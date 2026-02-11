@@ -1,0 +1,137 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interlace"
+version = "0.1.1"
+description = "A modern, Python/SQL-first data orchestration & pipeline framework"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [
+    {name = "Mark", email="mark@interlace.sh"}
+]
+keywords = ["data", "pipeline", "orchestration", "transformation", "etl", "reverse-etl", "dbt", "data-engineering"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Build Tools",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: SQL"
+]
+
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",  # For progress bars and beautiful console output
+    "pyyaml>=6.0",
+    "duckdb>=0.9.0",
+    "ibis-framework[duckdb,postgres]>=9.0.0",
+    "boto3>=1.28.0", # For S3 storage operations (optional but recommended)
+    "sqlglot>=24.0.0", # For SQL parsing and dependency extraction
+    "aiohttp>=3.9.0", # For async HTTP requests in API helper
+    "pandas>=2.0.0", # For DataFrame operations
+    "asyncpg>=0.29.0", # For Postgres connection pooling
+    "cachetools>=5.3.0", # For LRU cache implementation
+    "aiofiles>=23.2.0", # For async file I/O
+    "psutil>=5.9.0", # For system and process monitoring
+    "paramiko>=3.4.0", # For SFTP sync (poll + download)
+    "pgpy>=0.6.0", # For pure-Python PGP decrypt processor
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+    "aioresponses>=0.7.6",  # For mocking async HTTP requests in tests
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+
+[project.scripts]
+interlace = "interlace.cli.main:main"
+
+[project.entry-points."pytest11"]
+interlace = "interlace.testing"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+interlace = ["py.typed"]
+"interlace.service" = [
+    "static/**/*",
+    "static/*",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.coverage.run]
+source = ["src/interlace"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (slower, require database)",
+    "slow: Slow tests (may take a long time)",
+    "performance: Performance benchmarks",
+    "requires_db: Tests that require database connection",
+]
+asyncio_mode = "auto"

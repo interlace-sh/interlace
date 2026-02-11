@@ -1,0 +1,104 @@
+# Interlace SFTP Sync Project Configuration
+# This project demonstrates SFTP file synchronization with retry policies
+
+name: sftp_demo
+description: SFTP file synchronization with retry and error handling
+
+# ==============================================================================
+# CONNECTIONS
+# ==============================================================================
+connections:
+  # Default query connection for interlace runs (DuckDB)
+  default:
+    type: duckdb
+    path: data/main.duckdb
+
+  # Public test SFTP server (read-only)
+  sftp_public:
+    type: sftp
+    config:
+      host: test.rebex.net
+      port: 22
+      username: demo
+      password: password
+      connect_timeout_s: 15
+
+  # Destination: local filesystem
+  filesystem_exports:
+    type: filesystem
+    config:
+      root_path: data/exports
+
+# ==============================================================================
+# STATE MANAGEMENT
+# ==============================================================================
+state:
+  enabled: true
+  connection: default
+  schema: interlace
+
+# ==============================================================================
+# RETRY POLICIES - Important for SFTP connections
+# ==============================================================================
+# SFTP connections can fail due to network issues, server load, etc.
+retry:
+  default_policy:
+    max_attempts: 3
+    initial_delay: 5.0        # Network connections need longer initial delay
+    max_delay: 120.0          # Cap at 2 minutes
+    backoff_multiplier: 2.0
+    jitter: true
+
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout: 300.0   # Wait 5 minutes before retrying SFTP
+    half_open_requests: 1
+
+  dlq:
+    enabled: true
+    persist_to_db: true
+    max_entries: 200
+
+# ==============================================================================
+# SYNC JOBS
+# ==============================================================================
+# Phase A: sync jobs (run by serve later; demo script runs one tick)
+sync:
+  jobs:
+    - job_id: rebex_demo
+      sftp_connection: sftp_public
+      # You may need to adjust this after inspecting server directories.
+      remote_glob: /pub/example/*
+      destination_connection: filesystem_exports
+      destination_prefix: rebex
+      max_files_per_run: 50
+      processors: []
+
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+observability:
+  metrics:
+    enabled: true
+    port: 9092
+    prefix: "interlace_sftp"
+
+  tracing:
+    enabled: true
+    service_name: "interlace-sftp-sync"
+    exporter: console
+    sample_rate: 1.0
+
+  logging:
+    format: human
+    level: INFO
+    correlation_ids: true
+    static_fields:
+      service: interlace
+      project: sftp-sync
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+logging:
+  level: INFO

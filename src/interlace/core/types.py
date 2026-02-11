@@ -1,0 +1,67 @@
+"""
+Type definitions for Interlace.
+
+Provides TypedDict and type aliases for better type safety.
+"""
+
+from typing import TypedDict, Optional, List, Dict, Any, Union
+import ibis
+
+
+class ModelInfo(TypedDict, total=False):
+    """Type definition for model information dictionary."""
+    
+    name: str
+    schema: str
+    connection: Optional[str]
+    materialise: str  # UK spelling
+    strategy: Optional[str]
+    primary_key: Optional[Union[str, List[str]]]
+    dependencies: List[str]
+    incremental: Optional[Dict[str, Any]]
+    description: Optional[str]
+    tags: Optional[List[str]]
+    owner: Optional[str]
+    fields: Optional[Union[Dict[str, Any], List[tuple], ibis.Schema]]
+    file_path: Optional[str]
+    type: str  # "python" or "sql"
+
+
+class ConnectionConfig(TypedDict, total=False):
+    """Type definition for connection configuration."""
+    
+    type: str
+    path: Optional[str]
+    config: Dict[str, Any]
+    attach: List[Dict[str, Any]]
+    pool: Dict[str, Any]
+
+
+class ExecutorConfig(TypedDict, total=False):
+    """Type definition for executor configuration."""
+    
+    max_iterations: int
+    table_load_delay: float
+    task_timeout: float
+    max_workers: Optional[Union[int, str]]
+    cache: Dict[str, int]
+
+
+class MaterialisationResult(TypedDict):
+    """Type definition for materialisation result."""
+    
+    status: str
+    model: str
+    rows: Optional[int]
+    elapsed: float
+    reason: Optional[str]
+
+
+class ExecutionResult(TypedDict):
+    """Type definition for execution result."""
+    
+    status: str
+    model: str
+    rows: Optional[int]
+    elapsed: float
+    error: Optional[str]

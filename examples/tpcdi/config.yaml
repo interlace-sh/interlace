@@ -1,0 +1,177 @@
+# TPC-DI Benchmark Project Configuration
+# Data Integration benchmark demonstrating ETL patterns
+
+name: tpcdi_benchmark
+description: TPC-DI Benchmark - Financial Brokerage Data Integration
+
+# ==============================================================================
+# CONNECTIONS
+# ==============================================================================
+connections:
+  duckdb_main:
+    type: duckdb
+    path: "data/{env}/main.duckdb"
+    attach: []
+
+# ==============================================================================
+# STATE MANAGEMENT
+# ==============================================================================
+state:
+  connection: duckdb_main
+  schema: interlace
+
+# ==============================================================================
+# MODEL DEFAULTS
+# ==============================================================================
+models:
+  default_schema: main
+  default_materialize: table
+
+# ==============================================================================
+# SCHEDULER
+# ==============================================================================
+scheduler:
+  engine: aioclock
+  timezone: UTC
+  tick_ms: 500
+
+# ==============================================================================
+# RETRY POLICIES
+# ==============================================================================
+retry:
+  default_policy:
+    max_attempts: 3
+    initial_delay: 1.0
+    max_delay: 30.0
+    backoff_multiplier: 2.0
+    jitter: true
+
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout: 60.0
+    half_open_requests: 3
+
+  dlq:
+    enabled: true
+    persist_to_db: true
+    max_entries: 500
+
+# ==============================================================================
+# DATA QUALITY CHECKS
+# ==============================================================================
+quality:
+  enabled: true
+  fail_on_error: false
+
+  checks:
+    # Dimension quality checks
+    dim_customer:
+      - type: unique
+        column: customer_id
+        severity: error
+      - type: not_null
+        column: email
+        severity: warn
+      - type: row_count
+        min_count: 1
+        severity: error
+
+    dim_account:
+      - type: unique
+        column: account_id
+        severity: error
+      - type: not_null
+        column: customer_id
+        severity: error
+      - type: accepted_values
+        column: status
+        values: ["ACTIVE", "INACTIVE", "CLOSED"]
+        severity: warn
+
+    dim_broker:
+      - type: unique
+        column: broker_id
+        severity: error
+      - type: accepted_values
+        column: status
+        values: ["ACTIVE", "INACTIVE"]
+        severity: warn
+
+    dim_security:
+      - type: unique
+        column: security_id
+        severity: error
+      - type: unique
+        column: symbol
+        severity: warn
+      - type: not_null
+        column: company_id
+        severity: error
+
+    dim_company:
+      - type: unique
+        column: company_id
+        severity: error
+      - type: not_null
+        column: name
+        severity: error
+
+    # Fact table quality checks
+    fact_trade:
+      - type: not_null
+        column: account_id
+        severity: error
+      - type: not_null
+        column: security_id
+        severity: error
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+    fact_holding:
+      - type: not_null
+        column: account_id
+        severity: error
+      - type: not_null
+        column: security_id
+        severity: error
+
+    fact_market_history:
+      - type: not_null
+        column: security_id
+        severity: error
+      - type: row_count
+        min_count: 100
+        severity: warn
+
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+observability:
+  metrics:
+    enabled: true
+    port: 9093
+    prefix: "interlace_tpcdi"
+
+  tracing:
+    enabled: true
+    service_name: "interlace-tpcdi"
+    exporter: console
+    sample_rate: 1.0
+
+  logging:
+    format: human
+    level: INFO
+    correlation_ids: true
+    static_fields:
+      service: interlace
+      project: tpcdi-benchmark
+      benchmark: TPC-DI
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+logging:
+  level: INFO
+  file: "logs/interlace.log"
+  file_mode: "a"

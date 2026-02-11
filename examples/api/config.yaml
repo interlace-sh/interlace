@@ -1,0 +1,119 @@
+# Interlace API Ingestion Project Configuration
+# This project demonstrates API ingestion with retry policies and quality checks
+
+name: DummyJSON API Project
+version: 0.1.0
+description: Example project consuming DummyJSON APIs with retry and quality checks
+
+# ==============================================================================
+# CONNECTIONS
+# ==============================================================================
+connections:
+  default:
+    type: duckdb
+    path: "data/default.duckdb"
+
+# ==============================================================================
+# STATE MANAGEMENT
+# ==============================================================================
+state:
+  connection: default
+  schema: interlace
+
+# ==============================================================================
+# MODEL DEFAULTS
+# ==============================================================================
+models:
+  default_schema: public
+  default_materialize: table
+  default_strategy: replace
+
+# ==============================================================================
+# RETRY POLICIES - Essential for API ingestion
+# ==============================================================================
+# API calls can fail due to network issues, rate limiting, etc.
+# Retry policies automatically handle transient failures
+retry:
+  # Default retry policy for all API models
+  default_policy:
+    max_attempts: 5           # More retries for flaky APIs
+    initial_delay: 2.0        # Wait 2 seconds before first retry
+    max_delay: 60.0           # Cap delay at 60 seconds
+    backoff_multiplier: 2.0   # Double delay each retry: 2s, 4s, 8s, 16s, 32s
+    jitter: true              # Add randomness to avoid thundering herd
+
+  # Circuit breaker prevents overloading failing APIs
+  circuit_breaker:
+    failure_threshold: 10     # Open circuit after 10 failures
+    recovery_timeout: 120.0   # Wait 2 minutes before trying again
+    half_open_requests: 3     # Test with 3 requests in half-open state
+
+  # Dead Letter Queue for failed models
+  dlq:
+    enabled: true
+    persist_to_db: true
+    max_entries: 500
+
+# ==============================================================================
+# DATA QUALITY CHECKS
+# ==============================================================================
+quality:
+  enabled: true
+  fail_on_error: false
+
+  checks:
+    products:
+      - type: row_count
+        min_count: 1
+        severity: error
+      - type: unique
+        column: id
+        severity: warn
+
+    users:
+      - type: row_count
+        min_count: 1
+        severity: error
+      - type: unique
+        column: id
+        severity: warn
+
+    posts:
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+    comments:
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+observability:
+  metrics:
+    enabled: true
+    port: 9091
+    prefix: "interlace_api"
+
+  tracing:
+    enabled: true
+    service_name: "interlace-api-ingestion"
+    exporter: console
+    sample_rate: 1.0
+
+  logging:
+    format: human
+    level: INFO
+    correlation_ids: true
+    static_fields:
+      service: interlace
+      project: api-ingestion
+      data_source: dummyjson.com
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+logging:
+  level: INFO

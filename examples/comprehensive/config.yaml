@@ -1,0 +1,208 @@
+# Interlace Comprehensive Test Project Configuration
+# This project showcases ALL Interlace features and configurations
+
+name: comprehensive
+description: Comprehensive test project covering all Interlace functionality
+
+# ==============================================================================
+# CONNECTIONS
+# ==============================================================================
+# Interlace supports multiple database backends via ibis
+connections:
+  # Primary DuckDB connection (default)
+  default:
+    type: duckdb
+    path: "data/{env}/main.duckdb"
+
+  # Alternative in-memory DuckDB for testing
+  memory:
+    type: duckdb
+    path: ":memory:"
+
+  # PostgreSQL connection with connection pooling
+  # Uncomment and configure for Postgres testing
+  # postgres:
+  #   type: postgres
+  #   host: localhost
+  #   port: 5432
+  #   database: interlace_test
+  #   user: postgres
+  #   password: ${POSTGRES_PASSWORD}
+  #   pool:
+  #     min_size: 2
+  #     max_size: 10
+  #     timeout: 30.0
+  #   health_check:
+  #     enabled: true
+  #     interval: 60.0
+
+# ==============================================================================
+# STATE MANAGEMENT
+# ==============================================================================
+# State database for storing execution history, runs, tasks, and DLQ entries
+state:
+  connection: default
+  schema: interlace
+
+# ==============================================================================
+# MODEL DEFAULTS
+# ==============================================================================
+models:
+  default_schema: public
+  default_materialize: table
+  default_strategy: replace
+
+# ==============================================================================
+# RETRY POLICIES
+# ==============================================================================
+# Global retry configuration for transient failures
+retry:
+  # Default retry policy applied to all models unless overridden
+  default_policy:
+    max_attempts: 3
+    initial_delay: 1.0
+    max_delay: 30.0
+    backoff_multiplier: 2.0
+    jitter: true
+
+  # Circuit breaker settings
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout: 60.0
+    half_open_requests: 3
+
+  # Dead Letter Queue settings
+  dlq:
+    enabled: true
+    persist_to_db: true
+    max_entries: 1000
+
+# ==============================================================================
+# DATA QUALITY CHECKS
+# ==============================================================================
+# Quality checks run after model materialization
+quality:
+  # Global settings
+  enabled: true
+  fail_on_error: false  # Continue execution even if quality checks fail
+
+  # Model-specific quality checks
+  checks:
+    customers:
+      - type: unique
+        column: customer_id
+        severity: error
+      - type: not_null
+        column: email
+        severity: error
+      - type: not_null
+        column: name
+        severity: warn
+      - type: accepted_values
+        column: status
+        values: ["active", "inactive", "pending"]
+        severity: error
+
+    orders:
+      - type: unique
+        column: order_id
+        severity: error
+      - type: not_null
+        column: customer_id
+        severity: error
+      - type: not_null
+        column: order_date
+        severity: error
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+    products:
+      - type: unique
+        column: product_id
+        severity: error
+      - type: not_null
+        column: name
+        severity: error
+      - type: row_count
+        min_count: 1
+        max_count: 10000
+        severity: info
+
+    events:
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+    customer_summary:
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+observability:
+  # Prometheus metrics
+  metrics:
+    enabled: true
+    port: 9090
+    prefix: "interlace"
+    # Metric types exported:
+    # - interlace_model_execution_duration_seconds (histogram)
+    # - interlace_model_rows_processed (counter)
+    # - interlace_connection_pool_size (gauge)
+    # - interlace_retry_attempts (counter)
+    # - interlace_dlq_entries (gauge)
+
+  # OpenTelemetry tracing
+  tracing:
+    enabled: true
+    service_name: "interlace-comprehensive"
+    # Supported exporters: otlp, jaeger, zipkin, console
+    exporter: console
+    # OTLP configuration (when exporter: otlp)
+    # otlp_endpoint: "http://localhost:4317"
+    sample_rate: 1.0
+
+  # Structured logging
+  logging:
+    # Format: json or human
+    format: human
+    level: INFO
+    # Include correlation IDs for tracing requests
+    correlation_ids: true
+    # Additional fields included in all log entries
+    static_fields:
+      service: interlace
+      project: comprehensive
+      environment: ${ENV:-development}
+
+# ==============================================================================
+# LOGGING (Legacy - use observability.logging for new projects)
+# ==============================================================================
+logging:
+  level: INFO
+  # Supported levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+# ==============================================================================
+# SCHEDULER (for interlace serve)
+# ==============================================================================
+scheduler:
+  # Enable/disable the scheduler service
+  enabled: false
+  # Cron expression for scheduled runs
+  # cron: "0 */6 * * *"  # Every 6 hours
+  # Timezone for cron expressions
+  # timezone: "UTC"
+
+# ==============================================================================
+# ENVIRONMENT VARIABLES
+# ==============================================================================
+# Environment variables can be referenced using ${VAR_NAME} syntax
+# with optional defaults: ${VAR_NAME:-default_value}
+#
+# Common patterns:
+# - ${POSTGRES_PASSWORD} - Database credentials from environment
+# - ${ENV:-development} - Environment with default
+# - data/{env}/main.duckdb - Uses 'env' variable for path substitution

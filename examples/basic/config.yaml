@@ -1,0 +1,59 @@
+# Interlace Basic Test Project Configuration
+# A minimal project demonstrating core Interlace functionality
+
+name: basic
+description: Basic test project demonstrating core Interlace functionality
+
+# ==============================================================================
+# CONNECTIONS
+# ==============================================================================
+connections:
+  default:
+    type: duckdb
+    path: "data/{env}/main.duckdb"
+
+# ==============================================================================
+# STATE MANAGEMENT
+# ==============================================================================
+state:
+  connection: default
+  schema: interlace
+
+# ==============================================================================
+# MODEL DEFAULTS
+# ==============================================================================
+models:
+  default_schema: public
+  default_materialize: table
+
+# ==============================================================================
+# QUALITY CHECKS (Optional for basic project)
+# ==============================================================================
+quality:
+  enabled: true
+  fail_on_error: false
+
+  checks:
+    users:
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+    orders:
+      - type: unique
+        column: order_id
+        severity: error
+      - type: row_count
+        min_count: 1
+        severity: warn
+
+    products:
+      - type: unique
+        column: product_id
+        severity: error
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
+logging:
+  level: INFO

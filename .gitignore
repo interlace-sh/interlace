@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checkers
+.mypy_cache/
+.pytype/
+.pyre/
+
+# Linting
+.ruff_cache/
+
+# DuckDB / Databases
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+
+# Logs
+logs/
+*.log
+
+# Local config / Secrets
+.env
+.env.local
+.env.*.local
+*.local.yaml
+*.local.yml
+secrets.yaml
+secrets.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project data
+data/
+examples/*/data/raw/*.csv
+examples/*/data/dev/
+examples/*/data/prod/
+examples/*/logs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# AI agent configs (private)
+CLAUDE.md
+**/CLAUDE.md
+.claude/

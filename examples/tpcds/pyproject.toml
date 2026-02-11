@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []
+
+[tool.setuptools.package-data]
+"*" = []
+
+[project]
+name = "interlace-tpcds-benchmark"
+version = "0.1.0"
+description = "TPC-DS Benchmark for Interlace"
+requires-python = ">=3.12"
+dependencies = [
+    "interlace",
+    "ibis-framework[duckdb]>=9.0.0",
+    "pandas>=2.0.0",
+]
+
+[tool.uv.sources]
+interlace = { workspace = true }
+
+

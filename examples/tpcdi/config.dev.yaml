@@ -1,0 +1,10 @@
+# Development environment overrides
+
+connections:
+  duckdb_main:
+    path: data/dev/main.duckdb
+
+models:
+  default_schema: main
+
+

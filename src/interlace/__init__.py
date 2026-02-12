@@ -28,6 +28,26 @@ from interlace.testing import test_model, test_model_sync, mock_dependency, Test
 # Global config
 from interlace.config.singleton import config
 
+# Exceptions
+from interlace.exceptions import (
+    InterlaceError,
+    ConfigurationError,
+    InterlaceConnectionError,
+    ConnectionLockError,
+    ConnectionNotFoundError,
+    ExecutionError,
+    ModelExecutionError,
+    DependencyError,
+    DeadlockError,
+    InitializationError,
+    SchemaError,
+    MaterializationError,
+    QualityError,
+    RetryError,
+    CircuitBreakerOpenError,
+    StateStoreError,
+)
+
 __all__ = [
     # Core decorators
     "model",
@@ -60,4 +80,21 @@ __all__ = [
     "TestResult",
     # Config
     "config",
+    # Exceptions
+    "InterlaceError",
+    "ConfigurationError",
+    "InterlaceConnectionError",
+    "ConnectionLockError",
+    "ConnectionNotFoundError",
+    "ExecutionError",
+    "ModelExecutionError",
+    "DependencyError",
+    "DeadlockError",
+    "InitializationError",
+    "SchemaError",
+    "MaterializationError",
+    "QualityError",
+    "RetryError",
+    "CircuitBreakerOpenError",
+    "StateStoreError",
 ]

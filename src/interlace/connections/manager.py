@@ -7,13 +7,16 @@ Phase 3: Generic ibis backend support, shared connections, access policies.
 
 import threading
 from typing import Dict, Any, List, Optional
+from interlace.connections.base import BaseConnection
 from interlace.connections.duckdb import DuckDBConnection
 from interlace.connections.postgres import PostgresConnection
 from interlace.connections.ibis_generic import IbisConnection
 from interlace.connections.s3 import S3Connection
 from interlace.connections.filesystem import FilesystemConnection
 from interlace.connections.sftp import SFTPConnection
+from interlace.connections.storage import BaseStorageConnection
 from interlace.utils.logging import get_logger
+from interlace.exceptions import ConnectionNotFoundError
 
 logger = get_logger("interlace.connections.manager")
 
@@ -79,7 +82,7 @@ class ConnectionManager:
     def get(self, name: str) -> Any:
         """Get connection by name."""
         if name not in self._connections:
-            raise ValueError(f"Connection not found: {name}")
+            raise ConnectionNotFoundError(name)
         return self._connections[name]
 
     def list(self) -> list[str]:
@@ -136,56 +139,58 @@ class ConnectionManager:
         """Validate all connections can be accessed."""
         connections_config = self.config.get("connections", {})
         errors = []
-        
+
         # Check if any connections are defined
         if not connections_config:
-            # No connections defined - this is a warning, not an error
-            import logging
-            logger = logging.getLogger("interlace.connections")
             logger.warning("No connections defined in configuration")
             return
-        
+
         # Try to connect to each connection
-        for conn_name in self._connections.keys():
+        for conn_name, conn_obj in self._connections.items():
             try:
-                conn_obj = self._connections[conn_name]
-                # Try to access the connection (this will trigger actual connection)
-                try:
+                if isinstance(conn_obj, BaseConnection):
+                    # Queryable connections: trigger lazy ibis backend init
                     _ = conn_obj.connection
-                except Exception as e:
-                    error_msg = str(e)
-                    # Format helpful error messages
-                    if "lock" in error_msg.lower():
-                        errors.append(
-                            f"Connection '{conn_name}': Cannot connect - database file is locked.\n"
-                            f"  Error: {error_msg}\n"
-                            f"  Suggestion: Close other processes accessing the database"
-                        )
-                    elif "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
-                        errors.append(
-                            f"Connection '{conn_name}': Cannot connect - file or resource not found.\n"
-                            f"  Error: {error_msg}\n"
-                            f"  Suggestion: Check that the database file/path exists and is accessible"
-                        )
-                    elif "permission denied" in error_msg.lower():
-                        errors.append(
-                            f"Connection '{conn_name}': Cannot connect - permission denied.\n"
-                            f"  Error: {error_msg}\n"
-                            f"  Suggestion: Check file/directory permissions"
-                        )
-                    else:
-                        errors.append(
-                            f"Connection '{conn_name}': Cannot connect.\n"
-                            f"  Error: {error_msg}"
-                        )
+                elif isinstance(conn_obj, SFTPConnection):
+                    # SFTP: validate config is parseable (don't actually connect)
+                    cfg = conn_obj._parse_config()
+                    if not cfg.host:
+                        raise ValueError(f"Missing 'host' in SFTP config")
+                elif isinstance(conn_obj, BaseStorageConnection):
+                    # Storage connections (Filesystem, S3): config validated at init
+                    pass
+                else:
+                    logger.debug(f"Skipping validation for unknown connection type: {type(conn_obj)}")
             except Exception as e:
-                errors.append(
-                    f"Connection '{conn_name}': Unexpected error during connection test:\n"
-                    f"  Error: {e}"
-                )
-        
+                error_msg = str(e)
+                if "lock" in error_msg.lower():
+                    errors.append(
+                        f"Connection '{conn_name}': Cannot connect - database file is locked.\n"
+                        f"  Error: {error_msg}\n"
+                        f"  Suggestion: Close other processes accessing the database"
+                    )
+                elif "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
+                    errors.append(
+                        f"Connection '{conn_name}': Cannot connect - file or resource not found.\n"
+                        f"  Error: {error_msg}\n"
+                        f"  Suggestion: Check that the database file/path exists and is accessible"
+                    )
+                elif "permission denied" in error_msg.lower():
+                    errors.append(
+                        f"Connection '{conn_name}': Cannot connect - permission denied.\n"
+                        f"  Error: {error_msg}\n"
+                        f"  Suggestion: Check file/directory permissions"
+                    )
+                else:
+                    errors.append(
+                        f"Connection '{conn_name}': Cannot connect.\n"
+                        f"  Error: {error_msg}"
+                    )
+
         if errors:
-            error_message = "Connection validation failed:\n\n" + "\n\n".join(f"{i}. {err}" for i, err in enumerate(errors, 1))
+            error_message = "Connection validation failed:\n\n" + "\n\n".join(
+                f"{i}. {err}" for i, err in enumerate(errors, 1)
+            )
             raise ValueError(error_message)
 
 

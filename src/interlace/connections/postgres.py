@@ -2,7 +2,7 @@
 Postgres connection via ibis with connection pooling.
 
 Uses connection limiting and reuse for high-concurrency scenarios.
-Note: ibis.postgres uses psycopg2 (synchronous), so we use a semaphore-based
+Note: ibis.postgres uses psycopg (v3), so we use a semaphore-based
 approach to limit concurrent connections rather than true async pooling.
 """
 
@@ -20,9 +20,8 @@ class PostgresConnectionPool:
     """
     Connection pool manager for Postgres using semaphore-based limiting.
     
-    Since ibis.postgres uses psycopg2 (synchronous), we can't use true async
-    connection pooling. Instead, we use a semaphore to limit concurrent
-    connections and create ibis connections on demand.
+    Since ibis.postgres uses psycopg (v3), we use a semaphore to limit
+    concurrent connections and create ibis connections on demand.
     """
 
     def __init__(

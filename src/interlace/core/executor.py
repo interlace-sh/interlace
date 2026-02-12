@@ -11,6 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Any, Set, Tuple, List, Union
 import ibis
+import ibis.expr.datatypes as dt
 from interlace.core.dependencies import DependencyGraph
 from interlace.core.context import set_connection, get_connection as get_context_connection
 from interlace.connections.manager import get_connection, init_connections
@@ -25,6 +26,7 @@ from interlace.strategies.base import Strategy
 from interlace.utils.logging import get_logger
 from interlace.core.flow import Flow, Task, TaskStatus
 from interlace.core.state import StateStore
+from interlace.exceptions import ConnectionLockError, StateStoreError
 from interlace.utils.display import get_display
 from interlace.utils.table_utils import get_row_count_efficient
 from interlace.core.execution.data_converter import DataConverter
@@ -84,7 +86,7 @@ class Executor:
         self.state_store: Optional[StateStore] = None
         try:
             self.state_store = StateStore(config)
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError) as e:
             logger.warning(f"State database not available: {e}")
 
         # Phase 2: Initialize retry framework components
@@ -182,18 +184,18 @@ class Executor:
             if default_conn_name not in self.connections:
                 self.connections[default_conn_name] = self.con
                 self.connection_configs[default_conn_name] = self.default_connection.config
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError) as e:
             # For connection errors, extract useful info from the error chain
             error_msg = str(e)
             conn_config = connections_config.get(default_conn_name, {})
             conn_path = conn_config.get("path", "")
-            
+
             # Check if this is a lock error by examining the error message or underlying exception
             is_lock_error = "lock" in error_msg.lower() or "conflicting" in error_msg.lower()
-            
+
             # Try to extract PID from the error chain
             pid = self._extract_pid_from_error_chain(e)
-            
+
             if is_lock_error:
                 # Build clean error message without nesting
                 pid_info = f" (PID: {pid})" if pid != "unknown" else ""
@@ -205,14 +207,17 @@ class Executor:
                 if pid != "unknown":
                     suggestions.append(f"Check if process {pid} is still running: `ps -p {pid}` or `kill {pid}`")
                 suggestion_text = "\n  - ".join([""] + suggestions)
-                
-                raise RuntimeError(
+
+                raise ConnectionLockError(
                     f"Could not connect to database '{conn_path or default_conn_name}': File is locked{pid_info}.\n"
-                    f"Suggested actions:{suggestion_text}"
-                ) from None  # Don't chain - we've extracted the useful info
+                    f"Suggested actions:{suggestion_text}",
+                    pid=pid if pid != "unknown" else None,
+                    path=conn_path or None,
+                ) from None
             else:
-                # For other connection errors, provide general guidance
-                raise RuntimeError(
+                from interlace.exceptions import ConnectionError_ as InterlaceConnError
+
+                raise InterlaceConnError(
                     f"Could not load connection '{default_conn_name}': {error_msg}\n"
                     f"Please check:\n"
                     f"  - Connection configuration in config.yaml\n"
@@ -1637,7 +1642,7 @@ class Executor:
 # Note: _table_exists has been moved to interlace.utils.table_utils.check_table_exists
 
 
-def _ibis_type_to_sql(ibis_type: ibis.DataType) -> str:
+def _ibis_type_to_sql(ibis_type: dt.DataType) -> str:
     """Convert ibis DataType to SQL type string."""
     type_str = str(ibis_type)
     # Map ibis types to SQL types
@@ -1659,7 +1664,7 @@ def _ibis_type_to_sql(ibis_type: ibis.DataType) -> str:
     return type_map.get(base_type, "VARCHAR")
 
 
-def _is_safe_type_cast(from_type: ibis.DataType, to_type: ibis.DataType) -> bool:
+def _is_safe_type_cast(from_type: dt.DataType, to_type: dt.DataType) -> bool:
     """Check if type cast is safe (won't lose data)."""
     # For Phase 0, simple checks
     # Same type is always safe

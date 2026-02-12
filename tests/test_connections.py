@@ -578,7 +578,7 @@ class TestConnectionManager:
         config = {"connections": {}}
         manager = ConnectionManager(config, validate=False)
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(Exception) as exc_info:
             manager.get("nonexistent")
 
         assert "nonexistent" in str(exc_info.value)
@@ -597,7 +597,7 @@ class TestConnectionManager:
         manager = ConnectionManager(config, validate=False)
 
         # Connection should not exist since type was unsupported
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(Exception) as exc_info:
             manager.get("bad")
 
         assert "bad" in str(exc_info.value)

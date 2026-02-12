@@ -247,8 +247,45 @@ class FlowsHandler(BaseHandler):
         offset: int,
     ) -> tuple:
         """Query flows from state store or in-memory history."""
-        # First try state store
-        # TODO: Implement state store query when available
+        # Try state store first
+        if self.state_store:
+            try:
+                conn = self.state_store._get_connection()
+                if conn is not None:
+                    # Build dynamic WHERE clause
+                    conditions: List[str] = []
+                    if status:
+                        conditions.append(f"status = '{status}'")
+                    if trigger_type:
+                        conditions.append(f"trigger_type = '{trigger_type}'")
+                    if since:
+                        conditions.append(f"started_at >= TIMESTAMP '{since}'")
+                    if until:
+                        conditions.append(f"started_at <= TIMESTAMP '{until}'")
+
+                    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+                    # Get total count
+                    count_result = conn.sql(
+                        f"SELECT COUNT(*) AS cnt FROM interlace.flows{where}"
+                    ).execute()
+                    total = int(count_result.iloc[0, 0]) if count_result is not None and len(count_result) > 0 else 0
+
+                    # Get page of flows
+                    result = conn.sql(
+                        f"SELECT * FROM interlace.flows{where} "
+                        f"ORDER BY started_at DESC LIMIT {limit} OFFSET {offset}"
+                    ).execute()
+
+                    if result is not None and len(result) > 0:
+                        flows = result.to_dict("records")
+                        # Normalise keys for API response
+                        for f in flows:
+                            f.setdefault("trigger", f.get("trigger_type"))
+                            f.setdefault("summary", {})
+                        return flows, total
+            except Exception:
+                pass  # Fall back to in-memory
 
         # Fall back to in-memory history
         flows = []
@@ -279,7 +316,35 @@ class FlowsHandler(BaseHandler):
             if flow.flow_id == flow_id:
                 return self._serialize_flow(flow, include_tasks=True)
 
-        # TODO: Query state store when available
+        # Query state store
+        if self.state_store:
+            try:
+                conn = self.state_store._get_connection()
+                if conn is not None:
+                    from interlace.core.state import _escape_sql_string
+
+                    safe_id = _escape_sql_string(flow_id)
+                    result = conn.sql(
+                        f"SELECT * FROM interlace.flows WHERE flow_id = '{safe_id}'"
+                    ).execute()
+                    if result is not None and len(result) > 0:
+                        flow_dict = result.to_dict("records")[0]
+                        flow_dict.setdefault("trigger", flow_dict.get("trigger_type"))
+                        flow_dict.setdefault("summary", {})
+
+                        # Fetch associated tasks
+                        tasks_result = conn.sql(
+                            f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' "
+                            f"ORDER BY started_at"
+                        ).execute()
+                        if tasks_result is not None and len(tasks_result) > 0:
+                            flow_dict["tasks"] = tasks_result.to_dict("records")
+                        else:
+                            flow_dict["tasks"] = []
+                        return flow_dict
+            except Exception:
+                pass
+
         return None
 
     async def _get_tasks_from_store(self, flow_id: str) -> Optional[List[Dict[str, Any]]]:
@@ -289,5 +354,21 @@ class FlowsHandler(BaseHandler):
             if flow.flow_id == flow_id:
                 return [self._serialize_task(task) for task in flow.tasks.values()]
 
-        # TODO: Query state store when available
+        # Query state store
+        if self.state_store:
+            try:
+                conn = self.state_store._get_connection()
+                if conn is not None:
+                    from interlace.core.state import _escape_sql_string
+
+                    safe_id = _escape_sql_string(flow_id)
+                    result = conn.sql(
+                        f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' "
+                        f"ORDER BY started_at"
+                    ).execute()
+                    if result is not None and len(result) > 0:
+                        return result.to_dict("records")
+            except Exception:
+                pass
+
         return None

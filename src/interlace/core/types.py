@@ -4,8 +4,35 @@ Type definitions for Interlace.
 Provides TypedDict and type aliases for better type safety.
 """
 
-from typing import TypedDict, Optional, List, Dict, Any, Union
+from __future__ import annotations
+
+from typing import TypedDict, Optional, List, Dict, Any, Callable, Literal, Union
 import ibis
+
+# ---------------------------------------------------------------------------
+# Domain type aliases — use these instead of ``Any`` where possible
+# ---------------------------------------------------------------------------
+
+#: Any ibis backend connection
+ConnectionBackend = ibis.BaseBackend
+
+#: The output a model function may return before conversion
+ModelOutput = Union[ibis.Table, "pandas.DataFrame", list, dict, None]
+
+#: Materialization strategy names
+StrategyName = Literal["merge_by_key", "append", "replace", "scd_type_2", "none"]
+
+#: Materialization type names
+MaterializeType = Literal["table", "view", "ephemeral", "none"]
+
+#: Model type discriminator
+ModelType = Literal["python", "sql", "stream"]
+
+#: Schema evolution mode names
+SchemaMode = Literal["strict", "safe", "flexible", "lenient", "ignore"]
+
+#: Field definitions in the formats accepted by @model(fields=...)
+FieldsDef = Union[Dict[str, Any], list[tuple[str, str]], ibis.Schema, None]
 
 
 class ModelInfo(TypedDict, total=False):

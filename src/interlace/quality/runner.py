@@ -15,6 +15,7 @@ from interlace.quality.base import (
     QualityCheckSeverity,
     QualityCheckStatus,
 )
+from interlace.exceptions import QualityError
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.quality.runner")
@@ -313,7 +314,7 @@ class QualityCheckRunner:
         return checks
 
 
-class DataQualityError(Exception):
+class DataQualityError(QualityError):
     """Raised when data quality checks fail with ERROR severity."""
 
     def __init__(self, message: str, summary: Optional[QualityCheckSummary] = None):

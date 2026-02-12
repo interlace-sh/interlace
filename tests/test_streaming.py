@@ -351,9 +351,16 @@ class TestSubscribe:
 
         async def short_consumer():
             async for event in subscribe(stream_name, timeout=0.2):
-                break  # Exit immediately
+                break  # Exit after first event
 
-        await asyncio.wait_for(short_consumer(), timeout=3.0)
+        async def producer():
+            await asyncio.sleep(0.05)
+            await _notify_listeners(stream_name, [{"type": "trigger"}], "test")
+
+        await asyncio.wait_for(
+            asyncio.gather(short_consumer(), producer()),
+            timeout=3.0,
+        )
 
         # Listener should be cleaned up
         assert stream_name not in _stream_listeners or len(_stream_listeners.get(stream_name, [])) == 0

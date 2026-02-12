@@ -205,6 +205,4 @@ class CircuitBreaker:
         }
 
 
-class CircuitBreakerOpenError(Exception):
-    """Raised when circuit breaker is open and request is rejected."""
-    pass
+from interlace.exceptions import CircuitBreakerOpenError  # noqa: F401 - re-export

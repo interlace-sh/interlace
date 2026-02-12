@@ -472,7 +472,7 @@ class TestConnectionManager:
 class TestFallbackResolution:
     """Tests for fallback connection dependency resolution."""
 
-    def test_dependency_loader_with_fallback(self):
+    async def test_dependency_loader_with_fallback(self):
         """DependencyLoader should find tables in fallback connections."""
         from interlace.core.execution.dependency_loader import DependencyLoader
 
@@ -496,13 +496,10 @@ class TestFallbackResolution:
         )
 
         # The dependency should be found in fallback
-        import asyncio
         main_conn = ibis.duckdb.connect()  # Empty connection
 
-        result = asyncio.get_event_loop().run_until_complete(
-            loader.load_dependency_with_lock(
-                "source_data", main_conn, {}, "public"
-            )
+        result = await loader.load_dependency_with_lock(
+            "source_data", main_conn, {}, "public"
         )
 
         assert result is not None
@@ -512,7 +509,7 @@ class TestFallbackResolution:
         source_conn.disconnect()
         main_conn.disconnect()
 
-    def test_dependency_loader_prefers_primary(self):
+    async def test_dependency_loader_prefers_primary(self):
         """DependencyLoader should prefer primary connection over fallback."""
         from interlace.core.execution.dependency_loader import DependencyLoader
 
@@ -539,11 +536,8 @@ class TestFallbackResolution:
             fallback_connections=[("fallback", mock_fallback)],
         )
 
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
-            loader.load_dependency_with_lock(
-                "my_table", primary_conn, {}, "public"
-            )
+        result = await loader.load_dependency_with_lock(
+            "my_table", primary_conn, {}, "public"
         )
 
         assert result is not None

@@ -12,26 +12,17 @@ Orchestrates initialization of all components in the correct order:
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
+import yaml
 from interlace.config.loader import load_config, Config
 from interlace.connections.manager import init_connections
 from interlace.core.state import StateStore
 from interlace.utils.discovery import discover_models
 from interlace.core.dependencies import build_dependency_graph
-
-
-class InitializationError(Exception):
-    """
-    Exception raised during initialization with detailed error information.
-    
-    This exception should not be chained to avoid exposing internal stack traces.
-    Error messages should be informative and actionable.
-    """
-    def __init__(self, message: str):
-        super().__init__(message)
-        self.message = message
-    
-    def __str__(self) -> str:
-        return self.message
+from interlace.exceptions import (
+    InitializationError,
+    ConfigurationError,
+    InterlaceError,
+)
 
 
 class InterlaceInitializer:
@@ -80,19 +71,21 @@ class InterlaceInitializer:
         """Initialize and validate configuration."""
         try:
             config = load_config(self.project_dir, env=self.env)
-            
+
             # Validate config structure
             config.validate()
-            
+
             # Store environment and project_dir for later use
             config.data["_env"] = self.env
             config.data["_project_dir"] = self.project_dir
-            
+
             return config
+        except (FileNotFoundError, PermissionError, ValueError, yaml.YAMLError) as e:
+            raise InitializationError(str(e)) from None
+        except InterlaceError:
+            raise
         except Exception as e:
-            # Extract clean error message
-            error_msg = str(e)
-            raise InitializationError(error_msg) from None
+            raise InitializationError(f"Unexpected error loading config: {e}") from None
     
     def _initialize_logging(self) -> None:
         """Initialize logging from config."""
@@ -100,16 +93,15 @@ class InterlaceInitializer:
             # Set global config for logging auto-setup
             from interlace.config.singleton import GlobalConfig
             GlobalConfig.set_config(self.config)
-            
+
             # Store project_dir for auto-setup logging
             import interlace.utils.logging as logging_module
             logging_module._stored_project_dir = self.project_dir
-            
+
             # Logging will be auto-setup by get_logger() when first accessed
             # No explicit setup needed here
-        except Exception as e:
-            error_msg = str(e)
-            raise InitializationError(f"Failed to initialize logging: {error_msg}") from None
+        except (ImportError, AttributeError, TypeError) as e:
+            raise InitializationError(f"Failed to initialize logging: {e}") from None
     
     def _initialize_connections(self) -> None:
         """Initialize and validate all connections."""
@@ -117,15 +109,12 @@ class InterlaceInitializer:
             # Initialize connection manager (validates connections)
             init_connections(self.config.data)
             self.connections_initialized = True
+        except (ValueError, RuntimeError, OSError) as e:
+            raise InitializationError(str(e)) from None
+        except InterlaceError:
+            raise
         except Exception as e:
-            # Extract clean error message - connection errors already have good messages
-            error_msg = str(e)
-            # Remove nested "Error: Error: ..." patterns
-            if error_msg.startswith("Connection validation failed"):
-                # Use the message as-is (it already has all the details)
-                raise InitializationError(error_msg) from None
-            # For other errors, pass through the message
-            raise InitializationError(error_msg) from None
+            raise InitializationError(f"Failed to initialize connections: {e}") from None
     
     def _initialize_state_store(self) -> None:
         """Initialize state store (requires connections to be initialized)."""
@@ -133,16 +122,19 @@ class InterlaceInitializer:
             raise InitializationError(
                 "Connections must be initialized before state store"
             ) from None
-        
+
         try:
             state_config = self.config.data.get("state", {})
             if state_config.get("enabled", True):
                 self.state_store = StateStore(self.config.data)
             else:
                 self.state_store = None
+        except (ValueError, RuntimeError, OSError) as e:
+            raise InitializationError(f"Failed to initialize state store: {e}") from None
+        except InterlaceError:
+            raise
         except Exception as e:
-            error_msg = str(e)
-            raise InitializationError(f"Failed to initialize state store: {error_msg}") from None
+            raise InitializationError(f"Failed to initialize state store: {e}") from None
     
     def _initialize_models(self) -> Tuple[Dict[str, Dict[str, Any]], Any]:
         """Discover models, build dependency graph, and check for cycles."""
@@ -166,12 +158,15 @@ class InterlaceInitializer:
             if self.state_store:
                 try:
                     connection = self.state_store._get_connection()
-                except Exception:
+                except (RuntimeError, OSError):
                     pass  # Graceful degradation if connection not available
             models = discover_models(models_dir, connection)
+        except (ImportError, SyntaxError, ValueError, OSError) as e:
+            raise InitializationError(f"Failed to discover models: {e}") from None
+        except InterlaceError:
+            raise
         except Exception as e:
-            error_msg = str(e)
-            raise InitializationError(f"Failed to discover models: {error_msg}") from None
+            raise InitializationError(f"Failed to discover models: {e}") from None
         
         if not models:
             if self.verbose:
@@ -183,9 +178,8 @@ class InterlaceInitializer:
         # Build dependency graph
         try:
             graph = build_dependency_graph(models)
-        except Exception as e:
-            error_msg = str(e)
-            raise InitializationError(f"Failed to build dependency graph: {error_msg}") from None
+        except (ValueError, KeyError, TypeError) as e:
+            raise InitializationError(f"Failed to build dependency graph: {e}") from None
         
         # Check for cycles
         cycles = graph.detect_cycles()

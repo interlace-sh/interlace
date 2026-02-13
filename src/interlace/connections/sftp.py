@@ -60,10 +60,10 @@ class SFTPConnection:
         if not cfg.host:
             raise ValueError(f"SFTP connection '{self.name}' missing host")
 
-        transport = paramiko.Transport((cfg.host, cfg.port))
+        transport: Any = paramiko.Transport((cfg.host, cfg.port))
         transport.banner_timeout = cfg.connect_timeout_s
         transport.auth_timeout = cfg.connect_timeout_s
-        transport.connect_timeout = cfg.connect_timeout_s  # type: ignore[attr-defined]
+        transport.connect_timeout = cfg.connect_timeout_s
 
         pkey: paramiko.PKey | None = None
         if cfg.private_key_path:

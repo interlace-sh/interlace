@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from interlace.core.retry import DeadLetterQueue, RetryManager
     from interlace.core.state import StateStore
     from interlace.materialization.base import Materializer
-    from interlace.utils.display import RichDisplay
+    from interlace.utils.display import Display
 
 
 @dataclass
@@ -43,7 +43,7 @@ class ModelExecutorConfig:
     executor_pool: "ThreadPoolExecutor"
     state_store: Optional["StateStore"] = None
     flow: Optional["Flow"] = None
-    display: Optional["RichDisplay"] = None
+    display: Optional["Display"] = None
 
     # Phase 2: Retry framework components
     retry_manager: Optional["RetryManager"] = None
@@ -54,11 +54,11 @@ class ModelExecutorConfig:
     until: str | None = None
 
     # Function callbacks (to avoid circular dependencies)
-    get_row_count_func: Callable[[Any, str, str, str, ibis.BaseBackend], int | None] | None = None
-    update_model_last_run_func: Callable[[str, str], None] | None = None
-    log_model_end_func: Callable[[str, dict[str, Any], bool, float, int | None], None] | None = None
-    prepare_model_execution_func: Callable[[str, dict[str, Any]], tuple] | None = None
-    store_materialised_table_func: Callable[[str, ibis.Table, str, str, ibis.BaseBackend], None] | None = None
+    get_row_count_func: Callable[..., Any] | None = None
+    update_model_last_run_func: Callable[..., Any] | None = None
+    log_model_end_func: Callable[..., Any] | None = None
+    prepare_model_execution_func: Callable[..., Any] | None = None
+    store_materialised_table_func: Callable[..., Any] | None = None
 
 
 @dataclass

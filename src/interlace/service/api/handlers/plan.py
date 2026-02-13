@@ -42,7 +42,7 @@ class PlanHandler(BaseHandler):
         try:
             from interlace.core.execution.change_detector import ChangeDetector
 
-            change_detector = ChangeDetector(self.models, self.state_store)
+            change_detector = ChangeDetector(self.models, self.state_store)  # type: ignore[call-arg, arg-type]
         except Exception as e:
             logger.debug(f"Could not initialize change detector: {e}")
 
@@ -85,7 +85,7 @@ class PlanHandler(BaseHandler):
         try:
             from interlace.core.execution.change_detector import ChangeDetector
 
-            change_detector = ChangeDetector(self.models, self.state_store)
+            change_detector = ChangeDetector(self.models, self.state_store)  # type: ignore[call-arg, arg-type]
         except Exception as e:
             logger.debug(f"Could not initialize change detector: {e}")
 

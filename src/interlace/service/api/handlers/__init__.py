@@ -23,7 +23,7 @@ class BaseHandler:
         self.service = service
 
     @property
-    def config(self):
+    def config(self) -> Any:
         """Get service configuration."""
         return self.service.config
 
@@ -33,17 +33,17 @@ class BaseHandler:
         return self.service.models
 
     @property
-    def graph(self):
+    def graph(self) -> Any:
         """Get dependency graph."""
         return self.service.graph
 
     @property
-    def state_store(self):
+    def state_store(self) -> Any:
         """Get state store for historical data."""
         return self.service.state_store
 
     @property
-    def event_bus(self):
+    def event_bus(self) -> Any:
         """Get event bus for real-time updates."""
         return self.service.event_bus
 

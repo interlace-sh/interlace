@@ -75,19 +75,19 @@ class RabbitMQAdapter(MessageAdapter):
             ) from e
 
         self._connection = await aio_pika.connect_robust(self.url)
-        self._channel = await self._connection.channel()
+        self._channel = await self._connection.channel()  # type: ignore[attr-defined]
 
         # Set prefetch count for consumer
-        await self._channel.set_qos(prefetch_count=self.config.batch_size)
+        await self._channel.set_qos(prefetch_count=self.config.batch_size)  # type: ignore[attr-defined]
 
         if self.exchange_name:
-            self._exchange = await self._channel.declare_exchange(
+            self._exchange = await self._channel.declare_exchange(  # type: ignore[attr-defined]
                 self.exchange_name,
                 aio_pika.ExchangeType.TOPIC,
                 durable=True,
             )
         else:
-            self._exchange = self._channel.default_exchange
+            self._exchange = self._channel.default_exchange  # type: ignore[attr-defined]
 
         logger.info(f"Connected to RabbitMQ at {self.url.split('@')[-1]}")
 
@@ -101,7 +101,7 @@ class RabbitMQAdapter(MessageAdapter):
             self._connection = None
         logger.info("Disconnected from RabbitMQ")
 
-    async def consume(
+    async def consume(  # type: ignore[override, misc]
         self,
         topic: str,
         *,

@@ -7,6 +7,7 @@ Supports both sync and async file I/O.
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import aiofiles
 
@@ -63,7 +64,7 @@ async def calculate_file_hash_async(file_path: Path) -> str:
         return ""
 
 
-def get_stored_file_hash(connection: any, model_name: str, schema_name: str) -> str | None:
+def get_stored_file_hash(connection: Any, model_name: str, schema_name: str) -> str | None:
     """
     Get stored file hash from database.
 
@@ -103,7 +104,7 @@ def get_stored_file_hash(connection: any, model_name: str, schema_name: str) -> 
 
 
 def store_file_hash(
-    connection: any,
+    connection: Any,
     model_name: str,
     schema_name: str,
     file_path: str,
@@ -152,7 +153,7 @@ def store_file_hash(
             logger.warning(f"Could not store file hash for {model_name}: {e}")
 
 
-def has_file_changed(connection: any, model_name: str, schema_name: str, file_path: Path) -> bool:
+def has_file_changed(connection: Any, model_name: str, schema_name: str, file_path: Path) -> bool:
     """
     Check if file hash has changed (synchronous).
 
@@ -176,7 +177,7 @@ def has_file_changed(connection: any, model_name: str, schema_name: str, file_pa
     return current_hash != stored_hash
 
 
-async def has_file_changed_async(connection: any, model_name: str, schema_name: str, file_path: Path) -> bool:
+async def has_file_changed_async(connection: Any, model_name: str, schema_name: str, file_path: Path) -> bool:
     """
     Check if file hash has changed (async).
 

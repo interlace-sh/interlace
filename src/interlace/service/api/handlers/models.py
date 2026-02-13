@@ -31,8 +31,9 @@ class ModelsHandler(BaseHandler):
         tags_filter = request.query.get("tags")
         search_filter = request.query.get("search", "").lower()
 
+        tags_list: list[str] | None = None
         if tags_filter:
-            tags_filter = [t.strip() for t in tags_filter.split(",")]
+            tags_list = [t.strip() for t in tags_filter.split(",")]
 
         # Filter models
         filtered_models = []
@@ -42,9 +43,9 @@ class ModelsHandler(BaseHandler):
                 continue
             if type_filter and model.get("type") != type_filter:
                 continue
-            if tags_filter:
+            if tags_list:
                 model_tags = model.get("tags", [])
-                if not any(t in model_tags for t in tags_filter):
+                if not any(t in model_tags for t in tags_list):
                     continue
             if search_filter and search_filter not in name.lower():
                 continue
@@ -105,7 +106,7 @@ class ModelsHandler(BaseHandler):
         edges = []
         visited = set()
 
-        def collect_upstream(model_name: str, current_depth: int):
+        def collect_upstream(model_name: str, current_depth: int) -> None:
             if model_name in visited or current_depth > depth:
                 return
             visited.add(model_name)
@@ -119,7 +120,7 @@ class ModelsHandler(BaseHandler):
                     edges.append({"source": dep, "target": model_name})
                     collect_upstream(dep, current_depth + 1)
 
-        def collect_downstream(model_name: str, current_depth: int):
+        def collect_downstream(model_name: str, current_depth: int) -> None:
             if model_name in visited or current_depth > depth:
                 return
             visited.add(model_name)
@@ -271,7 +272,7 @@ class ModelsHandler(BaseHandler):
         except (ValueError, TypeError) as e:
             raise ValidationError("'limit' must be a valid integer between 1 and 100") from e
 
-        runs = []
+        runs: list[dict[str, Any]] = []
 
         # Check current active flow
         if hasattr(self.service, "flow") and self.service.flow:
@@ -291,7 +292,7 @@ class ModelsHandler(BaseHandler):
             request=request,
         )
 
-    def _serialize_model_run(self, flow, task) -> dict[str, Any]:
+    def _serialize_model_run(self, flow: Any, task: Any) -> dict[str, Any]:
         """Serialize a flow+task pair into a model run record."""
         duration = None
         if hasattr(task, "get_duration"):
@@ -309,7 +310,7 @@ class ModelsHandler(BaseHandler):
             "error_message": task.error_message,
         }
 
-    def _serialize_retry_policy(self, policy) -> dict[str, Any] | None:
+    def _serialize_retry_policy(self, policy: Any) -> dict[str, Any] | None:
         """Serialize retry policy to dict."""
         if policy is None:
             return None

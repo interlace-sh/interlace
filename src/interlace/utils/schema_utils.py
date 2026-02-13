@@ -89,7 +89,7 @@ def merge_schemas(
     return ibis.schema(merged_dict)
 
 
-def apply_schema_to_dataframe(df, schema: ibis.Schema):
+def apply_schema_to_dataframe(df: Any, schema: ibis.Schema) -> Any:
     """
     Apply ibis schema to pandas DataFrame by casting columns in-place.
     Avoids re-executing queries by directly casting DataFrame columns.

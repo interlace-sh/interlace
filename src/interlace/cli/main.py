@@ -9,7 +9,7 @@ from interlace.cli import config, info, init, lineage, plan, promote, run, schem
 from interlace.migrations import cli as migrate_cli
 
 
-def version_callback(value: bool):
+def version_callback(value: bool) -> None:
     """Callback to display version and exit."""
     if value:
         typer.echo(f"interlace version {__version__}")
@@ -46,7 +46,7 @@ def entrypoint(
         callback=version_callback,
         help="Show version and exit.",
     ),
-):
+) -> None:
     """
     Interlace - A modern data orchestration, transformation and pipeline framework.
 
@@ -60,7 +60,7 @@ def entrypoint(
             raise typer.Exit()
 
 
-def main():
+def main() -> None:
     """Main CLI entry point."""
     app()
 

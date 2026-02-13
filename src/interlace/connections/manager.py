@@ -43,7 +43,7 @@ class ConnectionManager:
         if validate:
             self.validate()
 
-    def _load_connections(self):
+    def _load_connections(self) -> None:
         """Load connections from configuration."""
         connections_config = self.config.get("connections", {})
 
@@ -206,7 +206,7 @@ def get_connection(name: str) -> Any:
         return _connection_manager.get(name)
 
 
-def init_connections(config: dict[str, Any], validate: bool = True):
+def init_connections(config: dict[str, Any], validate: bool = True) -> None:
     """Initialize global connection manager with validation (thread-safe)."""
     global _connection_manager
     with _connection_manager_lock:

@@ -53,8 +53,8 @@ class S3Connection(BaseStorageConnection):
         """Get S3 bucket name from config."""
         bucket_name = self._cfg.get("bucket", "")
         if not bucket_name:
-            raise ValueError(f"S3 connection '{self._name}' missing required 'bucket' configuration")
-        return bucket_name
+            raise ValueError(f"S3 connection '{self.name}' missing required 'bucket' configuration")
+        return bucket_name  # type: ignore[no-any-return]
 
     @property
     def region(self) -> str | None:
@@ -69,7 +69,7 @@ class S3Connection(BaseStorageConnection):
     @property
     def _cfg(self) -> dict[str, Any]:
         """Get nested config dict."""
-        return self.config.get("config", {})
+        return self.config.get("config", {})  # type: ignore[no-any-return]
 
     def _get_client_kwargs(self) -> dict[str, Any]:
         """Build kwargs for boto3 client/resource initialization."""
@@ -95,7 +95,7 @@ class S3Connection(BaseStorageConnection):
         return kwargs
 
     @property
-    def client(self):
+    def client(self) -> Any:
         """
         Get boto3 S3 client (lazy initialization).
 
@@ -109,7 +109,7 @@ class S3Connection(BaseStorageConnection):
         return self._client
 
     @property
-    def resource(self):
+    def resource(self) -> Any:
         """
         Get boto3 S3 resource (lazy initialization).
 
@@ -151,7 +151,7 @@ class S3Connection(BaseStorageConnection):
         full_prefix = self._full_key(prefix) if prefix else (self.base_path or "")
         paginator = self.client.get_paginator("list_objects_v2")
 
-        page_config = {"MaxKeys": max_keys}
+        page_config: dict[str, Any] = {"MaxKeys": max_keys}
         if delimiter:
             page_config["Delimiter"] = delimiter
 
@@ -255,7 +255,7 @@ class S3Connection(BaseStorageConnection):
         """
         full_key = self._full_key(key)
         response = self.client.get_object(Bucket=self.bucket, Key=full_key)
-        return response["Body"].read()
+        return response["Body"].read()  # type: ignore[no-any-return]
 
     def put_object(
         self,
@@ -334,5 +334,5 @@ class S3Connection(BaseStorageConnection):
     def __enter__(self) -> S3Connection:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any) -> None:
         self.close()

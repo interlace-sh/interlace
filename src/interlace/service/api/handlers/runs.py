@@ -138,10 +138,10 @@ class RunsHandler(BaseHandler):
                 tasks = flow.tasks if hasattr(flow, "tasks") and flow.tasks else {}
                 total = len(tasks)
 
-                def get_task_status(task) -> str:
+                def get_task_status(task: Any) -> str:
                     """Safely get task status value."""
                     if hasattr(task, "status") and hasattr(task.status, "value"):
-                        return task.status.value
+                        return task.status.value  # type: ignore[no-any-return]
                     return "unknown"
 
                 completed = sum(1 for t in tasks.values() if get_task_status(t) == "completed")
@@ -265,7 +265,7 @@ class RunsHandler(BaseHandler):
         # Also set as current flow for backward compatibility
         self.service.flow = flow
 
-        async def _execute():
+        async def _execute() -> None:
             try:
                 flow.start()
 

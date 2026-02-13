@@ -35,7 +35,7 @@ async def error_middleware(request: web.Request, handler: Callable) -> web.Respo
         response = await handler(request)
         # Add request ID to successful responses
         response.headers["X-Request-ID"] = request_id
-        return response
+        return response  # type: ignore[no-any-return]
 
     except APIError as e:
         logger.warning(

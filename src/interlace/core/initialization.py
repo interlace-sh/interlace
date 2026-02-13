@@ -94,6 +94,7 @@ class InterlaceInitializer:
             # Set global config for logging auto-setup
             from interlace.config.singleton import GlobalConfig
 
+            assert self.config is not None
             GlobalConfig.set_config(self.config)
 
             # Store project_dir for auto-setup logging
@@ -110,6 +111,7 @@ class InterlaceInitializer:
         """Initialize and validate all connections."""
         try:
             # Initialize connection manager (validates connections)
+            assert self.config is not None
             init_connections(self.config.data)
             self.connections_initialized = True
         except (ValueError, RuntimeError, OSError) as e:
@@ -125,6 +127,7 @@ class InterlaceInitializer:
             raise InitializationError("Connections must be initialized before state store") from None
 
         try:
+            assert self.config is not None
             state_config = self.config.data.get("state", {})
             if state_config.get("enabled", True):
                 self.state_store = StateStore(self.config.data)

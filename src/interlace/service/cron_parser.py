@@ -57,7 +57,7 @@ def next_fire_time_cron(expr: str, *, now: datetime, timezone: str | None = None
     else:
         now = now.astimezone(tz)
 
-    spec = _parse_cron(expr, tz=tz)
+    spec = _parse_cron(expr, tz=tz)  # type: ignore[arg-type]
     # Start at next minute boundary
     start = (now.replace(second=0, microsecond=0) + timedelta(minutes=1)).astimezone(tz)
     return _find_next_match(spec, start)

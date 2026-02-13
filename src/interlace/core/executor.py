@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import ibis
-import ibis.expr.datatypes as dt
 
 from interlace.connections.manager import get_connection, init_connections
 from interlace.core.context import get_connection as get_context_connection
@@ -42,6 +41,19 @@ from interlace.utils.logging import get_logger
 from interlace.utils.table_utils import check_table_exists, get_row_count_efficient, try_load_table
 
 logger = get_logger("interlace.executor")
+
+
+def _is_lock_exception(exc: BaseException) -> bool:
+    """Check if an exception or its chain indicates a database lock error."""
+    current: BaseException | None = exc
+    while current is not None:
+        exc_type = type(current).__name__.lower()
+        if any(keyword in exc_type for keyword in ("lock", "busy", "conflict")):
+            return True
+        current = current.__cause__ or current.__context__
+        if current is exc:
+            break
+    return False
 
 
 class Executor:
@@ -120,6 +132,9 @@ class Executor:
         # Dependency loading locks to prevent race conditions
         self._dep_loading_locks: dict[str, asyncio.Lock] = {}
 
+        # Model execution timing
+        self.model_timing: dict[str, dict] = {}
+
         # Schema caching for performance
         self._schema_cache: dict[str, ibis.Schema] = {}  # cache_key -> schema
         self._table_existence_cache: dict[tuple, bool] = {}  # (table_name, schema) -> exists
@@ -190,8 +205,11 @@ class Executor:
             conn_config = connections_config.get(default_conn_name, {})
             conn_path = conn_config.get("path", "")
 
-            # Check if this is a lock error by examining the error message or underlying exception
-            is_lock_error = "lock" in error_msg.lower() or "conflicting" in error_msg.lower()
+            # Check if this is a lock error by examining the error message and exception chain
+            error_lower = error_msg.lower()
+            is_lock_error = any(
+                keyword in error_lower for keyword in ("lock", "conflicting", "locked", "busy", "in use")
+            ) or _is_lock_exception(e)
 
             # Try to extract PID from the error chain
             pid = self._extract_pid_from_error_chain(e)
@@ -314,7 +332,7 @@ class Executor:
 
         # Initialize ExecutionOrchestrator after all components are set up
         # Pass a callback to update Executor's flow reference when flow is created
-        def set_executor_flow(flow):
+        def set_executor_flow(flow: Flow) -> None:
             self.flow = flow
 
         self.execution_orchestrator = ExecutionOrchestrator(
@@ -516,8 +534,6 @@ class Executor:
         start_time = time.time()
 
         # Track timing for debugging parallelization
-        if not hasattr(self, "model_timing"):
-            self.model_timing = {}
         self.model_timing[model_name] = {"start_time": start_time, "end_time": None}
 
         # Extract model configuration
@@ -530,6 +546,7 @@ class Executor:
         self._log_model_start(model_name, model_info)
 
         # Update task status to running
+        assert self.flow is not None
         if model_name in self.flow.tasks:
             task = self.flow.tasks[model_name]
             task.start()
@@ -562,10 +579,9 @@ class Executor:
                     # Only update if we successfully loaded - otherwise keep the result table
                     self.materialised_tables[model_name] = loaded_table
                 # If all schema attempts failed, that's fine - we already have result stored
-            except Exception:
-                # Any exception here is non-fatal - we already stored the result table
-                # Don't log or raise - just continue with the result table we have
-                pass
+            except Exception as e:
+                # Non-fatal - we already stored the result table, but log for debugging
+                logger.debug(f"Could not reload materialised table for {model_name}: {e}")
         elif materialise == "ephemeral":
             self.materialised_tables[model_name] = result
 
@@ -649,11 +665,10 @@ class Executor:
         Returns:
             ibis.Table if dependency was loaded successfully, None otherwise
         """
-        # Create lock for this dependency if it doesn't exist
-        if dep_name not in self._dep_loading_locks:
-            self._dep_loading_locks[dep_name] = asyncio.Lock()
+        # Get or create lock atomically for this dependency
+        lock = self._dep_loading_locks.setdefault(dep_name, asyncio.Lock())
 
-        async with self._dep_loading_locks[dep_name]:
+        async with lock:
             # Check again after acquiring lock (another task may have loaded it)
             if dep_name in self.materialised_tables:
                 return self.materialised_tables[dep_name]
@@ -670,8 +685,8 @@ class Executor:
             try_schemas = [s for s in try_schemas if s is not None]
             try_schemas.extend([dep_schema, "main", schema, "public", None])
             # Remove duplicates while preserving order
-            seen = set()
-            try_schemas = [s for s in try_schemas if not (s in seen or seen.add(s))]
+            seen: set[str | None] = set()
+            try_schemas = [s for s in try_schemas if not (s in seen or seen.add(s))]  # type: ignore[func-returns-value]
 
             # Try to load table from dependency's connection and schema
             last_error = None
@@ -730,7 +745,7 @@ class Executor:
             # For sync functions, run in executor to avoid blocking event loop
             loop = asyncio.get_event_loop()
 
-            def execute_func():
+            def execute_func() -> Any:
                 set_connection(current_conn)
                 return func(**func_kwargs)
 
@@ -779,7 +794,8 @@ class Executor:
         """
         fields = model_info.get("fields") if model_info else None
         table_expr = self.data_converter.convert_to_ibis_table(data, fields=fields)
-        ref_table_name = f"_interlace_tmp_{model_name}"
+        safe_name = model_name.replace('"', "").replace("'", "").replace(";", "")
+        ref_table_name = f"_interlace_tmp_{safe_name}"
 
         try:
             df = table_expr.execute()
@@ -938,17 +954,18 @@ class Executor:
                 if not check_table_exists(connection, dep_name, None):
                     df = dep_table.execute()
                     connection.create_table(dep_name, obj=df, temp=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not register dependency table '{dep_name}' as temp table: {e}")
 
         # Workaround for ibis issue with CTEs referenced in subqueries
         # When a CTE is referenced both in the main query and in a subquery, ibis may duplicate
         # the CTE definition during compilation, causing a "Duplicate CTE name" error.
         # We detect this by trying to execute the query, and if it fails, use a workaround.
         model_name = model_info.get("name", "temp_query")
-        temp_table_name = f"_interlace_cte_workaround_{model_name}"
+        safe_name = model_name.replace('"', "").replace("'", "").replace(";", "")
+        temp_table_name = f"_interlace_cte_workaround_{safe_name}"
 
-        def execute_with_workaround():
+        def execute_with_workaround() -> ibis.Table | None:
             """Execute query using underlying DuckDB connection as workaround."""
             if hasattr(connection, "con"):
                 duckdb_con = connection.con
@@ -1035,7 +1052,7 @@ class Executor:
         completed: set[str],
         succeeded: set[str],
         results: dict[str, Any],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, asyncio.Task[Any]],
         ready: set[str],
     ) -> dict[str, Any]:
         """
@@ -1057,7 +1074,7 @@ class Executor:
         Returns:
             Dictionary mapping model names to execution results
         """
-        new_ready = set()
+        new_ready: set[str] = set()
         iteration = 0
         while pending or executing:
             iteration += 1
@@ -1142,6 +1159,7 @@ class Executor:
                     }
 
                     # Update task status
+                    assert self.flow is not None
                     if model_name in self.flow.tasks:
                         task = self.flow.tasks[model_name]
                         task.skip()
@@ -1158,6 +1176,7 @@ class Executor:
                     # All dependencies succeeded - mark as ready
                     new_ready.add(model_name)
                     # Update task status for newly ready models
+                    assert self.flow is not None
                     if model_name in self.flow.tasks:
                         task = self.flow.tasks[model_name]
                         task.mark_ready()
@@ -1180,8 +1199,8 @@ class Executor:
         model_name: str,
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        task_map: dict[str, asyncio.Task],
-    ):
+        task_map: dict[str, asyncio.Task[Any]],
+    ) -> None:
         """
         Start execution of a model.
 
@@ -1192,9 +1211,10 @@ class Executor:
             task_map: Dictionary mapping model names to asyncio.Task objects
         """
         # Update task to show model is ready to execute
+        assert self.flow is not None
         if model_name in self.flow.tasks:
-            task = self.flow.tasks[model_name]
-            task.mark_ready()  # Dependencies satisfied
+            flow_task = self.flow.tasks[model_name]
+            flow_task.mark_ready()  # Dependencies satisfied
             # Note: task.start() and logging happen in execute_model() via _prepare_model_execution()
 
         # Progress will be updated in execute_model() when execution actually starts
@@ -1202,15 +1222,15 @@ class Executor:
         # Create task for model execution
         # Get force flag from executor instance (passed to execute_dynamic)
         force = getattr(self, "_force_execution", False)
-        task = asyncio.create_task(
+        async_task = asyncio.create_task(
             self.model_executor.execute_model(model_name, models[model_name], models, force=force)
         )
-        task_map[model_name] = task
+        task_map[model_name] = async_task
 
     async def _wait_for_task_completion(
         self,
         executing: set[str],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, asyncio.Task[Any]],
         results: dict[str, Any],
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
@@ -1219,7 +1239,7 @@ class Executor:
         new_ready: set[str],
         completed: set[str],
         succeeded: set[str],
-    ):
+    ) -> None:
         """
         Wait for at least one task to complete and process the result.
 
@@ -1298,18 +1318,18 @@ class Executor:
 
     async def _process_completed_task(
         self,
-        task: asyncio.Task,
+        task: asyncio.Task[Any],
         result: dict[str, Any],
         executing: set[str],
         completed: set[str],
         succeeded: set[str],
         results: dict[str, Any],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, asyncio.Task[Any]],
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
         pending: set[str],
         new_ready: set[str],
-    ):
+    ) -> None:
         """
         Process a successfully completed task.
 
@@ -1338,6 +1358,7 @@ class Executor:
                 result_status = result.get("status", "success")
 
                 # Update task status
+                assert self.flow is not None
                 if model_name in self.flow.tasks:
                     flow_task = self.flow.tasks[model_name]
                     if result_status == "error":
@@ -1418,6 +1439,7 @@ class Executor:
                     if dependent in pending and all(d in succeeded for d in deps):
                         new_ready.add(dependent)
                         # Update task status for newly ready models
+                        assert self.flow is not None
                         if dependent in self.flow.tasks:
                             dep_task = self.flow.tasks[dependent]
                             dep_task.mark_ready()
@@ -1429,20 +1451,20 @@ class Executor:
 
     async def _process_failed_task(
         self,
-        task: asyncio.Task,
+        task: asyncio.Task[Any],
         error: Exception,
         executing: set[str],
         completed: set[str],
         succeeded: set[str],
         results: dict[str, Any],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, asyncio.Task[Any]],
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
         pending: set[str],
         ready: set[str],
         new_ready: set[str],
-        exc_info=None,
-    ):
+        exc_info: Any = None,
+    ) -> None:
         """
         Process a failed task.
 
@@ -1480,6 +1502,7 @@ class Executor:
 
                 error_traceback = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
 
+                assert self.flow is not None
                 if model_name in self.flow.tasks:
                     flow_task = self.flow.tasks[model_name]
                     flow_task.complete(success=False)
@@ -1575,6 +1598,7 @@ class Executor:
                         }
 
                         # Update task status - mark as skipped since dependency failed
+                        assert self.flow is not None
                         if dependent in self.flow.tasks:
                             dep_task = self.flow.tasks[dependent]
                             dep_task.skip()  # Mark as skipped, not failed
@@ -1659,62 +1683,6 @@ class Executor:
                 del self._schema_cache[schema_cache_key]
 
         return exists
-
-
-# Helper functions for schema validation
-# Note: _table_exists has been moved to interlace.utils.table_utils.check_table_exists
-
-
-def _ibis_type_to_sql(ibis_type: dt.DataType) -> str:
-    """Convert ibis DataType to SQL type string."""
-    type_str = str(ibis_type)
-    # Map ibis types to SQL types
-    type_map = {
-        "int8": "BIGINT",
-        "int16": "SMALLINT",
-        "int32": "INTEGER",
-        "int64": "BIGINT",
-        "float32": "REAL",
-        "float64": "DOUBLE",
-        "string": "VARCHAR",
-        "boolean": "BOOLEAN",
-        "date": "DATE",
-        "time": "TIME",
-        "timestamp": "TIMESTAMP",
-    }
-    # Extract base type (remove nullable info)
-    base_type = type_str.split("(")[0].split("!")[0].lower()
-    return type_map.get(base_type, "VARCHAR")
-
-
-def _is_safe_type_cast(from_type: dt.DataType, to_type: dt.DataType) -> bool:
-    """Check if type cast is safe (won't lose data)."""
-    # For Phase 0, simple checks
-    # Same type is always safe
-    if from_type == to_type:
-        return True
-
-    # Integer widening is safe
-    int_types = ["int8", "int16", "int32", "int64"]
-    from_str = str(from_type).lower()
-    to_str = str(to_type).lower()
-
-    if any(t in from_str for t in int_types) and any(t in to_str for t in int_types):
-        # Check if widening
-        if "int8" in from_str and "int16" in to_str:
-            return True
-        if "int16" in from_str and "int32" in to_str:
-            return True
-        if "int32" in from_str and "int64" in to_str:
-            return True
-
-    # VARCHAR to TEXT is safe
-    if "string" in from_str or "varchar" in from_str:
-        if "string" in to_str or "varchar" in to_str or "text" in to_str:
-            return True
-
-    # Default: conservative - require manual migration
-    return False
 
 
 async def execute_models(

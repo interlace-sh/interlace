@@ -8,7 +8,7 @@ import asyncio
 import functools
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
@@ -29,12 +29,6 @@ def dual[T](func: Callable[..., Awaitable[T]]) -> Callable[..., T]:
     if not inspect.iscoroutinefunction(func):
         raise TypeError("@dual can only be applied to async def functions")
 
-    @overload
-    def sync_or_async_call(*args: Any, **kwargs: Any) -> T: ...
-
-    @overload
-    async def sync_or_async_call(*args: Any, **kwargs: Any) -> T: ...
-
     @functools.wraps(func)
     def sync_or_async_call(*args: Any, **kwargs: Any) -> Any:
         coro = func(*args, **kwargs)
@@ -42,7 +36,7 @@ def dual[T](func: Callable[..., Awaitable[T]]) -> Callable[..., T]:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
-        return coro if loop.is_running() else asyncio.run(coro)
+        return coro if loop.is_running() else asyncio.run(coro)  # type: ignore[arg-type]
 
-    sync_or_async_call = functools.update_wrapper(sync_or_async_call, func)  # type: ignore
-    return sync_or_async_call  # type: ignore
+    sync_or_async_call = functools.update_wrapper(sync_or_async_call, func)
+    return sync_or_async_call

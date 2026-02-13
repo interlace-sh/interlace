@@ -163,7 +163,7 @@ class ChangeDetector:
                             # Convert to timestamp if needed
 
                             if hasattr(last_run, "timestamp"):
-                                return last_run.timestamp()
+                                return float(last_run.timestamp())
                             elif isinstance(last_run, (int, float)):
                                 return float(last_run)
                 elif isinstance(result, (list, tuple)) and len(result) > 0:
@@ -171,7 +171,7 @@ class ChangeDetector:
                     if last_run is not None:
 
                         if hasattr(last_run, "timestamp"):
-                            return last_run.timestamp()
+                            return float(last_run.timestamp())
                         elif isinstance(last_run, (int, float)):
                             return float(last_run)
             return None

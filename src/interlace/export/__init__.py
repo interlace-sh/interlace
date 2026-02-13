@@ -5,6 +5,8 @@ Supports CSV, Parquet, and JSON formats using DuckDB's native
 COPY TO functionality for optimal performance.
 """
 
+from typing import Any
+
 from interlace.export.base import ExportConfig, Exporter
 from interlace.export.csv_exporter import CSVExporter
 from interlace.export.json_exporter import JSONExporter
@@ -43,11 +45,11 @@ def get_exporter(format: str) -> Exporter:
     if cls is None:
         supported = ", ".join(sorted(exporters.keys()))
         raise ValueError(f"Unsupported export format: '{format}'. Supported formats: {supported}")
-    return cls()
+    return cls()  # type: ignore[abstract]
 
 
 def export_table(
-    connection,
+    connection: Any,
     table_name: str,
     schema: str,
     export_config: dict,

@@ -41,7 +41,7 @@ def get_correlation_id() -> str | None:
     return _correlation_id.get()
 
 
-def set_correlation_id(correlation_id: str):
+def set_correlation_id(correlation_id: str) -> None:
     """
     Set correlation ID for current context.
 
@@ -52,7 +52,7 @@ def set_correlation_id(correlation_id: str):
 
 
 @contextmanager
-def add_correlation_id(correlation_id: str | None = None):
+def add_correlation_id(correlation_id: str | None = None) -> Any:
     """
     Context manager to add correlation ID to logs.
 
@@ -235,7 +235,7 @@ def setup_structured_logging(
     json_format: bool = False,
     stream: Any = None,
     extra_fields: dict[str, Any] | None = None,
-):
+) -> None:
     """
     Setup structured logging for Interlace.
 
@@ -265,6 +265,7 @@ def setup_structured_logging(
     handler.setLevel(getattr(logging, level.upper()))
 
     # Set formatter
+    formatter: logging.Formatter
     if json_format:
         formatter = StructuredFormatter(extra_fields=extra_fields)
     else:
@@ -289,7 +290,7 @@ class LogContext:
             logger.info("Processing model")  # Will include model and flow_id
     """
 
-    def __init__(self, **fields):
+    def __init__(self, **fields: Any) -> None:
         """
         Initialize log context.
 
@@ -297,15 +298,15 @@ class LogContext:
             **fields: Fields to add to log records
         """
         self.fields = fields
-        self._old_factory = None
+        self._old_factory: Any = None
 
-    def __enter__(self):
+    def __enter__(self) -> "LogContext":
         """Add fields to log records."""
         old_factory = logging.getLogRecordFactory()
         self._old_factory = old_factory
         fields = self.fields
 
-        def record_factory(*args, **kwargs):
+        def record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
             record = old_factory(*args, **kwargs)
             for key, value in fields.items():
                 setattr(record, key, value)
@@ -314,7 +315,7 @@ class LogContext:
         logging.setLogRecordFactory(record_factory)
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: Any) -> None:
         """Restore original log record factory."""
         if self._old_factory:
             logging.setLogRecordFactory(self._old_factory)
@@ -325,7 +326,7 @@ def log_model_start(
     model_type: str = "python",
     materialise: str = "table",
     schema: str = "default",
-):
+) -> None:
     """
     Log model execution start.
 
@@ -354,7 +355,7 @@ def log_model_end(
     duration: float,
     rows_processed: int | None = None,
     error: str | None = None,
-):
+) -> None:
     """
     Log model execution end.
 

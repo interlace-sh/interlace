@@ -52,15 +52,15 @@ class RetryManager:
             circuit_breaker: Optional circuit breaker for fail-fast behavior
         """
         self.circuit_breaker = circuit_breaker
-        self._retry_stats = {}  # Track retry statistics per model
+        self._retry_stats: dict[str, Any] = {}  # Track retry statistics per model
 
     async def execute(
         self,
         func: Callable[..., Any],
-        *args,
+        *args: Any,
         policy: RetryPolicy | None = None,
         model_name: str | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Any:
         """
         Execute async function with retry logic.
@@ -145,10 +145,10 @@ class RetryManager:
     def execute_sync(
         self,
         func: Callable[..., T],
-        *args,
+        *args: Any,
         policy: RetryPolicy | None = None,
         model_name: str | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> T:
         """
         Execute sync function with retry logic.

@@ -363,7 +363,7 @@ class SchemaManager:
         """
         cache_key = (table_name, schema)
         if cache_key in self._table_existence_cache:
-            return self._table_existence_cache[cache_key]
+            return bool(self._table_existence_cache[cache_key])
 
         exists = check_table_exists(connection, table_name, schema)
         self._table_existence_cache[cache_key] = exists

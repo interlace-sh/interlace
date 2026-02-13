@@ -21,10 +21,10 @@ def migrate(
     ctx: typer.Context,
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", "-d", help="Project directory"),
     env: str = typer.Option("dev", "--env", "-e", help="Environment name"),
-    migration: str = typer.Option(None, "--migration", "-m", help="Specific migration file to run"),
+    migration: str | None = typer.Option(None, "--migration", "-m", help="Specific migration file to run"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be executed without running"),
     list_only: bool = typer.Option(False, "--list", "-l", help="List pending migrations without running them"),
-):
+) -> None:
     """
     Run database migrations.
 
@@ -71,19 +71,19 @@ def migrate(
                 typer.echo(f"Migrations ({len(all_migrations)} total):")
                 typer.echo(f"  Executed: {executed_count}, Pending: {pending_count}, Failed: {failed_count}\n")
 
-                for migration in all_migrations:
-                    status = migration["status"]
-                    file_name = migration["migration_file"]
+                for mig_info in all_migrations:
+                    status = mig_info["status"]
+                    file_name = mig_info["migration_file"]
 
                     if status == "executed":
-                        executed_at = migration.get("executed_at")
-                        executed_by = migration.get("executed_by")
+                        executed_at = mig_info.get("executed_at")
+                        executed_by = mig_info.get("executed_by")
                         timestamp = f" ({executed_at})" if executed_at else ""
                         by = f" by {executed_by}" if executed_by else ""
                         typer.echo(f"  ✓ {file_name}{timestamp}{by}")
                     elif status == "failed":
-                        error = migration.get("error_message", "Unknown error")
-                        executed_at = migration.get("executed_at")
+                        error = mig_info.get("error_message", "Unknown error")
+                        executed_at = mig_info.get("executed_at")
                         timestamp = f" ({executed_at})" if executed_at else ""
                         typer.echo(f"  ✗ {file_name}{timestamp} - {error}", err=True)
                     else:  # pending

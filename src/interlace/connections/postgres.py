@@ -130,7 +130,7 @@ class PostgresConnectionPool:
             logger.error(f"Failed to acquire Postgres connection from pool: {e}")
             raise
 
-    async def return_connection(self, connection: ibis.BaseBackend):
+    async def return_connection(self, connection: ibis.BaseBackend) -> None:
         """
         Return a connection to the pool.
 
@@ -160,7 +160,7 @@ class PostgresConnectionPool:
         """
         return self._metrics.copy()
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the connection pool."""
         # Wait for all connections to be released
         for _ in range(self.max_size):
@@ -255,7 +255,7 @@ class PostgresConnection(BaseConnection):
 
         return await self._pool.get_connection()
 
-    async def return_pooled_connection(self, connection: ibis.BaseBackend):
+    async def return_pooled_connection(self, connection: ibis.BaseBackend) -> None:
         """
         Return a connection to the pool.
 
@@ -276,7 +276,7 @@ class PostgresConnection(BaseConnection):
             return self._pool.get_metrics()
         return {}
 
-    def close(self):
+    def close(self) -> None:
         """Close connection and pool.
 
         This must be synchronous so that ``BaseConnection.__exit__``
@@ -288,7 +288,7 @@ class PostgresConnection(BaseConnection):
         self._pool = None
         super().close()
 
-    async def close_async(self):
+    async def close_async(self) -> None:
         """Async close that gracefully drains the connection pool."""
         if self._pool:
             await self._pool.close()

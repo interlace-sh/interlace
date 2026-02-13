@@ -27,7 +27,7 @@ class Config:
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value using dot notation."""
         keys = key.split(".")
-        value = self.data
+        value: Any = self.data
         for k in keys:
             if isinstance(value, dict):
                 value = value.get(k)
@@ -68,15 +68,15 @@ class Config:
         """Iterate over top-level keys."""
         return iter(self.data)
 
-    def keys(self):
+    def keys(self) -> Any:
         """Get top-level keys."""
         return self.data.keys()
 
-    def values(self):
+    def values(self) -> Any:
         """Get top-level values."""
         return self.data.values()
 
-    def items(self):
+    def items(self) -> Any:
         """Get top-level items."""
         return self.data.items()
 
@@ -170,7 +170,7 @@ def load_config(project_path: Path | None = None, env: str | None = None) -> Con
     return Config(config_data)
 
 
-def _merge_dict(base: dict, override: dict):
+def _merge_dict(base: dict, override: dict) -> None:
     """Recursively merge override into base."""
     for key, value in override.items():
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):
@@ -193,7 +193,7 @@ def _substitute_env_vars(data: Any) -> Any:
         # Substitute ${VAR_NAME}
         import re
 
-        def replace_var(match):
+        def replace_var(match: re.Match[str]) -> str:
             var_name = match.group(1)
             return os.getenv(var_name, match.group(0))
 

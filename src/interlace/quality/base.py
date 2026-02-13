@@ -120,8 +120,8 @@ class QualityCheck(ABC):
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
         name: str | None = None,
         description: str | None = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         """
         Initialize quality check.
 

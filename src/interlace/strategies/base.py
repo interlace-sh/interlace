@@ -5,7 +5,7 @@ Phase 0: Abstract base class for all strategies.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import ibis
@@ -21,7 +21,7 @@ class Strategy(ABC):
         target_table: str,
         schema: str,
         source_table: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> str | None:
         """
         Generate SQL for strategy execution.

@@ -64,8 +64,8 @@ class MaterializationManager:
         materialise_type: str,
         connection: ibis.BaseBackend,
         fields: dict[str, Any] | list | ibis.Schema | None = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         """Materialise data using materialiser."""
         # Materialisation is synchronous - call directly (DuckDB connections are not thread-safe)
         # TODO: Consider making ibis operations async or use connection pooling
@@ -218,7 +218,8 @@ class MaterializationManager:
         # Generate and execute INSERT SQL
         if is_reference_table:
             insert_sql = strategy.generate_sql(connection, model_name, schema, ref_table_name)
-            _execute_sql_internal(connection, insert_sql)
+            if insert_sql:
+                _execute_sql_internal(connection, insert_sql)
         else:
             # Create temp table and insert
             temp_table_name = f"_interlace_tmp_{model_name}"
@@ -228,7 +229,8 @@ class MaterializationManager:
                 df = new_data.execute()
                 connection.create_table(temp_table_name, obj=df, temp=True)
             insert_sql = strategy.generate_sql(connection, model_name, schema, temp_table_name)
-            _execute_sql_internal(connection, insert_sql)
+            if insert_sql:
+                _execute_sql_internal(connection, insert_sql)
             try:
                 connection.drop_table(temp_table_name)
             except Exception:
@@ -355,7 +357,8 @@ class MaterializationManager:
             primary_key=primary_key,
             delete_mode=delete_mode,
         )
-        _execute_sql_internal(connection, merge_sql)
+        if merge_sql:
+            _execute_sql_internal(connection, merge_sql)
 
         # Update task with change counts
         if self.flow and model_name in self.flow.tasks:
@@ -457,7 +460,7 @@ CREATE TABLE {escaped_target} (
             _execute_sql_internal(connection, create_table_sql)
 
             # Use initial insert SQL from strategy
-            insert_sql = strategy.get_initial_insert_sql(
+            insert_sql = strategy.get_initial_insert_sql(  # type: ignore[attr-defined]
                 connection,
                 model_name,
                 schema,
@@ -489,6 +492,8 @@ CREATE TABLE {escaped_target} (
         )
 
         # Execute each statement (split by semicolon)
+        if not scd2_sql:
+            return
         statements = [s.strip() for s in scd2_sql.split(";") if s.strip()]
         for stmt in statements:
             _execute_sql_internal(connection, stmt)
@@ -502,7 +507,7 @@ CREATE TABLE {escaped_target} (
             task.rows_updated = 0  # SCD2 doesn't update, it expires and inserts
             task.rows_deleted = 0  # SCD2 uses soft delete via valid_to
 
-    def _ibis_type_to_sql(self, ibis_type) -> str:
+    def _ibis_type_to_sql(self, ibis_type: Any) -> str:
         """
         Convert ibis data type to SQL type string.
 

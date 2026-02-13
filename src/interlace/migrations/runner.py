@@ -6,6 +6,7 @@ Executes SQL migrations from migrations directory.
 
 import os
 from pathlib import Path
+from typing import Any
 
 from interlace.core.context import _execute_sql_internal
 from interlace.migrations.utils import (
@@ -19,7 +20,7 @@ from interlace.utils.logging import get_logger
 logger = get_logger("interlace.migrations")
 
 
-def list_pending_migrations(project_dir: Path, connection: any, environment: str) -> list[str]:
+def list_pending_migrations(project_dir: Path, connection: Any, environment: str) -> list[str]:
     """
     List pending migrations for an environment.
 
@@ -46,7 +47,7 @@ def list_pending_migrations(project_dir: Path, connection: any, environment: str
 
 def run_migrations(
     project_dir: Path,
-    connection: any,
+    connection: Any,
     environment: str,
     migration_file: str | None = None,
     dry_run: bool = False,
@@ -101,7 +102,7 @@ def run_migrations(
 
 def _run_single_migration(
     migration_path: Path,
-    connection: any,
+    connection: Any,
     environment: str,
     dry_run: bool = False,
 ) -> list[MigrationResult]:

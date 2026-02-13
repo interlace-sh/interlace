@@ -17,7 +17,7 @@ def get_static_dir() -> Path:
 
 
 @app.command()
-def status():
+def status() -> None:
     """
     Check the status of the embedded UI.
     """

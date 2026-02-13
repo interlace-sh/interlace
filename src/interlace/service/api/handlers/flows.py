@@ -100,15 +100,15 @@ class FlowsHandler(BaseHandler):
         # Check current in-memory flow first
         if hasattr(self.service, "flow") and self.service.flow:
             if self.service.flow.flow_id == flow_id:
-                flow = self._serialize_flow(self.service.flow, include_tasks=True)
-                return await self.json_response(flow, request=request)
+                flow_data = self._serialize_flow(self.service.flow, include_tasks=True)
+                return await self.json_response(flow_data, request=request)
 
         # Query from state store
         if self.state_store:
             try:
-                flow = await self._get_flow_from_store(flow_id)
-                if flow:
-                    return await self.json_response(flow, request=request)
+                stored_flow = await self._get_flow_from_store(flow_id)
+                if stored_flow:
+                    return await self.json_response(stored_flow, request=request)
             except Exception:
                 pass
 
@@ -125,21 +125,21 @@ class FlowsHandler(BaseHandler):
         # Check current in-memory flow first
         if hasattr(self.service, "flow") and self.service.flow:
             if self.service.flow.flow_id == flow_id:
-                tasks = [self._serialize_task(task) for task in self.service.flow.tasks.values()]
-                return await self.json_response({"tasks": tasks}, request=request)
+                task_list = [self._serialize_task(task) for task in self.service.flow.tasks.values()]
+                return await self.json_response({"tasks": task_list}, request=request)
 
         # Query from state store
         if self.state_store:
             try:
-                tasks = await self._get_tasks_from_store(flow_id)
-                if tasks is not None:
-                    return await self.json_response({"tasks": tasks}, request=request)
+                stored_tasks = await self._get_tasks_from_store(flow_id)
+                if stored_tasks is not None:
+                    return await self.json_response({"tasks": stored_tasks}, request=request)
             except Exception:
                 pass
 
         raise NotFoundError("Flow", flow_id, ErrorCode.FLOW_NOT_FOUND)
 
-    def _serialize_flow(self, flow, include_tasks: bool = False) -> dict[str, Any]:
+    def _serialize_flow(self, flow: Any, include_tasks: bool = False) -> dict[str, Any]:
         """Serialize Flow object to dict."""
         # Compute task counts
         total_tasks = len(flow.tasks) if hasattr(flow, "tasks") else 0
@@ -180,7 +180,7 @@ class FlowsHandler(BaseHandler):
 
         return result
 
-    def _serialize_task(self, task) -> dict[str, Any]:
+    def _serialize_task(self, task: Any) -> dict[str, Any]:
         """Serialize Task object to dict."""
         return {
             "task_id": task.task_id,
@@ -209,7 +209,7 @@ class FlowsHandler(BaseHandler):
             "error_stacktrace": task.error_stacktrace,
         }
 
-    def _compute_summary(self, flow) -> dict[str, int]:
+    def _compute_summary(self, flow: Any) -> dict[str, int]:
         """Compute task summary for a flow."""
         summary = {
             "total_tasks": 0,
@@ -330,7 +330,7 @@ class FlowsHandler(BaseHandler):
                             flow_dict["tasks"] = tasks_result.to_dict("records")
                         else:
                             flow_dict["tasks"] = []
-                        return flow_dict
+                        return flow_dict  # type: ignore[no-any-return]
             except Exception:
                 pass
 
@@ -355,7 +355,7 @@ class FlowsHandler(BaseHandler):
                         f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' " f"ORDER BY started_at"
                     ).execute()
                     if result is not None and len(result) > 0:
-                        return result.to_dict("records")
+                        return result.to_dict("records")  # type: ignore[no-any-return]
             except Exception:
                 pass
 

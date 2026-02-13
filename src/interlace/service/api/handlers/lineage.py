@@ -4,6 +4,8 @@ Column-level lineage API endpoints.
 Provides endpoints for querying and refreshing column-level lineage.
 """
 
+from typing import Any
+
 from aiohttp import web
 
 from interlace.lineage import (
@@ -22,12 +24,12 @@ logger = get_logger("interlace.api.lineage")
 class LineageHandler(BaseHandler):
     """Handler for column-level lineage endpoints."""
 
-    def __init__(self, service):
+    def __init__(self, service: Any) -> None:
         super().__init__(service)
         self._lineage_cache: dict[str, ColumnLineage] = {}
         self._lineage_graph: LineageGraph | None = None
 
-    def _get_extractor(self, model_type: str):
+    def _get_extractor(self, model_type: str) -> Any:
         """Get the appropriate lineage extractor."""
         if model_type == "sql":
             return SqlLineageExtractor()
@@ -48,7 +50,7 @@ class LineageHandler(BaseHandler):
             extractor = self._get_extractor(model_type)
             lineage = extractor.extract(model_name, model_info, self.models)
             self._lineage_cache[model_name] = lineage
-            return lineage
+            return lineage  # type: ignore[no-any-return]
         except Exception as e:
             logger.debug(f"Could not compute lineage for {model_name}: {e}")
             return None
@@ -83,7 +85,7 @@ class LineageHandler(BaseHandler):
             model_names = list(self.models.keys())
 
         # Build lineage for requested models
-        result = {
+        result: dict[str, Any] = {
             "models": {},
             "edges": [],
         }
@@ -207,7 +209,7 @@ class LineageHandler(BaseHandler):
         if col is None:
             raise NotFoundError("Column", column_name, ErrorCode.RESOURCE_NOT_FOUND)
 
-        result = {
+        result: dict[str, Any] = {
             "model": model_name,
             "column": column_name,
             "data_type": col.data_type,

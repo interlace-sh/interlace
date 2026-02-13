@@ -19,7 +19,7 @@ async def run(
     verbose: bool = False,
     since: str | None = None,
     until: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """
     Run Interlace models programmatically, automatically works in both sync and async contexts.
@@ -145,7 +145,7 @@ def run_sync(
     project_dir: Path | None = None,
     env: str | None = None,
     verbose: bool = False,
-    **kwargs,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """
     Synchronous wrapper for run().
@@ -155,4 +155,4 @@ def run_sync(
 
     See run() for parameter documentation.
     """
-    return asyncio.run(run(models=models, project_dir=project_dir, env=env, verbose=verbose, **kwargs))
+    return asyncio.run(run(models=models, project_dir=project_dir, env=env, verbose=verbose, **kwargs))  # type: ignore[arg-type]

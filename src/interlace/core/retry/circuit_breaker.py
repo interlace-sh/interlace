@@ -111,7 +111,7 @@ class CircuitBreaker:
 
         return False
 
-    def record_success(self):
+    def record_success(self) -> None:
         """Record a successful request."""
         if self._state == CircuitState.HALF_OPEN:
             self._success_count += 1
@@ -125,7 +125,7 @@ class CircuitBreaker:
             # Reset failure count on success
             self._failure_count = 0
 
-    def record_failure(self):
+    def record_failure(self) -> None:
         """Record a failed request."""
         if self._state == CircuitState.OPEN:
             # Don't process failures when circuit is already open.
@@ -147,7 +147,7 @@ class CircuitBreaker:
             self._open_circuit()
             logger.warning("Circuit breaker re-opened after failure during recovery")
 
-    def _update_state(self):
+    def _update_state(self) -> None:
         """Update circuit state based on timeout."""
         if self._state == CircuitState.OPEN:
             if self._last_failure_time is not None:
@@ -158,20 +158,20 @@ class CircuitBreaker:
                     self._half_open_circuit()
                     logger.info("Circuit breaker entering half-open state")
 
-    def _open_circuit(self):
+    def _open_circuit(self) -> None:
         """Transition to OPEN state."""
         self._state = CircuitState.OPEN
         self._success_count = 0
         self._half_open_requests = 0
 
-    def _half_open_circuit(self):
+    def _half_open_circuit(self) -> None:
         """Transition to HALF_OPEN state."""
         self._state = CircuitState.HALF_OPEN
         self._failure_count = 0
         self._success_count = 0
         self._half_open_requests = 0
 
-    def _close_circuit(self):
+    def _close_circuit(self) -> None:
         """Transition to CLOSED state."""
         self._state = CircuitState.CLOSED
         self._failure_count = 0
@@ -179,7 +179,7 @@ class CircuitBreaker:
         self._half_open_requests = 0
         self._last_failure_time = None
 
-    def reset(self):
+    def reset(self) -> None:
         """Manually reset circuit breaker to CLOSED state."""
         self._close_circuit()
         logger.info("Circuit breaker manually reset")

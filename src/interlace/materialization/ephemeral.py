@@ -15,10 +15,12 @@ from interlace.utils.logging import get_logger
 class EphemeralMaterializer(Materializer):
     """Ephemeral materializer - registers data in-memory."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.logger = get_logger("interlace.materialization.ephemeral")
 
-    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any = None, **kwargs) -> None:
+    def materialise(
+        self, data: ibis.Table, model_name: str, schema: str, connection: Any = None, **kwargs: Any
+    ) -> None:
         """
         Materialise data as ephemeral (register with ibis connection using alias).
 

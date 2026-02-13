@@ -21,14 +21,14 @@ app = typer.Typer(name="run", help="Execute Interlace models", invoke_without_co
 @app.callback()
 def run(
     ctx: typer.Context,
-    tasks: list[str] = typer.Argument(None, help="Specific models to run (default: all)"),
-    env: str = typer.Option(None, help="Environment (dev, staging, prod)"),
+    tasks: list[str] | None = typer.Argument(None, help="Specific models to run (default: all)"),
+    env: str | None = typer.Option(None, help="Environment (dev, staging, prod)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", "-d", help="Project directory"),
     force: bool = typer.Option(False, "--force", "-f", help="Force execution (bypass change detection)"),
-    since: str = typer.Option(None, "--since", help="Backfill: override cursor start value (e.g. '2024-01-01')"),
-    until: str = typer.Option(None, "--until", help="Backfill: upper bound for cursor filter"),
-):
+    since: str | None = typer.Option(None, "--since", help="Backfill: override cursor start value (e.g. '2024-01-01')"),
+    until: str | None = typer.Option(None, "--until", help="Backfill: upper bound for cursor filter"),
+) -> None:
     """
     Execute models.
 

@@ -58,13 +58,13 @@ class TaskConnectionManager:
         # Note: This will be set after connections are initialized
         self._default_connection = None
 
-    def _get_default_connection(self):
+    def _get_default_connection(self) -> Any:
         """Get the default connection, lazily initialised."""
         if self._default_connection is None:
             self._default_connection = self.connections.get(self.default_conn_name)
         return self._default_connection
 
-    def _apply_attach_configs(self, new_conn, attach_configs):
+    def _apply_attach_configs(self, new_conn: Any, attach_configs: list[Any]) -> None:
         """
         Apply ATTACH configurations to a DuckDB connection.
 

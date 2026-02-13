@@ -52,7 +52,7 @@ class TokenBucket:
         self.lock = asyncio.Lock()
         self.refill_rate = rate / interval  # Tokens per second
 
-    async def acquire(self):
+    async def acquire(self) -> None:
         """
         Acquire a token from the bucket.
 
@@ -162,7 +162,7 @@ class API:
         if rate_limit is not None:
             self.token_bucket = TokenBucket(rate=rate_limit, interval=rate_limit_interval)
 
-    async def _ensure_session(self):
+    async def _ensure_session(self) -> None:
         """Ensure session exists, creating it if needed."""
         async with self._session_lock:
             if self.session is None or self.session.closed:
@@ -184,14 +184,14 @@ class API:
                     except Exception as e:
                         logger.warning(f"Auth function failed: {e}, continuing without auth")
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "API":
         """Async context manager entry."""
         await self._ensure_session()
         async with self._session_lock:
             self._session_refcount += 1
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any) -> None:
         """Async context manager exit."""
         async with self._session_lock:
             self._session_refcount -= 1
@@ -200,7 +200,7 @@ class API:
                 await self.session.close()
                 self.session = None
 
-    async def close(self):
+    async def close(self) -> None:
         """Explicitly close the session (useful for cleanup)."""
         async with self._session_lock:
             if self.session and not self.session.closed:
@@ -288,7 +288,7 @@ class API:
         if data_attribute and data_attribute in json_data:
             value = json_data[data_attribute]
             if value is not None:
-                return value
+                return value  # type: ignore[no-any-return]
 
         return json_data
 
@@ -333,6 +333,7 @@ class API:
                     if self.session is None or self.session.closed:
                         await self._ensure_session()
 
+                    assert self.session is not None
                     request_headers = {**self.session.headers}
                     if headers:
                         request_headers.update(headers)
@@ -366,7 +367,7 @@ class API:
                         )
 
                         if response.status <= 299:
-                            return await response.json()
+                            return await response.json()  # type: ignore[no-any-return]
                         else:
                             text = await response.text()
                             logger.warning(f"{method} {response.status} {url} - {text[:200]}")
@@ -528,11 +529,11 @@ class API:
         pages = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Extract data from each page
-        for page in pages:
-            if isinstance(page, Exception):
-                logger.error(f"Error fetching page: {page}")
+        for page_response in pages:
+            if isinstance(page_response, BaseException):
+                logger.error(f"Error fetching page: {page_response}")
                 continue
-            page_data = self._extract_data(page, data_attribute)
+            page_data = self._extract_data(page_response, data_attribute)
             if isinstance(page_data, list):
                 all_data.extend(page_data)
             else:
@@ -582,9 +583,9 @@ class API:
 
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        all_data = []
+        all_data: list[dict] = []
         for response in responses:
-            if isinstance(response, Exception):
+            if isinstance(response, BaseException):
                 logger.error(f"Error in batch request: {response}")
                 continue
             extracted = self._extract_data(response, data_attribute)
@@ -643,7 +644,7 @@ async def oauth2_token(
     async with session.post(token_url, data=data) as response:
         response.raise_for_status()
         token_data = await response.json()
-        return token_data["access_token"]
+        return str(token_data["access_token"])
 
 
 async def basic_auth_token(

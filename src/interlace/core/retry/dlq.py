@@ -32,26 +32,26 @@ class DLQEntry:
 
     # Retry metadata
     total_attempts: int = 1
-    retry_history: list[dict[str, Any]] = None
+    retry_history: list[dict[str, Any]] | None = None
 
     # Timing information
-    first_attempt_time: float = None
-    last_attempt_time: float = None
+    first_attempt_time: float | None = None
+    last_attempt_time: float | None = None
     total_duration: float = 0.0
 
     # Model parameters (for reproducing failure)
-    model_config: dict[str, Any] = None
-    model_dependencies: list[str] = None
+    model_config: dict[str, Any] | None = None
+    model_dependencies: list[str] | None = None
 
     # Run context
     run_id: str | None = None
     environment: str | None = None
 
     # Entry metadata
-    dlq_timestamp: float = None
+    dlq_timestamp: float | None = None
     dlq_id: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Set default values."""
         if self.retry_history is None:
             self.retry_history = []
@@ -189,7 +189,7 @@ class DeadLetterQueue:
         else:
             # Filter in-memory queue
             entries = [e for e in self._in_memory_queue if e.model_name == model_name]
-            return sorted(entries, key=lambda e: e.dlq_timestamp, reverse=True)[:limit]
+            return sorted(entries, key=lambda e: e.dlq_timestamp or 0.0, reverse=True)[:limit]
 
     def get_recent(self, limit: int = 10) -> list[DLQEntry]:
         """
@@ -205,9 +205,9 @@ class DeadLetterQueue:
             return self._fetch_recent_entries(limit)
         else:
             # Sort in-memory queue by timestamp
-            return sorted(self._in_memory_queue, key=lambda e: e.dlq_timestamp, reverse=True)[:limit]
+            return sorted(self._in_memory_queue, key=lambda e: e.dlq_timestamp or 0.0, reverse=True)[:limit]
 
-    def mark_resolved(self, dlq_id: str, resolution_note: str | None = None):
+    def mark_resolved(self, dlq_id: str, resolution_note: str | None = None) -> None:
         """
         Mark a DLQ entry as resolved.
 
@@ -223,7 +223,7 @@ class DeadLetterQueue:
             # Remove from in-memory queue
             self._in_memory_queue = [e for e in self._in_memory_queue if e.dlq_id != dlq_id]
 
-    def clear_model(self, model_name: str):
+    def clear_model(self, model_name: str) -> None:
         """
         Clear all DLQ entries for a model.
 
@@ -237,7 +237,7 @@ class DeadLetterQueue:
         else:
             self._in_memory_queue = [e for e in self._in_memory_queue if e.model_name != model_name]
 
-    def clear_all(self):
+    def clear_all(self) -> None:
         """Clear all DLQ entries."""
         logger.warning("Clearing all DLQ entries")
 
@@ -258,8 +258,8 @@ class DeadLetterQueue:
         else:
             # Calculate stats from in-memory queue
             total = len(self._in_memory_queue)
-            by_model = {}
-            by_exception = {}
+            by_model: dict[str, int] = {}
+            by_exception: dict[str, int] = {}
 
             for entry in self._in_memory_queue:
                 by_model[entry.model_name] = by_model.get(entry.model_name, 0) + 1
@@ -280,7 +280,7 @@ class DeadLetterQueue:
         content = f"{entry.model_name}_{entry.dlq_timestamp}"
         return f"dlq_{hashlib.sha256(content.encode()).hexdigest()[:16]}"
 
-    def _persist_entry(self, entry: DLQEntry):
+    def _persist_entry(self, entry: DLQEntry) -> None:
         """Persist entry to state database."""
         if not self.state_store:
             return
@@ -298,7 +298,7 @@ class DeadLetterQueue:
             dlq_table = "interlace.dead_letter_queue"
 
             # Escape and format values
-            def sql_value(val):
+            def sql_value(val: Any) -> str:
                 if val is None:
                     return "NULL"
                 elif isinstance(val, str):
@@ -426,7 +426,7 @@ class DeadLetterQueue:
             logger.debug(f"Failed to fetch recent DLQ entries: {e}")
             return []
 
-    def _mark_entry_resolved(self, dlq_id: str, resolution_note: str | None):
+    def _mark_entry_resolved(self, dlq_id: str, resolution_note: str | None) -> None:
         """Mark entry as resolved in state database."""
         if not self.state_store:
             return
@@ -456,7 +456,7 @@ class DeadLetterQueue:
         except Exception as e:
             logger.warning(f"Failed to mark DLQ entry as resolved: {e}")
 
-    def _clear_model_entries(self, model_name: str):
+    def _clear_model_entries(self, model_name: str) -> None:
         """Clear model entries from state database."""
         if not self.state_store:
             return
@@ -479,7 +479,7 @@ class DeadLetterQueue:
         except Exception as e:
             logger.warning(f"Failed to clear DLQ entries for model: {e}")
 
-    def _clear_all_entries(self):
+    def _clear_all_entries(self) -> None:
         """Clear all entries from state database."""
         if not self.state_store:
             return
@@ -551,7 +551,7 @@ class DeadLetterQueue:
                 "entries_by_exception": {},
             }
 
-    def _row_to_entry(self, row) -> DLQEntry:
+    def _row_to_entry(self, row: Any) -> DLQEntry:
         """Convert a database row to DLQEntry."""
         import json
 
@@ -578,14 +578,14 @@ class DeadLetterQueue:
                 model_dependencies = []
 
         # Convert timestamp fields
-        def to_float(val):
+        def to_float(val: Any) -> float | None:
             if val is None:
                 return None
             if isinstance(val, (int, float)):
                 return float(val)
             # Handle pandas Timestamp
             if hasattr(val, "timestamp"):
-                return val.timestamp()
+                return float(val.timestamp())
             return None
 
         return DLQEntry(

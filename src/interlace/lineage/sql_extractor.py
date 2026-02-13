@@ -155,7 +155,7 @@ class SqlLineageExtractor(LineageExtractor):
 
         Returns list of (column_name, column_expression) tuples.
         """
-        columns = []
+        columns: list[tuple[str, exp.Expression]] = []
 
         if not isinstance(parsed, exp.Select):
             # Try to find SELECT within CTE or subquery
@@ -241,7 +241,7 @@ class SqlLineageExtractor(LineageExtractor):
         sources = []
 
         # SQLGlot lineage returns a Node with downstream references
-        def process_node(node, depth=0):
+        def process_node(node: Any, depth: int = 0) -> None:
             nonlocal sources
             if depth > 10:  # Prevent infinite recursion
                 return
@@ -291,7 +291,7 @@ class SqlLineageExtractor(LineageExtractor):
         sources = []
         visited = set()
 
-        def trace_expr(expr: exp.Expression, transformation: TransformationType):
+        def trace_expr(expr: exp.Expression, transformation: TransformationType) -> None:
             nonlocal sources
 
             if id(expr) in visited:

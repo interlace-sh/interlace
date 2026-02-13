@@ -23,7 +23,7 @@ except Exception:
 class FileFormatter(logging.Formatter):
     """Formatter for file logs - clean and parseable."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(fmt="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
     def format(self, record: logging.LogRecord) -> str:
@@ -104,8 +104,8 @@ def setup_logging(
     # to prevent duplicates
     root_logger = logging.getLogger()
     root_file_handlers = [h for h in root_logger.handlers if isinstance(h, logging.FileHandler)]
-    for handler in root_file_handlers:
-        root_logger.removeHandler(handler)
+    for fh in root_file_handlers:
+        root_logger.removeHandler(fh)
 
     # Parse level
     level_int = _parse_level(level)
@@ -146,10 +146,10 @@ def setup_logging(
                 # Custom format: "level: timestamp - msg" for normal logs
                 # For errors, include class/file information
                 class CustomFormatter(logging.Formatter):
-                    def __init__(self):
+                    def __init__(self) -> None:
                         super().__init__(datefmt="%Y-%m-%d %H:%M:%S")
 
-                    def format(self, record):
+                    def format(self, record: logging.LogRecord) -> str:
                         # Base format: "level: timestamp - msg"
                         base_format = f"{record.levelname}: {self.formatTime(record)} - {record.getMessage()}"
 
@@ -165,7 +165,7 @@ def setup_logging(
 
                         return base_format
 
-                formatter = CustomFormatter()
+                formatter: logging.Formatter = CustomFormatter()
             else:
                 formatter = logging.Formatter(format_string)
 
@@ -181,7 +181,7 @@ def setup_logging(
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Check if a file handler for this file already exists to avoid duplicates
-        existing_file_handler = None
+        existing_file_handler: logging.Handler | None = None
         for handler in logger.handlers:
             if isinstance(handler, logging.FileHandler) and handler.baseFilename == str(log_file.resolve()):
                 existing_file_handler = handler
@@ -275,7 +275,7 @@ _logging_setup_lock = threading.Lock()
 _stored_project_dir: Path | None = None
 
 
-def _auto_setup_logging():
+def _auto_setup_logging() -> None:
     """
     Automatically set up logging from global config if not already configured.
 

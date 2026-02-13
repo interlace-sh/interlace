@@ -17,10 +17,10 @@ from interlace.utils.logging import get_logger
 class TableMaterializer(Materializer):
     """Table materializer - persists data to table in catalog."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.logger = get_logger("interlace.materialization.table")
 
-    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs) -> None:
+    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs: Any) -> None:
         """
         Materialise data to table.
 

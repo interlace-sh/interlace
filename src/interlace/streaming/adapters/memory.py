@@ -62,7 +62,7 @@ class InMemoryAdapter(MessageAdapter):
         self._queues.clear()
         self._connected = False
 
-    async def consume(
+    async def consume(  # type: ignore[override, misc]
         self,
         topic: str,
         *,

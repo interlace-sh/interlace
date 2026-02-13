@@ -94,7 +94,7 @@ class DuckDBConnection(BaseConnection):
 
         return self._connection
 
-    def _attach_external(self, attach_config: dict[str, Any]):
+    def _attach_external(self, attach_config: dict[str, Any]) -> None:
         """
         Attach external database to DuckDB.
 

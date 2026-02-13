@@ -139,6 +139,7 @@ class ModelExecutor:
                 }
 
         # Prepare execution
+        assert self._prepare_model_execution is not None
         model_type, materialise, schema, strategy_name, start_time = self._prepare_model_execution(
             model_name, model_info
         )
@@ -160,7 +161,7 @@ class ModelExecutor:
 
             # Track connection info for cleanup (needed for Postgres pool return)
             conn_obj = self.connection_manager.connections.get(model_conn_name)
-            is_pooled = conn_obj and hasattr(conn_obj, "return_pooled_connection")
+            is_pooled = bool(conn_obj and hasattr(conn_obj, "return_pooled_connection"))
 
             # Set connection in context early so models can access it
             set_connection(model_conn)
@@ -254,7 +255,7 @@ class ModelExecutor:
 
             # Phase 2: Execute model with optional retry logic
             # Define core execution function that can be retried
-            async def _core_execute():
+            async def _core_execute() -> Any:
                 if model_type == "python":
                     return await self.execute_python_model(model_info, dependency_tables, model_conn)
                 elif model_type == "sql":
@@ -319,13 +320,14 @@ class ModelExecutor:
                         self.state_store.save_task(task)
 
                 # Log model completion (no data returned - side-effect model)
-                self._log_model_end(
-                    model_name=model_name,
-                    model_info=model_info,
-                    success=True,
-                    duration=elapsed,
-                    rows_processed=None,
-                )
+                if self._log_model_end:
+                    self._log_model_end(
+                        model_name=model_name,
+                        model_info=model_info,
+                        success=True,
+                        duration=elapsed,
+                        rows_processed=None,
+                    )
 
                 return {"status": "success", "model": model_name, "rows": None, "elapsed": elapsed}
 
@@ -334,7 +336,11 @@ class ModelExecutor:
                 result = await self.schema_manager.setup_reference_table(result, model_name, model_conn, model_info)
 
             # Capture rows_ingested (input count before strategy)
-            rows_ingested = self._get_row_count(result, model_name, materialise, schema, model_conn)
+            rows_ingested = (
+                self._get_row_count(result, model_name, materialise, schema, model_conn)
+                if self._get_row_count
+                else None
+            )
             if self.flow and model_name in self.flow.tasks:
                 task = self.flow.tasks[model_name]
                 task.rows_ingested = rows_ingested
@@ -409,14 +415,19 @@ class ModelExecutor:
             # Store materialised table for downstream models
             # Wrap in try/except to ensure table loading failures don't fail the task
             try:
-                await self._store_materialised_table(model_name, result, materialise, schema, model_conn)
+                if self._store_materialised_table:
+                    await self._store_materialised_table(model_name, result, materialise, schema, model_conn)
             except Exception as e:
                 # If storing fails (e.g., table not found when loading), log but don't fail
                 # The result table is already stored in materialised_tables by _store_materialised_table
                 logger.debug(f"Could not store materialised table {model_name} (non-fatal): {e}")
 
             # Get row count from materialised table
-            rows = self._get_row_count(result, model_name, materialise, schema, model_conn)
+            rows = (
+                self._get_row_count(result, model_name, materialise, schema, model_conn)
+                if self._get_row_count
+                else None
+            )
 
             # Export to file if configured
             export_config = model_info.get("export")
@@ -453,24 +464,25 @@ class ModelExecutor:
             if self.state_store:
                 try:
                     state_conn = self.state_store._get_connection()
-                    if state_conn:
+                    if state_conn and self._update_model_last_run:
                         self._update_model_last_run(state_conn, model_name, schema)
                 except Exception as e:
                     logger.debug(f"Could not update last_run_at for {model_name}: {e}")
 
             # Log model completion with statistics
-            self._log_model_end(
-                model_name=model_name,
-                model_info=model_info,
-                success=True,
-                duration=elapsed,
-                rows_processed=rows,
-                rows_ingested=task.rows_ingested if task else None,
-                rows_inserted=task.rows_inserted if task else None,
-                rows_updated=task.rows_updated if task else None,
-                rows_deleted=task.rows_deleted if task else None,
-                schema_changes=task.schema_changes if task else 0,
-            )
+            if self._log_model_end:
+                self._log_model_end(
+                    model_name=model_name,
+                    model_info=model_info,
+                    success=True,
+                    duration=elapsed,
+                    rows_processed=rows,
+                    rows_ingested=task.rows_ingested if task else None,
+                    rows_inserted=task.rows_inserted if task else None,
+                    rows_updated=task.rows_updated if task else None,
+                    rows_deleted=task.rows_deleted if task else None,
+                    schema_changes=task.schema_changes if task else 0,
+                )
 
             return {"status": "success", "model": model_name, "rows": rows, "elapsed": elapsed}
 
@@ -487,13 +499,14 @@ class ModelExecutor:
                 self.model_timing[model_name]["end_time"] = time.time()
 
             # Log model failure with timing
-            self._log_model_end(
-                model_name=model_name,
-                model_info=model_info,
-                success=False,
-                duration=elapsed,
-                error=str(e),
-            )
+            if self._log_model_end:
+                self._log_model_end(
+                    model_name=model_name,
+                    model_info=model_info,
+                    success=False,
+                    duration=elapsed,
+                    error=str(e),
+                )
 
             # Capture the full traceback from the original exception
             # Skip the asyncio wrapper traceback if present - use the underlying error instead
@@ -501,7 +514,7 @@ class ModelExecutor:
 
             # If the exception is from async_utils.py (the wrapper), use the __context__ instead
             # This gives us the actual error location, not the async wrapper
-            if exc_tb and "async_utils.py" in str(exc_tb.tb_frame.f_code.co_filename):
+            if exc_tb and exc_value and "async_utils.py" in str(exc_tb.tb_frame.f_code.co_filename):
                 # This is the async wrapper error - use the context (the real error) instead
                 if exc_value.__context__:
                     # Use the context exception (the real error)
@@ -542,9 +555,10 @@ class ModelExecutor:
                 error_traceback = "".join(lines)
 
                 # Point exc_info at the last user frame for Rich formatting
-                filtered_exc = exc_type(str(exc_value))
-                filtered_exc.__traceback__ = user_frames[-1]
-                exc_value = filtered_exc
+                if exc_type is not None:
+                    filtered_exc = exc_type(str(exc_value))
+                    filtered_exc.__traceback__ = user_frames[-1]
+                    exc_value = filtered_exc
                 exc_tb = user_frames[-1]
             else:
                 # No user frames found - show just the error type and message
@@ -606,7 +620,7 @@ class ModelExecutor:
             # For sync functions, run in executor to avoid blocking event loop
             loop = asyncio.get_event_loop()
 
-            def execute_func():
+            def execute_func() -> Any:
                 set_connection(current_conn)
                 return func(**func_kwargs)
 
@@ -702,7 +716,7 @@ class ModelExecutor:
         model_name = model_info.get("name", "temp_query")
         temp_table_name = f"_interlace_cte_workaround_{model_name}"
 
-        def execute_with_workaround():
+        def execute_with_workaround() -> ibis.Table | None:
             """Execute query using underlying DuckDB connection as workaround."""
             if hasattr(connection, "con"):
                 duckdb_con = connection.con

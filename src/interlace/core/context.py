@@ -36,7 +36,7 @@ def get_connection() -> ibis.BaseBackend:
     return conn
 
 
-def set_connection(connection: ibis.BaseBackend):
+def set_connection(connection: ibis.BaseBackend) -> None:
     """
     Set the connection in the execution context.
 

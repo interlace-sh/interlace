@@ -11,11 +11,11 @@ from typing import Any
 class DependencyGraph:
     """Represents a directed acyclic graph of model dependencies."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._graph: dict[str, list[str]] = defaultdict(list)  # model -> dependencies
         self._reverse: dict[str, list[str]] = defaultdict(list)  # model -> dependents
 
-    def add_model(self, model_name: str, dependencies: list[str] | None = None):
+    def add_model(self, model_name: str, dependencies: list[str] | None = None) -> None:
         """Add a model and its dependencies to the graph."""
         dependencies = dependencies or []
 
@@ -89,7 +89,7 @@ class DependencyGraph:
         cycles: list[list[str]] = []
         path: list[str] = []
 
-        def dfs(node: str):
+        def dfs(node: str) -> None:
             """DFS helper to detect cycles."""
             visited.add(node)
             rec_stack.add(node)
@@ -201,7 +201,7 @@ class DependencyGraph:
 
         lines = []
 
-        def build_tree(model: str, prefix: str = "", is_last: bool = True, visited: set[str] = None) -> None:
+        def build_tree(model: str, prefix: str = "", is_last: bool = True, visited: set[str] | None = None) -> None:
             if visited is None:
                 visited = set()
 

@@ -148,7 +148,7 @@ def apply_schema_changes(
     return len(alter_statements)
 
 
-def _ibis_type_to_sql(ibis_type: any) -> str:
+def _ibis_type_to_sql(ibis_type: Any) -> str:
     """
     Convert ibis type to SQL type string.
 

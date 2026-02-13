@@ -60,15 +60,15 @@ class InterlaceService:
         self.verbose = verbose
 
         self.config: dict[str, Any] = {}
-        self.state_store = None
+        self.state_store: Any = None
         self.models: dict[str, dict[str, Any]] = {}
-        self.graph = None
+        self.graph: Any = None
 
         # Event bus for real-time updates
         self.event_bus: EventBus = EventBus()
 
         # Current flow for tracking execution state (deprecated, kept for backward compat)
-        self.flow = None
+        self.flow: Any = None
 
         # Concurrent flows tracking: keyed by run_id to prevent race conditions
         self.flows_in_progress: dict[str, Any] = {}
@@ -85,7 +85,7 @@ class InterlaceService:
         self._background_tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
-    def save_flow_to_history(self, flow) -> None:
+    def save_flow_to_history(self, flow: Any) -> None:
         """Save a completed flow to in-memory history."""
         # Add to front of list (newest first)
         self.flow_history.insert(0, flow)
@@ -353,7 +353,7 @@ class InterlaceService:
             self.models if not requested_set else {k: v for k, v in self.models.items() if k in requested_set}
         )
 
-        async def _run_task():
+        async def _run_task() -> None:
             async with self._run_lock:
                 ex = Executor(self.config)
                 try:
@@ -519,7 +519,7 @@ class InterlaceService:
                 pass
 
         # Trigger downstream impacted models
-        dependents = []
+        dependents: list[str] = []
         if self.graph:
             dependents = self.graph.get_dependents(stream_name) or []
 
@@ -609,7 +609,7 @@ def run_service(
                 app.router.add_static("/assets", static_dir / "assets", name="static_assets")
 
             # Serve individual static files (favicon, icons, manifest, etc.)
-            async def static_file_handler(request: web.Request) -> web.Response:
+            async def static_file_handler(request: web.Request) -> web.StreamResponse:
                 filename = request.match_info["filename"]
                 ext = request.match_info["ext"]
                 filepath = static_dir / f"{filename}.{ext}"
@@ -621,7 +621,7 @@ def run_service(
                 app.router.add_get("/{filename}.{ext:" + ext + "}", static_file_handler)
 
             # SPA fallback: serve index.html for all non-API routes
-            async def spa_handler(request: web.Request) -> web.Response:
+            async def spa_handler(request: web.Request) -> web.StreamResponse:
                 # Don't serve index.html for API routes
                 if request.path.startswith("/api/") or request.path.startswith("/health"):
                     raise web.HTTPNotFound()
@@ -659,7 +659,7 @@ def run_service(
     web.run_app(app, host=host, port=port, access_log=None)
 
 
-def datetime_from_ts(ts: float, tz: str | None = None):
+def datetime_from_ts(ts: float, tz: str | None = None) -> Any:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 

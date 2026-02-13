@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from interlace.core.execution.materialization_manager import MaterializationManager
     from interlace.core.execution.model_executor import ModelExecutor
     from interlace.core.state import StateStore
-    from interlace.utils.display import RichDisplay
+    from interlace.utils.display import Display
 
 logger = get_logger("interlace.execution.execution_orchestrator")
 
@@ -37,7 +37,7 @@ class ExecutionOrchestrator:
         change_detector: "ChangeDetector",
         materialization_manager: "MaterializationManager",
         state_store: Optional["StateStore"] = None,
-        display: Optional["RichDisplay"] = None,
+        display: Optional["Display"] = None,
         config: dict[str, Any] | None = None,
         max_iterations: int = 10000,
         task_timeout: float = 3600.0,
@@ -69,7 +69,7 @@ class ExecutionOrchestrator:
         self.task_timeout = task_timeout
         self.thread_pool_size = thread_pool_size
         self.executor_flow_setter = executor_flow_setter
-        self.flow = None
+        self.flow: Flow | None = None
         self._force_execution = False
 
     async def execute_dynamic(
@@ -130,11 +130,11 @@ class ExecutionOrchestrator:
         time.time()
 
         pending = set(models.keys())
-        executing = set()
-        completed = set()  # All completed models (success or failure)
-        succeeded = set()  # Only successfully completed models
-        results = {}
-        task_map: dict[str, asyncio.Task] = {}
+        executing: set[str] = set()
+        completed: set[str] = set()  # All completed models (success or failure)
+        succeeded: set[str] = set()  # Only successfully completed models
+        results: dict[str, Any] = {}
+        task_map: dict[str, asyncio.Task[Any]] = {}
 
         # Get layer mapping from graph to order progress bars by execution layer
         model_layers = graph.get_layers()
@@ -167,11 +167,12 @@ class ExecutionOrchestrator:
                 self.state_store.save_task(task)
 
         # Initialize RichDisplay with Flow
-        self.display.set_flow(self.flow)
+        if self.display:
+            self.display.set_flow(self.flow)
 
         # Print heading first (creates layout if needed)
         # Always call if enabled - print_heading will set config internally
-        if self.display.enabled:
+        if self.display and self.display.enabled:
             # Get project name from top-level config, fallback to "Interlace Project"
             project_name = self.config.get("name", "Interlace Project")
             # Get environment from config metadata or trigger
@@ -189,13 +190,15 @@ class ExecutionOrchestrator:
 
         # Initialize progress (updates layout with progress bars)
         # Pass thread pool size for dynamic task visibility
-        self.display.initialize_progress(self.flow, models, graph, thread_pool_size=self.thread_pool_size)
+        if self.display:
+            self.display.initialize_progress(self.flow, models, graph, thread_pool_size=self.thread_pool_size)
 
         # Get initial ready models (no dependencies)
         ready = {model_name for model_name in pending if not graph.get_dependencies(model_name)}
 
         # Start progress display - enter Live context BEFORE any logging
         # This ensures all logs go to the layout, not directly to console
+        assert self.display is not None, "Display must be set before execution"
         try:
             # Use RichDisplay context manager - this starts Live display
             with self.display:
@@ -240,13 +243,14 @@ class ExecutionOrchestrator:
             logger.info("Execution interrupted by user (Ctrl+C)")
 
             # Cancel all running tasks
-            for model_name, task in list(task_map.items()):
-                if not task.done():
-                    task.cancel()
+            for model_name, async_task in list(task_map.items()):
+                if not async_task.done():
+                    async_task.cancel()
                     # Update task status
                     if model_name in self.flow.tasks:
                         self.flow.tasks[model_name].status = TaskStatus.SKIPPED
-                        self.display.update_from_flow()
+                        if self.display:
+                            self.display.update_from_flow()
 
             # Wait for tasks to cancel (with timeout to avoid hanging)
             # Use shield to prevent our cancellation wait from being cancelled
@@ -287,7 +291,7 @@ class ExecutionOrchestrator:
                 self.state_store.save_flow(self.flow)
 
             # Final display update to show all tasks now that flow is complete
-            if self.display.enabled:
+            if self.display and self.display.enabled:
                 self.display.update_from_flow()
 
             # Note: Flow completion log is done inside display context above
@@ -303,7 +307,7 @@ class ExecutionOrchestrator:
         completed: set[str],
         succeeded: set[str],
         results: dict[str, Any],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, "asyncio.Task[Any]"],
         ready: set[str],
     ) -> dict[str, Any]:
         """
@@ -325,7 +329,8 @@ class ExecutionOrchestrator:
         Returns:
             Dictionary mapping model names to execution results
         """
-        new_ready = set()
+        assert self.flow is not None
+        new_ready: set[str] = set()
         iteration = 0
         while pending or executing:
             iteration += 1
@@ -429,9 +434,10 @@ class ExecutionOrchestrator:
 
                     # Log and update display
                     logger.error(f"Model '{model_name}' skipped: {error_msg}")
-                    if self.display.enabled:
+                    if self.display and self.display.enabled:
                         self.display.add_error(model_name, f"Skipped due to failed dependencies: {failed_deps}")
-                    self.display.update_from_flow()
+                    if self.display:
+                        self.display.update_from_flow()
                 elif all(dep in succeeded for dep in deps):
                     # All dependencies succeeded - mark as ready
                     new_ready.add(model_name)
@@ -443,7 +449,8 @@ class ExecutionOrchestrator:
                             self.state_store.save_task(task)
 
                     # Update display for newly ready models
-                    self.display.update_from_flow()
+                    if self.display:
+                        self.display.update_from_flow()
 
                     # Note: Model start logging happens in _prepare_model_execution()
                     # which is called at the beginning of execute_model()
@@ -458,8 +465,8 @@ class ExecutionOrchestrator:
         model_name: str,
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        task_map: dict[str, asyncio.Task],
-    ):
+        task_map: dict[str, "asyncio.Task[Any]"],
+    ) -> None:
         """
         Start execution of a model.
 
@@ -469,10 +476,11 @@ class ExecutionOrchestrator:
             graph: Dependency graph
             task_map: Dictionary mapping model names to asyncio.Task objects
         """
+        assert self.flow is not None
         # Update task to show model is ready to execute
         if model_name in self.flow.tasks:
-            task = self.flow.tasks[model_name]
-            task.mark_ready()  # Dependencies satisfied
+            flow_task = self.flow.tasks[model_name]
+            flow_task.mark_ready()  # Dependencies satisfied
             # Note: task.start() and logging happen in execute_model() via _prepare_model_execution()
 
         # Progress will be updated in execute_model() when execution actually starts
@@ -480,15 +488,15 @@ class ExecutionOrchestrator:
         # Create task for model execution
         # Get force flag from orchestrator instance (passed to execute_dynamic)
         force = self._force_execution
-        task = asyncio.create_task(
+        async_task = asyncio.create_task(
             self.model_executor.execute_model(model_name, models[model_name], models, force=force)
         )
-        task_map[model_name] = task
+        task_map[model_name] = async_task
 
     async def wait_for_task_completion(
         self,
         executing: set[str],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, "asyncio.Task[Any]"],
         results: dict[str, Any],
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
@@ -497,7 +505,7 @@ class ExecutionOrchestrator:
         new_ready: set[str],
         completed: set[str],
         succeeded: set[str],
-    ):
+    ) -> None:
         """
         Wait for at least one task to complete and process the result.
 
@@ -576,18 +584,18 @@ class ExecutionOrchestrator:
 
     async def process_completed_task(
         self,
-        task: asyncio.Task,
+        task: "asyncio.Task[Any]",
         result: dict[str, Any],
         executing: set[str],
         completed: set[str],
         succeeded: set[str],
         results: dict[str, Any],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, "asyncio.Task[Any]"],
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
         pending: set[str],
         new_ready: set[str],
-    ):
+    ) -> None:
         """
         Process a successfully completed task.
 
@@ -603,6 +611,7 @@ class ExecutionOrchestrator:
             pending: Set of pending model names
             new_ready: Set to add newly ready models to
         """
+        assert self.flow is not None
         # Find which model completed
         for model_name in list(executing):
             if model_name in task_map and task_map[model_name] == task:
@@ -653,7 +662,7 @@ class ExecutionOrchestrator:
                                 logger.error(error_message, exc_info=True, extra={"model_name": model_name})
 
                             # Also add error to display for error panel (include traceback if available)
-                            if self.display.enabled:
+                            if self.display and self.display.enabled:
                                 if error_traceback:
                                     self.display.add_error(model_name, f"{error_msg}\n{error_traceback}")
                                 else:
@@ -685,7 +694,7 @@ class ExecutionOrchestrator:
                 # Update display after task completion
                 # NOTE: This is called AFTER logging to avoid potential deadlocks
                 # The logging handler might access display state, so we do logging first
-                if self.display.enabled:
+                if self.display and self.display.enabled:
                     self.display.update_from_flow()
 
                 # Check dependents - if all dependencies are complete, mark as ready
@@ -705,20 +714,20 @@ class ExecutionOrchestrator:
 
     async def process_failed_task(
         self,
-        task: asyncio.Task,
+        task: "asyncio.Task[Any]",
         error: Exception,
         executing: set[str],
         completed: set[str],
         succeeded: set[str],
         results: dict[str, Any],
-        task_map: dict[str, asyncio.Task],
+        task_map: dict[str, "asyncio.Task[Any]"],
         models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
         pending: set[str],
         ready: set[str],
         new_ready: set[str],
-        exc_info=None,
-    ):
+        exc_info: Any = None,
+    ) -> None:
         """
         Process a failed task.
 
@@ -734,6 +743,7 @@ class ExecutionOrchestrator:
             pending: Set of pending model names
             new_ready: Set to add newly ready models to
         """
+        assert self.flow is not None
         # CRITICAL: Mark failed model as complete so it doesn't block the loop
         # Find which model failed
         for model_name in list(executing):
@@ -801,11 +811,12 @@ class ExecutionOrchestrator:
                         sys.stderr.write(f"ERROR: Logging also failed: {log_error}\n")
 
                 # Also ensure error is added to display for error panel
-                if self.display.enabled:
+                if self.display and self.display.enabled:
                     self.display.add_error(model_name, f"{str(error)}\n{error_traceback}")
 
                 # Update display
-                self.display.update_from_flow()
+                if self.display:
+                    self.display.update_from_flow()
 
                 # Mark dependents as failed since their dependency failed
                 # Don't add failed model to succeeded set - it failed

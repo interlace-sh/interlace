@@ -45,6 +45,8 @@ def discover_python_models(models_dir: Path, connection: Any | None = None) -> d
 
         try:
             spec = importlib.util.spec_from_file_location(py_file.stem, py_file)
+            if spec is None or spec.loader is None:
+                continue
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
@@ -237,9 +239,9 @@ def _extract_sql_dependencies_regex(sql_content: str) -> set[str]:
 
     for pattern in patterns:
         for match in re.finditer(pattern, sql_content, re.IGNORECASE):
-            if match.lastindex >= 2:
+            if match.lastindex is not None and match.lastindex >= 2:
                 table = match.group(2)
-            elif match.lastindex >= 1:
+            elif match.lastindex is not None and match.lastindex >= 1:
                 table = match.group(1)
             else:
                 continue
@@ -253,7 +255,7 @@ def _extract_sql_dependencies_regex(sql_content: str) -> set[str]:
 
 def _parse_sql_annotations(content: str) -> dict[str, Any]:
     """Parse SQL annotations from comments."""
-    annotations = {}
+    annotations: dict[str, Any] = {}
 
     # Match -- @key: value
     pattern = r"--\s*@(\w+):\s*(.+)"

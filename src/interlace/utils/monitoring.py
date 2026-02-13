@@ -15,7 +15,7 @@ from typing import Any
 try:
     import psutil
 except ImportError:
-    psutil = None  # type: ignore
+    psutil = None
 
 from interlace.utils.logging import get_logger
 
@@ -157,11 +157,11 @@ def get_resource_monitor(config: dict[str, Any] | None = None) -> ResourceMonito
 class ConnectionPoolMetrics:
     """Track connection pool metrics."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize metrics tracker."""
         self.pools: dict[str, Any] = {}  # pool_name -> pool instance
 
-    def register_pool(self, name: str, pool: Any):
+    def register_pool(self, name: str, pool: Any) -> None:
         """
         Register a connection pool for metrics tracking.
 
@@ -200,7 +200,7 @@ class ConnectionPoolMetrics:
         pool = self.pools.get(name)
         if pool and hasattr(pool, "get_metrics"):
             try:
-                return pool.get_metrics()
+                return pool.get_metrics()  # type: ignore[no-any-return]
             except Exception as e:
                 logger.debug(f"Error getting metrics for pool {name}: {e}")
         return None
@@ -223,7 +223,7 @@ def get_connection_pool_metrics() -> ConnectionPoolMetrics:
     return _connection_pool_metrics
 
 
-def timed(func: Callable | None = None, name: str | None = None, log: bool = False):
+def timed(func: Callable | None = None, name: str | None = None, log: bool = False) -> Callable:
     """
     Decorator to time function execution.
 
@@ -246,7 +246,7 @@ def timed(func: Callable | None = None, name: str | None = None, log: bool = Fal
         timing_name = name or f.__name__
 
         @functools.wraps(f)
-        async def async_wrapper(*args, **kwargs):
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             start_time = time.time()
             try:
                 result = await f(*args, **kwargs)
@@ -261,7 +261,7 @@ def timed(func: Callable | None = None, name: str | None = None, log: bool = Fal
                 raise
 
         @functools.wraps(f)
-        def sync_wrapper(*args, **kwargs):
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             start_time = time.time()
             try:
                 result = f(*args, **kwargs)
@@ -327,11 +327,11 @@ class PerformanceMonitor:
             },
         }
         self._start_time = time.time()
-        self._memory_samples = []
+        self._memory_samples: list[float] = []
         self._concurrent_models = 0
         self._max_concurrent = 0
 
-    def record_model_execution(self, model_name: str, duration: float):
+    def record_model_execution(self, model_name: str, duration: float) -> None:
         """Record model execution time."""
         if not self.enabled:
             return
@@ -339,46 +339,46 @@ class PerformanceMonitor:
             self.metrics["model_execution_times"][model_name] = []
         self.metrics["model_execution_times"][model_name].append(duration)
 
-    def record_dependency_loading(self, model_name: str, duration: float):
+    def record_dependency_loading(self, model_name: str, duration: float) -> None:
         """Record dependency loading time."""
         if not self.enabled:
             return
         self.metrics["dependency_loading_times"][model_name] = duration
 
-    def record_schema_validation(self, model_name: str, duration: float):
+    def record_schema_validation(self, model_name: str, duration: float) -> None:
         """Record schema validation time."""
         if not self.enabled:
             return
         self.metrics["schema_validation_times"][model_name] = duration
 
-    def record_materialization(self, model_name: str, duration: float):
+    def record_materialization(self, model_name: str, duration: float) -> None:
         """Record materialization time."""
         if not self.enabled:
             return
         self.metrics["materialization_times"][model_name] = duration
 
-    def record_database_query(self, duration: float):
+    def record_database_query(self, duration: float) -> None:
         """Record database query execution."""
         if not self.enabled:
             return
         self.metrics["database_queries"]["count"] += 1
         self.metrics["database_queries"]["total_duration"] += duration
 
-    def record_cache_hit(self, cache_type: str):
+    def record_cache_hit(self, cache_type: str) -> None:
         """Record cache hit."""
         if not self.enabled:
             return
         if cache_type in self.metrics["cache_stats"]:
             self.metrics["cache_stats"][cache_type]["hits"] += 1
 
-    def record_cache_miss(self, cache_type: str):
+    def record_cache_miss(self, cache_type: str) -> None:
         """Record cache miss."""
         if not self.enabled:
             return
         if cache_type in self.metrics["cache_stats"][cache_type]:
             self.metrics["cache_stats"][cache_type]["misses"] += 1
 
-    def sample_memory(self):
+    def sample_memory(self) -> None:
         """Sample current memory usage."""
         if not self.enabled:
             return
@@ -394,7 +394,7 @@ class PerformanceMonitor:
         except Exception:
             pass
 
-    def update_concurrent_models(self, count: int):
+    def update_concurrent_models(self, count: int) -> None:
         """Update concurrent model count."""
         if not self.enabled:
             return

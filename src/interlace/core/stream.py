@@ -71,8 +71,8 @@ def stream(
     validate_schema: bool = False,
     # Retention
     retention: dict[str, Any] | None = None,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Callable[[Callable], Callable]:
     """
     Decorator to define an Interlace stream (append-only ingestion table).
 
@@ -119,10 +119,10 @@ def stream(
             **kwargs,
         }
 
-        func._interlace_stream = stream_meta
+        func._interlace_stream = stream_meta  # type: ignore[attr-defined]
 
         # Expose as model-like for discovery/graph integration.
-        func._interlace_model = {
+        func._interlace_model = {  # type: ignore[attr-defined]
             "name": stream_name,
             "schema": schema,
             "connection": connection,
@@ -144,16 +144,16 @@ def stream(
         }
 
         # Register in global stream registry
-        _register_stream(stream_name, func._interlace_model)
+        _register_stream(stream_name, func._interlace_model)  # type: ignore[attr-defined]
 
         @functools.wraps(func)
-        def wrapper(*args, **kw):
+        def wrapper(*args: Any, **kw: Any) -> None:
             # Stream functions are not meant to run directly
             return None
 
         # Preserve metadata on wrapper
-        wrapper._interlace_stream = func._interlace_stream
-        wrapper._interlace_model = func._interlace_model
+        wrapper._interlace_stream = func._interlace_stream  # type: ignore[attr-defined]
+        wrapper._interlace_model = func._interlace_model  # type: ignore[attr-defined]
         return wrapper
 
     return decorator
@@ -304,7 +304,7 @@ async def publish(
         )
 
     # Trigger downstream models
-    triggered = []
+    triggered: list[str] = []
     if _graph and _enqueue_run:
         dependents = _graph.get_dependents(stream_name) or []
         if dependents:
@@ -328,7 +328,7 @@ async def publish(
 def publish_sync(
     stream: str | Callable,
     data: dict[str, Any] | list[dict[str, Any]],
-    **kwargs,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """
     Synchronous wrapper for publish().
@@ -510,10 +510,10 @@ async def consume(
 
         result = _execute_sql_internal(con, sql)
         if result is not None and hasattr(result, "to_dict"):
-            return result.to_dict("records")
+            return result.to_dict("records")  # type: ignore[no-any-return]
         elif result is not None and hasattr(result, "fetchdf"):
             df = result.fetchdf()
-            return df.to_dict("records")
+            return df.to_dict("records")  # type: ignore[no-any-return]
         return []
     except Exception as e:
         logger.warning(f"Failed to consume from stream '{stream_name}': {e}")

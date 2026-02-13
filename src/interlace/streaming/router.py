@@ -165,7 +165,7 @@ class StreamRouter:
         self._running = True
 
         # Group routes by stream name
-        streams = {}
+        streams: dict[str, list[Any]] = {}
         for route in self._routes:
             if route.stream_name not in streams:
                 streams[route.stream_name] = []
@@ -208,12 +208,12 @@ class StreamRouter:
                 # Check filter
                 if route.filter_fn:
                     try:
-                        if not route.filter_fn(event):
+                        if not route.filter_fn(event):  # type: ignore[arg-type]
                             continue
                     except Exception:
                         continue
 
-                tasks.append(self._dispatch(route, event))
+                tasks.append(self._dispatch(route, event))  # type: ignore[arg-type]
 
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
@@ -257,9 +257,9 @@ class StreamRouter:
     def is_running(self) -> bool:
         return self._running
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> StreamRouter:
         await self.start()
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: Any) -> None:
         await self.stop()

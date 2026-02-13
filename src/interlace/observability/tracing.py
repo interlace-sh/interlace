@@ -53,36 +53,36 @@ except ImportError:
 class NoOpSpan:
     """No-op span for when tracing is disabled."""
 
-    def __init__(self, name: str = ""):
+    def __init__(self, name: str = "") -> None:
         self.name = name
 
-    def __enter__(self):
+    def __enter__(self) -> "NoOpSpan":
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args: Any) -> None:
         pass
 
-    def set_attribute(self, key: str, value: Any):
+    def set_attribute(self, key: str, value: Any) -> None:
         pass
 
-    def set_status(self, status):
+    def set_status(self, status: Any) -> None:
         pass
 
-    def record_exception(self, exception: Exception):
+    def record_exception(self, exception: Exception) -> None:
         pass
 
-    def add_event(self, name: str, attributes: dict[str, Any] | None = None):
+    def add_event(self, name: str, attributes: dict[str, Any] | None = None) -> None:
         pass
 
 
 class NoOpTracer:
     """No-op tracer for when OpenTelemetry is not available."""
 
-    def start_span(self, name: str, **kwargs) -> NoOpSpan:
+    def start_span(self, name: str, **kwargs: Any) -> NoOpSpan:
         return NoOpSpan(name)
 
     @contextmanager
-    def start_as_current_span(self, name: str, **kwargs):
+    def start_as_current_span(self, name: str, **kwargs: Any) -> Any:
         yield NoOpSpan(name)
 
 
@@ -94,7 +94,7 @@ class TracingManager:
     and materialization operations.
     """
 
-    def __init__(self, service_name: str = "interlace"):
+    def __init__(self, service_name: str = "interlace") -> None:
         """
         Initialize tracing manager.
 
@@ -110,7 +110,7 @@ class TracingManager:
         self,
         endpoint: str | None = None,
         console: bool = False,
-    ):
+    ) -> None:
         """
         Enable tracing.
 
@@ -159,7 +159,7 @@ class TracingManager:
         self._enabled = True
         logger.info("Tracing enabled")
 
-    def disable(self):
+    def disable(self) -> None:
         """Disable tracing."""
         self._enabled = False
         self._tracer = NoOpTracer()
@@ -173,7 +173,7 @@ class TracingManager:
         return self._enabled
 
     @property
-    def tracer(self):
+    def tracer(self) -> Any:
         """Get the tracer instance."""
         return self._tracer
 
@@ -182,7 +182,7 @@ class TracingManager:
         self,
         name: str,
         attributes: dict[str, Any] | None = None,
-    ):
+    ) -> Any:
         """
         Create a span context manager.
 
@@ -210,7 +210,7 @@ class TracingManager:
         model_type: str = "python",
         materialise: str = "table",
         schema: str = "default",
-    ):
+    ) -> Any:
         """
         Create a span for model execution.
 
@@ -236,8 +236,8 @@ class TracingManager:
     def dependency_loading_span(
         self,
         model_name: str,
-        dependencies: list | None = None,
-    ):
+        dependencies: list[str] | None = None,
+    ) -> Any:
         """
         Create a span for dependency loading.
 
@@ -262,7 +262,7 @@ class TracingManager:
         model_name: str,
         materialise: str,
         strategy: str | None = None,
-    ):
+    ) -> Any:
         """
         Create a span for materialization.
 
@@ -287,7 +287,7 @@ class TracingManager:
         self,
         query_type: str,
         table_name: str | None = None,
-    ):
+    ) -> Any:
         """
         Create a span for database query.
 
@@ -326,7 +326,7 @@ def get_tracer(service_name: str = "interlace") -> TracingManager:
 
 
 # Decorators for tracing
-def trace_model_execution(func: Callable | None = None, name: str | None = None):
+def trace_model_execution(func: Callable[..., Any] | None = None, name: str | None = None) -> Any:
     """
     Decorator to trace model execution.
 
@@ -340,18 +340,18 @@ def trace_model_execution(func: Callable | None = None, name: str | None = None)
             ...
     """
 
-    def decorator(f: Callable) -> Callable:
+    def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
         trace_name = name or f.__name__
 
         @functools.wraps(f)
-        async def async_wrapper(*args, **kwargs):
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             tracer = get_tracer()
             model_name = kwargs.get("model_name") or (args[0] if args else "unknown")
             with tracer.span(f"model.execute.{trace_name}", attributes={"model": model_name}):
                 return await f(*args, **kwargs)
 
         @functools.wraps(f)
-        def sync_wrapper(*args, **kwargs):
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             tracer = get_tracer()
             model_name = kwargs.get("model_name") or (args[0] if args else "unknown")
             with tracer.span(f"model.execute.{trace_name}", attributes={"model": model_name}):
@@ -368,7 +368,7 @@ def trace_model_execution(func: Callable | None = None, name: str | None = None)
         return decorator(func)
 
 
-def trace_dependency_loading(func: Callable | None = None, name: str | None = None):
+def trace_dependency_loading(func: Callable[..., Any] | None = None, name: str | None = None) -> Any:
     """
     Decorator to trace dependency loading.
 
@@ -378,17 +378,17 @@ def trace_dependency_loading(func: Callable | None = None, name: str | None = No
             ...
     """
 
-    def decorator(f: Callable) -> Callable:
+    def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
 
         @functools.wraps(f)
-        async def async_wrapper(*args, **kwargs):
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             tracer = get_tracer()
             model_name = kwargs.get("model_name") or "unknown"
             with tracer.dependency_loading_span(model_name):
                 return await f(*args, **kwargs)
 
         @functools.wraps(f)
-        def sync_wrapper(*args, **kwargs):
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             tracer = get_tracer()
             model_name = kwargs.get("model_name") or "unknown"
             with tracer.dependency_loading_span(model_name):
@@ -405,7 +405,7 @@ def trace_dependency_loading(func: Callable | None = None, name: str | None = No
         return decorator(func)
 
 
-def trace_materialization(func: Callable | None = None, name: str | None = None):
+def trace_materialization(func: Callable[..., Any] | None = None, name: str | None = None) -> Any:
     """
     Decorator to trace materialization.
 
@@ -415,10 +415,10 @@ def trace_materialization(func: Callable | None = None, name: str | None = None)
             ...
     """
 
-    def decorator(f: Callable) -> Callable:
+    def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
 
         @functools.wraps(f)
-        async def async_wrapper(*args, **kwargs):
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             tracer = get_tracer()
             model_name = kwargs.get("model_name") or "unknown"
             materialise_type = kwargs.get("materialise") or "table"
@@ -426,7 +426,7 @@ def trace_materialization(func: Callable | None = None, name: str | None = None)
                 return await f(*args, **kwargs)
 
         @functools.wraps(f)
-        def sync_wrapper(*args, **kwargs):
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
             tracer = get_tracer()
             model_name = kwargs.get("model_name") or "unknown"
             materialise_type = kwargs.get("materialise") or "table"

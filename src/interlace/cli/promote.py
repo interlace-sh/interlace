@@ -6,6 +6,7 @@ workflows like dev → staging → production data promotion.
 """
 
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -46,7 +47,7 @@ def promote(
         "-c",
         help="Specific connection name to use (overrides default connection resolution)",
     ),
-):
+) -> None:
     """
     Promote data from one environment to another.
 
@@ -156,9 +157,9 @@ def promote(
 
 
 def _execute_promotion(
-    promote_models: dict,
-    source_config,
-    target_config,
+    promote_models: dict[str, Any],
+    source_config: Any,
+    target_config: Any,
     source_env: str,
     target_env: str,
     connection_name: str | None = None,
@@ -310,7 +311,7 @@ def _execute_promotion(
             pass
 
 
-def _get_default_conn_name(conn_configs: dict) -> str:
+def _get_default_conn_name(conn_configs: dict[str, Any]) -> str:
     """Get the default connection name from config."""
     if "default" in conn_configs:
         return "default"

@@ -7,6 +7,7 @@ and affected downstream models.
 
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -26,14 +27,14 @@ app = typer.Typer(
 )
 
 
-def _load_config(project_dir: Path) -> dict:
+def _load_config(project_dir: Path) -> dict[str, Any]:
     """Load project configuration."""
     import yaml
 
     config_path = project_dir / "config.yaml"
     if config_path.exists():
         with open(config_path) as f:
-            return yaml.safe_load(f)
+            return yaml.safe_load(f)  # type: ignore[no-any-return]
     return {}
 
 
@@ -45,7 +46,7 @@ def plan(
     format: str = typer.Option("table", "--format", help="Output format: table, json, summary"),
     show_schema: bool = typer.Option(False, "--schema", "-s", help="Show detailed schema changes"),
     project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
-):
+) -> None:
     """
     Preview what will happen during execution.
 
@@ -93,7 +94,7 @@ def plan(
     try:
         from interlace.core.execution.change_detector import ChangeDetector
 
-        change_detector = ChangeDetector(all_models, state_store)
+        change_detector = ChangeDetector(all_models, state_store)  # type: ignore[call-arg, arg-type]
     except Exception as e:
         logger.debug(f"Could not initialize change detector: {e}")
 
@@ -119,7 +120,7 @@ def plan(
         _output_table(result, show_schema)
 
 
-def _output_table(result, show_schema: bool):
+def _output_table(result: Any, show_schema: bool) -> None:
     """Output impact analysis as a table."""
     from interlace.core.impact import RunReason
 
@@ -218,7 +219,7 @@ def _output_table(result, show_schema: bool):
     console.print(Panel(summary_text, title="Plan Complete"))
 
 
-def _output_summary(result, show_schema: bool):
+def _output_summary(result: Any, show_schema: bool) -> None:
     """Output a brief summary."""
     console.print()
 

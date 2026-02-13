@@ -67,7 +67,7 @@ class SCDType2Strategy(Strategy):
         - _scd2_hash (VARCHAR): Hash of tracked columns for change detection
     """
 
-    def generate_sql(
+    def generate_sql(  # type: ignore[override]
         self,
         connection: ibis.BaseBackend,
         target_table: str,
@@ -75,7 +75,7 @@ class SCDType2Strategy(Strategy):
         source_table: str,
         primary_key: str | list[str],
         scd2_config: dict[str, Any] | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         """
         Generate SCD Type 2 MERGE SQL statement.
@@ -294,7 +294,7 @@ WHERE target.{escaped_is_current} = TRUE
         source_table: str,
         primary_key: str | list[str],
         scd2_config: dict[str, Any] | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         """
         Generate SQL for initial load (when target table is empty).

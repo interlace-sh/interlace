@@ -14,9 +14,9 @@ app = typer.Typer(name="init", help="Create a new Interlace project", invoke_wit
 @app.callback()
 def init(
     ctx: typer.Context,
-    project_name: str = typer.Argument(None, help="Project name"),
+    project_name: str | None = typer.Argument(None, help="Project name"),
     template: str = typer.Option("default", help="Project template"),
-):
+) -> None:
     """
     Initialize a new Interlace project.
 

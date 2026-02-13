@@ -149,7 +149,7 @@ class DependencyLoader:
 
             # Build schema search order: cached first, then model schema, then fallbacks
             # This reduces schema probing attempts
-            try_schemas = []
+            try_schemas: list[str | None] = []
 
             # 1. Try cached schema location first (most likely to succeed)
             cached_schema = self._dep_schema_cache.get(dep_name)

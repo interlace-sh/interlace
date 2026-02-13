@@ -89,7 +89,7 @@ class RedisAdapter(MessageAdapter):
             )
 
         # Test connection
-        await self._client.ping()
+        await self._client.ping()  # type: ignore[attr-defined]
         logger.info(f"Connected to Redis at {self.url or f'{self.host}:{self.port}'}")
 
     async def disconnect(self) -> None:
@@ -99,7 +99,7 @@ class RedisAdapter(MessageAdapter):
             self._client = None
         logger.info("Disconnected from Redis")
 
-    async def consume(
+    async def consume(  # type: ignore[override, misc]
         self,
         topic: str,
         *,

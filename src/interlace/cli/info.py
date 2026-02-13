@@ -18,10 +18,10 @@ console = Console()
 @app.callback()
 def info(
     ctx: typer.Context,
-    env: str = typer.Option(None, help="Environment"),
+    env: str | None = typer.Option(None, help="Environment"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", "-d", help="Project directory"),
-):
+) -> None:
     """
     Display information about Interlace project and models.
     """

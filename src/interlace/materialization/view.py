@@ -18,10 +18,10 @@ from interlace.utils.logging import get_logger
 class ViewMaterializer(Materializer):
     """View materializer - creates view in catalog."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.logger = get_logger("interlace.materialization.view")
 
-    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs) -> None:
+    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs: Any) -> None:
         """
         Materialise data as view.
 

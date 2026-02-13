@@ -74,7 +74,7 @@ class StateStore:
                 return None
         return self._connection
 
-    def _initialize_schema(self):
+    def _initialize_schema(self) -> None:
         """Create interlace schema and tables if they don't exist."""
         if self._initialized:
             return
@@ -439,7 +439,7 @@ class StateStore:
         except Exception as e:
             logger.warning(f"Could not save cursor value for {model_name}: {e}")
 
-    def _initialize_schema_tracking_tables(self, conn: ibis.BaseBackend, schema_name: str):
+    def _initialize_schema_tracking_tables(self, conn: ibis.BaseBackend, schema_name: str) -> None:
         """Create schema tracking tables for schema evolution."""
         # Schema history table (informative only, no rollback)
         schema_history_table = f"{schema_name}.schema_history"
@@ -502,54 +502,48 @@ class StateStore:
         except Exception as e:
             logger.warning(f"Could not create migration_runs table: {e}")
 
-        # Model metadata table (update to add last_run_at if it doesn't exist)
+        # Model metadata table — use CREATE TABLE IF NOT EXISTS + idempotent ALTER
         model_metadata_table = f"{schema_name}.model_metadata"
         try:
-            # Check if table exists by trying to query it
-            try:
-                _execute_sql_internal(conn, f"SELECT 1 FROM {model_metadata_table} LIMIT 1")
-                # Table exists, check if last_run_at column exists
-                try:
-                    _execute_sql_internal(conn, f"SELECT last_run_at FROM {model_metadata_table} LIMIT 1")
-                except Exception:
-                    # Column doesn't exist, add it
-                    _execute_sql_internal(conn, f"ALTER TABLE {model_metadata_table} ADD COLUMN last_run_at TIMESTAMP")
-            except Exception:
-                # Table doesn't exist, create it
-                _execute_sql_internal(
-                    conn,
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {model_metadata_table} (
-                        model_name VARCHAR NOT NULL,
-                        schema_name VARCHAR NOT NULL,
-                        materialize VARCHAR,
-                        strategy VARCHAR,
-                        primary_key VARCHAR,
-                        dependencies TEXT[],
-                        incremental_type VARCHAR,
-                        incremental_column VARCHAR,
-                        incremental_period VARCHAR,
-                        schedule JSON,
-                        schedule_timezone VARCHAR,
-                        description TEXT,
-                        tags TEXT[],
-                        owner VARCHAR,
-                        source_file VARCHAR,
-                        source_type VARCHAR,
-                        checksum VARCHAR,
-                        discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        is_active BOOLEAN DEFAULT TRUE,
-                        last_run_at TIMESTAMP,
-                        PRIMARY KEY (model_name, schema_name)
-                    )
-                    """,
+            _execute_sql_internal(
+                conn,
+                f"""
+                CREATE TABLE IF NOT EXISTS {model_metadata_table} (
+                    model_name VARCHAR NOT NULL,
+                    schema_name VARCHAR NOT NULL,
+                    materialize VARCHAR,
+                    strategy VARCHAR,
+                    primary_key VARCHAR,
+                    dependencies TEXT[],
+                    incremental_type VARCHAR,
+                    incremental_column VARCHAR,
+                    incremental_period VARCHAR,
+                    schedule JSON,
+                    schedule_timezone VARCHAR,
+                    description TEXT,
+                    tags TEXT[],
+                    owner VARCHAR,
+                    source_file VARCHAR,
+                    source_type VARCHAR,
+                    checksum VARCHAR,
+                    discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    last_run_at TIMESTAMP,
+                    PRIMARY KEY (model_name, schema_name)
                 )
+                """,
+            )
+            # Idempotent column add for existing tables missing last_run_at
+            try:
+                _execute_sql_internal(conn, f"SELECT last_run_at FROM {model_metadata_table} LIMIT 0")
+            except Exception:
+                _execute_sql_internal(conn, f"ALTER TABLE {model_metadata_table} ADD COLUMN last_run_at TIMESTAMP")
         except Exception as e:
             # Non-fatal: state tracking is optional, execution can continue
             logger.debug(f"Could not create/update model_metadata table (non-fatal): {e}")
 
-    def save_flow(self, flow: Flow):
+    def save_flow(self, flow: Flow) -> None:
         """Save or update flow in database."""
         conn = self._get_connection()
         if conn is None:
@@ -599,7 +593,7 @@ class StateStore:
         except Exception as e:
             logger.error(f"Failed to save flow {flow.flow_id}: {e}", exc_info=True)
 
-    def save_task(self, task: Task):
+    def save_task(self, task: Task) -> None:
         """Save or update task in database."""
         conn = self._get_connection()
         if conn is None:
@@ -679,7 +673,7 @@ class StateStore:
         transformation_type: str = "unknown",
         transformation_expression: str | None = None,
         confidence: float = 1.0,
-    ):
+    ) -> None:
         """
         Save a column lineage edge to the database.
 
@@ -740,7 +734,7 @@ class StateStore:
         is_nullable: bool = True,
         is_primary_key: bool = False,
         description: str | None = None,
-    ):
+    ) -> None:
         """
         Save column metadata for a model.
 
@@ -788,7 +782,7 @@ class StateStore:
         except Exception as e:
             logger.debug(f"Failed to save model column: {e}")
 
-    def get_column_lineage(self, model_name: str, column_name: str | None = None) -> list:
+    def get_column_lineage(self, model_name: str, column_name: str | None = None) -> list[Any]:
         """
         Get column lineage for a model.
 
@@ -819,7 +813,7 @@ class StateStore:
             if result is not None:
                 # Convert to list of dicts
                 if hasattr(result, "to_dict"):
-                    return result.to_dict("records")
+                    return result.to_dict("records")  # type: ignore[no-any-return]
                 elif hasattr(result, "fetchall"):
                     columns = [desc[0] for desc in result.description]
                     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
@@ -828,7 +822,7 @@ class StateStore:
             logger.debug(f"Failed to get column lineage: {e}")
             return []
 
-    def get_model_columns(self, model_name: str) -> list:
+    def get_model_columns(self, model_name: str) -> list[Any]:
         """
         Get column metadata for a model.
 
@@ -853,7 +847,7 @@ class StateStore:
             result = _execute_sql_internal(conn, sql)
             if result is not None:
                 if hasattr(result, "to_dict"):
-                    return result.to_dict("records")
+                    return result.to_dict("records")  # type: ignore[no-any-return]
                 elif hasattr(result, "fetchall"):
                     columns = [desc[0] for desc in result.description]
                     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
@@ -897,7 +891,7 @@ class StateStore:
                 if val is not None:
                     # Convert pandas Timestamp to stdlib datetime if needed
                     if hasattr(val, "to_pydatetime"):
-                        return val.to_pydatetime()
+                        return val.to_pydatetime()  # type: ignore[no-any-return]
                     if isinstance(val, datetime):
                         return val
             return None
@@ -958,7 +952,7 @@ class StateStore:
         except Exception as e:
             logger.warning(f"Could not set last_run_at for {model_name}: {e}")
 
-    def clear_model_lineage(self, model_name: str):
+    def clear_model_lineage(self, model_name: str) -> None:
         """
         Clear all lineage data for a model (before recomputing).
 

@@ -47,7 +47,7 @@ class TestResult:
         if self.table is None:
             return None
         try:
-            return self.table.count().execute()
+            return self.table.count().execute()  # type: ignore[no-any-return]
         except Exception:
             return None
 
@@ -62,7 +62,7 @@ class TestResult:
             return []
 
     @property
-    def df(self):
+    def df(self) -> Any:
         """Execute the result and return a pandas DataFrame."""
         if self.table is None:
             return None
@@ -74,7 +74,7 @@ class TestResult:
         df = self.df
         if df is None:
             return []
-        return df.to_dict("records")
+        return df.to_dict("records")  # type: ignore[no-any-return]
 
 
 def mock_dependency(
@@ -204,14 +204,14 @@ try:
     import pytest
 
     @pytest.fixture
-    def interlace_test_db():
+    def interlace_test_db() -> Any:
         """Provide an in-memory DuckDB connection via ibis for testing."""
         conn = ibis.duckdb.connect()
         yield conn
         # DuckDB in-memory connections are cleaned up automatically
 
     @pytest.fixture
-    def interlace_mock():
+    def interlace_mock() -> Any:
         """Provide the mock_dependency helper as a fixture."""
         return mock_dependency
 

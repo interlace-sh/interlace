@@ -22,7 +22,7 @@ def resolve_config(config_data: dict[str, Any], env: str = "dev") -> dict[str, A
     Returns:
         Resolved configuration
     """
-    return _resolve_value(config_data, env)
+    return _resolve_value(config_data, env)  # type: ignore[no-any-return]
 
 
 def _resolve_value(value: Any, env: str) -> Any:

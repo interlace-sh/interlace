@@ -77,7 +77,7 @@ class WebhookAdapter(MessageAdapter):
         self.timeout = timeout
         self.retry_count = retry_count
         self.batch_mode = batch_mode
-        self._session = None
+        self._session: Any = None
 
     async def connect(self) -> None:
         """Initialize HTTP session."""
@@ -101,7 +101,7 @@ class WebhookAdapter(MessageAdapter):
             await self._session.close()
             self._session = None
 
-    async def consume(
+    async def consume(  # type: ignore[override, misc]
         self,
         topic: str,
         *,

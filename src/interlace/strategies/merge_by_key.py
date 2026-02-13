@@ -4,7 +4,7 @@ Merge by key strategy - merge based on primary key.
 Phase 0: SQL-based merge using MERGE SQL statement.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import ibis  # Used for type hints and schema operations
 
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class MergeByKeyStrategy(Strategy):
     """Merge by key strategy - updates existing rows, inserts new ones using MERGE SQL."""
 
-    def generate_sql(
+    def generate_sql(  # type: ignore[override]
         self,
         connection: ibis.BaseBackend,
         target_table: str,
@@ -26,7 +26,7 @@ class MergeByKeyStrategy(Strategy):
         source_table: str,
         primary_key: str | list[str],
         delete_mode: str = "preserve",
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         """
         Generate MERGE SQL statement for merge_by_key strategy.

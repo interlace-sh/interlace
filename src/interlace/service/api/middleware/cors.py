@@ -4,6 +4,8 @@ CORS middleware configuration.
 Enables Cross-Origin Resource Sharing for the API.
 """
 
+from typing import Any
+
 from aiohttp import web
 
 
@@ -49,7 +51,7 @@ def setup_cors(
 
     # Add CORS middleware
     @web.middleware
-    async def cors_middleware(request: web.Request, handler) -> web.Response:
+    async def cors_middleware(request: web.Request, handler: Any) -> web.Response:
         # Get origin from request
         origin = request.headers.get("Origin", "")
 

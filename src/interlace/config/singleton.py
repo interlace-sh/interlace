@@ -18,7 +18,7 @@ class GlobalConfig:
     _lock = threading.Lock()
 
     @classmethod
-    def set_config(cls, config: Config):
+    def set_config(cls, config: Config) -> None:
         """Set the global config instance."""
         with cls._lock:
             cls._instance = config
@@ -29,7 +29,7 @@ class GlobalConfig:
         return cls._instance
 
     @classmethod
-    def reset_config(cls):
+    def reset_config(cls) -> None:
         """Reset the global config instance (for testing)."""
         with cls._lock:
             cls._instance = None
@@ -58,7 +58,7 @@ class ConfigProxy:
         api_key = config.get("my_api.api_key")
     """
 
-    def __getitem__(self, key: str):
+    def __getitem__(self, key: str) -> Any:
         """Dict-like access: config['key']."""
         cfg = get_config()
         if cfg is None:
@@ -72,7 +72,7 @@ class ConfigProxy:
             return False
         return key in cfg
 
-    def get(self, key: str, default: Any = None):
+    def get(self, key: str, default: Any = None) -> Any:
         """Get config value with dot notation: config.get('my_api.api_key')."""
         cfg = get_config()
         if cfg is None:
@@ -86,21 +86,21 @@ class ConfigProxy:
             return iter([])
         return iter(cfg)
 
-    def keys(self):
+    def keys(self) -> Any:
         """Get config keys."""
         cfg = get_config()
         if cfg is None:
             return []
         return cfg.keys()
 
-    def values(self):
+    def values(self) -> Any:
         """Get config values."""
         cfg = get_config()
         if cfg is None:
             return []
         return cfg.values()
 
-    def items(self):
+    def items(self) -> Any:
         """Get config items."""
         cfg = get_config()
         if cfg is None:

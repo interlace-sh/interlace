@@ -4,7 +4,7 @@ Append strategy - always append new data.
 Phase 0: SQL-based append using connection.insert() with overwrite=False.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from interlace.strategies.base import Strategy
 from interlace.utils.sql_escape import escape_identifier, escape_qualified_name
@@ -22,7 +22,7 @@ class AppendStrategy(Strategy):
         target_table: str,
         schema: str,
         source_table: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         """
         Generate INSERT SQL for append strategy.

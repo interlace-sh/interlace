@@ -6,6 +6,7 @@ Supports SchemaMode for controlling validation strictness.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 import ibis
 
@@ -19,9 +20,9 @@ logger = get_logger("interlace.schema.validation")
 class SchemaComparisonResult:
     """Result of schema comparison."""
 
-    added_columns: dict[str, any]  # column_name -> ibis type
+    added_columns: dict[str, Any]  # column_name -> ibis type
     removed_columns: list[str]  # column names
-    type_changes: list[tuple[str, any, any]]  # (column_name, old_type, new_type)
+    type_changes: list[tuple[str, Any, Any]]  # (column_name, old_type, new_type)
     compatible: bool
     warnings: list[str]
     errors: list[str]
@@ -191,7 +192,7 @@ def validate_schema(
     return compare_schemas(existing_schema, new_schema, fields_schema, schema_mode)
 
 
-def _is_safe_type_cast(old_type: any, new_type: any) -> bool:
+def _is_safe_type_cast(old_type: Any, new_type: Any) -> bool:
     """
     Check if type cast is safe.
 

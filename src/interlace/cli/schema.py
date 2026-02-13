@@ -23,7 +23,7 @@ def schema_diff(
     env2: str = typer.Option("prod", "--env2", "-e2", help="Second environment"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", "-d", help="Project directory"),
     schema: str = typer.Option("public", "--schema", "-s", help="Schema/database name"),
-):
+) -> None:
     """
     Compare schema of a model between two environments.
 
@@ -85,7 +85,7 @@ def schema_diff(
             raise typer.Exit(1)
         elif schema1 is None:
             typer.echo(f"  ⚠ Model exists only in {env2}")
-            typer.echo(f"  {env2} columns: {', '.join(schema2.keys())}")
+            typer.echo(f"  {env2} columns: {', '.join(schema2.keys())}")  # type: ignore[union-attr]
             raise typer.Exit(0)
         elif schema2 is None:
             typer.echo(f"  ⚠ Model exists only in {env1}")
@@ -137,7 +137,7 @@ def schema_list(
     env: str = typer.Option("dev", "--env", "-e", help="Environment"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", "-d", help="Project directory"),
     schema: str = typer.Option("public", "--schema", "-s", help="Schema/database name"),
-):
+) -> None:
     """
     List all models and their schemas in an environment.
 

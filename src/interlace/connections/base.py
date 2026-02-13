@@ -115,7 +115,7 @@ class BaseConnection(ABC):
         """
         return self.connection.sql(query).execute(**kwargs)
 
-    def close(self):
+    def close(self) -> None:
         """Close connection and cleanup resources."""
         if self._connection:
             # Try disconnect() first (preferred for ibis backends)
@@ -134,11 +134,11 @@ class BaseConnection(ABC):
 
             self._connection = None
 
-    def __enter__(self):
+    def __enter__(self) -> "BaseConnection":
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any) -> None:
         """Context manager exit - closes connection."""
         try:
             self.close()

@@ -65,8 +65,8 @@ class KafkaAdapter(MessageAdapter):
         sasl_password: str | None = None,
         ssl_context: Any | None = None,
         config: AdapterConfig | None = None,
-        **kafka_config,
-    ):
+        **kafka_config: Any,
+    ) -> None:
         super().__init__(config)
         self.bootstrap_servers = bootstrap_servers
         self.group_id = group_id
@@ -110,7 +110,7 @@ class KafkaAdapter(MessageAdapter):
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
             **common_config,
         )
-        await self._producer.start()
+        await self._producer.start()  # type: ignore[attr-defined]
         logger.info(f"Connected Kafka producer to {self.bootstrap_servers}")
 
     async def disconnect(self) -> None:
@@ -123,7 +123,7 @@ class KafkaAdapter(MessageAdapter):
             self._consumer = None
         logger.info("Disconnected from Kafka")
 
-    async def consume(
+    async def consume(  # type: ignore[override, misc]
         self,
         topic: str,
         *,

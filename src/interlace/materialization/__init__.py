@@ -28,4 +28,4 @@ def get_materializer(materialize_type: str) -> Materializer:
     """Get materializer by type."""
     if materialize_type not in MATERIALIZERS:
         raise ValueError(f"Unknown materialization type: {materialize_type}")
-    return MATERIALIZERS[materialize_type]()
+    return MATERIALIZERS[materialize_type]()  # type: ignore[abstract]

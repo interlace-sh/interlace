@@ -96,7 +96,7 @@ class IbisLineageExtractor(LineageExtractor):
             if schema_dict:
                 try:
                     # Create memtable with empty data but proper schema
-                    data = {col: [] for col in schema_dict.keys()}
+                    data: dict[str, list[Any]] = {col: [] for col in schema_dict.keys()}
                     mock_tables[dep_name] = ibis.memtable(data, schema=ibis.schema(schema_dict))
                 except Exception as e:
                     logger.debug(f"Could not create mock table for {dep_name}: {e}")
@@ -186,7 +186,7 @@ class IbisLineageExtractor(LineageExtractor):
 
         Walks the expression tree to trace column origins.
         """
-        columns = []
+        columns: list[ColumnInfo] = []
 
         # Get output schema
         try:
@@ -394,7 +394,7 @@ class IbisLineageExtractor(LineageExtractor):
         if hasattr(rel, "name"):
             name = rel.name
             if name in dependencies:
-                return name
+                return name  # type: ignore[no-any-return]
 
         # Try to match by checking if it's a UnboundTable or similar
         rel_name = getattr(rel, "name", None)
@@ -409,7 +409,7 @@ class IbisLineageExtractor(LineageExtractor):
             if hasattr(op, "name"):
                 name = op.name
                 if name in dependencies:
-                    return name
+                    return name  # type: ignore[no-any-return]
 
         return None
 

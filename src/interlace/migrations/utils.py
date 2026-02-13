@@ -6,6 +6,7 @@ Helper functions for migration system.
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from interlace.utils.logging import get_logger
 
@@ -39,7 +40,7 @@ def get_migration_files(migrations_dir: Path) -> list[Path]:
     return sorted(migration_files)
 
 
-def get_executed_migrations(connection: any, environment: str) -> list[str]:
+def get_executed_migrations(connection: Any, environment: str) -> list[str]:
     """
     Get list of executed migration files for an environment.
 
@@ -71,7 +72,7 @@ def get_executed_migrations(connection: any, environment: str) -> list[str]:
         return []
 
 
-def get_all_migrations_with_status(project_dir: Path, connection: any, environment: str) -> list[dict]:
+def get_all_migrations_with_status(project_dir: Path, connection: Any, environment: str) -> list[dict]:
     """
     Get all migrations with their execution status.
 
@@ -149,7 +150,7 @@ def get_all_migrations_with_status(project_dir: Path, connection: any, environme
 
 
 def record_migration_run(
-    connection: any,
+    connection: Any,
     migration_file: str,
     environment: str,
     success: bool,

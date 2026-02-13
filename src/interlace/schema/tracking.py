@@ -4,6 +4,8 @@ Schema version tracking.
 Tracks schema history for models (informative only, no rollback).
 """
 
+from typing import Any
+
 import ibis
 
 from interlace.core.context import _execute_sql_internal
@@ -124,7 +126,7 @@ def get_schema_history(
     model_name: str,
     schema_name: str,
     version: int | None = None,
-) -> list[dict[str, any]]:
+) -> list[dict[str, Any]]:
     """
     Get schema history for a model.
 

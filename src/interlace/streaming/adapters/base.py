@@ -226,7 +226,7 @@ class MessageAdapter(ABC):
 
         self._running = True
 
-        async for msg in self.consume(topic, group_id=group_id, from_beginning=from_beginning):
+        async for msg in self.consume(topic, group_id=group_id, from_beginning=from_beginning):  # type: ignore[attr-defined]
             if not self._running:
                 break
 
@@ -318,11 +318,11 @@ class MessageAdapter(ABC):
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> MessageAdapter:
         await self.connect()
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: Any) -> None:
         await self.stop()
         await self.disconnect()
 

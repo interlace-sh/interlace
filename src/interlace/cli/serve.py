@@ -21,7 +21,7 @@ app = typer.Typer(name="serve", help="Run Interlace as a long-running service", 
 @app.callback()
 def serve(
     ctx: typer.Context,
-    env: str = typer.Option(None, help="Environment (dev, staging, prod)"),
+    env: str | None = typer.Option(None, help="Environment (dev, staging, prod)"),
     no_scheduler: bool = typer.Option(False, "--no-scheduler", help="Disable background scheduler"),
     no_ui: bool = typer.Option(False, "--no-ui", help="Disable web UI serving"),
     run: bool = typer.Option(False, "--run", help="Perform initial run of all models on startup"),
@@ -29,7 +29,7 @@ def serve(
     port: int = typer.Option(8080, help="Port to bind to"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", "-d", help="Project directory"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
-):
+) -> None:
     """
     Run Interlace as a long-running service.
 

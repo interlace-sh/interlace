@@ -53,7 +53,7 @@ class StreamsHandler(BaseHandler):
                 continue
 
             # Get downstream dependents
-            dependents = []
+            dependents: list[str] = []
             if self.graph:
                 dependents = self.graph.get_dependents(name) or []
 
@@ -91,7 +91,7 @@ class StreamsHandler(BaseHandler):
             raise NotFoundError("Stream", name, ErrorCode.RESOURCE_NOT_FOUND)
 
         # Get downstream dependents
-        dependents = []
+        dependents: list[str] = []
         if self.graph:
             dependents = self.graph.get_dependents(name) or []
 
@@ -498,16 +498,16 @@ class StreamsHandler(BaseHandler):
         now = time.time()
 
         if not hasattr(self.service, "_rate_state"):
-            self.service._rate_state = {}
+            self.service._rate_state = {}  # type: ignore[attr-defined]
 
-        state = self.service._rate_state.get(rate_key, {"count": 0, "window_start": now})
+        state = self.service._rate_state.get(rate_key, {"count": 0, "window_start": now})  # type: ignore[attr-defined]
 
         # Reset window every second
         if now - state["window_start"] >= 1.0:
             state = {"count": 0, "window_start": now}
 
         state["count"] += 1
-        self.service._rate_state[rate_key] = state
+        self.service._rate_state[rate_key] = state  # type: ignore[attr-defined]
 
         if state["count"] > max_rps:
             raise APIError(

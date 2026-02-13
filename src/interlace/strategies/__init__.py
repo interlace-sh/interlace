@@ -35,4 +35,4 @@ def get_strategy(strategy_name: str) -> Strategy:
     """Get strategy by name."""
     if strategy_name not in STRATEGIES:
         raise ValueError(f"Unknown strategy: {strategy_name}")
-    return STRATEGIES[strategy_name]()
+    return STRATEGIES[strategy_name]()  # type: ignore[abstract]

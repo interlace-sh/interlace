@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from rich.align import Align
 from rich.console import Console, Group
+from rich.live import Live
 from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, RenderableType, SpinnerColumn, TaskID, TextColumn
@@ -39,7 +40,7 @@ class LogHandler(RichHandler):
     - No manual display updates needed - Rich Progress handles it automatically
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         # Don't set console here - we'll get it lazily from display.progress.console
         # This allows progress to be created after LogHandler initialization
         if not kwargs.get("console"):
@@ -49,9 +50,9 @@ class LogHandler(RichHandler):
             kwargs["console"] = Console()
 
         super().__init__(*args, **kwargs)
-        self._cached_console = None  # Cache the progress console once found
+        self._cached_console: Console | None = None  # Cache the progress console once found
 
-    def _get_progress_console(self):
+    def _get_progress_console(self) -> Console | None:
         """Get the Progress console from display (lazy lookup)."""
         # Use cached console if available to avoid repeated lookups and potential deadlocks
         if self._cached_console is not None:
@@ -91,7 +92,7 @@ class LogHandler(RichHandler):
         # Fallback to the console we were initialized with
         return self.console
 
-    def emit(self, record: logging.LogRecord):
+    def emit(self, record: logging.LogRecord) -> None:
         """Emit a log record - Progress console handles display automatically."""
         # CRITICAL: We must NOT raise exceptions here, as that would prevent
         # the record from propagating to other handlers (like FileHandler).
@@ -174,7 +175,7 @@ class LogHandler(RichHandler):
             # Don't print to stderr here as it might cause issues - just silently fail
             # The error will still be logged to file via handleError()
 
-    def _handle_error(self, record: logging.LogRecord):
+    def _handle_error(self, record: logging.LogRecord) -> None:
         """Extract model name from error record and add to display error panel."""
         try:
             # Try to extract model name from record extra (set by executor)
@@ -220,11 +221,11 @@ class StatusColumn(TextColumn):
     # Fixed width for status column (all emojis are single character, but we want consistent spacing)
     STATUS_WIDTH = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render status emoji with fixed width."""
         status = task.fields.get("status", "")
         if status == "✓":
@@ -245,23 +246,23 @@ class StatusColumn(TextColumn):
 class NameColumn(TextColumn):
     """Column to show task name."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render task name."""
-        return task.fields.get("name", "")
+        return str(task.fields.get("name", ""))
 
 
 class MaterialisationColumn(TextColumn):
     """Column to show materialisation type."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render materialisation info."""
         materialise = task.fields.get("materialise", "")
         return f"[dim]{materialise}[/dim]"
@@ -270,11 +271,11 @@ class MaterialisationColumn(TextColumn):
 class StrategyColumn(TextColumn):
     """Column to show strategy (if any)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render strategy info."""
         strategy = task.fields.get("strategy", "")
         if strategy:
@@ -291,11 +292,11 @@ class StepColumn(TextColumn):
     # Longest is "materialising" (13 chars)
     STEP_WIDTH = 13
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render current step info with fixed width."""
         step = task.fields.get("step", "")
         if step:
@@ -308,11 +309,11 @@ class StepColumn(TextColumn):
 class RowsColumn(TextColumn):
     """Column to show rows processed."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render rows count."""
         rows = task.fields.get("rows")
         if rows is not None:
@@ -325,11 +326,11 @@ class RowsColumn(TextColumn):
 class ArrowColumn(TextColumn):
     """Column to show arrow separator when there are changes."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render arrow if there are changes."""
         # Show arrow only if there are any changes
         has_changes = (
@@ -345,11 +346,11 @@ class ArrowColumn(TextColumn):
 class InsertedColumn(TextColumn):
     """Column to show inserted rows count."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render inserted rows count."""
         rows_inserted = task.fields.get("rows_inserted")
         if rows_inserted is not None and rows_inserted > 0:
@@ -360,11 +361,11 @@ class InsertedColumn(TextColumn):
 class UpdatedColumn(TextColumn):
     """Column to show updated rows count."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render updated rows count."""
         rows_updated = task.fields.get("rows_updated")
         if rows_updated is not None and rows_updated > 0:
@@ -375,11 +376,11 @@ class UpdatedColumn(TextColumn):
 class DeletedColumn(TextColumn):
     """Column to show deleted rows count."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render deleted rows count."""
         rows_deleted = task.fields.get("rows_deleted")
         if rows_deleted is not None and rows_deleted > 0:
@@ -390,11 +391,11 @@ class DeletedColumn(TextColumn):
 class DependenciesColumn(TextColumn):
     """Column to show dependencies."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render dependencies."""
         deps = task.fields.get("dependencies", [])
         if deps:
@@ -405,11 +406,11 @@ class DependenciesColumn(TextColumn):
 class SchemaChangesColumn(TextColumn):
     """Column to show schema changes."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render schema changes."""
         changes = task.fields.get("schema_changes", 0)
         if changes > 0:
@@ -420,11 +421,11 @@ class SchemaChangesColumn(TextColumn):
 class ExecutionTimeColumn(TextColumn):
     """Column to show execution time in seconds."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render execution time if available."""
         elapsed = task.fields.get("execution_time")
         if elapsed is not None:
@@ -435,24 +436,24 @@ class ExecutionTimeColumn(TextColumn):
 class FlowTimeColumn(TextColumn):
     """Column to show flow execution time in seconds."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render flow time if available."""
         time_str = task.fields.get("time", "")
-        return time_str
+        return str(time_str)
 
 
 class ErrorColumn(TextColumn):
     """Column to show error messages (first line only)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
 
-    def render(self, task: Any) -> RenderableType:
+    def render(self, task: Any) -> RenderableType:  # type: ignore[override]
         """Render error message first line if available."""
         error_msg = task.fields.get("error_message")
         if error_msg:
@@ -507,6 +508,7 @@ class Display:
         self._project_dir: Path | None = None  # Store project directory for finding env configs
         self.thread_pool_size: int | None = None  # Thread pool size for determining visible tasks
         self.task_visibility: dict[str, bool] = {}  # Track which tasks are visible
+        self.live: Live | None = None
 
     @classmethod
     def get_instance(cls) -> "Display":
@@ -627,7 +629,7 @@ class Display:
         models: dict[str, dict[str, Any]] | None = None,
         env: str | None = None,
         project_dir: Path | None = None,
-    ):
+    ) -> None:
         """
         Print project heading with key info - will appear above progress bars.
 
@@ -658,7 +660,7 @@ class Display:
         models: dict[str, dict[str, Any]],
         graph: Any,
         thread_pool_size: int | None = None,
-    ):
+    ) -> None:
         """
         Initialize progress display from Flow and models using Rich Progress.
 
@@ -761,7 +763,7 @@ class Display:
             # Set initial field values
             self._update_progress_task(progress_task_id, task)
 
-    def set_flow(self, flow: Flow):
+    def set_flow(self, flow: Flow) -> None:
         """
         Set the current Flow to observe.
 
@@ -773,7 +775,7 @@ class Display:
         if self.enabled:
             self.update_from_flow()
 
-    def update_from_flow(self):
+    def update_from_flow(self) -> None:
         """Update progress display from Flow/Task objects."""
         if not self.enabled or not self.progress or not self.flow:
             return
@@ -829,7 +831,7 @@ class Display:
             # Always release the lock, even if an exception occurs
             self._update_lock.release()
 
-    def _update_task_visibility(self):
+    def _update_task_visibility(self) -> None:
         """
         Dynamically manage task visibility:
         - When flow is complete: show all tasks
@@ -929,7 +931,7 @@ class Display:
                 # Task doesn't exist in progress tracker - skip
                 pass
 
-    def _update_progress_task(self, task_id: TaskID, task: Task):
+    def _update_progress_task(self, task_id: TaskID, task: Task) -> None:
         """Update a single progress task from Task object with all fields."""
         if not self.progress:
             return
@@ -1001,7 +1003,7 @@ class Display:
         }
         return step_map.get(status, "")
 
-    def add_error(self, model_name: str, error_message: str):
+    def add_error(self, model_name: str, error_message: str) -> None:
         """
         Add error message for a model.
 
@@ -1018,7 +1020,7 @@ class Display:
                 if self.progress:
                     self.update_from_flow()
 
-    def print_errors(self):
+    def print_errors(self) -> None:
         """Print error section to Progress console with syntax highlighting."""
         if not self.enabled or not self._errors:
             return
@@ -1028,7 +1030,7 @@ class Display:
 
         # Build error content using Group to properly render Rich markup
 
-        error_components = []
+        error_components: list[RenderableType] = []
 
         for model_name, error_msg in self._errors.items():
             # Create model name header with proper Rich markup
@@ -1063,7 +1065,7 @@ class Display:
             )
             console_to_use.print(panel)
 
-    def __enter__(self):
+    def __enter__(self) -> "Display":
         """Context manager entry - start Progress display."""
         if not self.enabled:
             return self
@@ -1071,9 +1073,6 @@ class Display:
         # Combine flow progress and task progress into a Group
         # Use Live to display the group (which contains both Progress instances)
         if self.progress and self.flow_progress:
-            from rich.console import Group
-            from rich.live import Live
-
             progress_group = Group(self.flow_progress, self.progress)
             # Use Live to display the group - this allows logs to appear above progress
             self.live = Live(progress_group, console=self.console, refresh_per_second=10, screen=False)
@@ -1124,7 +1123,7 @@ class Display:
 
         return self
 
-    def _build_header_panel(self):
+    def _build_header_panel(self) -> Panel | None:
         """Build header panel (internal method for reuse)."""
         if not self.enabled or not self._project_name:
             return None
@@ -1233,7 +1232,7 @@ class Display:
             padding=(0, 1),
         )
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any) -> None:
         """Context manager exit - stop Progress display and show errors."""
         if self.enabled:
             # For KeyboardInterrupt, exit immediately without printing errors
@@ -1252,7 +1251,7 @@ class Display:
                     except Exception as e:
                         _display_logger.debug(f"Error exiting progress display on interrupt: {e}")
                 # Don't suppress KeyboardInterrupt - let it propagate
-                return False
+                return
 
             # Print errors before closing (for non-interrupt exits)
             self.print_errors()
@@ -1263,7 +1262,6 @@ class Display:
                 self.live = None
             elif self.progress:
                 self.progress.__exit__(exc_type, exc_val, exc_tb)
-        return False
 
 
 # Global instance accessor

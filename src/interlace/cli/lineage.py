@@ -7,6 +7,7 @@ across models in the pipeline.
 
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -26,18 +27,18 @@ app = typer.Typer(
 )
 
 
-def _load_config(project_dir: Path) -> dict:
+def _load_config(project_dir: Path) -> dict[str, Any]:
     """Load project configuration."""
     import yaml
 
     config_path = project_dir / "config.yaml"
     if config_path.exists():
         with open(config_path) as f:
-            return yaml.safe_load(f)
+            return yaml.safe_load(f)  # type: ignore[no-any-return]
     return {}
 
 
-def _get_lineage_extractor(model_type: str):
+def _get_lineage_extractor(model_type: str) -> Any:
     """Get the appropriate lineage extractor for a model type."""
     from interlace.lineage import IbisLineageExtractor, SqlLineageExtractor
 
@@ -46,7 +47,7 @@ def _get_lineage_extractor(model_type: str):
     return IbisLineageExtractor()
 
 
-def _compute_lineage(model_name: str, models: dict, computed: set = None):
+def _compute_lineage(model_name: str, models: dict[str, Any], computed: set[str] | None = None) -> Any:
     """
     Compute column lineage for a model.
 
@@ -86,7 +87,7 @@ def show(
     depth: int = typer.Option(3, "--depth", help="Maximum depth to traverse"),
     format: str = typer.Option("tree", "--format", "-f", help="Output format: tree, table, json, dot"),
     project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
-):
+) -> None:
     """
     Show column-level lineage for a model.
 
@@ -121,10 +122,10 @@ def show(
     # Build lineage graph
     console.print("[dim]Computing column lineage...[/dim]")
     graph = LineageGraph()
-    computed = set()
+    computed: set[str] = set()
 
     # Compute lineage for target model and dependencies
-    def compute_recursive(name: str, direction: str, current_depth: int):
+    def compute_recursive(name: str, direction: str, current_depth: int) -> None:
         if current_depth > depth:
             return
         if name in computed:
@@ -172,7 +173,7 @@ def show(
         _output_tree(model_lineage, graph, column, upstream, downstream, depth)
 
 
-def _output_tree(lineage, graph, column, upstream, downstream, depth):
+def _output_tree(lineage: Any, graph: Any, column: str | None, upstream: bool, downstream: bool, depth: int) -> None:
     """Output lineage as a tree visualization."""
 
     model_name = lineage.model_name
@@ -209,7 +210,7 @@ def _output_tree(lineage, graph, column, upstream, downstream, depth):
     console.print(tree)
 
 
-def _add_upstream_tree(branch, graph, model_name, column_name, remaining_depth):
+def _add_upstream_tree(branch: Any, graph: Any, model_name: str, column_name: str, remaining_depth: int) -> None:
     """Recursively add upstream lineage to tree."""
     if remaining_depth <= 0:
         return
@@ -225,7 +226,7 @@ def _add_upstream_tree(branch, graph, model_name, column_name, remaining_depth):
         _add_upstream_tree(src_branch, graph, edge.source_model, edge.source_column, remaining_depth - 1)
 
 
-def _output_table(lineage, graph, column, upstream, downstream, depth):
+def _output_table(lineage: Any, graph: Any, column: str | None, upstream: bool, downstream: bool, depth: int) -> None:
     """Output lineage as a table."""
     table = Table(title=f"Column Lineage: {lineage.model_name}")
     table.add_column("Column", style="green")
@@ -262,7 +263,7 @@ def _output_table(lineage, graph, column, upstream, downstream, depth):
     console.print(table)
 
 
-def _output_json(lineage, graph, column, upstream, downstream, depth):
+def _output_json(lineage: Any, graph: Any, column: str | None, upstream: bool, downstream: bool, depth: int) -> None:
     """Output lineage as JSON."""
     if column:
         col = lineage.get_column(column)
@@ -281,7 +282,7 @@ def _output_json(lineage, graph, column, upstream, downstream, depth):
     console.print(json.dumps(data, indent=2, default=str))
 
 
-def _output_dot(lineage, graph, column, upstream, downstream, depth):
+def _output_dot(lineage: Any, graph: Any, column: str | None, upstream: bool, downstream: bool, depth: int) -> None:
     """Output lineage as DOT format for Graphviz."""
     lines = ["digraph lineage {"]
     lines.append("    rankdir=LR;")
@@ -289,7 +290,7 @@ def _output_dot(lineage, graph, column, upstream, downstream, depth):
 
     edges_seen = set()
 
-    def add_edge(src_model, src_col, dst_model, dst_col, trans_type):
+    def add_edge(src_model: str, src_col: str, dst_model: str, dst_col: str, trans_type: str) -> None:
         edge_key = (src_model, src_col, dst_model, dst_col)
         if edge_key in edges_seen:
             return
@@ -324,7 +325,7 @@ def _output_dot(lineage, graph, column, upstream, downstream, depth):
 def refresh(
     model: str | None = typer.Argument(None, help="Model name to refresh (or all if not specified)"),
     project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
-):
+) -> None:
     """
     Refresh/recompute column lineage for models.
 
@@ -422,7 +423,7 @@ def refresh(
 def list_columns(
     model: str = typer.Argument(..., help="Model name to list columns for"),
     project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
-):
+) -> None:
     """
     List all columns for a model with their lineage summary.
 

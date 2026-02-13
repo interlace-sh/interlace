@@ -73,7 +73,7 @@ class RetryPolicy:
     # Signature: (exception: Exception, attempt: int) -> bool
     retry_condition: Callable | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate configuration."""
         if self.max_attempts < 0:
             raise ValueError("max_attempts must be >= 0")
@@ -103,7 +103,7 @@ class RetryPolicy:
 
         # Custom retry condition takes precedence
         if self.retry_condition is not None:
-            return self.retry_condition(exception, attempt)
+            return bool(self.retry_condition(exception, attempt))
 
         # Check if exception type is retryable
         if self.retryable_exceptions is not None:
@@ -160,13 +160,13 @@ class RetryState:
     total_attempts: int = 0
 
     # Exceptions encountered (for debugging)
-    exceptions: list = field(default_factory=list)
+    exceptions: list[dict[str, Any]] = field(default_factory=list)
 
     # Timestamps of each attempt
-    attempt_timestamps: list = field(default_factory=list)
+    attempt_timestamps: list[float] = field(default_factory=list)
 
     # Delays between attempts
-    delays: list = field(default_factory=list)
+    delays: list[float] = field(default_factory=list)
 
     # Final result (if succeeded)
     result: Any | None = None
@@ -177,7 +177,7 @@ class RetryState:
     # Whether execution succeeded
     succeeded: bool = False
 
-    def record_attempt(self, exception: Exception | None = None):
+    def record_attempt(self, exception: Exception | None = None) -> None:
         """Record an attempt and its result."""
         import time
 
@@ -194,16 +194,16 @@ class RetryState:
                 }
             )
 
-    def record_delay(self, delay: float):
+    def record_delay(self, delay: float) -> None:
         """Record the delay before next retry."""
         self.delays.append(delay)
 
-    def mark_success(self, result: Any):
+    def mark_success(self, result: Any) -> None:
         """Mark execution as successful."""
         self.succeeded = True
         self.result = result
 
-    def mark_failure(self, exception: Exception):
+    def mark_failure(self, exception: Exception) -> None:
         """Mark execution as failed after all retries."""
         self.succeeded = False
         self.final_exception = exception

@@ -18,9 +18,9 @@ console = Console()
 @app.callback()
 def config(
     ctx: typer.Context,
-    env: str = typer.Option(None, help="Specific environment to show"),
+    env: str | None = typer.Option(None, help="Specific environment to show"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", "-d", help="Project directory"),
-):
+) -> None:
     """
     List available environments and configurations.
     """
@@ -36,7 +36,7 @@ def config(
             # Show specific environment config
             config_file = project_dir / f"config.{env}.yaml"
             if not config_file.exists():
-                config_file = project_dir / "config.yaml" if env == "default" else None
+                config_file = (project_dir / "config.yaml") if env == "default" else None  # type: ignore[assignment]
 
             if config_file and config_file.exists():
                 console.print(f"\n[bold]Configuration: {config_file.name}[/bold]\n")

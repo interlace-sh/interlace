@@ -3,7 +3,7 @@ Tests for state store and migration runner.
 """
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -228,7 +228,7 @@ class TestStateStoreScheduler:
         store = store_with_duckdb
         assert store.get_model_last_run_at("my_model") is None
 
-        now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+        now = datetime.now(tz=UTC).replace(tzinfo=None)
         store.set_model_last_run_at("my_model", run_at=now)
 
         last_run = store.get_model_last_run_at("my_model")

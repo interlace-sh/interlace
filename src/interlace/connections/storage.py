@@ -44,7 +44,7 @@ class BaseStorageConnection:
         For local filesystem, this is the relative path from root.
         """
         storage = self.config.get("config", {}).get("storage", {})
-        return storage.get("base_path", "")
+        return storage.get("base_path", "")  # type: ignore[no-any-return]
 
     def __repr__(self) -> str:
         """String representation."""

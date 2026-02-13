@@ -110,7 +110,7 @@ def _make_wrapper(func: Callable, model_name: str, is_async: bool) -> Callable:
     if is_async:
 
         @functools.wraps(func)
-        async def wrapper(*args, **kw):
+        async def wrapper(*args: Any, **kw: Any) -> Any:
             start_time = time.time()
             try:
                 logger.debug(f"Model '{model_name}' execution started")
@@ -128,7 +128,7 @@ def _make_wrapper(func: Callable, model_name: str, is_async: bool) -> Callable:
     else:
 
         @functools.wraps(func)
-        def wrapper(*args, **kw):
+        def wrapper(*args: Any, **kw: Any) -> Any:
             start_time = time.time()
             try:
                 logger.debug(f"Model '{model_name}' execution started")
@@ -165,8 +165,8 @@ def model(
     schema_mode: str | None = None,
     export: dict[str, Any] | None = None,
     cursor: str | None = None,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Callable[[Callable], Callable]:
     """
     Decorator to define an Interlace model.
 
@@ -370,7 +370,7 @@ def model(
         # Attach metadata to the wrapper explicitly so that model discovery
         # (which checks ``hasattr(obj, "_interlace_model")``) finds it
         # reliably, regardless of ``functools.wraps`` __dict__ propagation.
-        wrapper._interlace_model = metadata
+        wrapper._interlace_model = metadata  # type: ignore[attr-defined]
 
         return wrapper
 

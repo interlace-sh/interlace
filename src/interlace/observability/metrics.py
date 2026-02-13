@@ -50,7 +50,7 @@ class MetricsRegistry:
     and can be retrieved via get_metrics().
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize metrics registry."""
         self._enabled = False
         self._internal_metrics: dict[str, Any] = {
@@ -71,7 +71,7 @@ class MetricsRegistry:
         else:
             self._registry = None
 
-    def _setup_prometheus_metrics(self):
+    def _setup_prometheus_metrics(self) -> None:
         """Setup Prometheus metrics."""
         # Model execution duration histogram
         self._model_execution_histogram = Histogram(
@@ -151,12 +151,12 @@ class MetricsRegistry:
             registry=self._registry,
         )
 
-    def enable(self):
+    def enable(self) -> None:
         """Enable metrics collection."""
         self._enabled = True
         logger.info("Metrics collection enabled")
 
-    def disable(self):
+    def disable(self) -> None:
         """Disable metrics collection."""
         self._enabled = False
         logger.info("Metrics collection disabled")
@@ -172,7 +172,7 @@ class MetricsRegistry:
         duration: float,
         status: str = "success",
         materialise: str = "table",
-    ):
+    ) -> None:
         """
         Record model execution metrics.
 
@@ -208,7 +208,7 @@ class MetricsRegistry:
         model: str,
         operation: str,
         count: int,
-    ):
+    ) -> None:
         """
         Record row counts.
 
@@ -235,7 +235,7 @@ class MetricsRegistry:
         active: int,
         max_size: int,
         wait_time: float = 0.0,
-    ):
+    ) -> None:
         """
         Record connection pool metrics.
 
@@ -261,7 +261,7 @@ class MetricsRegistry:
         self,
         model: str,
         outcome: str,
-    ):
+    ) -> None:
         """
         Record retry attempt.
 
@@ -282,7 +282,7 @@ class MetricsRegistry:
         if PROMETHEUS_AVAILABLE and self._registry:
             self._retry_counter.labels(model=model, outcome=outcome).inc()
 
-    def record_dlq_entry(self, model: str, count: int = 1):
+    def record_dlq_entry(self, model: str, count: int = 1) -> None:
         """
         Record DLQ entry.
 
@@ -300,7 +300,7 @@ class MetricsRegistry:
             current = self._internal_metrics["dlq_entries"].get(model, 0)
             self._dlq_gauge.labels(model=model).set(max(0, current))
 
-    def record_circuit_breaker_state(self, model: str, state: str):
+    def record_circuit_breaker_state(self, model: str, state: str) -> None:
         """
         Record circuit breaker state.
 
@@ -325,7 +325,7 @@ class MetricsRegistry:
         self,
         model: str,
         materialise: str = "table",
-    ):
+    ) -> Any:
         """
         Context manager to time model execution.
 
@@ -368,7 +368,7 @@ class MetricsRegistry:
                 "circuit_breaker_state": dict(self._internal_metrics["circuit_breaker_state"]),
             }
 
-    def start_http_server(self, port: int = 9090, addr: str = ""):
+    def start_http_server(self, port: int = 9090, addr: str = "") -> None:
         """
         Start HTTP server for Prometheus scraping.
 
@@ -393,12 +393,12 @@ class MetricsRegistry:
         if not PROMETHEUS_AVAILABLE:
             return b"# prometheus_client not installed\n"
 
-        return generate_latest(self._registry)
+        return generate_latest(self._registry)  # type: ignore[no-any-return]
 
     def get_content_type(self) -> str:
         """Get Prometheus content type for HTTP response."""
         if PROMETHEUS_AVAILABLE:
-            return CONTENT_TYPE_LATEST
+            return CONTENT_TYPE_LATEST  # type: ignore[no-any-return]
         return "text/plain; charset=utf-8"
 
 
@@ -425,26 +425,26 @@ def model_execution_histogram(
     duration: float,
     status: str = "success",
     materialise: str = "table",
-):
+) -> None:
     """Record model execution histogram."""
     get_metrics_registry().record_model_execution(model, duration, status, materialise)
 
 
-def model_rows_counter(model: str, operation: str, count: int):
+def model_rows_counter(model: str, operation: str, count: int) -> None:
     """Record model rows counter."""
     get_metrics_registry().record_rows(model, operation, count)
 
 
-def connection_pool_gauge(connection: str, active: int, max_size: int, wait_time: float = 0.0):
+def connection_pool_gauge(connection: str, active: int, max_size: int, wait_time: float = 0.0) -> None:
     """Record connection pool gauge."""
     get_metrics_registry().record_connection_pool(connection, active, max_size, wait_time)
 
 
-def retry_counter(model: str, outcome: str):
+def retry_counter(model: str, outcome: str) -> None:
     """Record retry counter."""
     get_metrics_registry().record_retry(model, outcome)
 
 
-def dlq_counter(model: str, count: int = 1):
+def dlq_counter(model: str, count: int = 1) -> None:
     """Record DLQ counter."""
     get_metrics_registry().record_dlq_entry(model, count)

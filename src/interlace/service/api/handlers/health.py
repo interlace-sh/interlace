@@ -3,6 +3,7 @@ Health and project information endpoints.
 """
 
 import time
+from typing import Any
 
 from aiohttp import web
 
@@ -12,7 +13,7 @@ from interlace.service.api.handlers import BaseHandler
 class HealthHandler(BaseHandler):
     """Handler for health check and project info endpoints."""
 
-    def __init__(self, service):
+    def __init__(self, service: Any) -> None:
         super().__init__(service)
         self._start_time = time.time()
 

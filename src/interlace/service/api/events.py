@@ -32,7 +32,7 @@ class EventBus:
     - task.progress (row count updates)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Subscribers for specific event types
         self._type_subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
         # Subscribers for all events

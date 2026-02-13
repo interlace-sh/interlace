@@ -28,10 +28,11 @@ class GraphHandler(BaseHandler):
         format_type = request.query.get("format", "full")
         models_filter = request.query.get("models")
 
+        models_list: list[str] | None = None
         if models_filter:
-            models_filter = [m.strip() for m in models_filter.split(",")]
+            models_list = [m.strip() for m in models_filter.split(",")]
             # Validate all requested models exist
-            invalid_models = [m for m in models_filter if m not in self.models]
+            invalid_models = [m for m in models_list if m not in self.models]
             if invalid_models:
                 raise ValidationError(
                     f"Unknown models: {invalid_models}",
@@ -52,7 +53,7 @@ class GraphHandler(BaseHandler):
 
         # Build nodes
         for name, model in self.models.items():
-            if models_filter and name not in models_filter:
+            if models_list and name not in models_list:
                 continue
 
             layer = layers.get(name, 0)
@@ -72,14 +73,14 @@ class GraphHandler(BaseHandler):
 
         # Build edges from dependencies
         for name in self.models:
-            if models_filter and name not in models_filter:
+            if models_list and name not in models_list:
                 continue
 
             if self.graph:
                 deps = self.graph.get_dependencies(name)
                 for dep in deps:
                     # Only include edge if both nodes are in filter
-                    if models_filter and dep not in models_filter:
+                    if models_list and dep not in models_list:
                         continue
                     edges.append(
                         {

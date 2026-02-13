@@ -55,12 +55,12 @@ class Flow:
     # Task tracking
     tasks: dict[str, "Task"] = field(default_factory=dict)  # model_name -> Task
 
-    def start(self):
+    def start(self) -> None:
         """Mark flow as started."""
         self.status = FlowStatus.RUNNING
         self.started_at = time.time()
 
-    def complete(self, success: bool = True):
+    def complete(self, success: bool = True) -> None:
         """Mark flow as completed."""
         self.status = FlowStatus.COMPLETED if success else FlowStatus.FAILED
         self.completed_at = time.time()
@@ -142,34 +142,34 @@ class Task:
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def enqueue(self):
+    def enqueue(self) -> None:
         """Mark task as enqueued."""
         self.status = TaskStatus.PENDING
         self.enqueued_at = time.time()
 
-    def mark_waiting(self):
+    def mark_waiting(self) -> None:
         """Mark task as waiting for dependencies."""
         self.status = TaskStatus.WAITING
 
-    def mark_ready(self):
+    def mark_ready(self) -> None:
         """Mark task as ready to execute (dependencies satisfied)."""
         self.status = TaskStatus.READY
 
-    def start(self):
+    def start(self) -> None:
         """Mark task as started."""
         self.status = TaskStatus.RUNNING
         self.started_at = time.time()
 
-    def mark_materialising(self):
+    def mark_materialising(self) -> None:
         """Mark task as materialising results."""
         self.status = TaskStatus.MATERIALISING
 
-    def complete(self, success: bool = True):
+    def complete(self, success: bool = True) -> None:
         """Mark task as completed."""
         self.status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
         self.completed_at = time.time()
 
-    def skip(self):
+    def skip(self) -> None:
         """Mark task as skipped."""
         self.status = TaskStatus.SKIPPED
         self.completed_at = time.time()

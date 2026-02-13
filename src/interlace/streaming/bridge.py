@@ -71,7 +71,7 @@ class StreamBridge:
             await bridge.run_forever()
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._routes: list[BridgeRoute] = []
         self._tasks: list[asyncio.Task] = []
         self._running = False
@@ -261,9 +261,9 @@ class StreamBridge:
             "tasks": len(self._tasks),
         }
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> StreamBridge:
         await self.start()
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: Any) -> None:
         await self.stop()

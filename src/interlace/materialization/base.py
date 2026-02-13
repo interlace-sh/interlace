@@ -15,7 +15,7 @@ class Materializer(ABC):
     """Base class for materialisers."""
 
     @abstractmethod
-    def materialise(self, data: "ibis.Table", model_name: str, schema: str, connection: Any, **kwargs) -> None:
+    def materialise(self, data: "ibis.Table", model_name: str, schema: str, connection: Any, **kwargs: Any) -> None:
         """
         Materialise data to target.
 

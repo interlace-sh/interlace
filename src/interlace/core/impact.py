@@ -290,7 +290,7 @@ class ImpactAnalyzer:
         downstream = []
         visited = set(already_running)
 
-        def traverse(name: str):
+        def traverse(name: str) -> None:
             if name in visited:
                 return
             visited.add(name)
@@ -312,7 +312,7 @@ class ImpactAnalyzer:
         dependencies = self.graph.get_dependencies(model_name)
         return [dep for dep in dependencies if dep in running_models]
 
-    def _build_column_usage(self):
+    def _build_column_usage(self) -> None:
         """Build map of which columns each model uses from its dependencies."""
         self._column_usage = {}
 
@@ -377,7 +377,7 @@ class ImpactAnalyzer:
 
     def _detect_schema_changes(self, model_name: str) -> list[SchemaChange]:
         """Detect schema changes for a model compared to last execution."""
-        changes = []
+        changes: list[SchemaChange] = []
 
         if not self.state_store:
             return changes

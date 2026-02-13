@@ -7,12 +7,13 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
-from typing import Any, Awaitable, Callable, TypeVar, overload
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar, overload
 
 T = TypeVar("T")
 
 
-def dual(func: Callable[..., Awaitable[T]]) -> Callable[..., T]:
+def dual[T](func: Callable[..., Awaitable[T]]) -> Callable[..., T]:
     """
     Decorator: makes an async function callable both synchronously and asynchronously.
 

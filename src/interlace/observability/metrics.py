@@ -14,10 +14,11 @@ Usage:
     registry.start_http_server(port=9090)
 """
 
-from typing import Dict, Any, Optional, Callable
-import time
 import threading
+import time
 from contextlib import contextmanager
+from typing import Any
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.observability.metrics")
@@ -25,14 +26,15 @@ logger = get_logger("interlace.observability.metrics")
 # Try to import prometheus_client (optional dependency)
 try:
     from prometheus_client import (
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
         Counter,
         Gauge,
         Histogram,
-        CollectorRegistry,
-        start_http_server,
         generate_latest,
-        CONTENT_TYPE_LATEST,
+        start_http_server,
     )
+
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
@@ -51,7 +53,7 @@ class MetricsRegistry:
     def __init__(self):
         """Initialize metrics registry."""
         self._enabled = False
-        self._internal_metrics: Dict[str, Any] = {
+        self._internal_metrics: dict[str, Any] = {
             "model_execution_seconds": {},  # model -> [durations]
             "model_rows_total": {},  # model -> count
             "connection_pool_active": {},  # pool_name -> count
@@ -187,17 +189,19 @@ class MetricsRegistry:
             # Internal tracking
             if model not in self._internal_metrics["model_execution_seconds"]:
                 self._internal_metrics["model_execution_seconds"][model] = []
-            self._internal_metrics["model_execution_seconds"][model].append({
-                "duration": duration,
-                "status": status,
-                "timestamp": time.time(),
-            })
+            self._internal_metrics["model_execution_seconds"][model].append(
+                {
+                    "duration": duration,
+                    "status": status,
+                    "timestamp": time.time(),
+                }
+            )
 
         # Prometheus tracking
         if PROMETHEUS_AVAILABLE and self._registry:
-            self._model_execution_histogram.labels(
-                model=model, status=status, materialise=materialise
-            ).observe(duration)
+            self._model_execution_histogram.labels(model=model, status=status, materialise=materialise).observe(
+                duration
+            )
 
     def record_rows(
         self,
@@ -223,9 +227,7 @@ class MetricsRegistry:
             )
 
         if PROMETHEUS_AVAILABLE and self._registry:
-            self._model_rows_counter.labels(
-                model=model, operation=operation
-            ).inc(count)
+            self._model_rows_counter.labels(model=model, operation=operation).inc(count)
 
     def record_connection_pool(
         self,
@@ -292,9 +294,7 @@ class MetricsRegistry:
             return
 
         with self._lock:
-            self._internal_metrics["dlq_entries"][model] = (
-                self._internal_metrics["dlq_entries"].get(model, 0) + count
-            )
+            self._internal_metrics["dlq_entries"][model] = self._internal_metrics["dlq_entries"].get(model, 0) + count
 
         if PROMETHEUS_AVAILABLE and self._registry:
             current = self._internal_metrics["dlq_entries"].get(model, 0)
@@ -350,7 +350,7 @@ class MetricsRegistry:
                 materialise=materialise,
             )
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         """
         Get all internal metrics.
 
@@ -377,10 +377,7 @@ class MetricsRegistry:
             addr: Address to bind to (empty string for all interfaces)
         """
         if not PROMETHEUS_AVAILABLE:
-            logger.warning(
-                "prometheus_client not installed. "
-                "Install with: pip install prometheus-client"
-            )
+            logger.warning("prometheus_client not installed. " "Install with: pip install prometheus-client")
             return
 
         start_http_server(port=port, addr=addr, registry=self._registry)
@@ -406,7 +403,7 @@ class MetricsRegistry:
 
 
 # Global metrics registry instance
-_metrics_registry: Optional[MetricsRegistry] = None
+_metrics_registry: MetricsRegistry | None = None
 
 
 def get_metrics_registry() -> MetricsRegistry:

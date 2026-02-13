@@ -16,12 +16,12 @@ Usage:
 """
 
 from interlace.streaming.adapters.base import (
-    MessageAdapter,
-    Message,
     AdapterConfig,
+    Message,
+    MessageAdapter,
 )
-from interlace.streaming.adapters.webhook import WebhookAdapter
 from interlace.streaming.adapters.memory import InMemoryAdapter
+from interlace.streaming.adapters.webhook import WebhookAdapter
 from interlace.streaming.bridge import StreamBridge
 from interlace.streaming.router import StreamRouter
 

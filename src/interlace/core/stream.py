@@ -13,19 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
-import time
 import uuid
-from datetime import datetime, timezone
+from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 from typing import (
     Any,
-    AsyncIterator,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    Union,
 )
 
 import ibis
@@ -39,22 +31,22 @@ logger = get_logger("interlace.stream")
 # Stream registry (in-process)
 # ---------------------------------------------------------------------------
 
-_stream_registry: Dict[str, Dict[str, Any]] = {}
+_stream_registry: dict[str, dict[str, Any]] = {}
 try:
     _stream_lock = asyncio.Lock() if asyncio.get_event_loop().is_running() else None
 except RuntimeError:
     _stream_lock = None
 
 # Listeners for subscribe() -- maps stream_name -> list[asyncio.Queue]
-_stream_listeners: Dict[str, List[asyncio.Queue]] = {}
+_stream_listeners: dict[str, list[asyncio.Queue]] = {}
 
 
-def _get_stream_info(name: str) -> Optional[Dict[str, Any]]:
+def _get_stream_info(name: str) -> dict[str, Any] | None:
     """Get stream metadata from registry."""
     return _stream_registry.get(name)
 
 
-def _register_stream(name: str, info: Dict[str, Any]) -> None:
+def _register_stream(name: str, info: dict[str, Any]) -> None:
     """Register a stream in the in-process registry."""
     _stream_registry[name] = info
 
@@ -63,21 +55,22 @@ def _register_stream(name: str, info: Dict[str, Any]) -> None:
 # @stream decorator
 # ---------------------------------------------------------------------------
 
+
 def stream(
-    name: Optional[str] = None,
+    name: str | None = None,
     schema: str = "events",
-    connection: Optional[str] = None,
+    connection: str | None = None,
     cursor: str = "rowid",
-    fields: Optional[Union[Dict[str, Any], List[Tuple[str, Any]], "ibis.Schema"]] = None,
-    description: Optional[str] = None,
-    tags: Optional[List[str]] = None,
-    owner: Optional[str] = None,
+    fields: dict[str, Any] | list[tuple[str, Any]] | ibis.Schema | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    owner: str | None = None,
     # Webhook/API config
-    auth: Optional[Dict[str, Any]] = None,
-    rate_limit: Optional[Dict[str, Any]] = None,
+    auth: dict[str, Any] | None = None,
+    rate_limit: dict[str, Any] | None = None,
     validate_schema: bool = False,
     # Retention
-    retention: Optional[Dict[str, Any]] = None,
+    retention: dict[str, Any] | None = None,
     **kwargs,
 ):
     """
@@ -170,18 +163,19 @@ def stream(
 # publish() -- core programmatic API
 # ---------------------------------------------------------------------------
 
+
 async def publish(
-    stream: Union[str, Callable],
-    data: Union[Dict[str, Any], List[Dict[str, Any]]],
+    stream: str | Callable,
+    data: dict[str, Any] | list[dict[str, Any]],
     *,
-    connection: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    _connection_obj: Optional["ibis.BaseBackend"] = None,
-    _config: Optional[Dict[str, Any]] = None,
-    _event_bus: Optional[Any] = None,
-    _graph: Optional[Any] = None,
-    _enqueue_run: Optional[Callable] = None,
-) -> Dict[str, Any]:
+    connection: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    _connection_obj: ibis.BaseBackend | None = None,
+    _config: dict[str, Any] | None = None,
+    _event_bus: Any | None = None,
+    _graph: Any | None = None,
+    _enqueue_run: Callable | None = None,
+) -> dict[str, Any]:
     """
     Publish event(s) to a stream.
 
@@ -256,7 +250,7 @@ async def publish(
     publish_id = str(uuid.uuid4())
 
     # Add interlace metadata columns if not present
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     for row in rows:
         row.setdefault("_interlace_published_at", now)
         row.setdefault("_interlace_publish_id", publish_id)
@@ -332,10 +326,10 @@ async def publish(
 
 
 def publish_sync(
-    stream: Union[str, Callable],
-    data: Union[Dict[str, Any], List[Dict[str, Any]]],
+    stream: str | Callable,
+    data: dict[str, Any] | list[dict[str, Any]],
     **kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Synchronous wrapper for publish().
 
@@ -345,9 +339,10 @@ def publish_sync(
         publish_sync("user_events", {"user_id": "123", "action": "signup"})
     """
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
         # Already in an async context -- schedule as a task
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor() as pool:
             future = pool.submit(asyncio.run, publish(stream, data, **kwargs))
             return future.result()
@@ -360,13 +355,14 @@ def publish_sync(
 # subscribe() -- async event consumer
 # ---------------------------------------------------------------------------
 
+
 async def subscribe(
     stream_name: str,
     *,
     batch_size: int = 1,
-    timeout: Optional[float] = None,
-    filter_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
-) -> AsyncIterator[Union[Dict[str, Any], List[Dict[str, Any]]]]:
+    timeout: float | None = None,
+    filter_fn: Callable[[dict[str, Any]], bool] | None = None,
+) -> AsyncIterator[dict[str, Any] | list[dict[str, Any]]]:
     """
     Subscribe to real-time events from a stream.
 
@@ -402,7 +398,7 @@ async def subscribe(
     _stream_listeners[stream_name].append(queue)
 
     try:
-        batch: List[Dict[str, Any]] = []
+        batch: list[dict[str, Any]] = []
 
         while True:
             try:
@@ -420,7 +416,7 @@ async def subscribe(
                         yield batch
                         batch = []
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # On timeout, yield partial batch if any
                 if batch:
                     yield batch
@@ -444,15 +440,16 @@ async def subscribe(
 # Stream cursor consumer (database-backed consumption)
 # ---------------------------------------------------------------------------
 
+
 async def consume(
     stream_name: str,
     consumer_name: str,
     *,
     batch_size: int = 100,
-    connection: Optional[str] = None,
-    _connection_obj: Optional["ibis.BaseBackend"] = None,
-    _config: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
+    connection: str | None = None,
+    _connection_obj: ibis.BaseBackend | None = None,
+    _config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """
     Consume unprocessed events from a stream using cursor-based tracking.
 
@@ -526,11 +523,11 @@ async def consume(
 async def ack(
     stream_name: str,
     consumer_name: str,
-    events: List[Dict[str, Any]],
+    events: list[dict[str, Any]],
     *,
-    connection: Optional[str] = None,
-    _connection_obj: Optional["ibis.BaseBackend"] = None,
-    _config: Optional[Dict[str, Any]] = None,
+    connection: str | None = None,
+    _connection_obj: ibis.BaseBackend | None = None,
+    _config: dict[str, Any] | None = None,
 ) -> None:
     """
     Acknowledge processed events and advance consumer cursor.
@@ -552,9 +549,7 @@ async def ack(
     stream_info = _get_stream_info(stream_name)
     con = _connection_obj
     if con is None:
-        con = _resolve_connection(
-            connection or (stream_info or {}).get("connection"), _config
-        )
+        con = _resolve_connection(connection or (stream_info or {}).get("connection"), _config)
 
     if con is None:
         raise RuntimeError(f"Cannot ack stream '{stream_name}': no connection available.")
@@ -566,9 +561,8 @@ async def ack(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_connection(
-    conn_name: Optional[str], config: Optional[Dict[str, Any]]
-) -> Optional["ibis.BaseBackend"]:
+
+def _resolve_connection(conn_name: str | None, config: dict[str, Any] | None) -> ibis.BaseBackend | None:
     """Resolve an ibis connection from name or config."""
     try:
         from interlace.connections.manager import get_connection as get_named_connection
@@ -579,9 +573,8 @@ def _resolve_connection(
 
         # Try default connection
         if config:
-            default_conn = (
-                config.get("executor", {}).get("default_connection")
-                or next(iter(config.get("connections", {}).keys()), None)
+            default_conn = config.get("executor", {}).get("default_connection") or next(
+                iter(config.get("connections", {}).keys()), None
             )
             if default_conn:
                 wrapper = get_named_connection(default_conn)
@@ -591,7 +584,7 @@ def _resolve_connection(
     return None
 
 
-def _ensure_schema(con: "ibis.BaseBackend", schema: str) -> None:
+def _ensure_schema(con: ibis.BaseBackend, schema: str) -> None:
     """Ensure database schema exists."""
     try:
         if hasattr(con, "create_database"):
@@ -601,10 +594,10 @@ def _ensure_schema(con: "ibis.BaseBackend", schema: str) -> None:
 
 
 def _ensure_stream_table(
-    con: "ibis.BaseBackend",
+    con: ibis.BaseBackend,
     stream_name: str,
     schema: str,
-    stream_info: Optional[Dict[str, Any]],
+    stream_info: dict[str, Any] | None,
 ) -> None:
     """Ensure stream table exists, creating it from fields schema if needed."""
     try:
@@ -630,10 +623,12 @@ def _ensure_stream_table(
     try:
         con.create_table(
             stream_name,
-            schema=ibis.schema({
-                "_interlace_published_at": "string",
-                "_interlace_publish_id": "string",
-            }),
+            schema=ibis.schema(
+                {
+                    "_interlace_published_at": "string",
+                    "_interlace_publish_id": "string",
+                }
+            ),
             database=schema,
             overwrite=False,
         )
@@ -642,7 +637,7 @@ def _ensure_stream_table(
 
 
 def _validate_event_schema(
-    rows: List[Dict[str, Any]],
+    rows: list[dict[str, Any]],
     fields: Any,
     stream_name: str,
 ) -> None:
@@ -661,18 +656,16 @@ def _validate_event_schema(
         for i, row in enumerate(rows):
             missing = required_cols - set(row.keys())
             if missing:
-                raise ValueError(
-                    f"Event {i} for stream '{stream_name}' missing required fields: {missing}"
-                )
+                raise ValueError(f"Event {i} for stream '{stream_name}' missing required fields: {missing}")
     except ImportError:
         pass
 
 
 def _insert_rows(
-    con: "ibis.BaseBackend",
+    con: ibis.BaseBackend,
     stream_name: str,
     schema: str,
-    rows: List[Dict[str, Any]],
+    rows: list[dict[str, Any]],
 ) -> None:
     """Insert rows into stream table via temp table."""
     from interlace.core.context import _execute_sql_internal
@@ -689,9 +682,7 @@ def _insert_rows(
             con.create_table(tmp_name, obj=df, temp=True)
 
         # Insert into stream table
-        _execute_sql_internal(
-            con, f"INSERT INTO {schema}.{stream_name} SELECT * FROM {tmp_name}"
-        )
+        _execute_sql_internal(con, f"INSERT INTO {schema}.{stream_name} SELECT * FROM {tmp_name}")
     finally:
         try:
             if hasattr(con, "drop_table"):
@@ -704,7 +695,7 @@ def _insert_rows(
 
 async def _notify_listeners(
     stream_name: str,
-    rows: List[Dict[str, Any]],
+    rows: list[dict[str, Any]],
     publish_id: str,
 ) -> None:
     """Notify in-process subscribers of new events."""
@@ -729,10 +720,10 @@ async def _notify_listeners(
 
 
 def _get_consumer_cursor(
-    con: "ibis.BaseBackend",
+    con: ibis.BaseBackend,
     stream_name: str,
     consumer_name: str,
-) -> Optional[int]:
+) -> int | None:
     """Get the current cursor position for a consumer."""
     from interlace.core.context import _execute_sql_internal
 
@@ -740,7 +731,7 @@ def _get_consumer_cursor(
         result = _execute_sql_internal(
             con,
             f"SELECT last_cursor FROM interlace.stream_consumers "
-            f"WHERE stream_name = '{stream_name}' AND consumer_name = '{consumer_name}'"
+            f"WHERE stream_name = '{stream_name}' AND consumer_name = '{consumer_name}'",
         )
         if result is not None:
             if hasattr(result, "fetchone"):
@@ -757,7 +748,7 @@ def _get_consumer_cursor(
 
 
 def _update_consumer_cursor(
-    con: "ibis.BaseBackend",
+    con: ibis.BaseBackend,
     stream_name: str,
     consumer_name: str,
     cursor_value: int,
@@ -777,20 +768,20 @@ def _update_consumer_cursor(
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (stream_name, consumer_name)
             )
-            """
+            """,
         )
 
         # Upsert cursor
         _execute_sql_internal(
             con,
             f"DELETE FROM interlace.stream_consumers "
-            f"WHERE stream_name = '{stream_name}' AND consumer_name = '{consumer_name}'"
+            f"WHERE stream_name = '{stream_name}' AND consumer_name = '{consumer_name}'",
         )
         _execute_sql_internal(
             con,
             f"INSERT INTO interlace.stream_consumers "
             f"(stream_name, consumer_name, last_cursor, updated_at) "
-            f"VALUES ('{stream_name}', '{consumer_name}', {cursor_value}, CURRENT_TIMESTAMP)"
+            f"VALUES ('{stream_name}', '{consumer_name}', {cursor_value}, CURRENT_TIMESTAMP)",
         )
     except Exception as e:
         logger.warning(f"Failed to update consumer cursor: {e}")

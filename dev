@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+case "${1:-help}" in
+  fmt)
+    uv run black "$DIR/src/" "$DIR/tests/"
+    uv run ruff check --fix "$DIR/src/" "$DIR/tests/"
+    ;;
+  lint)
+    uv run ruff check "$DIR/src/" "$DIR/tests/"
+    ;;
+  check)
+    uv run black --check "$DIR/src/" "$DIR/tests/"
+    uv run ruff check "$DIR/src/" "$DIR/tests/"
+    ;;
+  typecheck)
+    uv run mypy "$DIR/src/interlace/" --ignore-missing-imports
+    ;;
+  test)
+    cd "$DIR" && uv run pytest "${@:2}"
+    ;;
+  test-fast)
+    cd "$DIR" && uv run pytest -x -q -m "not slow and not requires_db" "${@:2}"
+    ;;
+  *)
+    echo "Usage: ./dev {fmt|lint|check|typecheck|test|test-fast}"
+    ;;
+esac

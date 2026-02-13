@@ -5,7 +5,9 @@ Phase 3: Check using custom SQL/ibis expression.
 """
 
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
+
 import ibis
 
 from interlace.quality.base import (
@@ -43,7 +45,7 @@ class ExpressionCheck(QualityCheck):
         self,
         expression: Callable[[ibis.Table], Any],
         name: str,
-        description: Optional[str] = None,
+        description: str | None = None,
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
         invert: bool = False,
     ):
@@ -80,7 +82,7 @@ class ExpressionCheck(QualityCheck):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> QualityCheckResult:
         """
         Execute expression check.
@@ -106,7 +108,7 @@ class ExpressionCheck(QualityCheck):
                 return self._make_result(
                     status=QualityCheckStatus.SKIPPED,
                     table_name=table_name,
-                    message=f"Table is empty, skipping expression check",
+                    message="Table is empty, skipping expression check",
                     total_rows=0,
                     duration=duration,
                 )

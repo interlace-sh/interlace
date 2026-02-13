@@ -4,24 +4,22 @@ Migration runner.
 Executes SQL migrations from migrations directory.
 """
 
-from pathlib import Path
-from typing import List, Optional
 import os
-from interlace.migrations.utils import (
-    get_migration_files,
-    get_executed_migrations,
-    record_migration_run,
-    MigrationResult,
-)
+from pathlib import Path
+
 from interlace.core.context import _execute_sql_internal
+from interlace.migrations.utils import (
+    MigrationResult,
+    get_executed_migrations,
+    get_migration_files,
+    record_migration_run,
+)
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.migrations")
 
 
-def list_pending_migrations(
-    project_dir: Path, connection: any, environment: str
-) -> List[str]:
+def list_pending_migrations(project_dir: Path, connection: any, environment: str) -> list[str]:
     """
     List pending migrations for an environment.
 
@@ -41,9 +39,7 @@ def list_pending_migrations(
     executed = get_executed_migrations(connection, environment)
 
     executed_set = set(executed)
-    pending = [
-        f.name for f in all_migrations if f.name not in executed_set
-    ]
+    pending = [f.name for f in all_migrations if f.name not in executed_set]
 
     return sorted(pending)
 
@@ -52,9 +48,9 @@ def run_migrations(
     project_dir: Path,
     connection: any,
     environment: str,
-    migration_file: Optional[str] = None,
+    migration_file: str | None = None,
     dry_run: bool = False,
-) -> List[MigrationResult]:
+) -> list[MigrationResult]:
     """
     Run migrations for an environment.
 
@@ -86,9 +82,7 @@ def run_migrations(
                 )
             ]
 
-        return _run_single_migration(
-            migration_path, connection, environment, dry_run
-        )
+        return _run_single_migration(migration_path, connection, environment, dry_run)
     else:
         # Run all pending migrations
         pending = list_pending_migrations(project_dir, connection, environment)
@@ -99,9 +93,7 @@ def run_migrations(
         results = []
         for migration_name in pending:
             migration_path = migrations_dir / migration_name
-            result = _run_single_migration(
-                migration_path, connection, environment, dry_run
-            )
+            result = _run_single_migration(migration_path, connection, environment, dry_run)
             results.extend(result)
 
         return results
@@ -112,7 +104,7 @@ def _run_single_migration(
     connection: any,
     environment: str,
     dry_run: bool = False,
-) -> List[MigrationResult]:
+) -> list[MigrationResult]:
     """
     Run a single migration file.
 
@@ -154,9 +146,7 @@ def _run_single_migration(
         _execute_sql_internal(connection, sql_content)
 
         # Record successful execution
-        record_migration_run(
-            connection, migration_file, environment, True, None, executed_by
-        )
+        record_migration_run(connection, migration_file, environment, True, None, executed_by)
 
         logger.info(f"Migration completed: {migration_file}")
         return [
@@ -171,9 +161,7 @@ def _run_single_migration(
         logger.error(f"Migration failed: {migration_file} - {error_message}")
 
         # Record failed execution
-        record_migration_run(
-            connection, migration_file, environment, False, error_message, executed_by
-        )
+        record_migration_run(connection, migration_file, environment, False, error_message, executed_by)
 
         return [
             MigrationResult(
@@ -182,4 +170,3 @@ def _run_single_migration(
                 error_message=error_message,
             )
         ]
-

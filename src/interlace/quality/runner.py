@@ -6,16 +6,17 @@ Phase 3: Orchestrates execution of quality checks on tables.
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import ibis
 
+from interlace.exceptions import QualityError
 from interlace.quality.base import (
     QualityCheck,
     QualityCheckResult,
     QualityCheckSeverity,
     QualityCheckStatus,
 )
-from interlace.exceptions import QualityError
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.quality.runner")
@@ -44,25 +45,21 @@ class QualityCheckSummary:
     failed: int = 0
     errors: int = 0
     skipped: int = 0
-    results: List[QualityCheckResult] = field(default_factory=list)
+    results: list[QualityCheckResult] = field(default_factory=list)
     duration_seconds: float = 0.0
 
     @property
     def has_failures(self) -> bool:
         """Check if any ERROR severity checks failed."""
         return any(
-            r.status == QualityCheckStatus.FAILED
-            and r.severity == QualityCheckSeverity.ERROR
-            for r in self.results
+            r.status == QualityCheckStatus.FAILED and r.severity == QualityCheckSeverity.ERROR for r in self.results
         )
 
     @property
     def has_warnings(self) -> bool:
         """Check if any WARN severity checks failed."""
         return any(
-            r.status == QualityCheckStatus.FAILED
-            and r.severity == QualityCheckSeverity.WARN
-            for r in self.results
+            r.status == QualityCheckStatus.FAILED and r.severity == QualityCheckSeverity.WARN for r in self.results
         )
 
     @property
@@ -72,7 +69,7 @@ class QualityCheckSummary:
             return 100.0
         return (self.passed / self.total_checks) * 100
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert summary to dictionary."""
         return {
             "table_name": self.table_name,
@@ -114,7 +111,7 @@ class QualityCheckRunner:
 
     def __init__(
         self,
-        connection: Optional[ibis.BaseBackend] = None,
+        connection: ibis.BaseBackend | None = None,
         fail_fast: bool = False,
     ):
         """
@@ -130,9 +127,9 @@ class QualityCheckRunner:
     def run_checks(
         self,
         table_name: str,
-        checks: List[QualityCheck],
-        schema: Optional[str] = None,
-        connection: Optional[ibis.BaseBackend] = None,
+        checks: list[QualityCheck],
+        schema: str | None = None,
+        connection: ibis.BaseBackend | None = None,
     ) -> QualityCheckSummary:
         """
         Run quality checks on a table.
@@ -219,10 +216,10 @@ class QualityCheckRunner:
     def run_model_checks(
         self,
         model_name: str,
-        model_info: Dict[str, Any],
-        schema: Optional[str] = None,
-        connection: Optional[ibis.BaseBackend] = None,
-    ) -> Optional[QualityCheckSummary]:
+        model_info: dict[str, Any],
+        schema: str | None = None,
+        connection: ibis.BaseBackend | None = None,
+    ) -> QualityCheckSummary | None:
         """
         Run quality checks defined in model configuration.
 
@@ -250,9 +247,7 @@ class QualityCheckRunner:
             connection=connection,
         )
 
-    def _parse_check_configs(
-        self, configs: List[Dict[str, Any]]
-    ) -> List[QualityCheck]:
+    def _parse_check_configs(self, configs: list[dict[str, Any]]) -> list[QualityCheck]:
         """
         Parse check configuration dictionaries into QualityCheck objects.
 
@@ -263,12 +258,11 @@ class QualityCheckRunner:
             List of QualityCheck instances
         """
         from interlace.quality.checks import (
-            UniqueCheck,
-            NotNullCheck,
             AcceptedValuesCheck,
             FreshnessCheck,
+            NotNullCheck,
             RowCountCheck,
-            ExpressionCheck,
+            UniqueCheck,
         )
 
         check_types = {
@@ -317,6 +311,6 @@ class QualityCheckRunner:
 class DataQualityError(QualityError):
     """Raised when data quality checks fail with ERROR severity."""
 
-    def __init__(self, message: str, summary: Optional[QualityCheckSummary] = None):
+    def __init__(self, message: str, summary: QualityCheckSummary | None = None):
         super().__init__(message)
         self.summary = summary

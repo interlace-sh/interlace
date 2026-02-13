@@ -5,14 +5,15 @@ Automatically creates interlace schema and tables if they don't exist.
 """
 
 import json
-from typing import Dict, Any, Optional
 from datetime import datetime
-import ibis
-from interlace.connections.manager import get_connection
-from interlace.core.flow import Flow, Task
-from interlace.core.context import _execute_sql_internal
-from interlace.utils.logging import get_logger
+from typing import Any
 
+import ibis
+
+from interlace.connections.manager import get_connection
+from interlace.core.context import _execute_sql_internal
+from interlace.core.flow import Flow, Task
+from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.state")
 
@@ -45,7 +46,7 @@ def _sql_value(value: Any) -> str:
 class StateStore:
     """Manages state storage in database for flows and tasks."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         """
         Initialize state store.
 
@@ -54,7 +55,7 @@ class StateStore:
         """
         self.config = config
         self.state_db_name = config.get("state", {}).get("connection")
-        self._connection: Optional[ibis.BaseBackend] = None
+        self._connection: ibis.BaseBackend | None = None
         self._initialized = False
 
     def _get_connection(self) -> ibis.BaseBackend:
@@ -349,7 +350,7 @@ class StateStore:
     # Cursor state CRUD
     # ------------------------------------------------------------------
 
-    def get_cursor_value(self, model_name: str) -> Optional[str]:
+    def get_cursor_value(self, model_name: str) -> str | None:
         """Get the last processed cursor value for a model.
 
         Args:
@@ -367,8 +368,7 @@ class StateStore:
             cursor_table = "interlace.cursor_state"
             safe_name = _escape_sql_string(model_name)
             result = conn.sql(
-                f"SELECT last_processed_value FROM {cursor_table} "
-                f"WHERE model_name = '{safe_name}'"
+                f"SELECT last_processed_value FROM {cursor_table} " f"WHERE model_name = '{safe_name}'"
             ).execute()
 
             if result is not None and len(result) > 0:
@@ -399,9 +399,7 @@ class StateStore:
         except Exception as e:
             logger.warning(f"Could not delete cursor value for {model_name}: {e}")
 
-    def save_cursor_value(
-        self, model_name: str, cursor_column: str, value: str
-    ) -> None:
+    def save_cursor_value(self, model_name: str, cursor_column: str, value: str) -> None:
         """Save the last processed cursor value for a model.
 
         Uses delete-then-insert for upsert portability across backends.
@@ -515,10 +513,7 @@ class StateStore:
                     _execute_sql_internal(conn, f"SELECT last_run_at FROM {model_metadata_table} LIMIT 1")
                 except Exception:
                     # Column doesn't exist, add it
-                    _execute_sql_internal(
-                        conn,
-                        f"ALTER TABLE {model_metadata_table} ADD COLUMN last_run_at TIMESTAMP"
-                    )
+                    _execute_sql_internal(conn, f"ALTER TABLE {model_metadata_table} ADD COLUMN last_run_at TIMESTAMP")
             except Exception:
                 # Table doesn't exist, create it
                 _execute_sql_internal(
@@ -570,14 +565,8 @@ class StateStore:
                 "trigger_type": flow.trigger_type,
                 "trigger_id": flow.trigger_id,
                 "status": flow.status.value,
-                "started_at": (
-                    datetime.fromtimestamp(flow.started_at) if flow.started_at else None
-                ),
-                "completed_at": (
-                    datetime.fromtimestamp(flow.completed_at)
-                    if flow.completed_at
-                    else None
-                ),
+                "started_at": (datetime.fromtimestamp(flow.started_at) if flow.started_at else None),
+                "completed_at": (datetime.fromtimestamp(flow.completed_at) if flow.completed_at else None),
                 "created_by": flow.created_by,
                 "metadata": json.dumps(flow.metadata) if flow.metadata else None,
                 "duration_seconds": flow.get_duration(),
@@ -595,14 +584,11 @@ class StateStore:
             # Insert using explicit column list to handle NULLs properly
             columns = list(row_data.keys())
             values = [_sql_value(row_data.get(col)) for col in columns]
-            columns_str = ', '.join(columns)
-            values_str = ', '.join(values)
-            
+            columns_str = ", ".join(columns)
+            values_str = ", ".join(values)
+
             try:
-                _execute_sql_internal(
-                    conn,
-                    f"INSERT INTO {flows_table} ({columns_str}) VALUES ({values_str})"
-                )
+                _execute_sql_internal(conn, f"INSERT INTO {flows_table} ({columns_str}) VALUES ({values_str})")
             except Exception as insert_error:
                 # Log as warning - execution history may be lost
                 logger.warning(
@@ -629,30 +615,16 @@ class StateStore:
                 "flow_id": task.flow_id,
                 "model_name": task.model_name,
                 "schema_name": task.schema_name,
-                "parent_task_ids": (
-                    json.dumps(task.parent_task_ids) if task.parent_task_ids else None
-                ),
+                "parent_task_ids": (json.dumps(task.parent_task_ids) if task.parent_task_ids else None),
                 "status": task.status.value,
                 "attempt": task.attempt,
                 "max_attempts": task.max_attempts,
-                "enqueued_at": (
-                    datetime.fromtimestamp(task.enqueued_at)
-                    if task.enqueued_at
-                    else None
-                ),
-                "started_at": (
-                    datetime.fromtimestamp(task.started_at) if task.started_at else None
-                ),
-                "completed_at": (
-                    datetime.fromtimestamp(task.completed_at)
-                    if task.completed_at
-                    else None
-                ),
+                "enqueued_at": (datetime.fromtimestamp(task.enqueued_at) if task.enqueued_at else None),
+                "started_at": (datetime.fromtimestamp(task.started_at) if task.started_at else None),
+                "completed_at": (datetime.fromtimestamp(task.completed_at) if task.completed_at else None),
                 "materialise": task.materialise,
                 "strategy": task.strategy,
-                "dependencies": (
-                    json.dumps(task.dependencies) if task.dependencies else None
-                ),
+                "dependencies": (json.dumps(task.dependencies) if task.dependencies else None),
                 "rows_processed": task.rows_processed,
                 "rows_ingested": task.rows_ingested,
                 "rows_inserted": task.rows_inserted,
@@ -680,14 +652,11 @@ class StateStore:
             # Build column list and values, handling NULLs
             columns = list(row_data.keys())
             values = [_sql_value(row_data.get(col)) for col in columns]
-            columns_str = ', '.join(columns)
-            values_str = ', '.join(values)
-            
+            columns_str = ", ".join(columns)
+            values_str = ", ".join(values)
+
             try:
-                _execute_sql_internal(
-                    conn,
-                    f"INSERT INTO {tasks_table} ({columns_str}) VALUES ({values_str})"
-                )
+                _execute_sql_internal(conn, f"INSERT INTO {tasks_table} ({columns_str}) VALUES ({values_str})")
             except Exception as insert_error:
                 # Log as debug instead of error to reduce console noise
                 logger.debug(
@@ -708,7 +677,7 @@ class StateStore:
         source_model: str,
         source_column: str,
         transformation_type: str = "unknown",
-        transformation_expression: Optional[str] = None,
+        transformation_expression: str | None = None,
         confidence: float = 1.0,
     ):
         """
@@ -767,10 +736,10 @@ class StateStore:
         self,
         model_name: str,
         column_name: str,
-        data_type: Optional[str] = None,
+        data_type: str | None = None,
         is_nullable: bool = True,
         is_primary_key: bool = False,
-        description: Optional[str] = None,
+        description: str | None = None,
     ):
         """
         Save column metadata for a model.
@@ -819,9 +788,7 @@ class StateStore:
         except Exception as e:
             logger.debug(f"Failed to save model column: {e}")
 
-    def get_column_lineage(
-        self, model_name: str, column_name: Optional[str] = None
-    ) -> list:
+    def get_column_lineage(self, model_name: str, column_name: str | None = None) -> list:
         """
         Get column lineage for a model.
 
@@ -855,7 +822,7 @@ class StateStore:
                     return result.to_dict("records")
                 elif hasattr(result, "fetchall"):
                     columns = [desc[0] for desc in result.description]
-                    return [dict(zip(columns, row)) for row in result.fetchall()]
+                    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
             return []
         except Exception as e:
             logger.debug(f"Failed to get column lineage: {e}")
@@ -889,7 +856,7 @@ class StateStore:
                     return result.to_dict("records")
                 elif hasattr(result, "fetchall"):
                     columns = [desc[0] for desc in result.description]
-                    return [dict(zip(columns, row)) for row in result.fetchall()]
+                    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
             return []
         except Exception as e:
             logger.debug(f"Failed to get model columns: {e}")
@@ -899,7 +866,7 @@ class StateStore:
     # Scheduler persistence
     # ------------------------------------------------------------------
 
-    def get_model_last_run_at(self, model_name: str, schema_name: str = "public") -> Optional[datetime]:
+    def get_model_last_run_at(self, model_name: str, schema_name: str = "public") -> datetime | None:
         """Get last_run_at timestamp for a model from model_metadata.
 
         Used by the scheduler to restore state after service restart so that
@@ -939,7 +906,7 @@ class StateStore:
             return None
 
     def set_model_last_run_at(
-        self, model_name: str, schema_name: str = "public", run_at: Optional[datetime] = None
+        self, model_name: str, schema_name: str = "public", run_at: datetime | None = None
     ) -> None:
         """Persist last_run_at timestamp for a model in model_metadata.
 

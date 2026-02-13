@@ -4,18 +4,15 @@ Schema version tracking.
 Tracks schema history for models (informative only, no rollback).
 """
 
-from typing import Dict, List, Optional
-from datetime import datetime
 import ibis
+
 from interlace.core.context import _execute_sql_internal
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.schema.tracking")
 
 
-def get_current_schema_version(
-    connection: ibis.BaseBackend, model_name: str, schema_name: str
-) -> int:
+def get_current_schema_version(connection: ibis.BaseBackend, model_name: str, schema_name: str) -> int:
     """
     Get current schema version for a model.
 
@@ -29,6 +26,7 @@ def get_current_schema_version(
     """
     try:
         from interlace.core.state import _escape_sql_string
+
         safe_model_name = _escape_sql_string(model_name)
         safe_schema_name = _escape_sql_string(schema_name)
         query = f"""
@@ -56,7 +54,7 @@ def track_schema_version(
     model_name: str,
     schema_name: str,
     schema: ibis.Schema,
-    primary_key: Optional[str | List[str]] = None,
+    primary_key: str | list[str] | None = None,
 ) -> int:
     """
     Track schema version in history (informative only, no rollback).
@@ -73,6 +71,7 @@ def track_schema_version(
     """
     try:
         from interlace.core.state import _escape_sql_string
+
         current_version = get_current_schema_version(connection, model_name, schema_name)
         new_version = current_version + 1
 
@@ -92,7 +91,7 @@ def track_schema_version(
             type_str = str(col_type)
             safe_col_name = _escape_sql_string(col_name)
             safe_type_str = _escape_sql_string(type_str)
-            
+
             insert_query = f"""
                 INSERT INTO interlace.schema_history
                 (model_name, schema_name, version, column_name, column_type, is_nullable, is_primary_key, detected_at)
@@ -124,8 +123,8 @@ def get_schema_history(
     connection: ibis.BaseBackend,
     model_name: str,
     schema_name: str,
-    version: Optional[int] = None,
-) -> List[Dict[str, any]]:
+    version: int | None = None,
+) -> list[dict[str, any]]:
     """
     Get schema history for a model.
 
@@ -140,12 +139,13 @@ def get_schema_history(
     """
     try:
         from interlace.core.state import _escape_sql_string
+
         safe_model_name = _escape_sql_string(model_name)
         safe_schema_name = _escape_sql_string(schema_name)
         if version is not None:
             query = f"""
                 SELECT * FROM interlace.schema_history
-                WHERE model_name = '{safe_model_name}' 
+                WHERE model_name = '{safe_model_name}'
                 AND schema_name = '{safe_schema_name}'
                 AND version = {version}
                 ORDER BY column_name
@@ -153,7 +153,7 @@ def get_schema_history(
         else:
             query = f"""
                 SELECT * FROM interlace.schema_history
-                WHERE model_name = '{safe_model_name}' 
+                WHERE model_name = '{safe_model_name}'
                 AND schema_name = '{safe_schema_name}'
                 ORDER BY version DESC, column_name
             """
@@ -169,4 +169,3 @@ def get_schema_history(
         else:
             logger.debug(f"Could not get schema history for {model_name}: {e}")
         return []
-

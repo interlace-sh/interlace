@@ -4,8 +4,8 @@ Base strategy interface.
 Phase 0: Abstract base class for all strategies.
 """
 
-from abc import ABC
-from typing import Optional, TYPE_CHECKING
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import ibis
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 class Strategy(ABC):
     """Base class for data loading strategies."""
 
+    @abstractmethod
     def generate_sql(
         self,
         connection: "ibis.BaseBackend",
@@ -21,7 +22,7 @@ class Strategy(ABC):
         schema: str,
         source_table: str,
         **kwargs,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Generate SQL for strategy execution.
 

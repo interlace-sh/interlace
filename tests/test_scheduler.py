@@ -5,11 +5,11 @@ Tests for cron parsing, next fire time calculation, compute_next_fire helper,
 and scheduler persistence / missed-job handling.
 """
 
-import pytest
 import time
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from datetime import datetime
 from zoneinfo import ZoneInfo
+
+import pytest
 
 
 class TestCronParsing:
@@ -66,21 +66,21 @@ class TestCronParsing:
 
     def test_parse_invalid_value(self):
         """Test that invalid values raise CronParseError."""
-        from interlace.service.cron_parser import _parse_field, CronParseError
+        from interlace.service.cron_parser import CronParseError, _parse_field
 
         with pytest.raises(CronParseError):
             _parse_field("abc", min_v=0, max_v=59)
 
     def test_parse_out_of_bounds(self):
         """Test that out-of-bounds values raise CronParseError."""
-        from interlace.service.cron_parser import _parse_field, CronParseError
+        from interlace.service.cron_parser import CronParseError, _parse_field
 
         with pytest.raises(CronParseError):
             _parse_field("60", min_v=0, max_v=59)
 
     def test_parse_empty_field(self):
         """Test that empty field raises CronParseError."""
-        from interlace.service.cron_parser import _parse_field, CronParseError
+        from interlace.service.cron_parser import CronParseError, _parse_field
 
         with pytest.raises(CronParseError):
             _parse_field("", min_v=0, max_v=59)
@@ -91,8 +91,9 @@ class TestCronSpec:
 
     def test_parse_cron_every_minute(self):
         """Test parsing '* * * * *' (every minute)."""
-        from interlace.service.cron_parser import _parse_cron
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import _parse_cron
 
         spec = _parse_cron("* * * * *", tz=ZoneInfo("UTC"))
 
@@ -106,8 +107,9 @@ class TestCronSpec:
 
     def test_parse_cron_hourly(self):
         """Test parsing '0 * * * *' (every hour at minute 0)."""
-        from interlace.service.cron_parser import _parse_cron
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import _parse_cron
 
         spec = _parse_cron("0 * * * *", tz=ZoneInfo("UTC"))
 
@@ -116,8 +118,9 @@ class TestCronSpec:
 
     def test_parse_cron_daily(self):
         """Test parsing '0 0 * * *' (daily at midnight)."""
-        from interlace.service.cron_parser import _parse_cron
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import _parse_cron
 
         spec = _parse_cron("0 0 * * *", tz=ZoneInfo("UTC"))
 
@@ -128,8 +131,9 @@ class TestCronSpec:
 
     def test_parse_cron_weekday(self):
         """Test parsing '0 9 * * 1-5' (9am on weekdays)."""
-        from interlace.service.cron_parser import _parse_cron
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import _parse_cron
 
         spec = _parse_cron("0 9 * * 1-5", tz=ZoneInfo("UTC"))
 
@@ -140,8 +144,9 @@ class TestCronSpec:
 
     def test_parse_cron_invalid_fields(self):
         """Test that wrong number of fields raises error."""
-        from interlace.service.cron_parser import _parse_cron, CronParseError
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import CronParseError, _parse_cron
 
         with pytest.raises(CronParseError):
             _parse_cron("* * *", tz=ZoneInfo("UTC"))
@@ -205,9 +210,7 @@ class TestNextFireTime:
         from interlace.service.cron_parser import next_fire_time_cron
 
         now = datetime(2024, 1, 15, 10, 30, 0, tzinfo=ZoneInfo("UTC"))
-        next_fire = next_fire_time_cron(
-            "0 12 * * *", now=now, timezone="America/New_York"
-        )
+        next_fire = next_fire_time_cron("0 12 * * *", now=now, timezone="America/New_York")
 
         # Result should be in the specified timezone
         assert next_fire.tzinfo == ZoneInfo("America/New_York")
@@ -241,8 +244,9 @@ class TestDomDowSemantics:
 
     def test_dom_only(self):
         """Test when only day-of-month is restricted."""
-        from interlace.service.cron_parser import _dom_or_dow_match, CronSpec
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import CronSpec, _dom_or_dow_match
 
         # Day 15 only, any day of week
         spec = CronSpec(
@@ -266,8 +270,9 @@ class TestDomDowSemantics:
 
     def test_dow_only(self):
         """Test when only day-of-week is restricted."""
-        from interlace.service.cron_parser import _dom_or_dow_match, CronSpec
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import CronSpec, _dom_or_dow_match
 
         # Any day of month, Monday only (1)
         spec = CronSpec(
@@ -291,8 +296,9 @@ class TestDomDowSemantics:
 
     def test_both_restricted_or_semantics(self):
         """Test OR semantics when both dom and dow are restricted."""
-        from interlace.service.cron_parser import _dom_or_dow_match, CronSpec
         from zoneinfo import ZoneInfo
+
+        from interlace.service.cron_parser import CronSpec, _dom_or_dow_match
 
         # Day 1 OR Monday - traditional cron OR semantics
         spec = CronSpec(
@@ -328,8 +334,9 @@ class TestComputeNextFire:
 
     def _make_service(self):
         """Create a minimal InterlaceService instance for testing."""
-        from interlace.service.server import InterlaceService
         from pathlib import Path
+
+        from interlace.service.server import InterlaceService
 
         svc = InterlaceService(
             project_dir=Path("/tmp/test-project"),
@@ -442,8 +449,9 @@ class TestSchedulerPersistence:
 
     def _make_service(self):
         """Create a minimal InterlaceService instance for testing."""
-        from interlace.service.server import InterlaceService
         from pathlib import Path
+
+        from interlace.service.server import InterlaceService
 
         return InterlaceService(
             project_dir=Path("/tmp/test-project"),
@@ -457,8 +465,9 @@ class TestSchedulerStatus:
 
     def test_get_scheduler_status_no_scheduled_models(self):
         """Test status when no models are scheduled."""
-        from interlace.service.server import InterlaceService
         from pathlib import Path
+
+        from interlace.service.server import InterlaceService
 
         svc = InterlaceService(
             project_dir=Path("/tmp/test-project"),
@@ -474,8 +483,9 @@ class TestSchedulerStatus:
 
     def test_get_scheduler_status_with_scheduled_model(self):
         """Test status when a model has a schedule."""
-        from interlace.service.server import InterlaceService
         from pathlib import Path
+
+        from interlace.service.server import InterlaceService
 
         svc = InterlaceService(
             project_dir=Path("/tmp/test-project"),

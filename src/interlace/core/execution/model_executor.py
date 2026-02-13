@@ -7,15 +7,18 @@ Phase 2: Added retry framework integration for transient failure handling.
 
 import asyncio
 import inspect
+import sys
 import time
 import traceback
-import sys
-from typing import Dict, Any, Optional, Callable
+from typing import Any
+
 import ibis
-from interlace.core.context import set_connection, get_connection as get_context_connection
-from interlace.utils.table_utils import check_table_exists
+
+from interlace.core.context import get_connection as get_context_connection
+from interlace.core.context import set_connection
 from interlace.core.execution.config import ModelExecutorConfig
 from interlace.utils.logging import get_logger
+from interlace.utils.table_utils import check_table_exists
 
 logger = get_logger("interlace.execution.model_executor")
 
@@ -85,16 +88,20 @@ class ModelExecutor:
         self.until = config.until
 
         # Timing tracking for debugging parallelization
-        self.model_timing: Dict[str, Dict[str, Any]] = {}
+        self.model_timing: dict[str, dict[str, Any]] = {}
 
     async def execute_model(
-        self, model_name: str, model_info: Dict[str, Any], models: Dict[str, Dict[str, Any]], force: bool = False
+        self,
+        model_name: str,
+        model_info: dict[str, Any],
+        models: dict[str, dict[str, Any]],
+        force: bool = False,
     ) -> Any:
         """
         Execute a single model.
-        
+
         Includes resource monitoring if enabled.
-        
+
         Handles both Python and SQL models. Uses model's @connection parameter to determine
         which connection to use for materialization.
 
@@ -110,14 +117,26 @@ class ModelExecutor:
             if not should_run:
                 logger.debug(f"Model '{model_name}' skipped: {reason}")
                 # Return success but with skipped status
-                return {"status": "skipped", "model": model_name, "reason": reason, "rows": None, "elapsed": 0.0}
+                return {
+                    "status": "skipped",
+                    "model": model_name,
+                    "reason": reason,
+                    "rows": None,
+                    "elapsed": 0.0,
+                }
 
         # Check cache policy (Phase 3: source caching with TTL)
         if not force:
             cache_skip = self._check_cache_policy(model_name, model_info)
             if cache_skip:
                 logger.info(f"Model '{model_name}' skipped: {cache_skip}")
-                return {"status": "skipped", "model": model_name, "reason": cache_skip, "rows": None, "elapsed": 0.0}
+                return {
+                    "status": "skipped",
+                    "model": model_name,
+                    "reason": cache_skip,
+                    "rows": None,
+                    "elapsed": 0.0,
+                }
 
         # Prepare execution
         model_type, materialise, schema, strategy_name, start_time = self._prepare_model_execution(
@@ -126,7 +145,7 @@ class ModelExecutor:
 
         # Get model's connection (defaults to default connection)
         model_conn_name = model_info.get("connection") or self.connection_manager._default_conn_name
-        
+
         # Initialize connection variables for cleanup
         model_conn = None
         conn_obj = None
@@ -138,11 +157,11 @@ class ModelExecutor:
         # For Postgres, uses connection pooling if enabled
         try:
             model_conn = await self.connection_manager.create_task_connection(model_conn_name)
-            
+
             # Track connection info for cleanup (needed for Postgres pool return)
             conn_obj = self.connection_manager.connections.get(model_conn_name)
             is_pooled = conn_obj and hasattr(conn_obj, "return_pooled_connection")
-            
+
             # Set connection in context early so models can access it
             set_connection(model_conn)
         except Exception as e:
@@ -180,8 +199,7 @@ class ModelExecutor:
                     last_value = self.state_store.get_cursor_value(model_name)
                     if last_value is not None:
                         logger.debug(
-                            f"Cursor '{cursor_column}' for '{model_name}': "
-                            f"last_processed_value={last_value}"
+                            f"Cursor '{cursor_column}' for '{model_name}': " f"last_processed_value={last_value}"
                         )
 
                 for dep_name, dep_table in list(dependency_tables.items()):
@@ -196,18 +214,13 @@ class ModelExecutor:
 
                     # Capture new max cursor value BEFORE filtering
                     try:
-                        max_val = dep_table.select(
-                            dep_table[cursor_column].max().name("_max_cursor")
-                        ).execute()
+                        max_val = dep_table.select(dep_table[cursor_column].max().name("_max_cursor")).execute()
                         if max_val is not None and len(max_val) > 0:
                             new_max = max_val.iloc[0, 0]
                             if new_max is not None:
                                 cursor_new_values[dep_name] = str(new_max)
                     except Exception as e:
-                        logger.debug(
-                            f"Could not compute max({cursor_column}) on "
-                            f"{dep_name}: {e}"
-                        )
+                        logger.debug(f"Could not compute max({cursor_column}) on " f"{dep_name}: {e}")
 
                     # Filter to only new rows (lower bound)
                     if last_value is not None:
@@ -257,19 +270,14 @@ class ModelExecutor:
             # Execute with or without retry
             if retry_policy and self.retry_manager:
                 # Execute with retry framework
-                logger.debug(
-                    f"Model '{model_name}' has retry policy: max_attempts={retry_policy.max_attempts}"
-                )
+                logger.debug(f"Model '{model_name}' has retry policy: max_attempts={retry_policy.max_attempts}")
                 try:
-                    result = await self.retry_manager.execute(
-                        _core_execute,
-                        policy=retry_policy,
-                        model_name=model_name
-                    )
+                    result = await self.retry_manager.execute(_core_execute, policy=retry_policy, model_name=model_name)
                 except Exception as e:
                     # All retries exhausted - add to DLQ if configured
                     if self.dlq and retry_policy.use_dlq:
                         from interlace.core.retry import DLQEntry
+
                         entry = DLQEntry(
                             model_name=model_name,
                             exception_type=type(e).__name__,
@@ -300,13 +308,8 @@ class ModelExecutor:
                 if cursor_column and cursor_new_values and self.state_store and not skip_cursor_save:
                     # Use the highest new max across all dependencies
                     best_value = _max_cursor_value(*cursor_new_values.values())
-                    self.state_store.save_cursor_value(
-                        model_name, cursor_column, best_value
-                    )
-                    logger.debug(
-                        f"Cursor '{cursor_column}' for '{model_name}' "
-                        f"updated to {best_value}"
-                    )
+                    self.state_store.save_cursor_value(model_name, cursor_column, best_value)
+                    logger.debug(f"Cursor '{cursor_column}' for '{model_name}' " f"updated to {best_value}")
 
                 task = None
                 if self.flow and model_name in self.flow.tasks:
@@ -314,7 +317,7 @@ class ModelExecutor:
                     task.complete(success=True)
                     if self.state_store:
                         self.state_store.save_task(task)
-                
+
                 # Log model completion (no data returned - side-effect model)
                 self._log_model_end(
                     model_name=model_name,
@@ -323,7 +326,7 @@ class ModelExecutor:
                     duration=elapsed,
                     rows_processed=None,
                 )
-                
+
                 return {"status": "success", "model": model_name, "rows": None, "elapsed": elapsed}
 
             # Setup reference table for schema validation
@@ -348,7 +351,7 @@ class ModelExecutor:
                     # Schema validation failures are non-fatal - log but continue
                     logger.debug(f"Schema validation failed for {model_name} (non-fatal): {e}")
                     schema_changes_count = 0
-                
+
                 if self.flow and model_name in self.flow.tasks:
                     task = self.flow.tasks[model_name]
                     task.schema_changes = schema_changes_count
@@ -367,7 +370,7 @@ class ModelExecutor:
                 # Update display to show materialising status
                 if self.display:
                     self.display.update_from_flow()
-            
+
             materializer = self.materializers.get(materialise)
             if materializer:
                 if materialise == "table" and strategy_name:
@@ -392,7 +395,13 @@ class ModelExecutor:
                     if state_conn:
                         materialize_kwargs["state_connection"] = state_conn
                     await self.materialization_manager.materialise(
-                        materializer, result, model_name, schema, materialise, model_conn, **materialize_kwargs
+                        materializer,
+                        result,
+                        model_name,
+                        schema,
+                        materialise,
+                        model_conn,
+                        **materialize_kwargs,
                     )
             elif materialise == "none":
                 self.materialised_tables[model_name] = result
@@ -414,6 +423,7 @@ class ModelExecutor:
             if export_config and isinstance(export_config, dict) and materialise != "ephemeral":
                 try:
                     from interlace.export import export_table
+
                     export_path = export_table(model_conn, model_name, schema, export_config)
                     logger.info(f"Exported {model_name} to {export_path}")
                 except Exception as e:
@@ -423,13 +433,8 @@ class ModelExecutor:
             # Skip during backfill to preserve the real high-water mark
             if cursor_column and cursor_new_values and self.state_store and not skip_cursor_save:
                 best_value = _max_cursor_value(*cursor_new_values.values())
-                self.state_store.save_cursor_value(
-                    model_name, cursor_column, best_value
-                )
-                logger.debug(
-                    f"Cursor '{cursor_column}' for '{model_name}' "
-                    f"updated to {best_value}"
-                )
+                self.state_store.save_cursor_value(model_name, cursor_column, best_value)
+                logger.debug(f"Cursor '{cursor_column}' for '{model_name}' " f"updated to {best_value}")
 
             elapsed = time.time() - execution_start_time
             if model_name in self.model_timing:
@@ -477,10 +482,10 @@ class ModelExecutor:
             except NameError:
                 # Fallback if execution_start_time wasn't set (shouldn't happen, but be safe)
                 elapsed = time.time() - start_time
-            
+
             if model_name in self.model_timing:
                 self.model_timing[model_name]["end_time"] = time.time()
-            
+
             # Log model failure with timing
             self._log_model_end(
                 model_name=model_name,
@@ -489,11 +494,11 @@ class ModelExecutor:
                 duration=elapsed,
                 error=str(e),
             )
-            
+
             # Capture the full traceback from the original exception
             # Skip the asyncio wrapper traceback if present - use the underlying error instead
             exc_type, exc_value, exc_tb = sys.exc_info()
-            
+
             # If the exception is from async_utils.py (the wrapper), use the __context__ instead
             # This gives us the actual error location, not the async wrapper
             if exc_tb and "async_utils.py" in str(exc_tb.tb_frame.f_code.co_filename):
@@ -504,7 +509,7 @@ class ModelExecutor:
                     real_exc_value = exc_value.__context__
                     real_exc_tb = real_exc_value.__traceback__
                     exc_type, exc_value, exc_tb = real_exc_type, real_exc_value, real_exc_tb
-            
+
             # Filter traceback to show only user model code frames
             # Skip: interlace internals, site-packages (ibis, etc.), async wrappers
             def _is_user_frame(filename: str) -> bool:
@@ -534,7 +539,7 @@ class ModelExecutor:
                 for frame_tb in user_frames:
                     lines.extend(traceback.format_tb(frame_tb, limit=1))
                 lines.extend(traceback.format_exception_only(exc_type, exc_value))
-                error_traceback = ''.join(lines)
+                error_traceback = "".join(lines)
 
                 # Point exc_info at the last user frame for Rich formatting
                 filtered_exc = exc_type(str(exc_value))
@@ -543,8 +548,8 @@ class ModelExecutor:
                 exc_tb = user_frames[-1]
             else:
                 # No user frames found - show just the error type and message
-                error_traceback = ''.join(traceback.format_exception_only(exc_type, exc_value))
-            
+                error_traceback = "".join(traceback.format_exception_only(exc_type, exc_value))
+
             # Error is stored in Flow/Task object via display.add_error()
             # Store both the traceback string and the exception info for Rich formatting
             return {
@@ -553,7 +558,7 @@ class ModelExecutor:
                 "error": str(e),
                 "traceback": error_traceback,
                 "exc_info": (exc_type, exc_value, exc_tb),  # Store for Rich formatting
-                "elapsed": elapsed
+                "elapsed": elapsed,
             }
         finally:
             # Clean up connection to prevent resource leaks
@@ -573,10 +578,10 @@ class ModelExecutor:
 
     async def execute_python_model(
         self,
-        model_info: Dict[str, Any],
-        dependency_tables: Dict[str, ibis.Table],
+        model_info: dict[str, Any],
+        dependency_tables: dict[str, ibis.Table],
         connection: ibis.BaseBackend,
-    ) -> Optional[ibis.Table]:
+    ) -> ibis.Table | None:
         """Execute Python model function (supports both async and sync functions)."""
         func = model_info.get("function")
         if not func:
@@ -640,8 +645,8 @@ class ModelExecutor:
 
     async def execute_sql_model(
         self,
-        model_info: Dict[str, Any],
-        dependency_tables: Dict[str, ibis.Table],
+        model_info: dict[str, Any],
+        dependency_tables: dict[str, ibis.Table],
         connection: ibis.BaseBackend,
     ) -> ibis.Table:
         """
@@ -711,7 +716,7 @@ class ModelExecutor:
         try:
             # Log SQL model execution
             logger.debug(f"Executing SQL model '{model_name}'")
-            
+
             # Try the normal path first
             result = connection.sql(query)
 
@@ -724,9 +729,7 @@ class ModelExecutor:
             except Exception as exec_error:
                 error_msg = str(exec_error).lower()
                 # Check if it's a duplicate CTE error
-                if "duplicate cte" in error_msg or (
-                    "duplicate" in error_msg and "cte" in error_msg
-                ):
+                if "duplicate cte" in error_msg or ("duplicate" in error_msg and "cte" in error_msg):
                     # Use workaround: execute directly and create temp table
                     workaround_result = execute_with_workaround()
                     if workaround_result is not None:
@@ -758,7 +761,7 @@ class ModelExecutor:
 
     async def execute_stream_model(
         self,
-        model_info: Dict[str, Any],
+        model_info: dict[str, Any],
         connection: ibis.BaseBackend,
     ) -> None:
         """
@@ -786,7 +789,7 @@ class ModelExecutor:
                 if model_name in existing:
                     return None
         except Exception:
-            pass        # Create an empty table using fields schema if provided.
+            pass  # Create an empty table using fields schema if provided.
         fields = model_info.get("fields")
         if fields:
             try:
@@ -819,7 +822,7 @@ class ModelExecutor:
 
         return None
 
-    def _check_cache_policy(self, model_name: str, model_info: Dict[str, Any]) -> Optional[str]:
+    def _check_cache_policy(self, model_name: str, model_info: dict[str, Any]) -> str | None:
         """
         Check if a model should be skipped due to cache policy.
 
@@ -892,10 +895,7 @@ class ModelExecutor:
                                 remaining_str = f"{remaining / 60:.0f}m"
                             else:
                                 remaining_str = f"{remaining:.0f}s"
-                            return (
-                                f"cache TTL '{ttl_str}' not expired "
-                                f"({remaining_str} remaining)"
-                            )
+                            return f"cache TTL '{ttl_str}' not expired " f"({remaining_str} remaining)"
                 except Exception as e:
                     logger.debug(f"Could not check cache TTL for '{model_name}': {e}")
 

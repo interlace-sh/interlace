@@ -13,8 +13,10 @@ Install backend extras as needed:
 """
 
 import importlib
-from typing import Dict, Any, Optional, Set
+from typing import Any
+
 import ibis
+
 from interlace.connections.base import BaseConnection
 from interlace.utils.logging import get_logger
 
@@ -65,7 +67,7 @@ class IbisConnection(BaseConnection):
     """
 
     # Map of connection type → ibis module path
-    BACKEND_MAP: Dict[str, str] = {
+    BACKEND_MAP: dict[str, str] = {
         "mysql": "ibis.mysql",
         "sqlite": "ibis.sqlite",
         "snowflake": "ibis.snowflake",
@@ -88,7 +90,7 @@ class IbisConnection(BaseConnection):
 
     # Backends that create new connections per task (cloud services
     # that handle concurrency/pooling internally)
-    CLOUD_BACKENDS: Set[str] = {
+    CLOUD_BACKENDS: set[str] = {
         "snowflake",
         "bigquery",
         "databricks",
@@ -102,12 +104,12 @@ class IbisConnection(BaseConnection):
 
     # Backends that are file-based and NOT thread-safe (need per-task
     # connections for file-based, shared for in-memory)
-    FILE_BACKENDS: Set[str] = {
+    FILE_BACKENDS: set[str] = {
         "sqlite",
         "datafusion",
     }
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
         self._backend_type: str = config.get("type", "")
         if self._backend_type not in self.BACKEND_MAP:
@@ -153,10 +155,7 @@ class IbisConnection(BaseConnection):
             # Connect
             try:
                 self._connection = module.connect(**connect_kwargs)
-                logger.info(
-                    f"Connected to {self._backend_type} backend "
-                    f"for connection '{self.name}'"
-                )
+                logger.info(f"Connected to {self._backend_type} backend " f"for connection '{self.name}'")
             except Exception as e:
                 raise RuntimeError(
                     f"Failed to connect to {self._backend_type} backend "
@@ -166,7 +165,7 @@ class IbisConnection(BaseConnection):
 
         return self._connection
 
-    def _build_connect_kwargs(self) -> Dict[str, Any]:
+    def _build_connect_kwargs(self) -> dict[str, Any]:
         """
         Build keyword arguments for ibis backend connect() call.
 
@@ -182,9 +181,9 @@ class IbisConnection(BaseConnection):
 
         # Remove interlace-specific keys that are not ibis connect() params
         interlace_keys = {
-            "storage",      # Storage sub-config
-            "pool",         # Pool config (handled separately)
-            "health_check", # Health check config
+            "storage",  # Storage sub-config
+            "pool",  # Pool config (handled separately)
+            "health_check",  # Health check config
         }
         for key in interlace_keys:
             connect_kwargs.pop(key, None)

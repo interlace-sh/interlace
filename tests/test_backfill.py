@@ -2,16 +2,16 @@
 Tests for the backfill feature (--since / --until cursor overrides).
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock
+
 from interlace.core.execution.config import ModelExecutorConfig
 from interlace.core.execution.model_executor import ModelExecutor, _max_cursor_value
 from interlace.core.state import StateStore
 
-
 # ---------------------------------------------------------------------------
 # ModelExecutorConfig
 # ---------------------------------------------------------------------------
+
 
 class TestModelExecutorConfigBackfill:
     """Test that since/until fields exist on ModelExecutorConfig."""
@@ -55,6 +55,7 @@ class TestModelExecutorConfigBackfill:
 # ModelExecutor backfill attributes
 # ---------------------------------------------------------------------------
 
+
 class TestModelExecutorBackfillInit:
     """Test that ModelExecutor picks up since/until from config."""
 
@@ -81,6 +82,7 @@ class TestModelExecutorBackfillInit:
 # ---------------------------------------------------------------------------
 # StateStore.delete_cursor_value
 # ---------------------------------------------------------------------------
+
 
 class TestDeleteCursorValue:
     """Test the delete_cursor_value method."""
@@ -119,6 +121,7 @@ class TestDeleteCursorValue:
 # _max_cursor_value helper
 # ---------------------------------------------------------------------------
 
+
 class TestMaxCursorValue:
     """Test the _max_cursor_value helper function."""
 
@@ -141,13 +144,16 @@ class TestMaxCursorValue:
 # execute_models function signature
 # ---------------------------------------------------------------------------
 
+
 class TestExecuteModelsSignature:
     """Test that execute_models accepts since/until parameters."""
 
     def test_signature_has_since_until(self):
         """execute_models function accepts since and until kwargs."""
         import inspect
+
         from interlace.core.executor import execute_models
+
         sig = inspect.signature(execute_models)
         assert "since" in sig.parameters
         assert "until" in sig.parameters
@@ -161,13 +167,16 @@ class TestExecuteModelsSignature:
 # CLI run command has --since/--until
 # ---------------------------------------------------------------------------
 
+
 class TestCLIBackfillOptions:
     """Test that the CLI run command has --since/--until options."""
 
     def test_run_command_has_options(self):
         """The run command function accepts since and until parameters."""
         import inspect
+
         from interlace.cli.run import run as run_cmd
+
         sig = inspect.signature(run_cmd)
         assert "since" in sig.parameters
         assert "until" in sig.parameters
@@ -177,13 +186,16 @@ class TestCLIBackfillOptions:
 # Programmatic API accepts since/until
 # ---------------------------------------------------------------------------
 
+
 class TestAPISinceUntil:
     """Test that the programmatic API accepts since/until."""
 
     def test_run_signature(self):
         """run() accepts since and until kwargs."""
         import inspect
+
         from interlace.core.api import run
+
         # The @dual decorator wraps the function but we can inspect the inner
         sig = inspect.signature(run)
         assert "since" in sig.parameters

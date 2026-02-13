@@ -26,8 +26,9 @@ Example:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Union
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 from interlace.utils.logging import get_logger
 
@@ -37,13 +38,14 @@ logger = get_logger("interlace.streaming.router")
 @dataclass
 class Route:
     """A routing rule for stream events."""
+
     stream_name: str
-    handler: Optional[Callable] = None
-    filter_fn: Optional[Callable[[Dict[str, Any]], bool]] = None
-    transform_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    forward_to: Optional[str] = None
-    error_handler: Optional[Callable] = None
-    name: Optional[str] = None
+    handler: Callable | None = None
+    filter_fn: Callable[[dict[str, Any]], bool] | None = None
+    transform_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    forward_to: str | None = None
+    error_handler: Callable | None = None
+    name: str | None = None
 
 
 class StreamRouter:
@@ -83,8 +85,8 @@ class StreamRouter:
     """
 
     def __init__(self, concurrency: int = 10):
-        self._routes: List[Route] = []
-        self._tasks: List[asyncio.Task] = []
+        self._routes: list[Route] = []
+        self._tasks: list[asyncio.Task] = []
         self._running = False
         self._semaphore = asyncio.Semaphore(concurrency)
 
@@ -92,9 +94,9 @@ class StreamRouter:
         self,
         stream_name: str,
         *,
-        filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
-        name: Optional[str] = None,
-        error_handler: Optional[Callable] = None,
+        filter: Callable[[dict[str, Any]], bool] | None = None,
+        name: str | None = None,
+        error_handler: Callable | None = None,
     ) -> Callable:
         """
         Decorator to register an event handler for a stream.
@@ -110,15 +112,19 @@ class StreamRouter:
             async def handle(event):
                 print(event)
         """
+
         def decorator(func: Callable) -> Callable:
-            self._routes.append(Route(
-                stream_name=stream_name,
-                handler=func,
-                filter_fn=filter,
-                name=name or func.__name__,
-                error_handler=error_handler,
-            ))
+            self._routes.append(
+                Route(
+                    stream_name=stream_name,
+                    handler=func,
+                    filter_fn=filter,
+                    name=name or func.__name__,
+                    error_handler=error_handler,
+                )
+            )
             return func
+
         return decorator
 
     def forward(
@@ -126,9 +132,9 @@ class StreamRouter:
         stream_name: str,
         *,
         to: str,
-        transform: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
-        filter: Optional[Callable[[Dict[str, Any]], bool]] = None,
-        name: Optional[str] = None,
+        transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        filter: Callable[[dict[str, Any]], bool] | None = None,
+        name: str | None = None,
     ) -> None:
         """
         Forward events from one stream to another, optionally transforming them.
@@ -144,13 +150,15 @@ class StreamRouter:
             router.forward("raw_events", to="cleaned_events",
                            transform=lambda e: clean(e))
         """
-        self._routes.append(Route(
-            stream_name=stream_name,
-            forward_to=to,
-            transform_fn=transform,
-            filter_fn=filter,
-            name=name or f"forward-{stream_name}->{to}",
-        ))
+        self._routes.append(
+            Route(
+                stream_name=stream_name,
+                forward_to=to,
+                transform_fn=transform,
+                filter_fn=filter,
+                name=name or f"forward-{stream_name}->{to}",
+            )
+        )
 
     async def start(self) -> None:
         """Start processing all routes."""
@@ -171,10 +179,7 @@ class StreamRouter:
             )
             self._tasks.append(task)
 
-        logger.info(
-            f"StreamRouter started with {len(self._routes)} route(s) "
-            f"across {len(streams)} stream(s)"
-        )
+        logger.info(f"StreamRouter started with {len(self._routes)} route(s) " f"across {len(streams)} stream(s)")
 
     async def stop(self) -> None:
         """Stop processing."""
@@ -188,7 +193,7 @@ class StreamRouter:
     async def _process_stream(
         self,
         stream_name: str,
-        routes: List[Route],
+        routes: list[Route],
     ) -> None:
         """Process events from a stream and dispatch to routes."""
         from interlace.core.stream import subscribe
@@ -213,7 +218,7 @@ class StreamRouter:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _dispatch(self, route: Route, event: Dict[str, Any]) -> None:
+    async def _dispatch(self, route: Route, event: dict[str, Any]) -> None:
         """Dispatch a single event to a route."""
         async with self._semaphore:
             try:
@@ -240,16 +245,12 @@ class StreamRouter:
                         if asyncio.iscoroutine(result):
                             await result
                     except Exception as handler_err:
-                        logger.error(
-                            f"Error handler for route '{route.name}' failed: {handler_err}"
-                        )
+                        logger.error(f"Error handler for route '{route.name}' failed: {handler_err}")
                 else:
-                    logger.error(
-                        f"Route '{route.name}' failed for event: {e}"
-                    )
+                    logger.error(f"Route '{route.name}' failed for event: {e}")
 
     @property
-    def routes(self) -> List[Route]:
+    def routes(self) -> list[Route]:
         return list(self._routes)
 
     @property

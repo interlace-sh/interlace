@@ -3,7 +3,6 @@ Server-Sent Events (SSE) endpoint for real-time updates.
 """
 
 import asyncio
-from typing import List, Optional
 
 from aiohttp import web
 
@@ -36,7 +35,7 @@ class EventsHandler(BaseHandler):
         # Parse query params
         flow_id = request.query.get("flow_id")
         types_param = request.query.get("types")
-        event_types: Optional[List[str]] = None
+        event_types: list[str] | None = None
         if types_param:
             event_types = [t.strip() for t in types_param.split(",")]
 
@@ -71,7 +70,7 @@ class EventsHandler(BaseHandler):
         queue = self.event_bus.subscribe(event_types=event_types, flow_id=flow_id)
 
         logger.info(
-            f"SSE client connected",
+            "SSE client connected",
             extra={
                 "flow_id": flow_id,
                 "event_types": event_types,
@@ -82,14 +81,16 @@ class EventsHandler(BaseHandler):
         try:
             # Send initial connection event
             await response.write(
-                format_sse_event({
-                    "event": "connected",
-                    "data": {
-                        "message": "Connected to event stream",
-                        "subscribed_types": event_types,
-                        "flow_id": flow_id,
-                    },
-                })
+                format_sse_event(
+                    {
+                        "event": "connected",
+                        "data": {
+                            "message": "Connected to event stream",
+                            "subscribed_types": event_types,
+                            "flow_id": flow_id,
+                        },
+                    }
+                )
             )
 
             # Stream events
@@ -102,7 +103,7 @@ class EventsHandler(BaseHandler):
                     except (ConnectionResetError, BrokenPipeError, OSError) as e:
                         logger.debug(f"SSE write failed, client disconnected: {e}")
                         break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Send keepalive comment
                     try:
                         await response.write(b": keepalive\n\n")

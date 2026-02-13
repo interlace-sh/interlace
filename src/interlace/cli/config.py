@@ -4,14 +4,13 @@ interlace config - Environment configuration.
 Display and manage environment configurations.
 """
 
-import typer
 from pathlib import Path
+
+import typer
 from rich.console import Console
 from rich.syntax import Syntax
 
-app = typer.Typer(
-    name="config", help="Manage Interlace configurations", invoke_without_command=True
-)
+app = typer.Typer(name="config", help="Manage Interlace configurations", invoke_without_command=True)
 
 console = Console()
 
@@ -37,7 +36,7 @@ def config(
             # Show specific environment config
             config_file = project_dir / f"config.{env}.yaml"
             if not config_file.exists():
-                config_file = project_dir / f"config.yaml" if env == "default" else None
+                config_file = project_dir / "config.yaml" if env == "default" else None
 
             if config_file and config_file.exists():
                 console.print(f"\n[bold]Configuration: {config_file.name}[/bold]\n")
@@ -60,6 +59,7 @@ def config(
                 # Load and show basic info
                 try:
                     from interlace.config.loader import load_config
+
                     cfg = load_config(project_dir, env=env_name if env_name != "default" else None)
                     project_name = cfg.get("name", "-")
                     connections = len(cfg.get("connections", {}))
@@ -68,4 +68,4 @@ def config(
                 except Exception:
                     console.print(f"  [cyan]{env_name}[/cyan] ({config_file.name})")
 
-            console.print(f"\n[dim]Use 'interlace config --env <name>' to view details[/dim]")
+            console.print("\n[dim]Use 'interlace config --env <name>' to view details[/dim]")

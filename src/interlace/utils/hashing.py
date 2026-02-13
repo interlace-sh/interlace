@@ -7,8 +7,9 @@ Supports both sync and async file I/O.
 
 import hashlib
 from pathlib import Path
-from typing import Optional
+
 import aiofiles
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.utils.hashing")
@@ -62,9 +63,7 @@ async def calculate_file_hash_async(file_path: Path) -> str:
         return ""
 
 
-def get_stored_file_hash(
-    connection: any, model_name: str, schema_name: str
-) -> Optional[str]:
+def get_stored_file_hash(connection: any, model_name: str, schema_name: str) -> str | None:
     """
     Get stored file hash from database.
 
@@ -76,17 +75,17 @@ def get_stored_file_hash(
     Returns:
         Stored hash or None if not found
     """
-    from interlace.core.context import _execute_sql_internal
 
     try:
         # Use parameterized query to prevent SQL injection
         # Note: ibis.sql() doesn't support parameters directly, so we use proper escaping
         from interlace.core.state import _escape_sql_string
+
         safe_model_name = _escape_sql_string(model_name)
         safe_schema_name = _escape_sql_string(schema_name)
         query = f"""
-            SELECT file_hash 
-            FROM interlace.model_file_hashes 
+            SELECT file_hash
+            FROM interlace.model_file_hashes
             WHERE model_name = '{safe_model_name}' AND schema_name = '{safe_schema_name}'
         """
         result = connection.sql(query).execute()
@@ -124,21 +123,22 @@ def store_file_hash(
 
     try:
         from interlace.core.state import _escape_sql_string
+
         safe_model_name = _escape_sql_string(model_name)
         safe_schema_name = _escape_sql_string(schema_name)
         safe_file_path = _escape_sql_string(file_path)
         safe_file_hash = _escape_sql_string(file_hash)
-        
+
         # Delete existing entry if it exists
         delete_query = f"""
-            DELETE FROM interlace.model_file_hashes 
+            DELETE FROM interlace.model_file_hashes
             WHERE model_name = '{safe_model_name}' AND schema_name = '{safe_schema_name}'
         """
         _execute_sql_internal(connection, delete_query)
 
         # Insert new entry
         insert_query = f"""
-            INSERT INTO interlace.model_file_hashes 
+            INSERT INTO interlace.model_file_hashes
             (model_name, schema_name, file_path, file_hash, last_updated_at)
             VALUES ('{safe_model_name}', '{safe_schema_name}', '{safe_file_path}', '{safe_file_hash}', CURRENT_TIMESTAMP)
         """
@@ -152,9 +152,7 @@ def store_file_hash(
             logger.warning(f"Could not store file hash for {model_name}: {e}")
 
 
-def has_file_changed(
-    connection: any, model_name: str, schema_name: str, file_path: Path
-) -> bool:
+def has_file_changed(connection: any, model_name: str, schema_name: str, file_path: Path) -> bool:
     """
     Check if file hash has changed (synchronous).
 
@@ -178,9 +176,7 @@ def has_file_changed(
     return current_hash != stored_hash
 
 
-async def has_file_changed_async(
-    connection: any, model_name: str, schema_name: str, file_path: Path
-) -> bool:
+async def has_file_changed_async(connection: any, model_name: str, schema_name: str, file_path: Path) -> bool:
     """
     Check if file hash has changed (async).
 
@@ -204,4 +200,3 @@ async def has_file_changed_async(
         return True  # Not in database, assume changed
 
     return current_hash != stored_hash
-

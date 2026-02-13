@@ -4,8 +4,9 @@ interlace init - Project initialization.
 Phase 0: Create new Interlace project structure.
 """
 
-import typer
 from pathlib import Path
+
+import typer
 
 app = typer.Typer(name="init", help="Create a new Interlace project", invoke_without_command=True)
 
@@ -38,7 +39,7 @@ def init(
         (project_path / "functions").mkdir()
 
         # Create config.yaml
-        config_content = """# Interlace Configuration
+        config_content = f"""# Interlace Configuration
 # Base configuration shared across all environments
 
 name: {project_name}
@@ -59,9 +60,7 @@ scheduler:
 models:
   default_schema: public
   default_materialize: table
-""".format(
-            project_name=project_name
-        )
+"""
 
         (project_path / "config.yaml").write_text(config_content)
 

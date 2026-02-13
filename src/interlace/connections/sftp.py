@@ -7,7 +7,7 @@ Phase A: SFTP polling + download for sync jobs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import paramiko
 
@@ -16,11 +16,11 @@ import paramiko
 class SFTPConfig:
     host: str
     port: int = 22
-    username: Optional[str] = None
-    password: Optional[str] = None
-    private_key_path: Optional[str] = None
-    private_key_passphrase: Optional[str] = None
-    known_hosts_path: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
+    private_key_path: str | None = None
+    private_key_passphrase: str | None = None
+    known_hosts_path: str | None = None
     # Safety/perf knobs
     connect_timeout_s: float = 15.0
 
@@ -35,8 +35,8 @@ class SFTPConnection:
     def __init__(self, name: str, config: dict[str, Any]):
         self.name = name
         self.config = config
-        self._transport: Optional[paramiko.Transport] = None
-        self._client: Optional[paramiko.SFTPClient] = None
+        self._transport: paramiko.Transport | None = None
+        self._client: paramiko.SFTPClient | None = None
 
     def _parse_config(self) -> SFTPConfig:
         cfg = self.config.get("config", {}) if isinstance(self.config, dict) else {}
@@ -69,9 +69,7 @@ class SFTPConnection:
         if cfg.private_key_path:
             # Try common key types; paramiko will raise if incompatible.
             try:
-                pkey = paramiko.RSAKey.from_private_key_file(
-                    cfg.private_key_path, password=cfg.private_key_passphrase
-                )
+                pkey = paramiko.RSAKey.from_private_key_file(cfg.private_key_path, password=cfg.private_key_passphrase)
             except Exception:
                 pkey = paramiko.Ed25519Key.from_private_key_file(
                     cfg.private_key_path, password=cfg.private_key_passphrase
@@ -100,10 +98,9 @@ class SFTPConnection:
         finally:
             self._transport = None
 
-    def __enter__(self) -> "SFTPConnection":
+    def __enter__(self) -> SFTPConnection:
         self.connect()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
-

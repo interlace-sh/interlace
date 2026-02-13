@@ -2,11 +2,11 @@
 Model catalog endpoints.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from aiohttp import web
 
-from interlace.service.api.errors import NotFoundError, ErrorCode, ValidationError
+from interlace.service.api.errors import ErrorCode, NotFoundError, ValidationError
 from interlace.service.api.handlers import BaseHandler
 
 
@@ -95,8 +95,8 @@ class ModelsHandler(BaseHandler):
         try:
             depth = int(request.query.get("depth", 3))
             depth = max(0, min(depth, 100))  # Limit depth to prevent DoS
-        except (ValueError, TypeError):
-            raise ValidationError("'depth' must be a valid integer between 0 and 100")
+        except (ValueError, TypeError) as e:
+            raise ValidationError("'depth' must be a valid integer between 0 and 100") from e
 
         direction = request.query.get("direction", "both")
 
@@ -156,7 +156,7 @@ class ModelsHandler(BaseHandler):
             request=request,
         )
 
-    def _model_summary(self, name: str, model: Dict[str, Any]) -> Dict[str, Any]:
+    def _model_summary(self, name: str, model: dict[str, Any]) -> dict[str, Any]:
         """Build model summary for list view."""
         layer = 0
         if self.graph and hasattr(self.graph, "get_layers"):
@@ -177,7 +177,7 @@ class ModelsHandler(BaseHandler):
             "has_schedule": model.get("schedule") is not None,
         }
 
-    def _model_detail(self, name: str, model: Dict[str, Any]) -> Dict[str, Any]:
+    def _model_detail(self, name: str, model: dict[str, Any]) -> dict[str, Any]:
         """Build full model detail."""
         # Get dependencies
         dependencies = model.get("dependencies", [])
@@ -234,7 +234,7 @@ class ModelsHandler(BaseHandler):
             "retry_policy": self._serialize_retry_policy(model.get("retry_policy")),
         }
 
-    def _node_data(self, name: str) -> Dict[str, Any]:
+    def _node_data(self, name: str) -> dict[str, Any]:
         """Build node data for graph visualization."""
         model = self.models.get(name, {})
         layer = 0
@@ -268,8 +268,8 @@ class ModelsHandler(BaseHandler):
         try:
             limit = int(request.query.get("limit", 20))
             limit = max(1, min(limit, 100))
-        except (ValueError, TypeError):
-            raise ValidationError("'limit' must be a valid integer between 1 and 100")
+        except (ValueError, TypeError) as e:
+            raise ValidationError("'limit' must be a valid integer between 1 and 100") from e
 
         runs = []
 
@@ -291,7 +291,7 @@ class ModelsHandler(BaseHandler):
             request=request,
         )
 
-    def _serialize_model_run(self, flow, task) -> Dict[str, Any]:
+    def _serialize_model_run(self, flow, task) -> dict[str, Any]:
         """Serialize a flow+task pair into a model run record."""
         duration = None
         if hasattr(task, "get_duration"):
@@ -309,7 +309,7 @@ class ModelsHandler(BaseHandler):
             "error_message": task.error_message,
         }
 
-    def _serialize_retry_policy(self, policy) -> Optional[Dict[str, Any]]:
+    def _serialize_retry_policy(self, policy) -> dict[str, Any] | None:
         """Serialize retry policy to dict."""
         if policy is None:
             return None

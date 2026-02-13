@@ -6,16 +6,17 @@ Phase 0: Extracted from Executor class for better separation of concerns.
 
 import asyncio
 import time
-import traceback
-from typing import Dict, Any, Set, Optional, TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
+
 from interlace.core.dependencies import DependencyGraph
 from interlace.core.flow import Flow, Task, TaskStatus
 from interlace.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from interlace.core.execution.model_executor import ModelExecutor
     from interlace.core.execution.change_detector import ChangeDetector
     from interlace.core.execution.materialization_manager import MaterializationManager
+    from interlace.core.execution.model_executor import ModelExecutor
     from interlace.core.state import StateStore
     from interlace.utils.display import RichDisplay
 
@@ -25,7 +26,7 @@ logger = get_logger("interlace.execution.execution_orchestrator")
 class ExecutionOrchestrator:
     """
     Orchestrates parallel execution flow.
-    
+
     Phase 0: Handles dynamic parallel execution of models, managing task lifecycle,
     dependency resolution, and error handling.
     """
@@ -37,15 +38,15 @@ class ExecutionOrchestrator:
         materialization_manager: "MaterializationManager",
         state_store: Optional["StateStore"] = None,
         display: Optional["RichDisplay"] = None,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
         max_iterations: int = 10000,
         task_timeout: float = 3600.0,
-        thread_pool_size: Optional[int] = None,
-        executor_flow_setter: Optional[Callable[[Flow], None]] = None,
+        thread_pool_size: int | None = None,
+        executor_flow_setter: Callable[[Flow], None] | None = None,
     ):
         """
         Initialize ExecutionOrchestrator.
-        
+
         Args:
             model_executor: ModelExecutor instance
             change_detector: ChangeDetector instance
@@ -72,8 +73,8 @@ class ExecutionOrchestrator:
         self._force_execution = False
 
     async def execute_dynamic(
-        self, models: Dict[str, Dict[str, Any]], graph: DependencyGraph, force: bool = False
-    ) -> Dict[str, Any]:
+        self, models: dict[str, dict[str, Any]], graph: DependencyGraph, force: bool = False
+    ) -> dict[str, Any]:
         """
         Execute models dynamically as dependencies complete.
 
@@ -86,7 +87,7 @@ class ExecutionOrchestrator:
         """
         # Store force flag for use in _start_model_execution
         self._force_execution = force
-        
+
         # Pre-populate file hash cache from models for performance
         # This avoids repeated database queries during change detection
         if self.state_store and not force:
@@ -94,6 +95,7 @@ class ExecutionOrchestrator:
                 state_conn = self.state_store._get_connection()
                 if state_conn:
                     from interlace.utils.hashing import get_stored_file_hash
+
                     for model_name, model_info in models.items():
                         schema_name = model_info.get("schema", "public")
                         cache_key = (model_name, schema_name)
@@ -119,20 +121,20 @@ class ExecutionOrchestrator:
         # Update Executor's flow reference (for backward compatibility with _prepare_model_execution)
         if self.executor_flow_setter:
             self.executor_flow_setter(self.flow)
-        
+
         # Save flow to state database
         if self.state_store:
             self.state_store.save_flow(self.flow)
-        
+
         # Start flow timing
-        flow_start_time = time.time()
+        time.time()
 
         pending = set(models.keys())
         executing = set()
         completed = set()  # All completed models (success or failure)
         succeeded = set()  # Only successfully completed models
         results = {}
-        task_map: Dict[str, asyncio.Task] = {}
+        task_map: dict[str, asyncio.Task] = {}
 
         # Get layer mapping from graph to order progress bars by execution layer
         model_layers = graph.get_layers()
@@ -159,14 +161,14 @@ class ExecutionOrchestrator:
             task.enqueue()
             task.mark_waiting()  # Initially waiting for dependencies
             self.flow.tasks[model_name] = task
-            
+
             # Save task to state database
             if self.state_store:
                 self.state_store.save_task(task)
 
         # Initialize RichDisplay with Flow
         self.display.set_flow(self.flow)
-        
+
         # Print heading first (creates layout if needed)
         # Always call if enabled - print_heading will set config internally
         if self.display.enabled:
@@ -177,20 +179,20 @@ class ExecutionOrchestrator:
             # Get project directory from config metadata
             project_dir = self.config.get("_project_dir")
             self.display.print_heading(
-                project_name, 
-                config=self.config, 
-                state_store=self.state_store, 
+                project_name,
+                config=self.config,
+                state_store=self.state_store,
                 models=models,
                 env=env,
-                project_dir=project_dir
+                project_dir=project_dir,
             )
-        
+
         # Initialize progress (updates layout with progress bars)
         # Pass thread pool size for dynamic task visibility
         self.display.initialize_progress(self.flow, models, graph, thread_pool_size=self.thread_pool_size)
 
         # Get initial ready models (no dependencies)
-        ready = set(model_name for model_name in pending if not graph.get_dependencies(model_name))
+        ready = {model_name for model_name in pending if not graph.get_dependencies(model_name)}
 
         # Start progress display - enter Live context BEFORE any logging
         # This ensures all logs go to the layout, not directly to console
@@ -200,11 +202,19 @@ class ExecutionOrchestrator:
                 # Log discovery and execution info after entering display context so it appears below header
                 logger.info(f"Discovered {len(models)} models: {', '.join(models.keys())}")
                 logger.info(f"Running all {len(models)} discovered models")
-                
+
                 results = await self.execute_loop(
-                    models, graph, pending, executing, completed, succeeded, results, task_map, ready
+                    models,
+                    graph,
+                    pending,
+                    executing,
+                    completed,
+                    succeeded,
+                    results,
+                    task_map,
+                    ready,
                 )
-                
+
                 # Log flow summary BEFORE exiting display context so it appears above progress
                 # Always log, but only include relevant parts (failed/skipped only if > 0)
                 if self.flow:
@@ -214,14 +224,14 @@ class ExecutionOrchestrator:
                     total = summary.get("total_tasks", 0)
                     failed = summary.get("failed", 0)
                     skipped = summary.get("skipped", 0)
-                    
+
                     # Build message with only relevant parts
                     parts = [f"{completed_count}/{total} tasks succeeded"]
                     if failed > 0:
                         parts.append(f"{failed} failed")
                     if skipped > 0:
                         parts.append(f"{skipped} skipped")
-                    
+
                     message = ", ".join(parts) + f" in {duration:.2f}s"
                     logger.info(f"Flow {self.flow.flow_id[:8]} completed: {message}")
         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -246,12 +256,10 @@ class ExecutionOrchestrator:
                     try:
                         # Shield the gather to prevent it from being cancelled
                         await asyncio.wait_for(
-                            asyncio.shield(
-                                asyncio.gather(*cancelled_tasks, return_exceptions=True)
-                            ),
-                            timeout=2.0  # Don't wait too long
+                            asyncio.shield(asyncio.gather(*cancelled_tasks, return_exceptions=True)),
+                            timeout=2.0,  # Don't wait too long
                         )
-                    except (asyncio.TimeoutError, asyncio.CancelledError, KeyboardInterrupt):
+                    except (TimeoutError, asyncio.CancelledError, KeyboardInterrupt):
                         # If tasks don't cancel quickly or we get interrupted again, just continue
                         # Don't wait - exit immediately
                         pass
@@ -273,31 +281,31 @@ class ExecutionOrchestrator:
             # Check if any tasks failed
             has_failures = any(t.status == TaskStatus.FAILED for t in self.flow.tasks.values())
             self.flow.complete(success=not has_failures)
-            
+
             # Save completed flow to state database
             if self.state_store:
                 self.state_store.save_flow(self.flow)
-            
+
             # Final display update to show all tasks now that flow is complete
             if self.display.enabled:
                 self.display.update_from_flow()
-            
+
             # Note: Flow completion log is done inside display context above
 
         return results
 
     async def execute_loop(
         self,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        executing: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
-        results: Dict[str, Any],
-        task_map: Dict[str, asyncio.Task],
-        ready: Set[str],
-    ) -> Dict[str, Any]:
+        pending: set[str],
+        executing: set[str],
+        completed: set[str],
+        succeeded: set[str],
+        results: dict[str, Any],
+        task_map: dict[str, asyncio.Task],
+        ready: set[str],
+    ) -> dict[str, Any]:
         """
         Internal execution loop (extracted for progress display context).
 
@@ -356,9 +364,7 @@ class ExecutionOrchestrator:
                         missing_deps[model_name] = missing
 
                 if missing_deps:
-                    logger.error(
-                        f"Deadlock detected - models have missing dependencies: {missing_deps}"
-                    )
+                    logger.error(f"Deadlock detected - models have missing dependencies: {missing_deps}")
                     # Mark models with missing dependencies as failed
                     for model_name, missing in missing_deps.items():
                         pending.remove(model_name)
@@ -378,7 +384,16 @@ class ExecutionOrchestrator:
             # Wait for at least one task to complete
             if executing:
                 await self.wait_for_task_completion(
-                    executing, task_map, results, models, graph, pending, ready, new_ready, completed, succeeded
+                    executing,
+                    task_map,
+                    results,
+                    models,
+                    graph,
+                    pending,
+                    ready,
+                    new_ready,
+                    completed,
+                    succeeded,
                 )
 
             # Update ready list: add newly ready models from pending
@@ -386,7 +401,7 @@ class ExecutionOrchestrator:
             # Also check for models that should be skipped (have failed dependencies)
             for model_name in list(pending):
                 deps = graph.get_dependencies(model_name)
-                
+
                 # Check if any dependency failed - if so, mark as skipped
                 failed_deps = [d for d in deps if d in completed and d not in succeeded]
                 if failed_deps:
@@ -394,7 +409,7 @@ class ExecutionOrchestrator:
                     pending.remove(model_name)
                     completed.add(model_name)
                     # Don't add to succeeded
-                    
+
                     # Create error message
                     error_msg = f"Dependencies {failed_deps} failed"
                     results[model_name] = {
@@ -403,7 +418,7 @@ class ExecutionOrchestrator:
                         "error": error_msg,
                         "failed_dependencies": failed_deps,
                     }
-                    
+
                     # Update task status
                     if model_name in self.flow.tasks:
                         task = self.flow.tasks[model_name]
@@ -411,7 +426,7 @@ class ExecutionOrchestrator:
                         task.error_message = error_msg
                         if self.state_store:
                             self.state_store.save_task(task)
-                    
+
                     # Log and update display
                     logger.error(f"Model '{model_name}' skipped: {error_msg}")
                     if self.display.enabled:
@@ -429,7 +444,7 @@ class ExecutionOrchestrator:
 
                     # Update display for newly ready models
                     self.display.update_from_flow()
-                    
+
                     # Note: Model start logging happens in _prepare_model_execution()
                     # which is called at the beginning of execute_model()
 
@@ -441,9 +456,9 @@ class ExecutionOrchestrator:
     async def start_model_execution(
         self,
         model_name: str,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        task_map: Dict[str, asyncio.Task],
+        task_map: dict[str, asyncio.Task],
     ):
         """
         Start execution of a model.
@@ -465,21 +480,23 @@ class ExecutionOrchestrator:
         # Create task for model execution
         # Get force flag from orchestrator instance (passed to execute_dynamic)
         force = self._force_execution
-        task = asyncio.create_task(self.model_executor.execute_model(model_name, models[model_name], models, force=force))
+        task = asyncio.create_task(
+            self.model_executor.execute_model(model_name, models[model_name], models, force=force)
+        )
         task_map[model_name] = task
 
     async def wait_for_task_completion(
         self,
-        executing: Set[str],
-        task_map: Dict[str, asyncio.Task],
-        results: Dict[str, Any],
-        models: Dict[str, Dict[str, Any]],
+        executing: set[str],
+        task_map: dict[str, asyncio.Task],
+        results: dict[str, Any],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        ready: Set[str],
-        new_ready: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
+        pending: set[str],
+        ready: set[str],
+        new_ready: set[str],
+        completed: set[str],
+        succeeded: set[str],
     ):
         """
         Wait for at least one task to complete and process the result.
@@ -512,7 +529,7 @@ class ExecutionOrchestrator:
                     task.cancel()
             # Re-raise to be handled by outer handler
             raise KeyboardInterrupt("Execution interrupted") from e
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"Timeout waiting for tasks to complete. Executing: {executing}")
             # Cancel hanging tasks
             for task in executing_tasks:
@@ -539,6 +556,7 @@ class ExecutionOrchestrator:
             except Exception as e:
                 # Capture exception info while still in exception context
                 import sys
+
                 exc_info = sys.exc_info()
                 await self.process_failed_task(
                     task,
@@ -559,16 +577,16 @@ class ExecutionOrchestrator:
     async def process_completed_task(
         self,
         task: asyncio.Task,
-        result: Dict[str, Any],
-        executing: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
-        results: Dict[str, Any],
-        task_map: Dict[str, asyncio.Task],
-        models: Dict[str, Dict[str, Any]],
+        result: dict[str, Any],
+        executing: set[str],
+        completed: set[str],
+        succeeded: set[str],
+        results: dict[str, Any],
+        task_map: dict[str, asyncio.Task],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        new_ready: Set[str],
+        pending: set[str],
+        new_ready: set[str],
     ):
         """
         Process a successfully completed task.
@@ -604,11 +622,11 @@ class ExecutionOrchestrator:
                         flow_task.complete(success=False)
                         error_msg = result.get("error", "Unknown error")
                         flow_task.error_message = error_msg
-                        
+
                         # Log error - models can return errors as results instead of raising exceptions
                         error_message = f"Model '{model_name}' failed: {error_msg}"
                         error_traceback = result.get("traceback") or result.get("error_stacktrace")
-                        
+
                         # Log error with traceback if available
                         # NOTE: Do this BEFORE update_from_flow() to avoid potential deadlocks
                         # The logging handler might access display state, and update_from_flow()
@@ -619,14 +637,21 @@ class ExecutionOrchestrator:
                             if exc_info and len(exc_info) == 3:
                                 # Use exc_info for RichHandler to format traceback nicely
                                 # This will show the styled traceback in console
-                                logger.error(error_message, exc_info=exc_info, extra={'model_name': model_name})
+                                logger.error(
+                                    error_message,
+                                    exc_info=exc_info,
+                                    extra={"model_name": model_name},
+                                )
                             elif error_traceback:
                                 # Fallback: include traceback in message if exc_info not available
-                                logger.error(f"{error_message}\n{error_traceback}", extra={'model_name': model_name})
+                                logger.error(
+                                    f"{error_message}\n{error_traceback}",
+                                    extra={"model_name": model_name},
+                                )
                             else:
                                 # No traceback available, just log the error message
-                                logger.error(error_message, exc_info=True, extra={'model_name': model_name})
-                            
+                                logger.error(error_message, exc_info=True, extra={"model_name": model_name})
+
                             # Also add error to display for error panel (include traceback if available)
                             if self.display.enabled:
                                 if error_traceback:
@@ -640,8 +665,9 @@ class ExecutionOrchestrator:
                             except Exception:
                                 # Last resort - print to stderr
                                 import sys
+
                                 # Fallback: use stderr if logging completely fails
-                                import sys
+
                                 sys.stderr.write(f"ERROR: Model '{model_name}' failed: {error_msg}\n")
                                 sys.stderr.write(f"ERROR: Logging also failed: {log_error}\n")
                         # Don't add to succeeded - model failed
@@ -651,7 +677,7 @@ class ExecutionOrchestrator:
                         # schema_changes already set during execution
                         # Add to succeeded set - model completed successfully
                         succeeded.add(model_name)
-                    
+
                     # Save task to state database
                     if self.state_store:
                         self.state_store.save_task(flow_task)
@@ -667,7 +693,7 @@ class ExecutionOrchestrator:
                 for dependent in dependents:
                     if dependent in completed or dependent in executing:
                         continue  # Already handled
-                    
+
                     # Check if all dependencies are complete
                     deps = graph.get_dependencies(dependent)
                     if all(dep in completed for dep in deps):
@@ -681,16 +707,16 @@ class ExecutionOrchestrator:
         self,
         task: asyncio.Task,
         error: Exception,
-        executing: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
-        results: Dict[str, Any],
-        task_map: Dict[str, asyncio.Task],
-        models: Dict[str, Dict[str, Any]],
+        executing: set[str],
+        completed: set[str],
+        succeeded: set[str],
+        results: dict[str, Any],
+        task_map: dict[str, asyncio.Task],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        ready: Set[str],
-        new_ready: Set[str],
+        pending: set[str],
+        ready: set[str],
+        new_ready: set[str],
         exc_info=None,
     ):
         """
@@ -720,16 +746,16 @@ class ExecutionOrchestrator:
 
                 # Update task status and log error
                 import traceback
-                
+
                 # Get full traceback for logging
                 # Use exc_info if provided (from exception context), otherwise use error's traceback
                 if exc_info and len(exc_info) == 3:
                     exc_type, exc_value, exc_tb = exc_info
                 else:
                     exc_type, exc_value, exc_tb = type(error), error, error.__traceback__
-                
-                error_traceback = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
-                
+
+                error_traceback = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+
                 if model_name in self.flow.tasks:
                     flow_task = self.flow.tasks[model_name]
                     flow_task.complete(success=False)
@@ -738,7 +764,7 @@ class ExecutionOrchestrator:
 
                 # Log error with full traceback - this will appear in logs above progress bars and in file
                 error_message = f"Model '{model_name}' failed: {str(error)}"
-                
+
                 # Log error with exception info tuple (preserves full traceback)
                 # Always use exc_info tuple if we have it (from sys.exc_info())
                 # This ensures the file handler receives the full traceback
@@ -749,22 +775,19 @@ class ExecutionOrchestrator:
                         logger.error(
                             error_message,
                             exc_info=(exc_type, exc_value, exc_tb),
-                            extra={'model_name': model_name}
+                            extra={"model_name": model_name},
                         )
                     elif exc_tb is not None:
                         # Use constructed exc_info from error object
                         logger.error(
                             error_message,
                             exc_info=(exc_type, exc_value, exc_tb),
-                            extra={'model_name': model_name}
+                            extra={"model_name": model_name},
                         )
                     else:
                         # Fallback - log without traceback if we can't get it
                         # Don't use exc_info=True here as we're outside exception context
-                        logger.error(
-                            error_message,
-                            extra={'model_name': model_name}
-                        )
+                        logger.error(error_message, extra={"model_name": model_name})
                 except Exception as log_error:
                     # If logging fails, at least try to log a simple error message
                     # This should never happen, but if it does, we want to know
@@ -773,13 +796,14 @@ class ExecutionOrchestrator:
                     except Exception:
                         # Last resort - print to stderr
                         import sys
+
                         sys.stderr.write(f"ERROR: Model '{model_name}' failed: {str(error)}\n")
                         sys.stderr.write(f"ERROR: Logging also failed: {log_error}\n")
-                
+
                 # Also ensure error is added to display for error panel
                 if self.display.enabled:
                     self.display.add_error(model_name, f"{str(error)}\n{error_traceback}")
-                
+
                 # Update display
                 self.display.update_from_flow()
 
@@ -791,7 +815,7 @@ class ExecutionOrchestrator:
                     # Skip dependents that are already executing or completed
                     if dependent in executing or dependent in completed:
                         continue
-                    
+
                     # Mark as skipped if in pending or ready (not yet executing)
                     if dependent in pending or dependent in ready:
                         # Remove from pending/ready sets
@@ -799,13 +823,13 @@ class ExecutionOrchestrator:
                             pending.remove(dependent)
                         if dependent in ready:
                             ready.discard(dependent)  # Use discard to avoid KeyError if not present
-                        
+
                         completed.add(dependent)  # Mark as complete (skipped)
                         # Don't add to succeeded - it was skipped
-                        
+
                         # Create error message indicating the failed dependency
                         error_msg = f"Dependency '{model_name}' failed: {str(error)}"
-                        
+
                         # Check if this dependent already has an error (multiple failed dependencies)
                         if dependent in results and results[dependent].get("status") == "error":
                             # Append to existing error
@@ -816,14 +840,14 @@ class ExecutionOrchestrator:
                                 failed_deps.append(model_name)
                         else:
                             failed_deps = [model_name]
-                        
+
                         results[dependent] = {
                             "status": "error",
                             "model": dependent,
                             "error": error_msg,
                             "failed_dependencies": failed_deps,
                         }
-                        
+
                         # Update task status - mark as skipped since dependency failed
                         if dependent in self.flow.tasks:
                             flow_task = self.flow.tasks[dependent]
@@ -833,4 +857,3 @@ class ExecutionOrchestrator:
                                 self.state_store.save_task(flow_task)
 
                 break  # Found the model, no need to continue
-

@@ -18,20 +18,20 @@ import json
 import logging
 import sys
 import uuid
-from contextvars import ContextVar
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
 from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import UTC, datetime
+from typing import Any
 
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.observability.logging")
 
 # Context variable for correlation ID
-_correlation_id: ContextVar[Optional[str]] = ContextVar("correlation_id", default=None)
+_correlation_id: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
 
-def get_correlation_id() -> Optional[str]:
+def get_correlation_id() -> str | None:
     """
     Get current correlation ID.
 
@@ -52,7 +52,7 @@ def set_correlation_id(correlation_id: str):
 
 
 @contextmanager
-def add_correlation_id(correlation_id: Optional[str] = None):
+def add_correlation_id(correlation_id: str | None = None):
     """
     Context manager to add correlation ID to logs.
 
@@ -94,7 +94,7 @@ class StructuredFormatter(logging.Formatter):
         include_level: bool = True,
         include_logger: bool = True,
         include_correlation_id: bool = True,
-        extra_fields: Optional[Dict[str, Any]] = None,
+        extra_fields: dict[str, Any] | None = None,
     ):
         """
         Initialize structured formatter.
@@ -115,11 +115,11 @@ class StructuredFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
-        log_data: Dict[str, Any] = {}
+        log_data: dict[str, Any] = {}
 
         # Add timestamp
         if self.include_timestamp:
-            log_data["timestamp"] = datetime.now(timezone.utc).isoformat()
+            log_data["timestamp"] = datetime.now(UTC).isoformat()
 
         # Add level
         if self.include_level:
@@ -156,11 +156,27 @@ class StructuredFormatter(logging.Formatter):
         # Add extra fields from record
         for key, value in record.__dict__.items():
             if key not in (
-                "name", "msg", "args", "created", "filename", "funcName",
-                "levelname", "levelno", "lineno", "module", "msecs",
-                "pathname", "process", "processName", "relativeCreated",
-                "stack_info", "exc_info", "exc_text", "message",
-                "thread", "threadName",
+                "name",
+                "msg",
+                "args",
+                "created",
+                "filename",
+                "funcName",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "msecs",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "stack_info",
+                "exc_info",
+                "exc_text",
+                "message",
+                "thread",
+                "threadName",
             ):
                 # Skip internal attributes
                 if not key.startswith("_"):
@@ -218,7 +234,7 @@ def setup_structured_logging(
     level: str = "INFO",
     json_format: bool = False,
     stream: Any = None,
-    extra_fields: Optional[Dict[str, Any]] = None,
+    extra_fields: dict[str, Any] | None = None,
 ):
     """
     Setup structured logging for Interlace.
@@ -321,7 +337,7 @@ def log_model_start(
     """
     log = logging.getLogger("interlace.execution")
     log.info(
-        f"Starting model execution",
+        "Starting model execution",
         extra={
             "event": "model.start",
             "model": model_name,
@@ -336,8 +352,8 @@ def log_model_end(
     model_name: str,
     success: bool,
     duration: float,
-    rows_processed: Optional[int] = None,
-    error: Optional[str] = None,
+    rows_processed: int | None = None,
+    error: str | None = None,
 ):
     """
     Log model execution end.
@@ -363,6 +379,6 @@ def log_model_end(
 
     if error:
         extra["error"] = error
-        log.error(f"Model execution failed", extra=extra)
+        log.error("Model execution failed", extra=extra)
     else:
-        log.info(f"Model execution completed", extra=extra)
+        log.info("Model execution completed", extra=extra)

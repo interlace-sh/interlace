@@ -8,10 +8,9 @@ to trace column origins through transformations.
 import inspect
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import ibis
-from ibis import _
 from ibis.expr import types as ir
 
 from interlace.lineage.extractor import (
@@ -36,8 +35,8 @@ class IbisLineageExtractor(LineageExtractor):
     def extract(
         self,
         model_name: str,
-        model_info: Dict[str, Any],
-        available_models: Dict[str, Dict[str, Any]],
+        model_info: dict[str, Any],
+        available_models: dict[str, dict[str, Any]],
     ) -> ColumnLineage:
         """
         Extract column lineage from a Python/ibis model.
@@ -50,7 +49,7 @@ class IbisLineageExtractor(LineageExtractor):
         Returns:
             ColumnLineage for this model
         """
-        columns: List[ColumnInfo] = []
+        columns: list[ColumnInfo] = []
         dependencies = model_info.get("dependencies", [])
 
         # Try to analyze the function
@@ -67,9 +66,7 @@ class IbisLineageExtractor(LineageExtractor):
             result = self._call_with_mocks(func, mock_tables)
 
             if result is not None and isinstance(result, ir.Table):
-                columns = self._analyze_ibis_table(
-                    result, model_name, dependencies, available_models
-                )
+                columns = self._analyze_ibis_table(result, model_name, dependencies, available_models)
         except Exception as e:
             logger.debug(f"Could not analyze ibis expression for {model_name}: {e}")
             # Fall back to field-based lineage
@@ -83,9 +80,9 @@ class IbisLineageExtractor(LineageExtractor):
 
     def _create_mock_tables(
         self,
-        dependencies: List[str],
-        available_models: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, ir.Table]:
+        dependencies: list[str],
+        available_models: dict[str, dict[str, Any]],
+    ) -> dict[str, ir.Table]:
         """
         Create mock ibis tables for dependencies.
 
@@ -100,28 +97,22 @@ class IbisLineageExtractor(LineageExtractor):
                 try:
                     # Create memtable with empty data but proper schema
                     data = {col: [] for col in schema_dict.keys()}
-                    mock_tables[dep_name] = ibis.memtable(
-                        data, schema=ibis.schema(schema_dict)
-                    )
+                    mock_tables[dep_name] = ibis.memtable(data, schema=ibis.schema(schema_dict))
                 except Exception as e:
                     logger.debug(f"Could not create mock table for {dep_name}: {e}")
                     # Create minimal mock with string columns
-                    mock_tables[dep_name] = ibis.memtable(
-                        {"__placeholder__": []}, schema={"__placeholder__": "string"}
-                    )
+                    mock_tables[dep_name] = ibis.memtable({"__placeholder__": []}, schema={"__placeholder__": "string"})
             else:
                 # No schema available, create placeholder
-                mock_tables[dep_name] = ibis.memtable(
-                    {"__placeholder__": []}, schema={"__placeholder__": "string"}
-                )
+                mock_tables[dep_name] = ibis.memtable({"__placeholder__": []}, schema={"__placeholder__": "string"})
 
         return mock_tables
 
     def _get_schema_for_model(
         self,
         model_name: str,
-        available_models: Dict[str, Dict[str, Any]],
-    ) -> Optional[Dict[str, str]]:
+        available_models: dict[str, dict[str, Any]],
+    ) -> dict[str, str] | None:
         """Get schema dictionary for a model."""
         if model_name not in available_models:
             return None
@@ -137,13 +128,13 @@ class IbisLineageExtractor(LineageExtractor):
             schema_dict = {}
             for col_name, col_type in fields.items():
                 if isinstance(col_type, type):
-                    if col_type == int:
+                    if col_type is int:
                         schema_dict[col_name] = "int64"
-                    elif col_type == float:
+                    elif col_type is float:
                         schema_dict[col_name] = "float64"
-                    elif col_type == str:
+                    elif col_type is str:
                         schema_dict[col_name] = "string"
-                    elif col_type == bool:
+                    elif col_type is bool:
                         schema_dict[col_name] = "boolean"
                     else:
                         schema_dict[col_name] = "string"
@@ -156,9 +147,7 @@ class IbisLineageExtractor(LineageExtractor):
 
         return None
 
-    def _call_with_mocks(
-        self, func: Any, mock_tables: Dict[str, ir.Table]
-    ) -> Optional[ir.Table]:
+    def _call_with_mocks(self, func: Any, mock_tables: dict[str, ir.Table]) -> ir.Table | None:
         """
         Call the model function with mock tables as arguments.
 
@@ -189,9 +178,9 @@ class IbisLineageExtractor(LineageExtractor):
         self,
         table: ir.Table,
         model_name: str,
-        dependencies: List[str],
-        available_models: Dict[str, Dict[str, Any]],
-    ) -> List[ColumnInfo]:
+        dependencies: list[str],
+        available_models: dict[str, dict[str, Any]],
+    ) -> list[ColumnInfo]:
         """
         Analyze an ibis Table expression to extract column lineage.
 
@@ -208,9 +197,7 @@ class IbisLineageExtractor(LineageExtractor):
         for col_name in schema.names:
             try:
                 col_expr = table[col_name]
-                sources = self._trace_column_expression(
-                    col_expr, model_name, dependencies, available_models
-                )
+                sources = self._trace_column_expression(col_expr, model_name, dependencies, available_models)
 
                 col_info = ColumnInfo(
                     name=col_name,
@@ -228,10 +215,10 @@ class IbisLineageExtractor(LineageExtractor):
         self,
         expr: ir.Column,
         model_name: str,
-        dependencies: List[str],
-        available_models: Dict[str, Dict[str, Any]],
-        visited: Optional[Set[int]] = None,
-    ) -> List[ColumnLineageEdge]:
+        dependencies: list[str],
+        available_models: dict[str, dict[str, Any]],
+        visited: set[int] | None = None,
+    ) -> list[ColumnLineageEdge]:
         """
         Trace an ibis column expression to find source columns.
 
@@ -250,11 +237,7 @@ class IbisLineageExtractor(LineageExtractor):
         try:
             # Get the operation from the expression
             op = expr.op()
-            sources.extend(
-                self._analyze_operation(
-                    op, model_name, dependencies, available_models, visited
-                )
-            )
+            sources.extend(self._analyze_operation(op, model_name, dependencies, available_models, visited))
         except Exception as e:
             logger.debug(f"Could not analyze expression: {e}")
 
@@ -264,10 +247,10 @@ class IbisLineageExtractor(LineageExtractor):
         self,
         op: Any,
         model_name: str,
-        dependencies: List[str],
-        available_models: Dict[str, Dict[str, Any]],
-        visited: Set[int],
-    ) -> List[ColumnLineageEdge]:
+        dependencies: list[str],
+        available_models: dict[str, dict[str, Any]],
+        visited: set[int],
+    ) -> list[ColumnLineageEdge]:
         """
         Analyze an ibis operation node to find source columns.
 
@@ -276,7 +259,6 @@ class IbisLineageExtractor(LineageExtractor):
         from ibis.expr import operations as ops
 
         sources = []
-        op_name = type(op).__name__
 
         # Field/Column reference - this is a leaf node
         if isinstance(op, ops.Field):
@@ -303,9 +285,7 @@ class IbisLineageExtractor(LineageExtractor):
         if isinstance(op, ops.Alias):
             arg = op.arg
             if hasattr(arg, "op"):
-                inner_sources = self._analyze_operation(
-                    arg.op(), model_name, dependencies, available_models, visited
-                )
+                inner_sources = self._analyze_operation(arg.op(), model_name, dependencies, available_models, visited)
                 # Mark as renamed
                 for src in inner_sources:
                     src.transformation_type = TransformationType.RENAMED
@@ -316,9 +296,7 @@ class IbisLineageExtractor(LineageExtractor):
         if isinstance(op, ops.Cast):
             arg = op.arg
             if hasattr(arg, "op"):
-                inner_sources = self._analyze_operation(
-                    arg.op(), model_name, dependencies, available_models, visited
-                )
+                inner_sources = self._analyze_operation(arg.op(), model_name, dependencies, available_models, visited)
                 for src in inner_sources:
                     src.transformation_type = TransformationType.CAST
                 sources.extend(inner_sources)
@@ -406,7 +384,7 @@ class IbisLineageExtractor(LineageExtractor):
 
         return sources
 
-    def _identify_source_model(self, rel: Any, dependencies: List[str]) -> Optional[str]:
+    def _identify_source_model(self, rel: Any, dependencies: list[str]) -> str | None:
         """
         Identify which dependency a relation refers to.
 
@@ -438,8 +416,8 @@ class IbisLineageExtractor(LineageExtractor):
     def _lineage_from_fields(
         self,
         model_name: str,
-        model_info: Dict[str, Any],
-        dependencies: List[str],
+        model_info: dict[str, Any],
+        dependencies: list[str],
     ) -> ColumnLineage:
         """
         Create lineage based on field definitions when analysis is not possible.

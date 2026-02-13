@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 from interlace.streaming.adapters.base import (
     AdapterConfig,
@@ -50,13 +50,13 @@ class RedisAdapter(MessageAdapter):
 
     def __init__(
         self,
-        url: Optional[str] = None,
+        url: str | None = None,
         host: str = "localhost",
         port: int = 6379,
         db: int = 0,
-        password: Optional[str] = None,
+        password: str | None = None,
         ssl: bool = False,
-        config: Optional[AdapterConfig] = None,
+        config: AdapterConfig | None = None,
     ):
         super().__init__(config)
         self.url = url
@@ -71,11 +71,10 @@ class RedisAdapter(MessageAdapter):
         """Connect to Redis."""
         try:
             import redis.asyncio as aioredis
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
-                "redis with async support is required for Redis integration. "
-                "Install it with: pip install redis"
-            )
+                "redis with async support is required for Redis integration. " "Install it with: pip install redis"
+            ) from e
 
         if self.url:
             self._client = aioredis.from_url(self.url, decode_responses=True)
@@ -104,7 +103,7 @@ class RedisAdapter(MessageAdapter):
         self,
         topic: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
     ) -> AsyncIterator[Message]:
         """Consume messages from a Redis stream."""
@@ -137,7 +136,7 @@ class RedisAdapter(MessageAdapter):
                         block=self.config.batch_timeout_ms,
                     )
 
-                    for stream_name, messages in results:
+                    for _stream_name, messages in results:
                         for msg_id, fields in messages:
                             yield self._redis_to_message(msg_id, fields, topic)
 
@@ -161,7 +160,7 @@ class RedisAdapter(MessageAdapter):
                         block=self.config.batch_timeout_ms,
                     )
 
-                    for stream_name, messages in results:
+                    for _stream_name, messages in results:
                         for msg_id, fields in messages:
                             last_id = msg_id
                             yield self._redis_to_message(msg_id, fields, topic)
@@ -190,7 +189,7 @@ class RedisAdapter(MessageAdapter):
 
         await self._client.xadd(topic, fields)
 
-    async def produce_batch(self, topic: str, messages: List[Message]) -> int:
+    async def produce_batch(self, topic: str, messages: list[Message]) -> int:
         """Produce a batch of messages using Redis pipeline."""
         if not self._client:
             raise RuntimeError("Redis not connected. Call connect() first.")
@@ -210,9 +209,7 @@ class RedisAdapter(MessageAdapter):
             results = await pipe.execute()
             return len(results)
 
-    def _redis_to_message(
-        self, msg_id: str, fields: Dict[str, str], topic: str
-    ) -> Message:
+    def _redis_to_message(self, msg_id: str, fields: dict[str, str], topic: str) -> Message:
         """Convert Redis stream entry to Message."""
         # Try to parse JSON values
         parsed = {}
@@ -228,7 +225,7 @@ class RedisAdapter(MessageAdapter):
         ts = None
         try:
             ts_ms = int(msg_id.split("-")[0])
-            ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            ts = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
         except (ValueError, IndexError):
             pass
 

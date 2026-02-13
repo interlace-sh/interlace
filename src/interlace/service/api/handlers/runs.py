@@ -5,12 +5,11 @@ Run execution endpoints.
 import asyncio
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from aiohttp import web
 
 from interlace.service.api.errors import (
-    APIError,
     ErrorCode,
     NotFoundError,
     ValidationError,
@@ -37,7 +36,7 @@ class RunsHandler(BaseHandler):
         try:
             body = await request.json()
         except json.JSONDecodeError as e:
-            raise ValidationError(f"Invalid JSON in request body: {e.msg}")
+            raise ValidationError(f"Invalid JSON in request body: {e.msg}") from e
         except Exception:
             # Empty body is valid for this endpoint (all models will run)
             body = {}
@@ -78,9 +77,7 @@ class RunsHandler(BaseHandler):
         selected_models = self._resolve_models_with_deps(model_names)
 
         # Trigger execution in background
-        run_id = await self._trigger_run(
-            selected_models, force, trigger_metadata, since=since, until=until
-        )
+        run_id = await self._trigger_run(selected_models, force, trigger_metadata, since=since, until=until)
 
         return await self.json_response(
             {
@@ -159,14 +156,18 @@ class RunsHandler(BaseHandler):
                         "model_name": getattr(t, "model_name", "unknown"),
                         "status": get_task_status(t),
                         "rows_processed": getattr(t, "rows_processed", None),
-                        "duration_seconds": t.get_duration() if hasattr(t, "get_duration") else None,
+                        "duration_seconds": (t.get_duration() if hasattr(t, "get_duration") else None),
                     }
                     task_list.append(task_info)
 
                 return await self.json_response(
                     {
                         "run_id": run_id,
-                        "status": flow.status.value if hasattr(flow, "status") and hasattr(flow.status, "value") else "unknown",
+                        "status": (
+                            flow.status.value
+                            if hasattr(flow, "status") and hasattr(flow.status, "value")
+                            else "unknown"
+                        ),
                         "started_at": getattr(flow, "started_at", None),
                         "elapsed_seconds": elapsed,
                         "progress": {
@@ -183,9 +184,7 @@ class RunsHandler(BaseHandler):
 
         raise NotFoundError("Run", run_id, ErrorCode.RUN_NOT_FOUND)
 
-    def _resolve_models_with_deps(
-        self, model_names: Optional[List[str]]
-    ) -> Dict[str, Dict[str, Any]]:
+    def _resolve_models_with_deps(self, model_names: list[str] | None) -> dict[str, dict[str, Any]]:
         """
         Resolve requested models with their dependencies (recursive).
 
@@ -199,6 +198,7 @@ class RunsHandler(BaseHandler):
 
         # Recursively add dependencies
         if self.graph:
+
             def resolve_recursive(name: str, visited: set) -> None:
                 """Recursively resolve all dependencies."""
                 if name in visited:
@@ -218,16 +218,17 @@ class RunsHandler(BaseHandler):
 
     async def _trigger_run(
         self,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         force: bool,
-        metadata: Dict[str, Any],
-        since: Optional[str] = None,
-        until: Optional[str] = None,
+        metadata: dict[str, Any],
+        since: str | None = None,
+        until: str | None = None,
     ) -> str:
         """Trigger execution in background and return run ID."""
-        from interlace.core.executor import Executor
-        from interlace.core.flow import Flow, Task, FlowStatus, TaskStatus
         import uuid
+
+        from interlace.core.executor import Executor
+        from interlace.core.flow import Flow, FlowStatus, Task, TaskStatus
 
         run_id = f"run_{uuid.uuid4().hex[:12]}"
 
@@ -315,10 +316,7 @@ class RunsHandler(BaseHandler):
 
                 # Build enriched event data
                 summary = flow.get_summary()
-                total_rows = sum(
-                    t.rows_processed for t in flow.tasks.values()
-                    if t.rows_processed is not None
-                )
+                total_rows = sum(t.rows_processed for t in flow.tasks.values() if t.rows_processed is not None)
                 event_type = "flow.failed" if has_failures else "flow.completed"
                 event_data = {
                     "flow_id": run_id,

@@ -5,18 +5,20 @@ Phase 0: Manage connections to various data sources.
 Phase 3: Generic ibis backend support, shared connections, access policies.
 """
 
+import builtins
 import threading
-from typing import Dict, Any, List, Optional
+from typing import Any
+
 from interlace.connections.base import BaseConnection
 from interlace.connections.duckdb import DuckDBConnection
-from interlace.connections.postgres import PostgresConnection
-from interlace.connections.ibis_generic import IbisConnection
-from interlace.connections.s3 import S3Connection
 from interlace.connections.filesystem import FilesystemConnection
+from interlace.connections.ibis_generic import IbisConnection
+from interlace.connections.postgres import PostgresConnection
+from interlace.connections.s3 import S3Connection
 from interlace.connections.sftp import SFTPConnection
 from interlace.connections.storage import BaseStorageConnection
-from interlace.utils.logging import get_logger
 from interlace.exceptions import ConnectionNotFoundError
+from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.connections.manager")
 
@@ -33,11 +35,11 @@ class ConnectionManager:
     - Access policies (``access: read | readwrite``)
     """
 
-    def __init__(self, config: Dict[str, Any], validate: bool = True):
+    def __init__(self, config: dict[str, Any], validate: bool = True):
         self.config = config
-        self._connections: Dict[str, Any] = {}
+        self._connections: dict[str, Any] = {}
         self._load_connections()
-        
+
         if validate:
             self.validate()
 
@@ -69,14 +71,10 @@ class ConnectionManager:
 
             # Not-yet-implemented types
             elif conn_type in ("http", "api"):
-                logger.warning(
-                    f"Connection type '{conn_type}' not yet implemented, skipping connection '{name}'"
-                )
+                logger.warning(f"Connection type '{conn_type}' not yet implemented, skipping connection '{name}'")
                 continue
             else:
-                logger.warning(
-                    f"Unknown connection type '{conn_type}' for connection '{name}', skipping"
-                )
+                logger.warning(f"Unknown connection type '{conn_type}' for connection '{name}', skipping")
                 continue
 
     def get(self, name: str) -> Any:
@@ -89,7 +87,7 @@ class ConnectionManager:
         """List all connection names."""
         return list(self._connections.keys())
 
-    def get_shared_connections(self) -> List[tuple]:
+    def get_shared_connections(self) -> builtins.list[tuple]:
         """
         Get all shared connections as (name, connection_object) tuples.
 
@@ -106,7 +104,7 @@ class ConnectionManager:
                 shared.append((name, conn_obj))
         return shared
 
-    def get_fallback_connections(self, config: Dict[str, Any]) -> List[tuple]:
+    def get_fallback_connections(self, config: dict[str, Any]) -> builtins.list[tuple]:
         """
         Get fallback connections for dependency resolution.
 
@@ -134,7 +132,7 @@ class ConnectionManager:
 
         # Default: use all shared connections as fallbacks
         return self.get_shared_connections()
-    
+
     def validate(self) -> None:
         """Validate all connections can be accessed."""
         connections_config = self.config.get("connections", {})
@@ -155,7 +153,7 @@ class ConnectionManager:
                     # SFTP: validate config is parseable (don't actually connect)
                     cfg = conn_obj._parse_config()
                     if not cfg.host:
-                        raise ValueError(f"Missing 'host' in SFTP config")
+                        raise ValueError("Missing 'host' in SFTP config")
                 elif isinstance(conn_obj, BaseStorageConnection):
                     # Storage connections (Filesystem, S3): config validated at init
                     pass
@@ -182,10 +180,7 @@ class ConnectionManager:
                         f"  Suggestion: Check file/directory permissions"
                     )
                 else:
-                    errors.append(
-                        f"Connection '{conn_name}': Cannot connect.\n"
-                        f"  Error: {error_msg}"
-                    )
+                    errors.append(f"Connection '{conn_name}': Cannot connect.\n" f"  Error: {error_msg}")
 
         if errors:
             error_message = "Connection validation failed:\n\n" + "\n\n".join(
@@ -195,7 +190,7 @@ class ConnectionManager:
 
 
 # Global connection manager instance with thread-safe access
-_connection_manager: Optional[ConnectionManager] = None
+_connection_manager: ConnectionManager | None = None
 _connection_manager_lock = threading.Lock()
 
 
@@ -211,7 +206,7 @@ def get_connection(name: str) -> Any:
         return _connection_manager.get(name)
 
 
-def init_connections(config: Dict[str, Any], validate: bool = True):
+def init_connections(config: dict[str, Any], validate: bool = True):
     """Initialize global connection manager with validation (thread-safe)."""
     global _connection_manager
     with _connection_manager_lock:

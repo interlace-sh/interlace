@@ -7,8 +7,9 @@ Provides boto3 client for S3 operations (list, download, upload).
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 from interlace.connections.storage import BaseStorageConnection
 
@@ -52,18 +53,16 @@ class S3Connection(BaseStorageConnection):
         """Get S3 bucket name from config."""
         bucket_name = self._cfg.get("bucket", "")
         if not bucket_name:
-            raise ValueError(
-                f"S3 connection '{self._name}' missing required 'bucket' configuration"
-            )
+            raise ValueError(f"S3 connection '{self._name}' missing required 'bucket' configuration")
         return bucket_name
 
     @property
-    def region(self) -> Optional[str]:
+    def region(self) -> str | None:
         """Get AWS region from config."""
         return self._cfg.get("region")
 
     @property
-    def endpoint_url(self) -> Optional[str]:
+    def endpoint_url(self) -> str | None:
         """Get custom endpoint URL (for S3-compatible services like MinIO)."""
         return self._cfg.get("endpoint_url")
 
@@ -157,8 +156,7 @@ class S3Connection(BaseStorageConnection):
             page_config["Delimiter"] = delimiter
 
         for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix, **page_config):
-            for obj in page.get("Contents", []):
-                yield obj
+            yield from page.get("Contents", [])
 
     def download_file(self, key: str, local_path: str | Path) -> Path:
         """
@@ -193,7 +191,7 @@ class S3Connection(BaseStorageConnection):
         local_path: str | Path,
         key: str,
         *,
-        extra_args: Optional[dict[str, Any]] = None,
+        extra_args: dict[str, Any] | None = None,
     ) -> str:
         """
         Upload a local file to S3.
@@ -264,7 +262,7 @@ class S3Connection(BaseStorageConnection):
         key: str,
         body: bytes | str,
         *,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
     ) -> str:
         """
         Put object content directly (for small objects).
@@ -333,7 +331,7 @@ class S3Connection(BaseStorageConnection):
         self._client = None
         self._resource = None
 
-    def __enter__(self) -> "S3Connection":
+    def __enter__(self) -> S3Connection:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

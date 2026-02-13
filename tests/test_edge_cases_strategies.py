@@ -7,14 +7,15 @@ Covers:
 - Temp table creation for SCD Type 2
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
-import ibis
+from unittest.mock import Mock, patch
 
+import ibis
+import pytest
 
 # ---------------------------------------------------------------------------
 # Bug 1 & 2: Empty primary_key list bypasses validation
 # ---------------------------------------------------------------------------
+
 
 class TestEmptyPrimaryKeyValidation:
     """Empty primary_key=[] should raise ValueError like primary_key=None."""
@@ -99,6 +100,7 @@ class TestEmptyPrimaryKeyValidation:
 # Bug 3: Key-only table produces invalid UPDATE SET * in merge
 # ---------------------------------------------------------------------------
 
+
 class TestMergeKeyOnlyTable:
     """When all columns are primary keys, UPDATE SET * is non-portable."""
 
@@ -143,6 +145,7 @@ class TestMergeKeyOnlyTable:
 # Bug 4: prepare_reference_table doesn't handle scd_type_2
 # ---------------------------------------------------------------------------
 
+
 class TestPrepareReferenceTableSCD2:
     """prepare_reference_table should create temp table for scd_type_2 strategy."""
 
@@ -155,8 +158,8 @@ class TestPrepareReferenceTableSCD2:
         Without the temp table, apply_scd_type_2_strategy fails when trying to
         access connection.table(ref_table_name).
         """
-        from interlace.core.execution.schema_manager import SchemaManager
         from interlace.core.execution.data_converter import DataConverter
+        from interlace.core.execution.schema_manager import SchemaManager
 
         # Create minimal SchemaManager
         mock_data_converter = Mock(spec=DataConverter)

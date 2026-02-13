@@ -4,18 +4,18 @@ Materialization management for persisting data with strategies.
 Phase 0: Extracted from Executor class for better separation of concerns.
 """
 
-from typing import Dict, Any, Optional, TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING, Any
+
 import ibis
+
 from interlace.core.context import _execute_sql_internal
 from interlace.strategies.base import Strategy
-from interlace.utils.table_utils import check_table_exists
 from interlace.utils.logging import get_logger
 from interlace.utils.sql_escape import escape_identifier, escape_qualified_name
+from interlace.utils.table_utils import check_table_exists
 
 if TYPE_CHECKING:
-    from interlace.core.execution.schema_manager import SchemaManager
-    from interlace.core.execution.data_converter import DataConverter
-    from interlace.core.flow import Flow
+    from interlace.materialization.base import Materializer
 
 logger = get_logger("interlace.execution.materialization_manager")
 
@@ -26,7 +26,7 @@ _table_exists = check_table_exists
 class MaterializationManager:
     """
     Manages data materialization with strategies.
-    
+
     Phase 0: Handles materialization of data to tables/views/ephemeral storage
     using various strategies (replace, append, merge_by_key, none).
     """
@@ -35,13 +35,13 @@ class MaterializationManager:
         self,
         schema_manager: Any,
         data_converter: Any,
-        strategies: Dict[str, Strategy],
+        strategies: dict[str, Strategy],
         flow: Any = None,
         get_row_count_func: Any = None,
     ):
         """
         Initialize MaterializationManager.
-        
+
         Args:
             schema_manager: SchemaManager instance
             data_converter: DataConverter instance
@@ -63,7 +63,7 @@ class MaterializationManager:
         schema: str,
         materialise_type: str,
         connection: ibis.BaseBackend,
-        fields: Optional[Union[Dict[str, Any], list, ibis.Schema]] = None,
+        fields: dict[str, Any] | list | ibis.Schema | None = None,
         **kwargs,
     ):
         """Materialise data using materialiser."""
@@ -80,7 +80,7 @@ class MaterializationManager:
         model_name: str,
         schema: str,
         strategy_name: str,
-        model_info: Dict[str, Any],
+        model_info: dict[str, Any],
         connection: ibis.BaseBackend,
     ) -> None:
         """
@@ -114,30 +114,44 @@ class MaterializationManager:
 
         # Apply strategy-specific logic
         if strategy_name == "replace":
-            await self.apply_replace_strategy(
-                new_data, model_name, schema, connection, table_exists
-            )
+            await self.apply_replace_strategy(new_data, model_name, schema, connection, table_exists)
         elif strategy_name == "append":
             await self.apply_append_strategy(
-                new_data, model_name, schema, connection, table_exists,
-                strategy, is_reference_table, ref_table_name
+                new_data,
+                model_name,
+                schema,
+                connection,
+                table_exists,
+                strategy,
+                is_reference_table,
+                ref_table_name,
             )
         elif strategy_name == "merge_by_key":
             await self.apply_merge_strategy(
-                source_table, model_name, schema, connection, table_exists,
-                model_info, strategy, ref_table_name
+                source_table,
+                model_name,
+                schema,
+                connection,
+                table_exists,
+                model_info,
+                strategy,
+                ref_table_name,
             )
         elif strategy_name == "scd_type_2":
             await self.apply_scd_type_2_strategy(
-                source_table, model_name, schema, connection, table_exists,
-                model_info, strategy, ref_table_name
+                source_table,
+                model_name,
+                schema,
+                connection,
+                table_exists,
+                model_info,
+                strategy,
+                ref_table_name,
             )
         elif strategy_name == "none":
             # "none" strategy means no strategy - just create/replace table directly
             # This is equivalent to replace but without strategy logic
-            await self.apply_replace_strategy(
-                new_data, model_name, schema, connection, table_exists
-            )
+            await self.apply_replace_strategy(new_data, model_name, schema, connection, table_exists)
         else:
             # Unknown strategy - raise error
             raise ValueError(
@@ -160,13 +174,13 @@ class MaterializationManager:
         existing_count = 0
         if table_exists and self._get_row_count:
             existing_count = self._get_row_count(None, model_name, "table", schema, connection) or 0
-        
+
         if not table_exists:
             self.schema_manager.create_table_safe(connection, model_name, new_data, schema, overwrite=False)
         else:
             # Subsequent runs: replace entire table
             self.schema_manager.create_table_safe(connection, model_name, new_data, schema, overwrite=True)
-        
+
         # Update task with change counts
         if self.flow and model_name in self.flow.tasks:
             task = self.flow.tasks[model_name]
@@ -203,9 +217,7 @@ class MaterializationManager:
 
         # Generate and execute INSERT SQL
         if is_reference_table:
-            insert_sql = strategy.generate_sql(
-                connection, model_name, schema, ref_table_name
-            )
+            insert_sql = strategy.generate_sql(connection, model_name, schema, ref_table_name)
             _execute_sql_internal(connection, insert_sql)
         else:
             # Create temp table and insert
@@ -215,15 +227,13 @@ class MaterializationManager:
             except (TypeError, AttributeError, ValueError, NotImplementedError):
                 df = new_data.execute()
                 connection.create_table(temp_table_name, obj=df, temp=True)
-            insert_sql = strategy.generate_sql(
-                connection, model_name, schema, temp_table_name
-            )
+            insert_sql = strategy.generate_sql(connection, model_name, schema, temp_table_name)
             _execute_sql_internal(connection, insert_sql)
             try:
                 connection.drop_table(temp_table_name)
             except Exception:
                 pass
-        
+
         # Update task with change counts
         if self.flow and model_name in self.flow.tasks:
             task = self.flow.tasks[model_name]
@@ -239,7 +249,7 @@ class MaterializationManager:
         schema: str,
         connection: ibis.BaseBackend,
         table_exists: bool,
-        model_info: Dict[str, Any],
+        model_info: dict[str, Any],
         strategy: Strategy,
         ref_table_name: str,
     ) -> None:
@@ -248,9 +258,7 @@ class MaterializationManager:
         """
         primary_key = model_info.get("primary_key")
         if primary_key is None:
-            raise ValueError(
-                f"primary_key required for merge_by_key strategy on model {model_name}"
-            )
+            raise ValueError(f"primary_key required for merge_by_key strategy on model {model_name}")
 
         if not table_exists:
             # Avoid DataFrame materialization when backend supports ibis.Table directly
@@ -264,7 +272,7 @@ class MaterializationManager:
             return
 
         delete_mode = model_info.get("delete_mode", "preserve")
-        
+
         # Pre-compute change counts before MERGE
         # Normalize primary_key to list
         if isinstance(primary_key, str):
@@ -277,10 +285,9 @@ class MaterializationManager:
         escaped_source = escape_identifier(ref_table_name)
 
         # Build ON conditions for queries with escaped column names
-        on_conditions = " AND ".join([
-            f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}"
-            for pk in pk_list
-        ])
+        on_conditions = " AND ".join(
+            [f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}" for pk in pk_list]
+        )
 
         # Count inserts: source rows not in target
         insert_count_sql = f"""
@@ -313,7 +320,7 @@ class MaterializationManager:
                     WHERE {on_conditions}
                 )
             """
-        
+
         # Execute count queries (can run in parallel, but SQL execution is synchronous)
         # For now, execute sequentially - optimization can be added later
         try:
@@ -322,14 +329,14 @@ class MaterializationManager:
         except Exception as e:
             logger.debug(f"Error counting inserts for {model_name}: {e}")
             rows_inserted = 0
-        
+
         try:
             update_result = _execute_sql_internal(connection, update_count_sql)
             rows_updated = self.data_converter.extract_count_from_result(update_result) or 0
         except Exception as e:
             logger.debug(f"Error counting updates for {model_name}: {e}")
             rows_updated = 0
-        
+
         rows_deleted = 0
         if delete_count_sql:
             try:
@@ -338,7 +345,7 @@ class MaterializationManager:
             except Exception as e:
                 logger.debug(f"Error counting deletes for {model_name}: {e}")
                 rows_deleted = 0
-        
+
         # Execute MERGE
         merge_sql = strategy.generate_sql(
             connection,
@@ -349,7 +356,7 @@ class MaterializationManager:
             delete_mode=delete_mode,
         )
         _execute_sql_internal(connection, merge_sql)
-        
+
         # Update task with change counts
         if self.flow and model_name in self.flow.tasks:
             task = self.flow.tasks[model_name]
@@ -364,7 +371,7 @@ class MaterializationManager:
         schema: str,
         connection: ibis.BaseBackend,
         table_exists: bool,
-        model_info: Dict[str, Any],
+        model_info: dict[str, Any],
         strategy: Strategy,
         ref_table_name: str,
     ) -> None:
@@ -392,9 +399,7 @@ class MaterializationManager:
         """
         primary_key = model_info.get("primary_key")
         if primary_key is None:
-            raise ValueError(
-                f"primary_key required for scd_type_2 strategy on model {model_name}"
-            )
+            raise ValueError(f"primary_key required for scd_type_2 strategy on model {model_name}")
 
         scd2_config = model_info.get("scd2_config", {})
 
@@ -414,14 +419,14 @@ class MaterializationManager:
                 source_schema = source.schema()
                 source_columns = list(source_schema.keys())
             except Exception as e:
-                raise ValueError(f"Cannot get schema for source table {ref_table_name}: {e}")
+                raise ValueError(f"Cannot get schema for source table {ref_table_name}: {e}") from e
 
             # Create table with SCD2 columns using SQL
             # This ensures proper column types for SCD2 metadata
             from interlace.utils.sql_escape import escape_identifier, escape_qualified_name
 
             escaped_target = escape_qualified_name(schema, model_name)
-            escaped_source = escape_identifier(ref_table_name)
+            escape_identifier(ref_table_name)
 
             # Build column definitions
             col_defs = []
@@ -453,8 +458,12 @@ CREATE TABLE {escaped_target} (
 
             # Use initial insert SQL from strategy
             insert_sql = strategy.get_initial_insert_sql(
-                connection, model_name, schema, ref_table_name,
-                primary_key=primary_key, scd2_config=scd2_config
+                connection,
+                model_name,
+                schema,
+                ref_table_name,
+                primary_key=primary_key,
+                scd2_config=scd2_config,
             )
             _execute_sql_internal(connection, insert_sql)
 
@@ -471,8 +480,12 @@ CREATE TABLE {escaped_target} (
 
         # Generate SCD2 SQL (multiple statements)
         scd2_sql = strategy.generate_sql(
-            connection, model_name, schema, ref_table_name,
-            primary_key=primary_key, scd2_config=scd2_config
+            connection,
+            model_name,
+            schema,
+            ref_table_name,
+            primary_key=primary_key,
+            scd2_config=scd2_config,
         )
 
         # Execute each statement (split by semicolon)
@@ -526,10 +539,9 @@ CREATE TABLE {escaped_target} (
             return type_mapping[type_str]
 
         # Check for partial match (e.g., "decimal(10, 2)")
-        for key, value in type_mapping.items():
+        for key, _value in type_mapping.items():
             if type_str.startswith(key):
                 return type_str.upper()  # Preserve precision/scale
 
         # Default to VARCHAR for unknown types
         return "VARCHAR"
-

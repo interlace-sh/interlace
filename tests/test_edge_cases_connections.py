@@ -10,14 +10,14 @@ Targets genuine bugs in:
 import asyncio
 import json
 import warnings
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Bug 1: Cron parser – DOW range "5-7" should produce {5, 6, 0} not raise
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 class TestCronParserDOWWrapAround:
@@ -53,6 +53,7 @@ class TestCronParserDOWWrapAround:
         """Full cron expression with DOW=7 (Sunday alias) should work."""
         from datetime import datetime
         from zoneinfo import ZoneInfo
+
         from interlace.service.cron_parser import next_fire_time_cron
 
         # "0 9 * * 5-7" = At 09:00 on Friday, Saturday, Sunday
@@ -65,6 +66,7 @@ class TestCronParserDOWWrapAround:
 # ---------------------------------------------------------------------------
 # Bug 2: PostgresConnection.close() is async → never awaited by __exit__
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 class TestPostgresConnectionCloseMismatch:
@@ -128,19 +130,16 @@ class TestPostgresConnectionCloseMismatch:
             conn.__exit__(None, None, None)
 
         coroutine_warnings = [
-            w for w in caught
-            if "coroutine" in str(w.message).lower()
-            and "never awaited" in str(w.message).lower()
+            w for w in caught if "coroutine" in str(w.message).lower() and "never awaited" in str(w.message).lower()
         ]
-        assert len(coroutine_warnings) == 0, (
-            f"__exit__ produced coroutine warning: {coroutine_warnings}"
-        )
+        assert len(coroutine_warnings) == 0, f"__exit__ produced coroutine warning: {coroutine_warnings}"
         assert conn._connection is None
 
 
 # ---------------------------------------------------------------------------
 # Bug 3: handle_stream_publish – StopIteration on empty connections config
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 class TestStreamPublishEmptyConnections:
@@ -172,6 +171,7 @@ class TestStreamPublishEmptyConnections:
 # ---------------------------------------------------------------------------
 # Bug 4: Legacy handle_run / handle_sync_once – empty JSON body crashes
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 class TestLegacyHandlerEmptyBody:
@@ -205,10 +205,7 @@ class TestLegacyHandlerEmptyBody:
             # Should get a 400 response
             assert response.status == 400
         except json.JSONDecodeError:
-            pytest.fail(
-                "handle_run crashed on invalid JSON body instead of "
-                "returning an error response"
-            )
+            pytest.fail("handle_run crashed on invalid JSON body instead of " "returning an error response")
 
     @pytest.mark.asyncio
     async def test_handle_sync_once_empty_body(self):
@@ -225,7 +222,4 @@ class TestLegacyHandlerEmptyBody:
             response = await svc.handle_sync_once(request)
             assert response.status == 400
         except json.JSONDecodeError:
-            pytest.fail(
-                "handle_sync_once crashed on invalid JSON body instead of "
-                "returning an error response"
-            )
+            pytest.fail("handle_sync_once crashed on invalid JSON body instead of " "returning an error response")

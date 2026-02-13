@@ -6,15 +6,15 @@ including detecting breaking changes and affected downstream models.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from enum import StrEnum
+from typing import Any
 
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.impact")
 
 
-class RunReason(str, Enum):
+class RunReason(StrEnum):
     """Reason why a model will be executed."""
 
     FILE_CHANGED = "file_changed"  # Model file has been modified
@@ -25,7 +25,7 @@ class RunReason(str, Enum):
     SCHEMA_CHANGED = "schema_changed"  # Output schema changed
 
 
-class BreakingChangeType(str, Enum):
+class BreakingChangeType(StrEnum):
     """Type of breaking change detected."""
 
     COLUMN_REMOVED = "column_removed"  # Column removed that's used downstream
@@ -40,10 +40,10 @@ class SchemaChange:
 
     column_name: str
     change_type: str  # "added", "removed", "type_changed"
-    old_type: Optional[str] = None
-    new_type: Optional[str] = None
+    old_type: str | None = None
+    new_type: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "column_name": self.column_name,
             "change_type": self.change_type,
@@ -59,11 +59,11 @@ class BreakingChange:
     model_name: str
     change_type: BreakingChangeType
     description: str
-    affected_downstream: List[str] = field(default_factory=list)
-    column_name: Optional[str] = None
+    affected_downstream: list[str] = field(default_factory=list)
+    column_name: str | None = None
     severity: str = "warning"  # "warning" or "error"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "model_name": self.model_name,
             "change_type": self.change_type.value,
@@ -80,14 +80,14 @@ class ModelImpact:
 
     model_name: str
     will_run: bool
-    run_reason: Optional[RunReason] = None
-    downstream_affected: List[str] = field(default_factory=list)
-    schema_changes: List[SchemaChange] = field(default_factory=list)
-    breaking_changes: List[BreakingChange] = field(default_factory=list)
+    run_reason: RunReason | None = None
+    downstream_affected: list[str] = field(default_factory=list)
+    schema_changes: list[SchemaChange] = field(default_factory=list)
+    breaking_changes: list[BreakingChange] = field(default_factory=list)
     file_changed: bool = False
-    upstream_changed: List[str] = field(default_factory=list)
+    upstream_changed: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "model_name": self.model_name,
             "will_run": self.will_run,
@@ -104,13 +104,13 @@ class ModelImpact:
 class ImpactAnalysisResult:
     """Complete impact analysis result."""
 
-    models_to_run: List[ModelImpact] = field(default_factory=list)
-    models_skipped: List[str] = field(default_factory=list)
-    breaking_changes: List[BreakingChange] = field(default_factory=list)
+    models_to_run: list[ModelImpact] = field(default_factory=list)
+    models_skipped: list[str] = field(default_factory=list)
+    breaking_changes: list[BreakingChange] = field(default_factory=list)
     total_affected: int = 0
     has_breaking_changes: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "models_to_run": [m.to_dict() for m in self.models_to_run],
             "models_skipped": self.models_skipped,
@@ -120,12 +120,8 @@ class ImpactAnalysisResult:
             "summary": {
                 "will_run": len(self.models_to_run),
                 "skipped": len(self.models_skipped),
-                "warnings": len(
-                    [bc for bc in self.breaking_changes if bc.severity == "warning"]
-                ),
-                "errors": len(
-                    [bc for bc in self.breaking_changes if bc.severity == "error"]
-                ),
+                "warnings": len([bc for bc in self.breaking_changes if bc.severity == "warning"]),
+                "errors": len([bc for bc in self.breaking_changes if bc.severity == "error"]),
             },
         }
 
@@ -140,10 +136,10 @@ class ImpactAnalyzer:
 
     def __init__(
         self,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         graph: Any,  # DependencyGraph
-        change_detector: Optional[Any] = None,
-        state_store: Optional[Any] = None,
+        change_detector: Any | None = None,
+        state_store: Any | None = None,
     ):
         """
         Initialize impact analyzer.
@@ -158,11 +154,11 @@ class ImpactAnalyzer:
         self.graph = graph
         self.change_detector = change_detector
         self.state_store = state_store
-        self._column_usage: Dict[str, Dict[str, Set[str]]] = {}
+        self._column_usage: dict[str, dict[str, set[str]]] = {}
 
     def analyze(
         self,
-        target_models: Optional[List[str]] = None,
+        target_models: list[str] | None = None,
         force: bool = False,
     ) -> ImpactAnalysisResult:
         """
@@ -179,9 +175,9 @@ class ImpactAnalyzer:
             target_models = list(self.models.keys())
 
         result = ImpactAnalysisResult()
-        models_to_run: Set[str] = set()
-        model_reasons: Dict[str, RunReason] = {}
-        file_changes: Dict[str, bool] = {}
+        models_to_run: set[str] = set()
+        model_reasons: dict[str, RunReason] = {}
+        file_changes: dict[str, bool] = {}
 
         # First pass: determine which models need to run
         for model_name in target_models:
@@ -197,8 +193,8 @@ class ImpactAnalyzer:
                 result.models_skipped.append(model_name)
 
         # Second pass: propagate to downstream
-        all_affected: Set[str] = set(models_to_run)
-        downstream_map: Dict[str, List[str]] = {}
+        all_affected: set[str] = set(models_to_run)
+        downstream_map: dict[str, list[str]] = {}
 
         for model_name in list(models_to_run):
             downstream = self._get_downstream_affected(model_name, all_affected)
@@ -227,18 +223,14 @@ class ImpactAnalyzer:
 
             # Detect upstream that changed
             if model_reasons.get(model_name) == RunReason.UPSTREAM_CHANGED:
-                impact.upstream_changed = self._get_changed_upstream(
-                    model_name, models_to_run
-                )
+                impact.upstream_changed = self._get_changed_upstream(model_name, models_to_run)
 
             # Detect schema changes
             schema_changes = self._detect_schema_changes(model_name)
             impact.schema_changes = schema_changes
 
             # Detect breaking changes
-            breaking = self._detect_breaking_changes(
-                model_name, schema_changes, downstream_map.get(model_name, [])
-            )
+            breaking = self._detect_breaking_changes(model_name, schema_changes, downstream_map.get(model_name, []))
             impact.breaking_changes = breaking
             result.breaking_changes.extend(breaking)
 
@@ -249,9 +241,7 @@ class ImpactAnalyzer:
             try:
                 order = self.graph.get_topological_order()
                 order_map = {name: i for i, name in enumerate(order)}
-                result.models_to_run.sort(
-                    key=lambda m: order_map.get(m.model_name, float("inf"))
-                )
+                result.models_to_run.sort(key=lambda m: order_map.get(m.model_name, float("inf")))
             except Exception:
                 pass
 
@@ -260,7 +250,7 @@ class ImpactAnalyzer:
 
         return result
 
-    def _get_run_reason(self, model_name: str, force: bool) -> Optional[RunReason]:
+    def _get_run_reason(self, model_name: str, force: bool) -> RunReason | None:
         """Determine why a model should run."""
         if force:
             return RunReason.FORCE
@@ -292,9 +282,7 @@ class ImpactAnalyzer:
         # Default: assume needs to run if no change detector
         return RunReason.FILE_CHANGED
 
-    def _get_downstream_affected(
-        self, model_name: str, already_running: Set[str]
-    ) -> List[str]:
+    def _get_downstream_affected(self, model_name: str, already_running: set[str]) -> list[str]:
         """Get list of downstream models that will be affected."""
         if not self.graph:
             return []
@@ -316,9 +304,7 @@ class ImpactAnalyzer:
         traverse(model_name)
         return downstream
 
-    def _get_changed_upstream(
-        self, model_name: str, running_models: Set[str]
-    ) -> List[str]:
+    def _get_changed_upstream(self, model_name: str, running_models: set[str]) -> list[str]:
         """Get list of upstream models that changed."""
         if not self.graph:
             return []
@@ -337,7 +323,7 @@ class ImpactAnalyzer:
             if not dependencies:
                 continue
 
-            usage: Dict[str, Set[str]] = {}
+            usage: dict[str, set[str]] = {}
 
             if model_type == "sql":
                 # Parse SQL to find column references
@@ -355,11 +341,9 @@ class ImpactAnalyzer:
 
             self._column_usage[model_name] = usage
 
-    def _extract_sql_column_usage(
-        self, sql: str, dependencies: List[str]
-    ) -> Dict[str, Set[str]]:
+    def _extract_sql_column_usage(self, sql: str, dependencies: list[str]) -> dict[str, set[str]]:
         """Extract column references from SQL query."""
-        usage: Dict[str, Set[str]] = {}
+        usage: dict[str, set[str]] = {}
 
         try:
             import sqlglot
@@ -391,7 +375,7 @@ class ImpactAnalyzer:
 
         return usage
 
-    def _detect_schema_changes(self, model_name: str) -> List[SchemaChange]:
+    def _detect_schema_changes(self, model_name: str) -> list[SchemaChange]:
         """Detect schema changes for a model compared to last execution."""
         changes = []
 
@@ -407,10 +391,7 @@ class ImpactAnalyzer:
         # Get previous schema from state store
         try:
             previous_columns = self.state_store.get_model_columns(model_name)
-            previous_fields = {
-                col["column_name"]: col.get("data_type")
-                for col in previous_columns
-            }
+            previous_fields = {col["column_name"]: col.get("data_type") for col in previous_columns}
 
             # Compare schemas
             current_cols = set(current_fields.keys())
@@ -458,9 +439,9 @@ class ImpactAnalyzer:
     def _detect_breaking_changes(
         self,
         model_name: str,
-        schema_changes: List[SchemaChange],
-        downstream: List[str],
-    ) -> List[BreakingChange]:
+        schema_changes: list[SchemaChange],
+        downstream: list[str],
+    ) -> list[BreakingChange]:
         """Detect breaking changes based on schema changes and downstream usage."""
         breaking = []
 

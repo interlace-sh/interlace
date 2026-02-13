@@ -4,34 +4,31 @@ Tests for the observability module.
 Phase 3: Tests for metrics, tracing, and structured logging.
 """
 
-import pytest
 import json
 import logging
-from unittest.mock import MagicMock, patch
+
+import pytest
 
 from interlace.observability.metrics import (
     MetricsRegistry,
     get_metrics_registry,
     model_execution_histogram,
-    model_rows_counter,
     retry_counter,
-    dlq_counter,
-)
-from interlace.observability.tracing import (
-    TracingManager,
-    get_tracer,
-    NoOpSpan,
-    NoOpTracer,
-    trace_model_execution,
 )
 from interlace.observability.structured_logging import (
-    StructuredFormatter,
     HumanReadableFormatter,
-    setup_structured_logging,
+    LogContext,
+    StructuredFormatter,
     add_correlation_id,
     get_correlation_id,
     set_correlation_id,
-    LogContext,
+    setup_structured_logging,
+)
+from interlace.observability.tracing import (
+    NoOpSpan,
+    NoOpTracer,
+    TracingManager,
+    trace_model_execution,
 )
 
 
@@ -154,6 +151,7 @@ class TestConvenienceFunctions:
         """Test model_execution_histogram function."""
         # Reset global registry
         import interlace.observability.metrics as metrics_module
+
         metrics_module._metrics_registry = None
 
         registry = get_metrics_registry()
@@ -167,6 +165,7 @@ class TestConvenienceFunctions:
     def test_retry_counter(self):
         """Test retry_counter function."""
         import interlace.observability.metrics as metrics_module
+
         metrics_module._metrics_registry = None
 
         registry = get_metrics_registry()
@@ -277,6 +276,7 @@ class TestTraceDecorators:
 
     def test_trace_model_execution_sync(self):
         """Test trace_model_execution with sync function."""
+
         @trace_model_execution
         def my_func(model_name):
             return f"executed {model_name}"
@@ -287,6 +287,7 @@ class TestTraceDecorators:
     @pytest.mark.asyncio
     async def test_trace_model_execution_async(self):
         """Test trace_model_execution with async function."""
+
         @trace_model_execution
         async def my_async_func(model_name):
             return f"executed {model_name}"
@@ -350,6 +351,7 @@ class TestStructuredFormatter:
             raise ValueError("Test error")
         except ValueError:
             import sys
+
             exc_info = sys.exc_info()
 
         record = logging.LogRecord(
@@ -499,6 +501,7 @@ class TestSetupStructuredLogging:
     def test_setup_human_readable(self):
         """Test setting up human-readable logging."""
         import io
+
         stream = io.StringIO()
 
         setup_structured_logging(level="DEBUG", json_format=False, stream=stream)
@@ -512,6 +515,7 @@ class TestSetupStructuredLogging:
     def test_setup_json_format(self):
         """Test setting up JSON logging."""
         import io
+
         stream = io.StringIO()
 
         setup_structured_logging(level="DEBUG", json_format=True, stream=stream)

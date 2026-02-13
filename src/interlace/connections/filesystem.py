@@ -4,8 +4,9 @@ Local filesystem connection for storage.
 Phase 0: Local filesystem connection for storage operations.
 """
 
-from typing import Dict, Any
 from pathlib import Path
+from typing import Any
+
 from interlace.connections.storage import BaseStorageConnection
 
 
@@ -17,7 +18,7 @@ class FilesystemConnection(BaseStorageConnection):
     For querying local files via SQL, use DuckDB with file paths.
     """
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
 
     @property
@@ -51,10 +52,10 @@ class FilesystemConnection(BaseStorageConnection):
             # Ensure full path is within or equal to root path
             try:
                 full_resolved.relative_to(root_resolved)
-            except ValueError:
+            except ValueError as e:
                 raise ValueError(
                     f"Path traversal detected: base_path '{base}' escapes root_path '{self.root_path}'"
-                )
+                ) from e
 
             return full_resolved
         return self.root_path.resolve()

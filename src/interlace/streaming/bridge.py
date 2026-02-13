@@ -30,8 +30,8 @@ Example:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from interlace.streaming.adapters.base import AdapterConfig, MessageAdapter
 from interlace.utils.logging import get_logger
@@ -42,12 +42,13 @@ logger = get_logger("interlace.streaming.bridge")
 @dataclass
 class BridgeRoute:
     """A route connecting a message adapter to/from an Interlace stream."""
+
     adapter: MessageAdapter
     source: str
     target: str
     direction: str  # "inbound" or "outbound"
-    config: Optional[AdapterConfig] = None
-    group_id: Optional[str] = None
+    config: AdapterConfig | None = None
+    group_id: str | None = None
     from_beginning: bool = False
 
 
@@ -71,10 +72,10 @@ class StreamBridge:
     """
 
     def __init__(self):
-        self._routes: List[BridgeRoute] = []
-        self._tasks: List[asyncio.Task] = []
+        self._routes: list[BridgeRoute] = []
+        self._tasks: list[asyncio.Task] = []
         self._running = False
-        self._adapters: List[MessageAdapter] = []
+        self._adapters: list[MessageAdapter] = []
 
     def add_inbound(
         self,
@@ -82,10 +83,10 @@ class StreamBridge:
         source_topic: str,
         target_stream: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
-        config: Optional[AdapterConfig] = None,
-    ) -> "StreamBridge":
+        config: AdapterConfig | None = None,
+    ) -> StreamBridge:
         """
         Add an inbound route: external topic -> Interlace stream.
 
@@ -100,15 +101,17 @@ class StreamBridge:
         Returns:
             self (for chaining)
         """
-        self._routes.append(BridgeRoute(
-            adapter=adapter,
-            source=source_topic,
-            target=target_stream,
-            direction="inbound",
-            config=config,
-            group_id=group_id,
-            from_beginning=from_beginning,
-        ))
+        self._routes.append(
+            BridgeRoute(
+                adapter=adapter,
+                source=source_topic,
+                target=target_stream,
+                direction="inbound",
+                config=config,
+                group_id=group_id,
+                from_beginning=from_beginning,
+            )
+        )
         if adapter not in self._adapters:
             self._adapters.append(adapter)
         return self
@@ -119,8 +122,8 @@ class StreamBridge:
         source_stream: str,
         target_topic: str,
         *,
-        config: Optional[AdapterConfig] = None,
-    ) -> "StreamBridge":
+        config: AdapterConfig | None = None,
+    ) -> StreamBridge:
         """
         Add an outbound route: Interlace stream -> external topic.
 
@@ -133,13 +136,15 @@ class StreamBridge:
         Returns:
             self (for chaining)
         """
-        self._routes.append(BridgeRoute(
-            adapter=adapter,
-            source=source_stream,
-            target=target_topic,
-            direction="outbound",
-            config=config,
-        ))
+        self._routes.append(
+            BridgeRoute(
+                adapter=adapter,
+                source=source_stream,
+                target=target_topic,
+                direction="outbound",
+                config=config,
+            )
+        )
         if adapter not in self._adapters:
             self._adapters.append(adapter)
         return self
@@ -218,10 +223,7 @@ class StreamBridge:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(
-                    f"Inbound bridge {route.source} -> {route.target} error: {e}. "
-                    f"Restarting in 5s..."
-                )
+                logger.error(f"Inbound bridge {route.source} -> {route.target} error: {e}. " f"Restarting in 5s...")
                 await asyncio.sleep(5.0)
 
     async def _run_outbound(self, route: BridgeRoute) -> None:
@@ -236,14 +238,11 @@ class StreamBridge:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(
-                    f"Outbound bridge {route.source} -> {route.target} error: {e}. "
-                    f"Restarting in 5s..."
-                )
+                logger.error(f"Outbound bridge {route.source} -> {route.target} error: {e}. " f"Restarting in 5s...")
                 await asyncio.sleep(5.0)
 
     @property
-    def routes(self) -> List[BridgeRoute]:
+    def routes(self) -> list[BridgeRoute]:
         """Get all configured routes."""
         return list(self._routes)
 
@@ -251,7 +250,7 @@ class StreamBridge:
     def is_running(self) -> bool:
         return self._running
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         """Get bridge status."""
         return {
             "running": self._running,

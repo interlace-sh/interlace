@@ -5,11 +5,13 @@ Phase 0: Basic table materialisation with DuckDB.
 """
 
 import re
-from interlace.materialization.base import Materializer
-from interlace.core.context import _execute_sql_internal
-from interlace.utils.logging import get_logger
 from typing import Any
+
 import ibis
+
+from interlace.core.context import _execute_sql_internal
+from interlace.materialization.base import Materializer
+from interlace.utils.logging import get_logger
 
 
 class TableMaterializer(Materializer):
@@ -18,9 +20,7 @@ class TableMaterializer(Materializer):
     def __init__(self):
         self.logger = get_logger("interlace.materialization.table")
 
-    def materialise(
-        self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs
-    ) -> None:
+    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs) -> None:
         """
         Materialise data to table.
 
@@ -80,7 +80,7 @@ class TableMaterializer(Materializer):
                 f"Could not create table directly from ibis expression for '{model_name}': {e}. "
                 f"Falling back to DataFrame materialization."
             )
-        
+
         # Fallback: Execute ibis expression to materialise data, then create table
         # Note: Some backends require materialised data (DataFrame) for create_table(obj=)
         try:
@@ -99,9 +99,9 @@ class TableMaterializer(Materializer):
         if fields:
             try:
                 from interlace.utils.schema_utils import (
+                    apply_schema_to_dataframe,
                     fields_to_ibis_schema,
                     merge_schemas,
-                    apply_schema_to_dataframe
                 )
 
                 # Convert fields to ibis schema

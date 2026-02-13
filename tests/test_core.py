@@ -4,8 +4,8 @@ Tests for core functionality.
 Phase 0: Basic tests for model decorator and dependencies.
 """
 
-from interlace.core.model import model
 from interlace.core.dependencies import DependencyGraph
+from interlace.core.model import model
 
 
 def test_model_decorator():

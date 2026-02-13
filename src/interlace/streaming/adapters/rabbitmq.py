@@ -15,10 +15,10 @@ Example:
 
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 from interlace.streaming.adapters.base import (
     AdapterConfig,
@@ -49,14 +49,14 @@ class RabbitMQAdapter(MessageAdapter):
 
     def __init__(
         self,
-        url: Optional[str] = None,
+        url: str | None = None,
         host: str = "localhost",
         port: int = 5672,
         login: str = "guest",
         password: str = "guest",
         virtualhost: str = "/",
         exchange: str = "",
-        config: Optional[AdapterConfig] = None,
+        config: AdapterConfig | None = None,
     ):
         super().__init__(config)
         self.url = url or f"amqp://{login}:{password}@{host}:{port}/{virtualhost}"
@@ -69,11 +69,10 @@ class RabbitMQAdapter(MessageAdapter):
         """Connect to RabbitMQ."""
         try:
             import aio_pika
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
-                "aio-pika is required for RabbitMQ integration. "
-                "Install it with: pip install aio-pika"
-            )
+                "aio-pika is required for RabbitMQ integration. " "Install it with: pip install aio-pika"
+            ) from e
 
         self._connection = await aio_pika.connect_robust(self.url)
         self._channel = await self._connection.channel()
@@ -106,17 +105,14 @@ class RabbitMQAdapter(MessageAdapter):
         self,
         topic: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
     ) -> AsyncIterator[Message]:
         """Consume messages from a RabbitMQ queue."""
-        try:
-            import aio_pika
-        except ImportError:
-            raise ImportError(
-                "aio-pika is required for RabbitMQ integration. "
-                "Install it with: pip install aio-pika"
-            )
+        import importlib.util
+
+        if importlib.util.find_spec("aio_pika") is None:
+            raise ImportError("aio-pika is required for RabbitMQ integration. " "Install it with: pip install aio-pika")
 
         if not self._channel:
             raise RuntimeError("RabbitMQ not connected. Call connect() first.")
@@ -144,17 +140,13 @@ class RabbitMQAdapter(MessageAdapter):
 
                     headers = {}
                     if amqp_msg.headers:
-                        headers = {
-                            str(k): str(v) for k, v in amqp_msg.headers.items()
-                        }
+                        headers = {str(k): str(v) for k, v in amqp_msg.headers.items()}
 
                     yield Message(
                         key=amqp_msg.routing_key,
                         value=value,
                         headers=headers,
-                        timestamp=amqp_msg.timestamp
-                        if amqp_msg.timestamp
-                        else datetime.now(timezone.utc),
+                        timestamp=(amqp_msg.timestamp if amqp_msg.timestamp else datetime.now(UTC)),
                         topic=topic,
                         metadata={
                             "source": "rabbitmq",
@@ -168,24 +160,23 @@ class RabbitMQAdapter(MessageAdapter):
         """Produce a message to a RabbitMQ queue/exchange."""
         try:
             import aio_pika
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
-                "aio-pika is required for RabbitMQ integration. "
-                "Install it with: pip install aio-pika"
-            )
+                "aio-pika is required for RabbitMQ integration. " "Install it with: pip install aio-pika"
+            ) from e
 
         if not self._exchange:
             raise RuntimeError("RabbitMQ not connected. Call connect() first.")
 
-        body = json.dumps(
-            message.value if isinstance(message.value, dict) else {"payload": message.value}
-        ).encode("utf-8")
+        body = json.dumps(message.value if isinstance(message.value, dict) else {"payload": message.value}).encode(
+            "utf-8"
+        )
 
         amqp_msg = aio_pika.Message(
             body=body,
             content_type="application/json",
             headers=message.headers or {},
-            timestamp=message.timestamp or datetime.now(timezone.utc),
+            timestamp=message.timestamp or datetime.now(UTC),
         )
 
         await self._exchange.publish(

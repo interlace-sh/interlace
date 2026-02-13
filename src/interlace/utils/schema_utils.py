@@ -4,46 +4,51 @@ Schema utilities for converting fields to ibis schemas.
 Handles conversion of native Python types to ibis.Schema using ibis.schema().
 """
 
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import TYPE_CHECKING, Any
+
 import ibis
+
+if TYPE_CHECKING:
+    import pyarrow
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.utils.schema_utils")
 
 
-def fields_to_ibis_schema(fields: Any) -> Optional[ibis.Schema]:
+def fields_to_ibis_schema(fields: Any) -> ibis.Schema | None:
     """
     Convert fields parameter to ibis.Schema using ibis.schema().
-    
+
     Supports native ibis schema formats:
     - Dict: {"x": int, "y": str} or {"x": "int64", "y": "string"}
     - List of tuples: [("foo", "string"), ("bar", "int64")]
     - List of names + types: names=["foo", "bar"], types=["string", "int64"]
     - Existing Schema object (no-op)
-    
+
     Args:
         fields: Fields in any supported format (dict, list of tuples, Schema, etc.)
-        
+
     Returns:
         ibis.Schema object, or None if fields is None/empty
-        
+
     Examples:
         >>> fields_to_ibis_schema({"x": int, "y": str})
         ibis.Schema { x: int64, y: string }
-        
+
         >>> fields_to_ibis_schema([("foo", "string"), ("bar", "int64")])
         ibis.Schema { foo: string, bar: int64 }
-        
+
         >>> fields_to_ibis_schema({"x": "int64", "y": "string"})
         ibis.Schema { x: int64, y: string }
     """
     if fields is None:
         return None
-    
+
     # If already an ibis.Schema, return as-is
     if isinstance(fields, ibis.Schema):
         return fields
-    
+
     try:
         # Use ibis.schema() to handle all native formats
         # It accepts: dict, list of tuples, names+types, or existing Schema
@@ -55,7 +60,7 @@ def fields_to_ibis_schema(fields: Any) -> Optional[ibis.Schema]:
 
 def merge_schemas(
     base_schema: ibis.Schema,
-    fields_schema: Optional[ibis.Schema],
+    fields_schema: ibis.Schema | None,
 ) -> ibis.Schema:
     """
     Merge fields schema into base schema (add/replace fields).
@@ -107,7 +112,6 @@ def apply_schema_to_dataframe(df, schema: ibis.Schema):
         the original type is preserved (no error raised).
     """
     import pandas as pd
-    import pyarrow as pa
 
     if not isinstance(df, pd.DataFrame):
         return df
@@ -135,7 +139,7 @@ def apply_schema_to_dataframe(df, schema: ibis.Schema):
     return df
 
 
-def _arrow_to_pandas_dtype(arrow_type: "pa.DataType") -> Optional[str]:
+def _arrow_to_pandas_dtype(arrow_type: "pyarrow.DataType") -> str | None:
     """
     Map PyArrow type to pandas dtype string.
 
@@ -145,54 +149,50 @@ def _arrow_to_pandas_dtype(arrow_type: "pa.DataType") -> Optional[str]:
     Returns:
         pandas dtype string, or None if no mapping exists
     """
-    import pyarrow as pa
     import pyarrow.types as pat
 
     # Numeric types
     if pat.is_int8(arrow_type):
-        return 'int8'
+        return "int8"
     elif pat.is_int16(arrow_type):
-        return 'int16'
+        return "int16"
     elif pat.is_int32(arrow_type):
-        return 'int32'
+        return "int32"
     elif pat.is_int64(arrow_type):
-        return 'int64'
+        return "int64"
     elif pat.is_uint8(arrow_type):
-        return 'uint8'
+        return "uint8"
     elif pat.is_uint16(arrow_type):
-        return 'uint16'
+        return "uint16"
     elif pat.is_uint32(arrow_type):
-        return 'uint32'
+        return "uint32"
     elif pat.is_uint64(arrow_type):
-        return 'uint64'
+        return "uint64"
     elif pat.is_float16(arrow_type):
-        return 'float16'
+        return "float16"
     elif pat.is_float32(arrow_type):
-        return 'float32'
+        return "float32"
     elif pat.is_float64(arrow_type):
-        return 'float64'
+        return "float64"
     # Boolean
     elif pat.is_boolean(arrow_type):
-        return 'bool'
+        return "bool"
     # String types
     elif pat.is_string(arrow_type) or pat.is_unicode(arrow_type) or pat.is_utf8(arrow_type):
-        return 'str'
+        return "str"
     # Binary
     elif pat.is_binary(arrow_type):
-        return 'object'
+        return "object"
     # Date/Time types
     elif pat.is_date(arrow_type):
-        return 'datetime64[ns]'
+        return "datetime64[ns]"
     elif pat.is_timestamp(arrow_type):
-        return 'datetime64[ns]'
+        return "datetime64[ns]"
     elif pat.is_time(arrow_type):
-        return 'object'  # pandas doesn't have native time type
+        return "object"  # pandas doesn't have native time type
     # Decimal
     elif pat.is_decimal(arrow_type):
-        return 'object'  # pandas decimal as object
+        return "object"  # pandas decimal as object
     # Default
     else:
-        return 'object'
-
-
-
+        return "object"

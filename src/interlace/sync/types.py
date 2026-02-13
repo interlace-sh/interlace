@@ -5,7 +5,7 @@ Type definitions for sync jobs and file processors.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, Optional
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -64,5 +64,4 @@ class DestURI:
     uri: str
     connection: str
     key_or_path: str
-    bucket: Optional[str] = None
-
+    bucket: str | None = None

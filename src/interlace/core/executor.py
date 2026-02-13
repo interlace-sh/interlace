@@ -9,38 +9,40 @@ import inspect
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional, Any, Set, Tuple, List, Union
+from typing import Any
+
 import ibis
 import ibis.expr.datatypes as dt
-from interlace.core.dependencies import DependencyGraph
-from interlace.core.context import set_connection, get_connection as get_context_connection
+
 from interlace.connections.manager import get_connection, init_connections
-from interlace.materialization.table import TableMaterializer
-from interlace.materialization.view import ViewMaterializer
-from interlace.materialization.ephemeral import EphemeralMaterializer
-from interlace.strategies.merge_by_key import MergeByKeyStrategy
-from interlace.strategies.append import AppendStrategy
-from interlace.strategies.replace import ReplaceStrategy
-from interlace.strategies.none import NoneStrategy
-from interlace.strategies.base import Strategy
-from interlace.utils.logging import get_logger
-from interlace.core.flow import Flow, Task, TaskStatus
-from interlace.core.state import StateStore
-from interlace.exceptions import ConnectionLockError, StateStoreError
-from interlace.utils.display import get_display
-from interlace.utils.table_utils import get_row_count_efficient
-from interlace.core.execution.data_converter import DataConverter
+from interlace.core.context import get_connection as get_context_connection
+from interlace.core.context import set_connection
+from interlace.core.dependencies import DependencyGraph
 from interlace.core.execution.change_detector import ChangeDetector
+from interlace.core.execution.config import ModelExecutorConfig
 from interlace.core.execution.connection_manager import TaskConnectionManager
-from interlace.core.execution.schema_manager import SchemaManager
+from interlace.core.execution.data_converter import DataConverter
 from interlace.core.execution.dependency_loader import DependencyLoader
+from interlace.core.execution.execution_orchestrator import ExecutionOrchestrator
 from interlace.core.execution.materialization_manager import MaterializationManager
 from interlace.core.execution.model_executor import ModelExecutor
-from interlace.core.execution.execution_orchestrator import ExecutionOrchestrator
-from interlace.core.execution.config import ModelExecutorConfig
-from interlace.utils.table_utils import check_table_exists, try_load_table
+from interlace.core.execution.schema_manager import SchemaManager
+from interlace.core.flow import Flow
+from interlace.core.state import StateStore
+from interlace.exceptions import ConnectionLockError
+from interlace.materialization.ephemeral import EphemeralMaterializer
+from interlace.materialization.table import TableMaterializer
+from interlace.materialization.view import ViewMaterializer
+from interlace.strategies.append import AppendStrategy
+from interlace.strategies.merge_by_key import MergeByKeyStrategy
+from interlace.strategies.none import NoneStrategy
+from interlace.strategies.replace import ReplaceStrategy
+from interlace.utils.display import get_display
+from interlace.utils.logging import get_logger
+from interlace.utils.table_utils import check_table_exists, get_row_count_efficient, try_load_table
 
 logger = get_logger("interlace.executor")
+
 
 class Executor:
     """
@@ -71,19 +73,19 @@ class Executor:
     DEFAULT_TASK_TIMEOUT = 30.0  # Timeout for waiting for task completion (seconds)
     DEFAULT_THREAD_POOL_SIZE = None  # None means auto-detect (use CPU count)
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.config = config
-        self.completed: Set[str] = set()
-        self.executing: Set[str] = set()
-        self.results: Dict[str, Any] = {}
-        self.materialised_tables: Dict[str, "ibis.Table"] = {}
+        self.completed: set[str] = set()
+        self.executing: set[str] = set()
+        self.results: dict[str, Any] = {}
+        self.materialised_tables: dict[str, ibis.Table] = {}
         self.display = get_display()  # Get global RichDisplay instance
         # Flow/task tracking
-        self.flow: Optional[Flow] = None
-        self.flow_start_time: Optional[float] = None
-        
+        self.flow: Flow | None = None
+        self.flow_start_time: float | None = None
+
         # State database (optional)
-        self.state_store: Optional[StateStore] = None
+        self.state_store: StateStore | None = None
         try:
             self.state_store = StateStore(config)
         except (ValueError, RuntimeError, OSError) as e:
@@ -91,7 +93,7 @@ class Executor:
 
         # Phase 2: Initialize retry framework components
         # Retry manager and dead letter queue for handling transient failures
-        from interlace.core.retry import RetryManager, DeadLetterQueue, CircuitBreaker
+        from interlace.core.retry import CircuitBreaker, DeadLetterQueue, RetryManager
 
         # Get retry configuration from config
         retry_config = config.get("retry", {})
@@ -116,43 +118,41 @@ class Executor:
         logger.debug("Retry framework initialized")
 
         # Dependency loading locks to prevent race conditions
-        self._dep_loading_locks: Dict[str, asyncio.Lock] = {}
+        self._dep_loading_locks: dict[str, asyncio.Lock] = {}
 
         # Schema caching for performance
-        self._schema_cache: Dict[str, "ibis.Schema"] = {}  # cache_key -> schema
-        self._table_existence_cache: Dict[tuple, bool] = {}  # (table_name, schema) -> exists
-        self._dep_schema_cache: Dict[str, Optional[str]] = {}  # dep_name -> schema_name
+        self._schema_cache: dict[str, ibis.Schema] = {}  # cache_key -> schema
+        self._table_existence_cache: dict[tuple, bool] = {}  # (table_name, schema) -> exists
+        self._dep_schema_cache: dict[str, str | None] = {}  # dep_name -> schema_name
 
         # Extract configuration values with defaults
         executor_config = config.get("executor", {})
         self.max_iterations = executor_config.get("max_iterations", self.DEFAULT_MAX_ITERATIONS)
-        self.table_load_delay = executor_config.get(
-            "table_load_delay", self.DEFAULT_TABLE_LOAD_DELAY
-        )
+        self.table_load_delay = executor_config.get("table_load_delay", self.DEFAULT_TABLE_LOAD_DELAY)
         self.task_timeout = executor_config.get("task_timeout", self.DEFAULT_TASK_TIMEOUT)
-        
+
         # Cache configuration
         cache_config = executor_config.get("cache", {})
         self.max_schema_cache_size = cache_config.get("max_schema_cache_size", 1000)
         self.max_existence_cache_size = cache_config.get("max_existence_cache_size", 2000)
         self.schema_cache_ttl = cache_config.get("schema_cache_ttl")  # None = no expiration
         self.existence_cache_ttl = cache_config.get("existence_cache_ttl")  # None = no expiration
-        
+
         # Create thread pool executor for Python model execution
         # Support "auto" or None for CPU-based sizing, or explicit integer value
         max_workers_config = executor_config.get("max_workers", self.DEFAULT_THREAD_POOL_SIZE)
         thread_pool_size = self._determine_thread_pool_size(max_workers_config)
         self.executor_pool = ThreadPoolExecutor(max_workers=thread_pool_size)
         self.thread_pool_size = thread_pool_size  # Store for display visibility management
-        
+
         # Initialize connections
         init_connections(self.config)
 
         # Store all connections for multi-connection support
         # Also store configs so we can create per-task connections (DuckDB is not thread-safe)
-        self.connections: Dict[str, Any] = {}  # Shared ibis backend connections
-        self.connection_configs: Dict[str, Dict[str, Any]] = {}  # Connection configs for cloning
-        
+        self.connections: dict[str, Any] = {}  # Shared ibis backend connections
+        self.connection_configs: dict[str, dict[str, Any]] = {}  # Connection configs for cloning
+
         # Determine default connection: check if "default" exists, otherwise use first connection or "duckdb_main"
         connections_config = self.config.get("connections", {})
         if "default" in connections_config:
@@ -236,7 +236,7 @@ class Executor:
             state_store=self.state_store,
         )
         # Set default connection in TaskConnectionManager after it's initialized
-        if hasattr(self, 'con'):
+        if hasattr(self, "con"):
             self.connection_manager._default_connection = self.con
         self.schema_manager = SchemaManager(
             data_converter=self.data_converter,
@@ -268,7 +268,7 @@ class Executor:
             "replace": ReplaceStrategy(),
             "none": NoneStrategy(),
         }
-        
+
         # Initialize MaterializationManager after strategies are set up
         self.materialization_manager = MaterializationManager(
             schema_manager=self.schema_manager,
@@ -277,7 +277,7 @@ class Executor:
             flow=None,  # Will be set when flow is created
             get_row_count_func=self._get_row_count,
         )
-        
+
         # Initialize ModelExecutor after all components are set up
         # Use configuration object to reduce coupling
         # Note: flow and display will be set later when flow is created
@@ -311,12 +311,12 @@ class Executor:
             store_materialised_table_func=self._store_materialised_table,
         )
         self.model_executor = ModelExecutor(model_executor_config)
-        
+
         # Initialize ExecutionOrchestrator after all components are set up
         # Pass a callback to update Executor's flow reference when flow is created
         def set_executor_flow(flow):
             self.flow = flow
-        
+
         self.execution_orchestrator = ExecutionOrchestrator(
             model_executor=self.model_executor,
             change_detector=self.change_detector,
@@ -330,20 +330,20 @@ class Executor:
             executor_flow_setter=set_executor_flow,
         )
 
-    def _determine_thread_pool_size(self, max_workers: Union[int, str, None]) -> int:
+    def _determine_thread_pool_size(self, max_workers: int | str | None) -> int:
         """
         Determine thread pool size from configuration.
-        
+
         For I/O-bound workloads (API calls, database queries, file operations),
         using more threads than CPUs is optimal since threads spend time waiting.
         Default uses: min(32, (CPU count * 2) + 4) which provides good balance.
-        
+
         Args:
             max_workers: Configuration value - can be:
                 - None or "auto": Use optimized formula: min(32, (CPU count * 2) + 4)
                 - Integer: Use explicit value
                 - String "auto": Use optimized formula
-        
+
         Returns:
             Integer thread pool size
         """
@@ -357,7 +357,7 @@ class Executor:
             if cpu_count is None:
                 logger.warning("Could not determine CPU count, defaulting to 8 workers")
                 return 8
-            
+
             # Optimized for I/O-bound: 2x CPUs + 4, capped at 32
             optimal_size = min(32, (cpu_count * 2) + 4)
             return optimal_size
@@ -373,8 +373,9 @@ class Executor:
     def _extract_pid_from_error(self, error_msg: str) -> str:
         """Extract process ID from error message if present."""
         import re
+
         # Look for "PID 12345" pattern
-        match = re.search(r'PID\s+(\d+)', error_msg)
+        match = re.search(r"PID\s+(\d+)", error_msg)
         if match:
             return match.group(1)
         return "unknown"
@@ -382,40 +383,39 @@ class Executor:
     def _extract_pid_from_error_chain(self, exception: Exception) -> str:
         """Extract process ID from exception chain by traversing __cause__ and __context__."""
         import re
+
         current = exception
-        
+
         # Check current exception
         error_str = str(current)
-        match = re.search(r'PID\s+(\d+)', error_str)
+        match = re.search(r"PID\s+(\d+)", error_str)
         if match:
             return match.group(1)
-        
+
         # Traverse __cause__ chain
-        cause = getattr(current, '__cause__', None)
+        cause = getattr(current, "__cause__", None)
         while cause:
             error_str = str(cause)
-            match = re.search(r'PID\s+(\d+)', error_str)
+            match = re.search(r"PID\s+(\d+)", error_str)
             if match:
                 return match.group(1)
-            cause = getattr(cause, '__cause__', None)
-        
+            cause = getattr(cause, "__cause__", None)
+
         # Traverse __context__ chain (for chained exceptions)
-        context = getattr(current, '__context__', None)
+        context = getattr(current, "__context__", None)
         while context:
             error_str = str(context)
-            match = re.search(r'PID\s+(\d+)', error_str)
+            match = re.search(r"PID\s+(\d+)", error_str)
             if match:
                 return match.group(1)
-            context = getattr(context, '__context__', None)
-        
+            context = getattr(context, "__context__", None)
+
         return "unknown"
 
-    def _log_model_start(
-        self, model_name: str, model_info: Dict[str, Any]
-    ) -> None:
+    def _log_model_start(self, model_name: str, model_info: dict[str, Any]) -> None:
         """
         Log model execution start with smart formatting.
-        
+
         Args:
             model_name: Name of the model
             model_info: Model configuration dictionary
@@ -424,7 +424,7 @@ class Executor:
         materialise = model_info.get("materialise", "table")
         schema = model_info.get("schema", "public")
         strategy_name = model_info.get("strategy")
-        
+
         # Build log message with context
         parts = [f"Starting {model_type} model '{model_name}'"]
         if schema != "public":
@@ -432,19 +432,26 @@ class Executor:
         parts.append(f"materialize={materialise}")
         if strategy_name:
             parts.append(f"strategy={strategy_name}")
-        
+
         logger.info(" | ".join(parts))
 
     def _log_model_end(
-        self, model_name: str, model_info: Dict[str, Any], 
-        success: bool, duration: float, rows_processed: Optional[int] = None,
-        rows_ingested: Optional[int] = None, rows_inserted: Optional[int] = None,
-        rows_updated: Optional[int] = None, rows_deleted: Optional[int] = None,
-        schema_changes: int = 0, error: Optional[str] = None
+        self,
+        model_name: str,
+        model_info: dict[str, Any],
+        success: bool,
+        duration: float,
+        rows_processed: int | None = None,
+        rows_ingested: int | None = None,
+        rows_inserted: int | None = None,
+        rows_updated: int | None = None,
+        rows_deleted: int | None = None,
+        schema_changes: int = 0,
+        error: str | None = None,
     ) -> None:
         """
         Log model execution end with timing and statistics.
-        
+
         Args:
             model_name: Name of the model
             model_info: Model configuration dictionary
@@ -467,11 +474,11 @@ class Executor:
             minutes = int(duration // 60)
             seconds = duration % 60
             duration_str = f"{minutes}m{seconds:.1f}s"
-        
+
         if success:
             # Build success message with statistics
             parts = [f"Completed '{model_name}' in {duration_str}"]
-            
+
             # Add row statistics if available
             stats = []
             if rows_processed is not None:
@@ -484,10 +491,10 @@ class Executor:
                 stats.append(f"{rows_deleted:,} deleted")
             if schema_changes > 0:
                 stats.append(f"{schema_changes} schema change(s)")
-            
+
             if stats:
                 parts.append("(" + ", ".join(stats) + ")")
-            
+
             logger.info(" | ".join(parts))
         else:
             # Build error message with timing
@@ -497,38 +504,37 @@ class Executor:
             logger.error(error_msg)
 
     def _prepare_model_execution(
-        self, model_name: str, model_info: Dict[str, Any]
-    ) -> Tuple[str, str, str, Optional[str], float]:
+        self, model_name: str, model_info: dict[str, Any]
+    ) -> tuple[str, str, str, str | None, float]:
         """
         Prepare model execution by extracting configuration and initializing tracking.
-        
+
         Returns:
             Tuple of (model_type, materialise, schema, strategy_name, start_time)
         """
-        import time
-        
+
         start_time = time.time()
-        
+
         # Track timing for debugging parallelization
         if not hasattr(self, "model_timing"):
             self.model_timing = {}
         self.model_timing[model_name] = {"start_time": start_time, "end_time": None}
-        
+
         # Extract model configuration
         model_type = model_info.get("type", "python")
         materialise = model_info.get("materialise", "table")
         schema = model_info.get("schema", "public")
         strategy_name = model_info.get("strategy")
-        
+
         # Log model start
         self._log_model_start(model_name, model_info)
-        
+
         # Update task status to running
         if model_name in self.flow.tasks:
             task = self.flow.tasks[model_name]
             task.start()
             self.display.update_from_flow()
-        
+
         return model_type, materialise, schema, strategy_name, start_time
 
     async def _store_materialised_table(
@@ -546,7 +552,7 @@ class Executor:
             # Always store the result table first to ensure it's available
             # Then try to load from database if possible (for better performance)
             self.materialised_tables[model_name] = result
-            
+
             try:
                 # Small delay to ensure table is visible after materialization
                 await asyncio.sleep(self.table_load_delay)
@@ -570,10 +576,10 @@ class Executor:
         materialise: str,
         schema: str,
         model_conn: ibis.BaseBackend,
-    ) -> Optional[int]:
+    ) -> int | None:
         """
         Get row count from materialised table or result.
-        
+
         Returns:
             Row count or None if unable to determine
         """
@@ -620,9 +626,9 @@ class Executor:
         self,
         dep_name: str,
         model_conn: ibis.BaseBackend,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         schema: str,
-    ) -> Optional[ibis.Table]:
+    ) -> ibis.Table | None:
         """
         Load a dependency table with lock to optimize performance.
 
@@ -696,10 +702,10 @@ class Executor:
 
     async def _execute_python_model(
         self,
-        model_info: Dict[str, Any],
-        dependency_tables: Dict[str, ibis.Table],
+        model_info: dict[str, Any],
+        dependency_tables: dict[str, ibis.Table],
         connection: ibis.BaseBackend,
-    ) -> Optional[ibis.Table]:
+    ) -> ibis.Table | None:
         """Execute Python model function (supports both async and sync functions)."""
         func = model_info.get("function")
         if not func:
@@ -749,9 +755,12 @@ class Executor:
             fields = model_info.get("fields")
             return self.data_converter.convert_to_ibis_table(result, fields=fields)
 
-
     async def _setup_reference_table(
-        self, data: Any, model_name: str, connection: ibis.BaseBackend, model_info: Optional[Dict[str, Any]] = None
+        self,
+        data: Any,
+        model_name: str,
+        connection: ibis.BaseBackend,
+        model_info: dict[str, Any] | None = None,
     ) -> ibis.Table:
         """
         Setup reference table for schema validation.
@@ -778,13 +787,16 @@ class Executor:
             return connection.table(ref_table_name)
         except Exception as e:
             # Fallback: if temp table creation fails, use memtable directly
-            logger.warning(
-                f"Could not create reference table {ref_table_name}: {e}, using memtable directly"
-            )
+            logger.warning(f"Could not create reference table {ref_table_name}: {e}, using memtable directly")
             return table_expr
 
     async def _validate_and_update_schema(
-        self, table_ref: ibis.Table, model_name: str, schema: str, connection: ibis.BaseBackend, model_info: Optional[Dict[str, Any]] = None
+        self,
+        table_ref: ibis.Table,
+        model_name: str,
+        schema: str,
+        connection: ibis.BaseBackend,
+        model_info: dict[str, Any] | None = None,
     ) -> int:
         """
         Validate schema compatibility and handle schema evolution.
@@ -803,9 +815,9 @@ class Executor:
         Returns:
             Number of schema changes applied
         """
-        from interlace.schema.validation import validate_schema
         from interlace.schema.evolution import apply_schema_changes, should_apply_schema_changes
         from interlace.schema.tracking import track_schema_version
+        from interlace.schema.validation import validate_schema
 
         # Check if target table exists using cached check
         table_exists = self.schema_manager.check_table_exists(connection, model_name, schema)
@@ -814,6 +826,7 @@ class Executor:
         fields = model_info.get("fields") if model_info else None
         # Convert fields to ibis schema for validation
         from interlace.utils.schema_utils import fields_to_ibis_schema
+
         fields_schema = fields_to_ibis_schema(fields)
 
         # Check cache first (use 'main' as default schema for consistency)
@@ -848,9 +861,7 @@ class Executor:
 
         if validation_result.errors:
             # Log errors but don't fail (non-fatal)
-            logger.warning(
-                f"Schema validation errors for {model_name}: {', '.join(validation_result.errors)}"
-            )
+            logger.warning(f"Schema validation errors for {model_name}: {', '.join(validation_result.errors)}")
             return 0
 
         # Track schema version (informative only)
@@ -871,9 +882,7 @@ class Executor:
                 logger.debug(f"Could not track schema version for {model_name}: {e}")
 
         # Apply schema changes if needed
-        if existing_schema is not None and should_apply_schema_changes(
-            existing_schema, new_schema, fields_schema
-        ):
+        if existing_schema is not None and should_apply_schema_changes(existing_schema, new_schema, fields_schema):
             try:
                 changes_count = apply_schema_changes(
                     connection, model_name, schema, existing_schema, new_schema, fields_schema
@@ -893,8 +902,8 @@ class Executor:
 
     async def _execute_sql_model(
         self,
-        model_info: Dict[str, Any],
-        dependency_tables: Dict[str, ibis.Table],
+        model_info: dict[str, Any],
+        dependency_tables: dict[str, ibis.Table],
         connection: ibis.BaseBackend,
     ) -> ibis.Table:
         """
@@ -953,7 +962,7 @@ class Executor:
         try:
             # Log SQL model execution
             logger.debug(f"Executing SQL model '{model_name}'")
-            
+
             # Try the normal path first
             result = connection.sql(query)
 
@@ -964,9 +973,7 @@ class Executor:
             except Exception as exec_error:
                 error_msg = str(exec_error).lower()
                 # Check if it's a duplicate CTE error
-                if "duplicate cte" in error_msg or (
-                    "duplicate" in error_msg and "cte" in error_msg
-                ):
+                if "duplicate cte" in error_msg or ("duplicate" in error_msg and "cte" in error_msg):
                     # Use workaround: execute directly and create temp table
                     workaround_result = execute_with_workaround()
                     if workaround_result is not None:
@@ -997,8 +1004,8 @@ class Executor:
             raise
 
     async def execute_dynamic(
-        self, models: Dict[str, Dict[str, Any]], graph: DependencyGraph, force: bool = False
-    ) -> Dict[str, Any]:
+        self, models: dict[str, dict[str, Any]], graph: DependencyGraph, force: bool = False
+    ) -> dict[str, Any]:
         """
         Execute models dynamically as dependencies complete.
 
@@ -1021,16 +1028,16 @@ class Executor:
 
     async def _execute_loop(
         self,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        executing: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
-        results: Dict[str, Any],
-        task_map: Dict[str, asyncio.Task],
-        ready: Set[str],
-    ) -> Dict[str, Any]:
+        pending: set[str],
+        executing: set[str],
+        completed: set[str],
+        succeeded: set[str],
+        results: dict[str, Any],
+        task_map: dict[str, asyncio.Task],
+        ready: set[str],
+    ) -> dict[str, Any]:
         """
         Internal execution loop (extracted for progress display context).
 
@@ -1089,9 +1096,7 @@ class Executor:
                         missing_deps[model_name] = missing
 
                 if missing_deps:
-                    logger.error(
-                        f"Deadlock detected - models have missing dependencies: {missing_deps}"
-                    )
+                    logger.error(f"Deadlock detected - models have missing dependencies: {missing_deps}")
                 else:
                     logger.error(
                         f"Deadlock detected - circular dependencies or unstartable models in pending: {pending}"
@@ -1101,7 +1106,16 @@ class Executor:
             # Wait for at least one task to complete
             if executing:
                 await self._wait_for_task_completion(
-                    executing, task_map, results, models, graph, pending, ready, new_ready, completed, succeeded
+                    executing,
+                    task_map,
+                    results,
+                    models,
+                    graph,
+                    pending,
+                    ready,
+                    new_ready,
+                    completed,
+                    succeeded,
                 )
 
             # Update ready list: add newly ready models from pending
@@ -1109,7 +1123,7 @@ class Executor:
             # Also check for models that should be skipped (have failed dependencies)
             for model_name in list(pending):
                 deps = graph.get_dependencies(model_name)
-                
+
                 # Check if any dependency failed - if so, mark as skipped
                 failed_deps = [d for d in deps if d in completed and d not in succeeded]
                 if failed_deps:
@@ -1117,7 +1131,7 @@ class Executor:
                     pending.remove(model_name)
                     completed.add(model_name)
                     # Don't add to succeeded
-                    
+
                     # Create error message
                     error_msg = f"Dependencies {failed_deps} failed"
                     results[model_name] = {
@@ -1126,7 +1140,7 @@ class Executor:
                         "error": error_msg,
                         "failed_dependencies": failed_deps,
                     }
-                    
+
                     # Update task status
                     if model_name in self.flow.tasks:
                         task = self.flow.tasks[model_name]
@@ -1134,7 +1148,7 @@ class Executor:
                         task.error_message = error_msg
                         if self.state_store:
                             self.state_store.save_task(task)
-                    
+
                     # Log and update display
                     logger.error(f"Model '{model_name}' skipped: {error_msg}")
                     if self.display.enabled:
@@ -1152,7 +1166,7 @@ class Executor:
 
                     # Update display for newly ready models
                     self.display.update_from_flow()
-                    
+
                     # Note: Model start logging happens in _prepare_model_execution()
                     # which is called at the beginning of execute_model()
 
@@ -1164,9 +1178,9 @@ class Executor:
     async def _start_model_execution(
         self,
         model_name: str,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        task_map: Dict[str, asyncio.Task],
+        task_map: dict[str, asyncio.Task],
     ):
         """
         Start execution of a model.
@@ -1188,21 +1202,23 @@ class Executor:
         # Create task for model execution
         # Get force flag from executor instance (passed to execute_dynamic)
         force = getattr(self, "_force_execution", False)
-        task = asyncio.create_task(self.model_executor.execute_model(model_name, models[model_name], models, force=force))
+        task = asyncio.create_task(
+            self.model_executor.execute_model(model_name, models[model_name], models, force=force)
+        )
         task_map[model_name] = task
 
     async def _wait_for_task_completion(
         self,
-        executing: Set[str],
-        task_map: Dict[str, asyncio.Task],
-        results: Dict[str, Any],
-        models: Dict[str, Dict[str, Any]],
+        executing: set[str],
+        task_map: dict[str, asyncio.Task],
+        results: dict[str, Any],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        ready: Set[str],
-        new_ready: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
+        pending: set[str],
+        ready: set[str],
+        new_ready: set[str],
+        completed: set[str],
+        succeeded: set[str],
     ):
         """
         Wait for at least one task to complete and process the result.
@@ -1235,7 +1251,7 @@ class Executor:
                     task.cancel()
             # Re-raise to be handled by outer handler
             raise KeyboardInterrupt("Execution interrupted") from e
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"Timeout waiting for tasks to complete. Executing: {executing}")
             # Cancel hanging tasks
             for task in executing_tasks:
@@ -1262,6 +1278,7 @@ class Executor:
             except Exception as e:
                 # Capture exception info while still in exception context
                 import sys
+
                 exc_info = sys.exc_info()
                 await self._process_failed_task(
                     task,
@@ -1282,16 +1299,16 @@ class Executor:
     async def _process_completed_task(
         self,
         task: asyncio.Task,
-        result: Dict[str, Any],
-        executing: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
-        results: Dict[str, Any],
-        task_map: Dict[str, asyncio.Task],
-        models: Dict[str, Dict[str, Any]],
+        result: dict[str, Any],
+        executing: set[str],
+        completed: set[str],
+        succeeded: set[str],
+        results: dict[str, Any],
+        task_map: dict[str, asyncio.Task],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        new_ready: Set[str],
+        pending: set[str],
+        new_ready: set[str],
     ):
         """
         Process a successfully completed task.
@@ -1327,11 +1344,11 @@ class Executor:
                         flow_task.complete(success=False)
                         error_msg = result.get("error", "Unknown error")
                         flow_task.error_message = error_msg
-                        
+
                         # Log error - models can return errors as results instead of raising exceptions
                         error_message = f"Model '{model_name}' failed: {error_msg}"
                         error_traceback = result.get("traceback") or result.get("error_stacktrace")
-                        
+
                         # Log error with traceback if available
                         # NOTE: Do this BEFORE update_from_flow() to avoid potential deadlocks
                         # The logging handler might access display state, and update_from_flow()
@@ -1342,14 +1359,21 @@ class Executor:
                             if exc_info and len(exc_info) == 3:
                                 # Use exc_info for RichHandler to format traceback nicely
                                 # This will show the styled traceback in console
-                                logger.error(error_message, exc_info=exc_info, extra={'model_name': model_name})
+                                logger.error(
+                                    error_message,
+                                    exc_info=exc_info,
+                                    extra={"model_name": model_name},
+                                )
                             elif error_traceback:
                                 # Fallback: include traceback in message if exc_info not available
-                                logger.error(f"{error_message}\n{error_traceback}", extra={'model_name': model_name})
+                                logger.error(
+                                    f"{error_message}\n{error_traceback}",
+                                    extra={"model_name": model_name},
+                                )
                             else:
                                 # No traceback available, just log the error message
-                                logger.error(error_message, exc_info=True, extra={'model_name': model_name})
-                            
+                                logger.error(error_message, exc_info=True, extra={"model_name": model_name})
+
                             # Also add error to display for error panel (include traceback if available)
                             if self.display.enabled:
                                 if error_traceback:
@@ -1363,8 +1387,9 @@ class Executor:
                             except Exception:
                                 # Last resort - print to stderr
                                 import sys
+
                                 # Fallback: use stderr if logging completely fails
-                                import sys
+
                                 sys.stderr.write(f"ERROR: Model '{model_name}' failed: {error_msg}\n")
                                 sys.stderr.write(f"ERROR: Logging also failed: {log_error}\n")
                         # Don't add to succeeded - model failed
@@ -1374,7 +1399,7 @@ class Executor:
                         # schema_changes already set during execution
                         # Add to succeeded set - model completed successfully
                         succeeded.add(model_name)
-                    
+
                     # Save task to state database
                     if self.state_store:
                         self.state_store.save_task(flow_task)
@@ -1406,16 +1431,16 @@ class Executor:
         self,
         task: asyncio.Task,
         error: Exception,
-        executing: Set[str],
-        completed: Set[str],
-        succeeded: Set[str],
-        results: Dict[str, Any],
-        task_map: Dict[str, asyncio.Task],
-        models: Dict[str, Dict[str, Any]],
+        executing: set[str],
+        completed: set[str],
+        succeeded: set[str],
+        results: dict[str, Any],
+        task_map: dict[str, asyncio.Task],
+        models: dict[str, dict[str, Any]],
         graph: DependencyGraph,
-        pending: Set[str],
-        ready: Set[str],
-        new_ready: Set[str],
+        pending: set[str],
+        ready: set[str],
+        new_ready: set[str],
         exc_info=None,
     ):
         """
@@ -1445,16 +1470,16 @@ class Executor:
 
                 # Update task status and log error
                 import traceback
-                
+
                 # Get full traceback for logging
                 # Use exc_info if provided (from exception context), otherwise use error's traceback
                 if exc_info and len(exc_info) == 3:
                     exc_type, exc_value, exc_tb = exc_info
                 else:
                     exc_type, exc_value, exc_tb = type(error), error, error.__traceback__
-                
-                error_traceback = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
-                
+
+                error_traceback = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+
                 if model_name in self.flow.tasks:
                     flow_task = self.flow.tasks[model_name]
                     flow_task.complete(success=False)
@@ -1463,7 +1488,7 @@ class Executor:
 
                 # Log error with full traceback - this will appear in logs above progress bars and in file
                 error_message = f"Model '{model_name}' failed: {str(error)}"
-                
+
                 # Log error with exception info tuple (preserves full traceback)
                 # Always use exc_info tuple if we have it (from sys.exc_info())
                 # This ensures the file handler receives the full traceback
@@ -1474,22 +1499,19 @@ class Executor:
                         logger.error(
                             error_message,
                             exc_info=(exc_type, exc_value, exc_tb),
-                            extra={'model_name': model_name}
+                            extra={"model_name": model_name},
                         )
                     elif exc_tb is not None:
                         # Use constructed exc_info from error object
                         logger.error(
                             error_message,
                             exc_info=(exc_type, exc_value, exc_tb),
-                            extra={'model_name': model_name}
+                            extra={"model_name": model_name},
                         )
                     else:
                         # Fallback - log without traceback if we can't get it
                         # Don't use exc_info=True here as we're outside exception context
-                        logger.error(
-                            error_message,
-                            extra={'model_name': model_name}
-                        )
+                        logger.error(error_message, extra={"model_name": model_name})
                 except Exception as log_error:
                     # If logging fails, at least try to log a simple error message
                     # This should never happen, but if it does, we want to know
@@ -1498,15 +1520,16 @@ class Executor:
                     except Exception:
                         # Last resort - print to stderr
                         import sys
+
                         # Fallback: use stderr if logging completely fails
-                        import sys
+
                         sys.stderr.write(f"ERROR: Model '{model_name}' failed: {str(error)}\n")
                         sys.stderr.write(f"ERROR: Logging also failed: {log_error}\n")
-                
+
                 # Also ensure error is added to display for error panel
                 if self.display.enabled:
                     self.display.add_error(model_name, f"{str(error)}\n{error_traceback}")
-                
+
                 # Update display
                 self.display.update_from_flow()
 
@@ -1518,7 +1541,7 @@ class Executor:
                     # Skip dependents that are already executing or completed
                     if dependent in executing or dependent in completed:
                         continue
-                    
+
                     # Mark as skipped if in pending or ready (not yet executing)
                     if dependent in pending or dependent in ready:
                         # Remove from pending/ready sets
@@ -1526,13 +1549,13 @@ class Executor:
                             pending.remove(dependent)
                         if dependent in ready:
                             ready.discard(dependent)  # Use discard to avoid KeyError if not present
-                        
+
                         completed.add(dependent)  # Mark as complete (skipped)
                         # Don't add to succeeded - it was skipped
-                        
+
                         # Create error message indicating the failed dependency
                         error_msg = f"Dependency '{model_name}' failed: {str(error)}"
-                        
+
                         # Check if this dependent already has an error (multiple failed dependencies)
                         if dependent in results and results[dependent].get("status") == "error":
                             # Append to existing error
@@ -1543,37 +1566,39 @@ class Executor:
                                 failed_deps.append(model_name)
                         else:
                             failed_deps = [model_name]
-                        
+
                         results[dependent] = {
                             "status": "error",
                             "model": dependent,
                             "error": error_msg,
                             "failed_dependencies": failed_deps,
                         }
-                        
+
                         # Update task status - mark as skipped since dependency failed
                         if dependent in self.flow.tasks:
                             dep_task = self.flow.tasks[dependent]
                             dep_task.skip()  # Mark as skipped, not failed
                             dep_task.error_message = error_msg
-                            dep_task.error_stacktrace = f"Dependency '{model_name}' failed with error:\n{error_traceback}"
-                            
+                            dep_task.error_stacktrace = (
+                                f"Dependency '{model_name}' failed with error:\n{error_traceback}"
+                            )
+
                             if self.state_store:
                                 self.state_store.save_task(dep_task)
-                        
+
                         # Log error for dependent model
                         logger.error(
                             f"Model '{dependent}' skipped: {error_msg}",
-                            extra={'model_name': dependent, 'failed_dependency': model_name}
+                            extra={"model_name": dependent, "failed_dependency": model_name},
                         )
-                        
+
                         # Add error to display
                         if self.display.enabled:
                             self.display.add_error(
                                 dependent,
-                                f"Skipped due to failed dependency '{model_name}': {str(error)}"
+                                f"Skipped due to failed dependency '{model_name}': {str(error)}",
                             )
-                        
+
                         # Update display immediately
                         self.display.update_from_flow()
                 break
@@ -1588,10 +1613,10 @@ class Executor:
     ) -> None:
         """
         Create a table safely, handling schema/qualified name variations.
-        
+
         Tries to create table with database parameter first, falls back to qualified name
         if that fails (for backends that don't support database parameter).
-        
+
         Args:
             connection: ibis connection backend
             table_name: Name of the table to create
@@ -1606,9 +1631,7 @@ class Executor:
             qualified_name = f"{schema}.{table_name}"
             connection.create_table(qualified_name, obj=obj, overwrite=overwrite)
 
-    def _check_table_exists(
-        self, connection: ibis.BaseBackend, table_name: str, schema: Optional[str] = None
-    ) -> bool:
+    def _check_table_exists(self, connection: ibis.BaseBackend, table_name: str, schema: str | None = None) -> bool:
         """
         Check if a table exists using cached checks.
 
@@ -1626,7 +1649,7 @@ class Executor:
 
         exists = check_table_exists(connection, table_name, schema)
         self._table_existence_cache[cache_key] = exists
-        
+
         # Invalidate schema cache if table existence changed
         # This handles cases where table is dropped/recreated externally
         schema_cache_key = f"{schema or 'main'}.{table_name}"
@@ -1634,7 +1657,7 @@ class Executor:
             # If table doesn't exist but we have cached schema, invalidate it
             if not exists:
                 del self._schema_cache[schema_cache_key]
-        
+
         return exists
 
 
@@ -1695,14 +1718,14 @@ def _is_safe_type_cast(from_type: dt.DataType, to_type: dt.DataType) -> bool:
 
 
 async def execute_models(
-    models: Dict[str, Dict[str, Any]],
+    models: dict[str, dict[str, Any]],
     graph: DependencyGraph,
-    config: Dict[str, Any],
+    config: dict[str, Any],
     use_progress: bool = True,
     force: bool = False,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-) -> Dict[str, Any]:
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
     """
     Execute models using dynamic parallel execution.
 

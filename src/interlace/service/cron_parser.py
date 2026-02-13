@@ -17,8 +17,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, Set
-
 from zoneinfo import ZoneInfo
 
 
@@ -28,11 +26,11 @@ class CronParseError(ValueError):
 
 @dataclass(frozen=True)
 class CronSpec:
-    minutes: Set[int]
-    hours: Set[int]
-    dom: Set[int]  # 1-31
-    months: Set[int]  # 1-12
-    dow: Set[int]  # 0-6 (0=Sunday)
+    minutes: set[int]
+    hours: set[int]
+    dom: set[int]  # 1-31
+    months: set[int]  # 1-12
+    dow: set[int]  # 0-6 (0=Sunday)
     dom_any: bool
     dow_any: bool
     tz: ZoneInfo
@@ -164,12 +162,12 @@ def _parse_field(
     min_v: int,
     max_v: int,
     allow_7_as_0: bool = False,
-) -> Set[int]:
+) -> set[int]:
     token = token.strip()
     if token == "*":
         return set(range(min_v, max_v + 1))
 
-    values: Set[int] = set()
+    values: set[int] = set()
     for part in token.split(","):
         part = part.strip()
         if not part:

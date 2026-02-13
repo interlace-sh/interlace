@@ -5,8 +5,7 @@ Uses typer's CliRunner to test CLI commands without actual execution.
 """
 
 import os
-import pytest
-from pathlib import Path
+
 from typer.testing import CliRunner
 
 from interlace.cli.main import app

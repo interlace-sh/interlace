@@ -6,13 +6,12 @@ workflows like dev → staging → production data promotion.
 """
 
 from pathlib import Path
-from typing import List, Optional
 
 import typer
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from interlace.utils.logging import get_logger
 
@@ -29,13 +28,9 @@ app = typer.Typer(
 @app.callback(invoke_without_command=True)
 def promote(
     ctx: typer.Context,
-    source_env: str = typer.Option(
-        ..., "--from", "-f", help="Source environment name (e.g. dev, staging)"
-    ),
-    target_env: str = typer.Option(
-        ..., "--to", "-t", help="Target environment name (e.g. staging, prod)"
-    ),
-    models: Optional[List[str]] = typer.Argument(
+    source_env: str = typer.Option(..., "--from", "-f", help="Source environment name (e.g. dev, staging)"),
+    target_env: str = typer.Option(..., "--to", "-t", help="Target environment name (e.g. staging, prod)"),
+    models: list[str] | None = typer.Argument(
         None, help="Specific models to promote (default: all source-tagged models)"
     ),
     sources_only: bool = typer.Option(
@@ -43,14 +38,12 @@ def promote(
         "--sources-only/--all",
         help="Only promote source models (tagged 'source'), or all models",
     ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", "-n", help="Show what would be promoted without executing"
-    ),
-    project_dir: Path = typer.Option(
-        Path("."), "--project", "-p", help="Project directory"
-    ),
-    connection: Optional[str] = typer.Option(
-        None, "--connection", "-c",
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be promoted without executing"),
+    project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
+    connection: str | None = typer.Option(
+        None,
+        "--connection",
+        "-c",
         help="Specific connection name to use (overrides default connection resolution)",
     ),
 ):
@@ -74,16 +67,16 @@ def promote(
     # Load configs for both environments
     try:
         source_config = load_config(project_dir, env=source_env)
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         console.print(f"[red]Source environment config not found: config.{source_env}.yaml[/red]")
         console.print("[dim]Hint: Create a config.{source_env}.yaml file or use 'default' as --from[/dim]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     try:
         target_config = load_config(project_dir, env=target_env)
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         console.print(f"[red]Target environment config not found: config.{target_env}.yaml[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     # Discover models
     from interlace.utils.discovery import discover_models
@@ -107,10 +100,7 @@ def promote(
             console.print(f"[yellow]Warning: Models not found: {', '.join(missing)}[/yellow]")
     elif sources_only:
         # Only source-tagged models
-        promote_models = {
-            k: v for k, v in all_models.items()
-            if "source" in (v.get("tags") or [])
-        }
+        promote_models = {k: v for k, v in all_models.items() if "source" in (v.get("tags") or [])}
         if not promote_models:
             console.print("[yellow]No source-tagged models found.[/yellow]")
             console.print("[dim]Hint: Tag models with tags=['source'] or use --all to promote all models[/dim]")
@@ -122,8 +112,7 @@ def promote(
     console.print()
     console.print(
         Panel(
-            f"[bold]Promote: {source_env} → {target_env}[/bold]\n"
-            f"Models: {len(promote_models)}",
+            f"[bold]Promote: {source_env} → {target_env}[/bold]\n" f"Models: {len(promote_models)}",
             title="Data Promotion",
         )
     )
@@ -150,9 +139,7 @@ def promote(
 
     # Confirm
     console.print()
-    confirm = typer.confirm(
-        f"Promote {len(promote_models)} model(s) from {source_env} to {target_env}?"
-    )
+    confirm = typer.confirm(f"Promote {len(promote_models)} model(s) from {source_env} to {target_env}?")
     if not confirm:
         console.print("[dim]Cancelled[/dim]")
         raise typer.Exit(0)
@@ -174,7 +161,7 @@ def _execute_promotion(
     target_config,
     source_env: str,
     target_env: str,
-    connection_name: Optional[str] = None,
+    connection_name: str | None = None,
 ) -> None:
     """Execute the data promotion between environments."""
     from interlace.connections.manager import ConnectionManager as ConnManager
@@ -185,7 +172,7 @@ def _execute_promotion(
         target_mgr = ConnManager(target_config.data, validate=False)
     except Exception as e:
         console.print(f"[red]Failed to create connections: {e}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     # Determine which connections to use
     source_conn_configs = source_config.data.get("connections", {})
@@ -299,10 +286,12 @@ def _execute_promotion(
     if failures:
         summary_parts.append(f"[red]{failures} failed[/red]")
 
-    console.print(Panel(
-        ", ".join(summary_parts),
-        title=f"Promotion Complete: {source_env} → {target_env}",
-    ))
+    console.print(
+        Panel(
+            ", ".join(summary_parts),
+            title=f"Promotion Complete: {source_env} → {target_env}",
+        )
+    )
 
     # Close connections
     for conn_name in source_mgr.list():

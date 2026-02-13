@@ -9,14 +9,13 @@ Runs Interlace as a long-running HTTP service with:
 - Background scheduler for models with schedule config
 """
 
-import typer
 from pathlib import Path
+
+import typer
 
 from interlace.service.server import run_service
 
-app = typer.Typer(
-    name="serve", help="Run Interlace as a long-running service", invoke_without_command=True
-)
+app = typer.Typer(name="serve", help="Run Interlace as a long-running service", invoke_without_command=True)
 
 
 @app.callback()

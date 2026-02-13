@@ -22,8 +22,8 @@ Usage:
 import asyncio
 import inspect
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass
+from typing import Any
 
 import ibis
 
@@ -34,13 +34,15 @@ from interlace.core.execution.data_converter import DataConverter
 class TestResult:
     """Result of a model test execution."""
 
-    table: Optional[ibis.Table] = None
+    __test__ = False  # prevent pytest collection
+
+    table: ibis.Table | None = None
     status: str = "success"
-    error: Optional[str] = None
+    error: str | None = None
     duration: float = 0.0
 
     @property
-    def row_count(self) -> Optional[int]:
+    def row_count(self) -> int | None:
         """Number of rows in the result table."""
         if self.table is None:
             return None
@@ -50,7 +52,7 @@ class TestResult:
             return None
 
     @property
-    def columns(self) -> List[str]:
+    def columns(self) -> list[str]:
         """Column names from the result table."""
         if self.table is None:
             return []
@@ -67,7 +69,7 @@ class TestResult:
         return self.table.execute()
 
     @property
-    def rows(self) -> List[Dict[str, Any]]:
+    def rows(self) -> list[dict[str, Any]]:
         """Execute the result and return a list of dicts."""
         df = self.df
         if df is None:
@@ -77,7 +79,7 @@ class TestResult:
 
 def mock_dependency(
     data: Any,
-    fields: Optional[Dict[str, Any]] = None,
+    fields: dict[str, Any] | None = None,
     strict: bool = False,
 ) -> ibis.Table:
     """
@@ -96,8 +98,8 @@ def mock_dependency(
 
 async def test_model(
     func: Any,
-    deps: Optional[Dict[str, Any]] = None,
-    fields: Optional[Dict[str, Dict[str, Any]]] = None,
+    deps: dict[str, Any] | None = None,
+    fields: dict[str, dict[str, Any]] | None = None,
 ) -> TestResult:
     """
     Test a single model function with mock dependencies (async version).
@@ -119,15 +121,13 @@ async def test_model(
 
     try:
         # Convert dependencies to ibis.Table
-        dep_tables: Dict[str, ibis.Table] = {}
+        dep_tables: dict[str, ibis.Table] = {}
         for dep_name, dep_data in (deps or {}).items():
             if isinstance(dep_data, ibis.Table):
                 dep_tables[dep_name] = dep_data
             else:
                 dep_fields = (fields or {}).get(dep_name)
-                dep_tables[dep_name] = DataConverter.convert_to_ibis_table(
-                    dep_data, fields=dep_fields
-                )
+                dep_tables[dep_name] = DataConverter.convert_to_ibis_table(dep_data, fields=dep_fields)
 
         # Unwrap @model decorator if present
         actual_func = func
@@ -168,8 +168,8 @@ async def test_model(
 
 def test_model_sync(
     func: Any,
-    deps: Optional[Dict[str, Any]] = None,
-    fields: Optional[Dict[str, Dict[str, Any]]] = None,
+    deps: dict[str, Any] | None = None,
+    fields: dict[str, dict[str, Any]] | None = None,
 ) -> TestResult:
     """
     Test a single model function with mock dependencies (sync version).
@@ -184,10 +184,9 @@ def test_model_sync(
     if loop and loop.is_running():
         # Already inside an event loop - create a new one in a thread
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(
-                asyncio.run, test_model(func, deps=deps, fields=fields)
-            ).result()
+            return pool.submit(asyncio.run, test_model(func, deps=deps, fields=fields)).result()
     else:
         return asyncio.run(test_model(func, deps=deps, fields=fields))
 

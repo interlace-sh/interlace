@@ -4,23 +4,23 @@ Tests for the retry framework.
 Phase 2: Tests for retry policy, retry manager, circuit breaker, and DLQ.
 """
 
-import pytest
-import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
+
+import pytest
 
 from interlace.core.retry import (
-    RetryPolicy,
-    RetryState,
-    RetryManager,
+    API_RETRY_POLICY,
+    DATABASE_RETRY_POLICY,
+    DEFAULT_RETRY_POLICY,
+    NO_RETRY_POLICY,
     CircuitBreaker,
     CircuitState,
     DeadLetterQueue,
     DLQEntry,
-    DEFAULT_RETRY_POLICY,
-    API_RETRY_POLICY,
-    DATABASE_RETRY_POLICY,
-    NO_RETRY_POLICY,
+    RetryManager,
+    RetryPolicy,
+    RetryState,
 )
 
 
@@ -382,21 +382,27 @@ class TestDeadLetterQueue:
         dlq = DeadLetterQueue()
 
         # Add entries for different models
-        dlq.add(DLQEntry(
-            model_name="model_a",
-            exception_type="ValueError",
-            exception_message="error 1",
-        ))
-        dlq.add(DLQEntry(
-            model_name="model_a",
-            exception_type="ValueError",
-            exception_message="error 2",
-        ))
-        dlq.add(DLQEntry(
-            model_name="model_b",
-            exception_type="ValueError",
-            exception_message="error 3",
-        ))
+        dlq.add(
+            DLQEntry(
+                model_name="model_a",
+                exception_type="ValueError",
+                exception_message="error 1",
+            )
+        )
+        dlq.add(
+            DLQEntry(
+                model_name="model_a",
+                exception_type="ValueError",
+                exception_message="error 2",
+            )
+        )
+        dlq.add(
+            DLQEntry(
+                model_name="model_b",
+                exception_type="ValueError",
+                exception_message="error 3",
+            )
+        )
 
         entries = dlq.get_by_model("model_a")
         assert len(entries) == 2
@@ -407,11 +413,13 @@ class TestDeadLetterQueue:
         dlq = DeadLetterQueue()
 
         for i in range(5):
-            dlq.add(DLQEntry(
-                model_name=f"model_{i}",
-                exception_type="ValueError",
-                exception_message=f"error {i}",
-            ))
+            dlq.add(
+                DLQEntry(
+                    model_name=f"model_{i}",
+                    exception_type="ValueError",
+                    exception_message=f"error {i}",
+                )
+            )
 
         entries = dlq.get_recent(limit=3)
         assert len(entries) == 3

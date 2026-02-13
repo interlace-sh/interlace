@@ -2,13 +2,13 @@
 Tests for state store and migration runner.
 """
 
-import pytest
 import time
-from datetime import datetime
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timezone
 
+import pytest
+
+from interlace.core.flow import Flow, Task
 from interlace.core.state import StateStore, _escape_sql_string, _sql_value
-from interlace.core.flow import Flow, Task, TaskStatus
 
 
 class TestSQLHelpers:
@@ -69,7 +69,6 @@ class TestStateStoreCursor:
     @pytest.fixture
     def store_with_duckdb(self, tmp_path):
         """Create a state store backed by an in-memory DuckDB for testing."""
-        import duckdb
         import ibis
 
         con = ibis.duckdb.connect()
@@ -132,9 +131,7 @@ class TestStateStoreFlowTask:
 
         # Verify persisted
         conn = store._get_connection()
-        result = conn.sql(
-            f"SELECT * FROM interlace.flows WHERE flow_id = '{flow.flow_id}'"
-        ).execute()
+        result = conn.sql(f"SELECT * FROM interlace.flows WHERE flow_id = '{flow.flow_id}'").execute()
         assert len(result) == 1
         assert result.iloc[0]["status"] == "completed"
 
@@ -156,9 +153,7 @@ class TestStateStoreFlowTask:
         store.save_task(task)
 
         conn = store._get_connection()
-        result = conn.sql(
-            f"SELECT * FROM interlace.tasks WHERE task_id = '{task.task_id}'"
-        ).execute()
+        result = conn.sql(f"SELECT * FROM interlace.tasks WHERE task_id = '{task.task_id}'").execute()
         assert len(result) == 1
         row = result.iloc[0]
         assert row["model_name"] == "test_model"
@@ -233,7 +228,7 @@ class TestStateStoreScheduler:
         store = store_with_duckdb
         assert store.get_model_last_run_at("my_model") is None
 
-        now = datetime.utcnow()
+        now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
         store.set_model_last_run_at("my_model", run_at=now)
 
         last_run = store.get_model_last_run_at("my_model")

@@ -4,10 +4,10 @@ Schema modes for controlling schema behavior.
 This module provides enums for schema-related behavior configuration.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class SchemaMode(str, Enum):
+class SchemaMode(StrEnum):
     """
     Schema evolution mode controlling how schema changes are handled when
     writing to existing tables.

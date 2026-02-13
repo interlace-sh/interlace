@@ -3,8 +3,10 @@ Abstract base connection class for all ibis-based queryable connections.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Any
+
 import ibis
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.connections.base")
@@ -12,6 +14,7 @@ logger = get_logger("interlace.connections.base")
 
 class ReadOnlyConnectionError(RuntimeError):
     """Raised when a write operation is attempted on a read-only connection."""
+
     pass
 
 
@@ -29,7 +32,7 @@ class BaseConnection(ABC):
           ``{env}`` substitution and are available across all environments.
     """
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         """
         Initialize connection.
 
@@ -39,14 +42,13 @@ class BaseConnection(ABC):
         """
         self.name = name
         self.config = config
-        self._connection: Optional[ibis.BaseBackend] = None
+        self._connection: ibis.BaseBackend | None = None
 
         # Access policy: "read" or "readwrite" (default)
         self._access: str = config.get("access", "readwrite")
         if self._access not in ("read", "readwrite"):
             raise ValueError(
-                f"Connection '{name}': invalid access policy '{self._access}'. "
-                f"Must be 'read' or 'readwrite'."
+                f"Connection '{name}': invalid access policy '{self._access}'. " f"Must be 'read' or 'readwrite'."
             )
 
         # Shared flag: shared connections skip {env} substitution

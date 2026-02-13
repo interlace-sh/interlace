@@ -12,24 +12,24 @@ from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
-from typing import Any, List, Optional
 import uuid
+from pathlib import Path
+from typing import Any
 
+import ibis
 from aiohttp import web
 
-from interlace.core.initialization import initialize, InitializationError
-from interlace.core.executor import Executor
-from interlace.core.context import _execute_sql_internal
 from interlace.connections.manager import get_connection as get_named_connection
-import ibis
-from interlace.sync.sftp_sync import run_sftp_sync_job
-from interlace.sync.types import SFTPSyncJob, ProcessorSpec
-from interlace.utils.logging import get_logger
-from interlace.service.cron_parser import next_fire_time_cron, CronParseError
-from interlace.service.api import setup_routes, EventBus
+from interlace.core.context import _execute_sql_internal
+from interlace.core.executor import Executor
+from interlace.core.initialization import InitializationError, initialize
+from interlace.service.api import EventBus, setup_routes
 from interlace.service.api.middleware import error_middleware, setup_cors
 from interlace.service.api.routes import setup_legacy_routes
+from interlace.service.cron_parser import CronParseError, next_fire_time_cron
+from interlace.sync.sftp_sync import run_sftp_sync_job
+from interlace.sync.types import ProcessorSpec, SFTPSyncJob
+from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.service")
 
@@ -54,7 +54,7 @@ def _job_from_dict(job_dict: dict[str, Any]) -> SFTPSyncJob:
 
 
 class InterlaceService:
-    def __init__(self, project_dir: Path, env: Optional[str], verbose: bool):
+    def __init__(self, project_dir: Path, env: str | None, verbose: bool):
         self.project_dir = Path(project_dir)
         self.env = env
         self.verbose = verbose
@@ -91,7 +91,7 @@ class InterlaceService:
         self.flow_history.insert(0, flow)
         # Trim to max size
         if len(self.flow_history) > self.max_flow_history:
-            self.flow_history = self.flow_history[:self.max_flow_history]
+            self.flow_history = self.flow_history[: self.max_flow_history]
 
     def initialize(self) -> None:
         config_obj, state_store, all_models, graph = initialize(self.project_dir, env=self.env, verbose=self.verbose)
@@ -140,11 +140,7 @@ class InterlaceService:
             entry: dict[str, Any] = {
                 "model": name,
                 "schedule": sched,
-                "next_fire_at": (
-                    dt.fromtimestamp(next_ts, tz=ZoneInfo("UTC")).isoformat()
-                    if next_ts
-                    else None
-                ),
+                "next_fire_at": (dt.fromtimestamp(next_ts, tz=ZoneInfo("UTC")).isoformat() if next_ts else None),
             }
             # Read persisted last_run_at
             if self.state_store:
@@ -306,9 +302,7 @@ class InterlaceService:
                     if self.state_store:
                         try:
                             schema_name = self.models[model_name].get("schema", "public")
-                            self.state_store.set_model_last_run_at(
-                                model_name, schema_name, run_at=run_ts
-                            )
+                            self.state_store.set_model_last_run_at(model_name, schema_name, run_at=run_ts)
                         except Exception as e:
                             logger.warning(f"Could not persist last_run_at for {model_name}: {e}")
 
@@ -355,7 +349,9 @@ class InterlaceService:
         if requested_set and self.graph:
             for m in list(requested_set):
                 requested_set.update(self.graph.get_dependencies(m))
-        selected_models = self.models if not requested_set else {k: v for k, v in self.models.items() if k in requested_set}
+        selected_models = (
+            self.models if not requested_set else {k: v for k, v in self.models.items() if k in requested_set}
+        )
 
         async def _run_task():
             async with self._run_lock:
@@ -379,9 +375,7 @@ class InterlaceService:
         try:
             payload = await request.json()
         except Exception:
-            return web.json_response(
-                {"error": "Invalid or missing JSON body"}, status=400
-            )
+            return web.json_response({"error": "Invalid or missing JSON body"}, status=400)
         requested = payload.get("models")
         force = bool(payload.get("force", False))
 
@@ -400,7 +394,10 @@ class InterlaceService:
 
         # Run in background and return a simple ack (HA-ready improvements later)
         await self._enqueue_run(list(selected_models.keys()), force=force)
-        return web.json_response({"status": "accepted", "models": list(selected_models.keys()), "force": force}, status=202)
+        return web.json_response(
+            {"status": "accepted", "models": list(selected_models.keys()), "force": force},
+            status=202,
+        )
 
     async def handle_sync_once(self, request: web.Request) -> web.Response:
         """
@@ -411,9 +408,7 @@ class InterlaceService:
         try:
             payload = await request.json()
         except Exception:
-            return web.json_response(
-                {"error": "Invalid or missing JSON body"}, status=400
-            )
+            return web.json_response({"error": "Invalid or missing JSON body"}, status=400)
         job_id = payload.get("job_id")
 
         jobs = self.config.get("sync", {}).get("jobs", [])
@@ -461,16 +456,16 @@ class InterlaceService:
             return web.json_response({"error": "body must be object or array of objects"}, status=400)
 
         schema = stream_info.get("schema", "events")
-        conn_name = stream_info.get("connection") or self.config.get("executor", {}).get("default_connection") or "default"
+        conn_name = (
+            stream_info.get("connection") or self.config.get("executor", {}).get("default_connection") or "default"
+        )
         try:
             conn_wrapper = get_named_connection(conn_name)
         except Exception:
             # Fallback to default connection name selection used in Executor
             fallback_name = next(iter(self.config.get("connections", {}).keys()), None)
             if fallback_name is None:
-                return web.json_response(
-                    {"error": "No connections configured"}, status=500
-                )
+                return web.json_response({"error": "No connections configured"}, status=500)
             conn_wrapper = get_named_connection(fallback_name)
         con = conn_wrapper.connection
 
@@ -545,14 +540,14 @@ class InterlaceService:
 def run_service(
     *,
     project_dir: Path,
-    env: Optional[str],
+    env: str | None,
     host: str,
     port: int,
     verbose: bool = False,
     enable_scheduler: bool = True,
     run_on_startup: bool = False,
     enable_ui: bool = True,
-    cors_origins: Optional[List[str]] = None,
+    cors_origins: list[str] | None = None,
 ) -> None:
     """
     Run the Interlace service (blocking).
@@ -670,4 +665,3 @@ def datetime_from_ts(ts: float, tz: str | None = None):
 
     zone = ZoneInfo(tz) if tz else ZoneInfo("UTC")
     return datetime.fromtimestamp(ts, tz=zone)
-

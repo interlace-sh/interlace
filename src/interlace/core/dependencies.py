@@ -4,18 +4,18 @@ Dependency graph building and management.
 Phase 0: Build dependency graph from model dependencies (implicit/explicit).
 """
 
-from typing import Dict, List, Set, Optional, Any
 from collections import defaultdict, deque
+from typing import Any
 
 
 class DependencyGraph:
     """Represents a directed acyclic graph of model dependencies."""
 
     def __init__(self):
-        self._graph: Dict[str, List[str]] = defaultdict(list)  # model -> dependencies
-        self._reverse: Dict[str, List[str]] = defaultdict(list)  # model -> dependents
+        self._graph: dict[str, list[str]] = defaultdict(list)  # model -> dependencies
+        self._reverse: dict[str, list[str]] = defaultdict(list)  # model -> dependents
 
-    def add_model(self, model_name: str, dependencies: Optional[List[str]] = None):
+    def add_model(self, model_name: str, dependencies: list[str] | None = None):
         """Add a model and its dependencies to the graph."""
         dependencies = dependencies or []
 
@@ -34,21 +34,21 @@ class DependencyGraph:
             if model_name not in self._reverse[dep]:
                 self._reverse[dep].append(model_name)
 
-    def get_dependencies(self, model_name: str) -> List[str]:
+    def get_dependencies(self, model_name: str) -> list[str]:
         """Get dependencies for a model."""
         return self._graph.get(model_name, [])
 
-    def get_dependents(self, model_name: str) -> List[str]:
+    def get_dependents(self, model_name: str) -> list[str]:
         """Get dependents (models that depend on this one)."""
         return self._reverse.get(model_name, [])
 
-    def topological_sort(self) -> List[str]:
+    def topological_sort(self) -> list[str]:
         """
         Topological sort of models by dependencies.
 
         Returns models in execution order (dependencies before dependents).
         """
-        in_degree: Dict[str, int] = defaultdict(int)
+        in_degree: dict[str, int] = defaultdict(int)
 
         # Calculate in-degrees
         for model_name in self._graph:
@@ -76,7 +76,7 @@ class DependencyGraph:
 
         return result
 
-    def detect_cycles(self) -> List[List[str]]:
+    def detect_cycles(self) -> list[list[str]]:
         """
         Detect cycles in the dependency graph.
 
@@ -84,10 +84,10 @@ class DependencyGraph:
         properly maintained so that non-cyclic nodes sharing edges with
         cyclic nodes are not falsely reported.
         """
-        visited: Set[str] = set()
-        rec_stack: Set[str] = set()
-        cycles: List[List[str]] = []
-        path: List[str] = []
+        visited: set[str] = set()
+        rec_stack: set[str] = set()
+        cycles: list[list[str]] = []
+        path: list[str] = []
 
         def dfs(node: str):
             """DFS helper to detect cycles."""
@@ -113,15 +113,15 @@ class DependencyGraph:
 
         return cycles
 
-    def get_layers(self) -> Dict[str, int]:
+    def get_layers(self) -> dict[str, int]:
         """
         Get layer (execution level) for each model.
 
         Returns a dictionary mapping model_name -> layer_number (0-based).
         Models in the same layer can run in parallel.
         """
-        in_degree: Dict[str, int] = defaultdict(int)
-        model_layers: Dict[str, int] = {}
+        in_degree: dict[str, int] = defaultdict(int)
+        model_layers: dict[str, int] = {}
 
         # Calculate in-degrees
         for model_name in self._graph:
@@ -168,7 +168,7 @@ class DependencyGraph:
         model_layers = self.get_layers()
 
         # Group models by layer
-        layers: Dict[int, List[str]] = defaultdict(list)
+        layers: dict[int, list[str]] = defaultdict(list)
         for model_name, layer in model_layers.items():
             layers[layer].append(model_name)
 
@@ -184,7 +184,7 @@ class DependencyGraph:
 
         return "\n".join(lines)
 
-    def visualize_tree(self, root: Optional[str] = None) -> str:
+    def visualize_tree(self, root: str | None = None) -> str:
         """
         Visualize dependency graph as a tree starting from root (models with no dependencies).
 
@@ -201,9 +201,7 @@ class DependencyGraph:
 
         lines = []
 
-        def build_tree(
-            model: str, prefix: str = "", is_last: bool = True, visited: Set[str] = None
-        ) -> None:
+        def build_tree(model: str, prefix: str = "", is_last: bool = True, visited: set[str] = None) -> None:
             if visited is None:
                 visited = set()
 
@@ -235,7 +233,7 @@ class DependencyGraph:
         return "\n".join(lines)
 
 
-def build_dependency_graph(models: Dict[str, Any]) -> DependencyGraph:
+def build_dependency_graph(models: dict[str, Any]) -> DependencyGraph:
     """
     Build dependency graph from models.
 

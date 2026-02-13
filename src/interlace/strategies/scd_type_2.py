@@ -9,11 +9,13 @@ Implements hash-based change detection for maintaining dimension history:
 Industry-aligned implementation following dbt snapshots, Delta Lake, and SQLMesh patterns.
 """
 
-from interlace.strategies.base import Strategy
-from typing import List, Optional, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
 import ibis
-from interlace.utils.sql_escape import escape_identifier, escape_qualified_name
+
+from interlace.strategies.base import Strategy
 from interlace.utils.logging import get_logger
+from interlace.utils.sql_escape import escape_identifier, escape_qualified_name
 
 if TYPE_CHECKING:
     pass
@@ -71,8 +73,8 @@ class SCDType2Strategy(Strategy):
         target_table: str,
         schema: str,
         source_table: str,
-        primary_key: str | List[str],
-        scd2_config: Optional[Dict[str, Any]] = None,
+        primary_key: str | list[str],
+        scd2_config: dict[str, Any] | None = None,
         **kwargs,
     ) -> str:
         """
@@ -118,7 +120,7 @@ class SCDType2Strategy(Strategy):
             source_schema = source.schema()
             all_columns = list(source_schema.keys())
         except Exception as e:
-            raise ValueError(f"Cannot get schema for source table {source_table}: {e}")
+            raise ValueError(f"Cannot get schema for source table {source_table}: {e}") from e
 
         # Determine SCD2 metadata columns (these shouldn't be in source data)
         scd2_meta_cols = {valid_from_col, valid_to_col, is_current_col, hash_col, deleted_col}
@@ -139,10 +141,9 @@ class SCDType2Strategy(Strategy):
         hash_expr = self._build_hash_expression(tracked_columns, "source")
 
         # Build ON condition for matching business key with current records
-        on_conditions = " AND ".join([
-            f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}"
-            for pk in primary_key
-        ])
+        on_conditions = " AND ".join(
+            [f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}" for pk in primary_key]
+        )
 
         # Build column lists with proper escaping
         escaped_source_cols = [escape_identifier(col) for col in source_columns]
@@ -234,7 +235,7 @@ WHERE target.{escaped_is_current} = TRUE
         # Join statements with semicolons
         return ";\n".join(sql_statements)
 
-    def _build_hash_expression(self, columns: List[str], table_alias: str) -> str:
+    def _build_hash_expression(self, columns: list[str], table_alias: str) -> str:
         """
         Build MD5 hash expression for change detection.
 
@@ -249,10 +250,7 @@ WHERE target.{escaped_is_current} = TRUE
             return "''"  # Empty hash if no columns to track
 
         # Concatenate columns with delimiter, coalesce NULLs to empty string
-        col_exprs = [
-            f"COALESCE(CAST({table_alias}.{escape_identifier(col)} AS VARCHAR), '')"
-            for col in columns
-        ]
+        col_exprs = [f"COALESCE(CAST({table_alias}.{escape_identifier(col)} AS VARCHAR), '')" for col in columns]
         concat_expr = " || '|' || ".join(col_exprs)
 
         # Use MD5 hash (supported by DuckDB and PostgreSQL)
@@ -262,7 +260,7 @@ WHERE target.{escaped_is_current} = TRUE
         """SCD Type 2 strategy needs temp table for SQL generation."""
         return True
 
-    def get_required_columns(self, scd2_config: Optional[Dict[str, Any]] = None) -> List[str]:
+    def get_required_columns(self, scd2_config: dict[str, Any] | None = None) -> list[str]:
         """
         Get the SCD2 metadata columns that will be added to the table.
 
@@ -294,8 +292,8 @@ WHERE target.{escaped_is_current} = TRUE
         target_table: str,
         schema: str,
         source_table: str,
-        primary_key: str | List[str],
-        scd2_config: Optional[Dict[str, Any]] = None,
+        primary_key: str | list[str],
+        scd2_config: dict[str, Any] | None = None,
         **kwargs,
     ) -> str:
         """
@@ -329,11 +327,14 @@ WHERE target.{escaped_is_current} = TRUE
             source_schema = source.schema()
             all_columns = list(source_schema.keys())
         except Exception as e:
-            raise ValueError(f"Cannot get schema for source table {source_table}: {e}")
+            raise ValueError(f"Cannot get schema for source table {source_table}: {e}") from e
 
         scd2_meta_cols = {
-            config["valid_from_col"], config["valid_to_col"],
-            config["is_current_col"], config["hash_col"], config["deleted_col"]
+            config["valid_from_col"],
+            config["valid_to_col"],
+            config["is_current_col"],
+            config["hash_col"],
+            config["deleted_col"],
         }
         source_columns = [col for col in all_columns if col not in scd2_meta_cols]
 

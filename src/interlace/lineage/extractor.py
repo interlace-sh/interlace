@@ -8,11 +8,11 @@ Python (ibis) and SQL models.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from enum import StrEnum
+from typing import Any
 
 
-class TransformationType(str, Enum):
+class TransformationType(StrEnum):
     """Type of transformation applied to a column."""
 
     DIRECT = "direct"  # Column passed through unchanged
@@ -40,10 +40,10 @@ class ColumnLineageEdge:
     output_model: str
     output_column: str
     transformation_type: TransformationType = TransformationType.UNKNOWN
-    transformation_expression: Optional[str] = None  # SQL or ibis expression if available
+    transformation_expression: str | None = None  # SQL or ibis expression if available
     confidence: float = 1.0  # Confidence score (0-1) for inferred lineage
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "source_model": self.source_model,
@@ -56,7 +56,7 @@ class ColumnLineageEdge:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ColumnLineageEdge":
+    def from_dict(cls, data: dict[str, Any]) -> "ColumnLineageEdge":
         """Create from dictionary."""
         return cls(
             source_model=data["source_model"],
@@ -74,13 +74,13 @@ class ColumnInfo:
     """Information about a column in a model."""
 
     name: str
-    data_type: Optional[str] = None
+    data_type: str | None = None
     nullable: bool = True
-    description: Optional[str] = None
+    description: str | None = None
     is_primary_key: bool = False
-    sources: List[ColumnLineageEdge] = field(default_factory=list)
+    sources: list[ColumnLineageEdge] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "name": self.name,
@@ -101,26 +101,24 @@ class ColumnLineage:
     """
 
     model_name: str
-    columns: List[ColumnInfo] = field(default_factory=list)
-    computed_at: Optional[datetime] = None
+    columns: list[ColumnInfo] = field(default_factory=list)
+    computed_at: datetime | None = None
 
-    def get_column(self, name: str) -> Optional[ColumnInfo]:
+    def get_column(self, name: str) -> ColumnInfo | None:
         """Get column by name."""
         for col in self.columns:
             if col.name == name:
                 return col
         return None
 
-    def get_all_edges(self) -> List[ColumnLineageEdge]:
+    def get_all_edges(self) -> list[ColumnLineageEdge]:
         """Get all lineage edges across all columns."""
         edges = []
         for col in self.columns:
             edges.extend(col.sources)
         return edges
 
-    def get_upstream_columns(
-        self, column_name: str, depth: int = -1
-    ) -> List[ColumnLineageEdge]:
+    def get_upstream_columns(self, column_name: str, depth: int = -1) -> list[ColumnLineageEdge]:
         """
         Get all upstream column sources for a specific column.
 
@@ -136,7 +134,7 @@ class ColumnLineage:
             return []
         return col.sources
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "model_name": self.model_name,
@@ -153,9 +151,9 @@ class LineageGraph:
     Stores column-level lineage for the entire pipeline.
     """
 
-    models: Dict[str, ColumnLineage] = field(default_factory=dict)
-    edges: List[ColumnLineageEdge] = field(default_factory=list)
-    computed_at: Optional[datetime] = None
+    models: dict[str, ColumnLineage] = field(default_factory=dict)
+    edges: list[ColumnLineageEdge] = field(default_factory=list)
+    computed_at: datetime | None = None
 
     def add_model_lineage(self, lineage: ColumnLineage) -> None:
         """Add or update lineage for a model."""
@@ -164,9 +162,7 @@ class LineageGraph:
         self.edges = [e for e in self.edges if e.output_model != lineage.model_name]
         self.edges.extend(lineage.get_all_edges())
 
-    def get_column_lineage(
-        self, model_name: str, column_name: str
-    ) -> List[ColumnLineageEdge]:
+    def get_column_lineage(self, model_name: str, column_name: str) -> list[ColumnLineageEdge]:
         """Get lineage edges for a specific column."""
         if model_name not in self.models:
             return []
@@ -177,8 +173,8 @@ class LineageGraph:
         model_name: str,
         column_name: str,
         depth: int = 3,
-        visited: Optional[Set[tuple]] = None,
-    ) -> List[ColumnLineageEdge]:
+        visited: set[tuple] | None = None,
+    ) -> list[ColumnLineageEdge]:
         """
         Trace a column upstream through multiple models.
 
@@ -223,8 +219,8 @@ class LineageGraph:
         model_name: str,
         column_name: str,
         depth: int = 3,
-        visited: Optional[Set[tuple]] = None,
-    ) -> List[ColumnLineageEdge]:
+        visited: set[tuple] | None = None,
+    ) -> list[ColumnLineageEdge]:
         """
         Trace a column downstream to find all dependent columns.
 
@@ -265,7 +261,7 @@ class LineageGraph:
 
         return result
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "models": {name: m.to_dict() for name, m in self.models.items()},
@@ -286,8 +282,8 @@ class LineageExtractor(ABC):
     def extract(
         self,
         model_name: str,
-        model_info: Dict[str, Any],
-        available_models: Dict[str, Dict[str, Any]],
+        model_info: dict[str, Any],
+        available_models: dict[str, dict[str, Any]],
     ) -> ColumnLineage:
         """
         Extract column lineage from a model.
@@ -305,8 +301,8 @@ class LineageExtractor(ABC):
     def _get_dependency_columns(
         self,
         dep_name: str,
-        available_models: Dict[str, Dict[str, Any]],
-    ) -> List[str]:
+        available_models: dict[str, dict[str, Any]],
+    ) -> list[str]:
         """
         Get column names from a dependency model.
 

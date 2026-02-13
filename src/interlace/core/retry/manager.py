@@ -6,13 +6,17 @@ Phase 2: Retry framework implementation with async support.
 
 import asyncio
 import time
-from typing import Any, Callable, Optional, TypeVar
-from interlace.core.retry.policy import RetryPolicy, RetryState, DEFAULT_RETRY_POLICY
+from collections.abc import Callable
+from typing import Any, Optional, TypeVar
+
+from interlace.core.retry.circuit_breaker import CircuitBreaker
+from interlace.core.retry.policy import DEFAULT_RETRY_POLICY, RetryPolicy, RetryState
+from interlace.exceptions import CircuitBreakerOpenError
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.retry.manager")
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class RetryManager:
@@ -40,7 +44,7 @@ class RetryManager:
         >>> result = await manager.execute(my_function, policy=policy)
     """
 
-    def __init__(self, circuit_breaker: Optional['CircuitBreaker'] = None):
+    def __init__(self, circuit_breaker: Optional["CircuitBreaker"] = None):
         """
         Initialize RetryManager.
 
@@ -54,9 +58,9 @@ class RetryManager:
         self,
         func: Callable[..., Any],
         *args,
-        policy: Optional[RetryPolicy] = None,
-        model_name: Optional[str] = None,
-        **kwargs
+        policy: RetryPolicy | None = None,
+        model_name: str | None = None,
+        **kwargs,
     ) -> Any:
         """
         Execute async function with retry logic.
@@ -79,21 +83,15 @@ class RetryManager:
 
         # Check circuit breaker before attempting
         if self.circuit_breaker and not self.circuit_breaker.allow_request():
-            logger.warning(
-                f"Circuit breaker open for {state.model_name}, failing fast"
-            )
-            raise CircuitBreakerOpenError(
-                f"Circuit breaker open, not attempting {state.model_name}"
-            )
+            logger.warning(f"Circuit breaker open for {state.model_name}, failing fast")
+            raise CircuitBreakerOpenError(f"Circuit breaker open, not attempting {state.model_name}")
 
         for attempt in range(policy.max_attempts + 1):
             state.attempt = attempt
 
             try:
                 # Execute the function
-                logger.debug(
-                    f"Executing {state.model_name} (attempt {attempt + 1}/{policy.max_attempts + 1})"
-                )
+                logger.debug(f"Executing {state.model_name} (attempt {attempt + 1}/{policy.max_attempts + 1})")
 
                 result = await func(*args, **kwargs)
 
@@ -107,9 +105,7 @@ class RetryManager:
 
                 # Log retry statistics if retries occurred
                 if attempt > 0:
-                    logger.info(
-                        f"{state.model_name} succeeded after {attempt + 1} attempts"
-                    )
+                    logger.info(f"{state.model_name} succeeded after {attempt + 1} attempts")
 
                 return result
 
@@ -118,10 +114,7 @@ class RetryManager:
                 state.record_attempt(exception=e)
 
                 # Check if we should retry
-                should_retry = (
-                    attempt < policy.max_attempts
-                    and policy.should_retry(e, attempt)
-                )
+                should_retry = attempt < policy.max_attempts and policy.should_retry(e, attempt)
 
                 if not should_retry:
                     # No more retries, fail
@@ -133,7 +126,7 @@ class RetryManager:
 
                     logger.error(
                         f"{state.model_name} failed after {attempt + 1} attempts: {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
 
                     raise
@@ -142,10 +135,7 @@ class RetryManager:
                 delay = policy.get_delay(attempt)
                 state.record_delay(delay)
 
-                logger.warning(
-                    f"{state.model_name} attempt {attempt + 1} failed: {e}. "
-                    f"Retrying in {delay:.2f}s..."
-                )
+                logger.warning(f"{state.model_name} attempt {attempt + 1} failed: {e}. " f"Retrying in {delay:.2f}s...")
 
                 await asyncio.sleep(delay)
 
@@ -156,9 +146,9 @@ class RetryManager:
         self,
         func: Callable[..., T],
         *args,
-        policy: Optional[RetryPolicy] = None,
-        model_name: Optional[str] = None,
-        **kwargs
+        policy: RetryPolicy | None = None,
+        model_name: str | None = None,
+        **kwargs,
     ) -> T:
         """
         Execute sync function with retry logic.
@@ -181,21 +171,15 @@ class RetryManager:
 
         # Check circuit breaker before attempting
         if self.circuit_breaker and not self.circuit_breaker.allow_request():
-            logger.warning(
-                f"Circuit breaker open for {state.model_name}, failing fast"
-            )
-            raise CircuitBreakerOpenError(
-                f"Circuit breaker open, not attempting {state.model_name}"
-            )
+            logger.warning(f"Circuit breaker open for {state.model_name}, failing fast")
+            raise CircuitBreakerOpenError(f"Circuit breaker open, not attempting {state.model_name}")
 
         for attempt in range(policy.max_attempts + 1):
             state.attempt = attempt
 
             try:
                 # Execute the function
-                logger.debug(
-                    f"Executing {state.model_name} (attempt {attempt + 1}/{policy.max_attempts + 1})"
-                )
+                logger.debug(f"Executing {state.model_name} (attempt {attempt + 1}/{policy.max_attempts + 1})")
 
                 result = func(*args, **kwargs)
 
@@ -209,9 +193,7 @@ class RetryManager:
 
                 # Log retry statistics if retries occurred
                 if attempt > 0:
-                    logger.info(
-                        f"{state.model_name} succeeded after {attempt + 1} attempts"
-                    )
+                    logger.info(f"{state.model_name} succeeded after {attempt + 1} attempts")
 
                 return result
 
@@ -220,10 +202,7 @@ class RetryManager:
                 state.record_attempt(exception=e)
 
                 # Check if we should retry
-                should_retry = (
-                    attempt < policy.max_attempts
-                    and policy.should_retry(e, attempt)
-                )
+                should_retry = attempt < policy.max_attempts and policy.should_retry(e, attempt)
 
                 if not should_retry:
                     # No more retries, fail
@@ -235,7 +214,7 @@ class RetryManager:
 
                     logger.error(
                         f"{state.model_name} failed after {attempt + 1} attempts: {e}",
-                        exc_info=True
+                        exc_info=True,
                     )
 
                     raise
@@ -244,15 +223,9 @@ class RetryManager:
                 delay = policy.get_delay(attempt)
                 state.record_delay(delay)
 
-                logger.warning(
-                    f"{state.model_name} attempt {attempt + 1} failed: {e}. "
-                    f"Retrying in {delay:.2f}s..."
-                )
+                logger.warning(f"{state.model_name} attempt {attempt + 1} failed: {e}. " f"Retrying in {delay:.2f}s...")
 
                 time.sleep(delay)
 
         # Should not reach here, but just in case
         raise RuntimeError(f"Retry logic error for {state.model_name}")
-
-
-from interlace.exceptions import CircuitBreakerOpenError  # noqa: F401 - re-export

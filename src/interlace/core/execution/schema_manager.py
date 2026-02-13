@@ -4,17 +4,19 @@ Schema management for validating and evolving table schemas.
 Phase 0: Extracted from Executor class for better separation of concerns.
 """
 
-from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any
+
 import ibis
 import pandas as pd
 from cachetools import LRUCache, TTLCache
-from interlace.schema.validation import validate_schema
+
+from interlace.core.context import _execute_sql_internal
 from interlace.schema.evolution import apply_schema_changes, should_apply_schema_changes
 from interlace.schema.tracking import track_schema_version
-from interlace.utils.schema_utils import fields_to_ibis_schema
-from interlace.core.context import _execute_sql_internal
-from interlace.utils.table_utils import check_table_exists
+from interlace.schema.validation import validate_schema
 from interlace.utils.logging import get_logger
+from interlace.utils.schema_utils import fields_to_ibis_schema
+from interlace.utils.table_utils import check_table_exists
 
 if TYPE_CHECKING:
     from interlace.core.execution.data_converter import DataConverter
@@ -25,23 +27,23 @@ logger = get_logger("interlace.execution.schema_manager")
 class SchemaManager:
     """
     Manages schema validation and evolution for tables.
-    
+
     Phase 0: Handles schema validation, evolution, table creation, and existence checks.
     """
 
     def __init__(
         self,
         data_converter: "DataConverter",
-        schema_cache: Dict[str, ibis.Schema],
-        table_existence_cache: Dict[tuple, bool],
+        schema_cache: dict[str, ibis.Schema],
+        table_existence_cache: dict[tuple, bool],
         max_schema_cache_size: int = 1000,
         max_existence_cache_size: int = 2000,
-        schema_cache_ttl: Optional[float] = None,
-        existence_cache_ttl: Optional[float] = None,
+        schema_cache_ttl: float | None = None,
+        existence_cache_ttl: float | None = None,
     ):
         """
         Initialize SchemaManager.
-        
+
         Args:
             data_converter: DataConverter instance for converting data to ibis tables
             schema_cache: Dictionary for caching table schemas (will be converted to LRU/TTL if not already)
@@ -52,7 +54,7 @@ class SchemaManager:
             existence_cache_ttl: Time-to-live for existence cache entries in seconds (None = no expiration)
         """
         self.data_converter = data_converter
-        
+
         # Convert to LRU or TTL caches if not already
         if isinstance(schema_cache, (LRUCache, TTLCache)):
             self._schema_cache = schema_cache
@@ -63,7 +65,7 @@ class SchemaManager:
             else:
                 self._schema_cache = LRUCache(maxsize=max_schema_cache_size)
             self._schema_cache.update(schema_cache)
-        
+
         if isinstance(table_existence_cache, (LRUCache, TTLCache)):
             self._table_existence_cache = table_existence_cache
         else:
@@ -73,21 +75,21 @@ class SchemaManager:
             else:
                 self._table_existence_cache = LRUCache(maxsize=max_existence_cache_size)
             self._table_existence_cache.update(table_existence_cache)
-    
+
     def invalidate_schema_cache(self, cache_key: str) -> None:
         """
         Invalidate a schema cache entry.
-        
+
         Args:
             cache_key: Cache key to invalidate (format: "schema.table_name")
         """
         if cache_key in self._schema_cache:
             del self._schema_cache[cache_key]
-    
-    def invalidate_existence_cache(self, table_name: str, schema: Optional[str] = None) -> None:
+
+    def invalidate_existence_cache(self, table_name: str, schema: str | None = None) -> None:
         """
         Invalidate a table existence cache entry.
-        
+
         Args:
             table_name: Table name
             schema: Schema name (optional)
@@ -98,10 +100,10 @@ class SchemaManager:
 
     async def setup_reference_table(
         self,
-        data: Union[ibis.Table, pd.DataFrame, list, dict],
+        data: ibis.Table | pd.DataFrame | list | dict,
         model_name: str,
         connection: ibis.BaseBackend,
-        model_info: Optional[Dict[str, Any]] = None,
+        model_info: dict[str, Any] | None = None,
     ) -> ibis.Table:
         """
         Setup reference table for schema validation.
@@ -155,7 +157,7 @@ class SchemaManager:
         model_name: str,
         schema: str,
         connection: ibis.BaseBackend,
-        model_info: Optional[Dict[str, Any]] = None,
+        model_info: dict[str, Any] | None = None,
     ) -> int:
         """
         Validate schema compatibility and handle schema evolution.
@@ -207,6 +209,7 @@ class SchemaManager:
             if mode_str:
                 try:
                     from interlace.schema.modes import SchemaMode
+
                     schema_mode = SchemaMode(mode_str)
                 except (ValueError, KeyError):
                     logger.warning(f"Invalid schema_mode '{mode_str}' for {model_name}, using default")
@@ -216,9 +219,7 @@ class SchemaManager:
 
         if validation_result.errors:
             # Log errors but don't fail (non-fatal)
-            logger.warning(
-                f"Schema validation errors for {model_name}: {', '.join(validation_result.errors)}"
-            )
+            logger.warning(f"Schema validation errors for {model_name}: {', '.join(validation_result.errors)}")
             return 0
 
         # Track schema version (informative only)
@@ -239,9 +240,7 @@ class SchemaManager:
                 logger.debug(f"Could not track schema version for {model_name}: {e}")
 
         # Apply schema changes if needed
-        if existing_schema is not None and should_apply_schema_changes(
-            existing_schema, new_schema, fields_schema
-        ):
+        if existing_schema is not None and should_apply_schema_changes(existing_schema, new_schema, fields_schema):
             try:
                 changes_count = apply_schema_changes(
                     connection, model_name, schema, existing_schema, new_schema, fields_schema
@@ -262,52 +261,49 @@ class SchemaManager:
     async def batch_check_table_exists(
         self,
         connection: ibis.BaseBackend,
-        table_schema_pairs: list[tuple[str, Optional[str]]],
-    ) -> Dict[tuple[str, Optional[str]], bool]:
+        table_schema_pairs: list[tuple[str, str | None]],
+    ) -> dict[tuple[str, str | None], bool]:
         """
         Batch check table existence for multiple tables.
-        
+
         More efficient than checking tables one by one by using a single query.
-        
+
         Args:
             connection: ibis connection backend
             table_schema_pairs: List of (table_name, schema) tuples
-            
+
         Returns:
             Dictionary mapping (table_name, schema) -> bool
         """
         results = {}
-        
+
         # Group by schema to batch queries
-        by_schema: Dict[Optional[str], list[str]] = {}
+        by_schema: dict[str | None, list[str]] = {}
         for table_name, schema in table_schema_pairs:
             if schema not in by_schema:
                 by_schema[schema] = []
             by_schema[schema].append(table_name)
-        
+
         # Check cache first
         for table_name, schema in table_schema_pairs:
             cache_key = (table_name, schema)
             if cache_key in self._table_existence_cache:
                 results[cache_key] = self._table_existence_cache[cache_key]
-        
+
         # For each schema, query all tables at once
         for schema, table_names in by_schema.items():
             # Filter out already cached
-            uncached = [
-                name for name in table_names
-                if (name, schema) not in results
-            ]
+            uncached = [name for name in table_names if (name, schema) not in results]
             if not uncached:
                 continue
-            
+
             try:
                 # Use list_tables to get all tables in schema
                 if schema:
                     tables = connection.list_tables(database=schema)
                 else:
                     tables = connection.list_tables()
-                
+
                 # Check which tables exist
                 for table_name in uncached:
                     exists = table_name in tables
@@ -322,23 +318,23 @@ class SchemaManager:
                     cache_key = (table_name, schema)
                     if cache_key not in results:
                         results[cache_key] = self.check_table_exists(connection, table_name, schema)
-        
+
         return results
 
     def create_table_safe(
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        obj: Union[ibis.Table, pd.DataFrame],
+        obj: ibis.Table | pd.DataFrame,
         schema: str,
         overwrite: bool = False,
     ) -> None:
         """
         Create a table safely, handling schema/qualified name variations.
-        
+
         Tries to create table with database parameter first, falls back to qualified name
         if that fails (for backends that don't support database parameter).
-        
+
         Args:
             connection: ibis connection backend
             table_name: Name of the table to create
@@ -353,9 +349,7 @@ class SchemaManager:
             qualified_name = f"{schema}.{table_name}"
             connection.create_table(qualified_name, obj=obj, overwrite=overwrite)
 
-    def check_table_exists(
-        self, connection: ibis.BaseBackend, table_name: str, schema: Optional[str] = None
-    ) -> bool:
+    def check_table_exists(self, connection: ibis.BaseBackend, table_name: str, schema: str | None = None) -> bool:
         """
         Check if a table exists using cached checks.
 
@@ -373,7 +367,7 @@ class SchemaManager:
 
         exists = check_table_exists(connection, table_name, schema)
         self._table_existence_cache[cache_key] = exists
-        
+
         # Invalidate schema cache if table existence changed
         # This handles cases where table is dropped/recreated externally
         schema_cache_key = f"{schema or 'main'}.{table_name}"
@@ -381,12 +375,10 @@ class SchemaManager:
             # If table doesn't exist but we have cached schema, invalidate it
             if not exists:
                 del self._schema_cache[schema_cache_key]
-        
+
         return exists
 
-    def ensure_schema_exists(
-        self, connection: ibis.BaseBackend, schema: str
-    ) -> None:
+    def ensure_schema_exists(self, connection: ibis.BaseBackend, schema: str) -> None:
         """
         Ensure database/schema exists, creating it if needed.
         """
@@ -405,7 +397,7 @@ class SchemaManager:
         model_name: str,
         connection: ibis.BaseBackend,
         strategy_name: str,
-    ) -> Tuple[ibis.Table, bool]:
+    ) -> tuple[ibis.Table, bool]:
         """
         Prepare reference table for strategy execution.
 
@@ -439,4 +431,3 @@ class SchemaManager:
                 pass
 
         return source_table, is_reference_table
-

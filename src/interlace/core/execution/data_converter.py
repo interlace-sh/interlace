@@ -10,12 +10,14 @@ Includes smart type coercion:
 - Heterogeneous arrays → JSON (automatic fallback for 'unknown' types)
 """
 
-from typing import Any, Optional, Union, Dict, List
 import json
+from typing import Any
+
 import ibis
 import ibis.expr.datatypes as dt
-from interlace.utils.schema_utils import fields_to_ibis_schema, merge_schemas
+
 from interlace.utils.logging import get_logger
+from interlace.utils.schema_utils import fields_to_ibis_schema, merge_schemas
 
 logger = get_logger("interlace.execution.data_converter")
 
@@ -35,9 +37,9 @@ class DataConverter:
 
     @staticmethod
     def _coerce_unknown_to_json(
-        data_list: List[Dict[str, Any]],
+        data_list: list[dict[str, Any]],
         schema: ibis.Schema,
-    ) -> tuple[List[Dict[str, Any]], ibis.Schema]:
+    ) -> tuple[list[dict[str, Any]], ibis.Schema]:
         """
         Detect columns with 'unknown' type and convert them to JSON strings.
 
@@ -84,9 +86,9 @@ class DataConverter:
 
     @staticmethod
     def apply_column_mapping(
-        data: List[Dict[str, Any]],
-        column_mapping: Dict[str, str],
-    ) -> List[Dict[str, Any]]:
+        data: list[dict[str, Any]],
+        column_mapping: dict[str, str],
+    ) -> list[dict[str, Any]]:
         """
         Apply column renames to list of dicts.
 
@@ -114,9 +116,9 @@ class DataConverter:
     @staticmethod
     def convert_to_ibis_table(
         data: Any,
-        fields: Optional[Union[Dict[str, Any], list, ibis.Schema]] = None,
+        fields: dict[str, Any] | list | ibis.Schema | None = None,
         strict: bool = False,
-        column_mapping: Optional[Dict[str, str]] = None,
+        column_mapping: dict[str, str] | None = None,
     ) -> ibis.Table:
         """
         Convert Python data structures to ibis Table using ibis.memtable().
@@ -168,9 +170,7 @@ class DataConverter:
                 keys = list(data.keys())
                 lengths = {len(data[k]) for k in keys if isinstance(data[k], list)}
                 if len(lengths) != 1:
-                    raise ValueError(
-                        "Dict of lists must have same length for all lists"
-                    )
+                    raise ValueError("Dict of lists must have same length for all lists")
                 length = lengths.pop() if lengths else 0
                 data_list = [{k: data[k][i] for k in keys} for i in range(length)]
             else:
@@ -191,13 +191,13 @@ class DataConverter:
                 data_list = data
             else:
                 raise ValueError(
-                    "List of non-dict values not supported. "
-                    'Use list of dicts like [{"col1": val1}, {"col1": val2}]'
+                    "List of non-dict values not supported. " 'Use list of dicts like [{"col1": val1}, {"col1": val2}]'
                 )
         else:
             # For pandas DataFrame or other types, convert to list of dicts first
             try:
                 import pandas as pd
+
                 if isinstance(data, pd.DataFrame):
                     if data.empty:
                         # Empty DataFrame - can only create table if fields schema is provided
@@ -215,12 +215,12 @@ class DataConverter:
                         f"Unsupported return type: {type(data)}. "
                         f"Supported types: dict, list of dicts, pandas.DataFrame, ibis.Table, generator (yield)"
                     )
-            except ImportError:
+            except ImportError as e:
                 raise ValueError(
                     f"Unsupported return type: {type(data)}. "
                     f"Supported types: dict, list of dicts, ibis.Table, generator (yield). "
                     f"For pandas.DataFrame support, install pandas."
-                )
+                ) from e
 
         # Apply column mapping (renames) before creating table
         if column_mapping:
@@ -233,10 +233,7 @@ class DataConverter:
             # STRICT mode: only output columns specified in fields
             # Filter data to only include specified columns
             specified_cols = set(fields_schema.names)
-            filtered_data = [
-                {k: v for k, v in row.items() if k in specified_cols}
-                for row in data_list
-            ]
+            filtered_data = [{k: v for k, v in row.items() if k in specified_cols} for row in data_list]
             return ibis.memtable(filtered_data, schema=fields_schema)
         elif fields_schema:
             # Handle empty data with schema
@@ -248,9 +245,7 @@ class DataConverter:
             inferred_schema = inferred_table.schema()
 
             # Smart coercion: convert unknown types to JSON
-            data_list, inferred_schema = DataConverter._coerce_unknown_to_json(
-                data_list, inferred_schema
-            )
+            data_list, inferred_schema = DataConverter._coerce_unknown_to_json(data_list, inferred_schema)
 
             merged_schema = merge_schemas(inferred_schema, fields_schema)
             return ibis.memtable(data_list, schema=merged_schema)
@@ -260,9 +255,7 @@ class DataConverter:
             inferred_schema = inferred_table.schema()
 
             # Smart coercion: convert unknown types to JSON
-            data_list, fixed_schema = DataConverter._coerce_unknown_to_json(
-                data_list, inferred_schema
-            )
+            data_list, fixed_schema = DataConverter._coerce_unknown_to_json(data_list, inferred_schema)
 
             # Only recreate if schema was fixed
             if fixed_schema != inferred_schema:
@@ -272,7 +265,7 @@ class DataConverter:
     @staticmethod
     def _apply_mapping_to_ibis_table(
         table: ibis.Table,
-        column_mapping: Dict[str, str],
+        column_mapping: dict[str, str],
     ) -> ibis.Table:
         """
         Apply column renames to an ibis.Table using ibis operations.
@@ -302,7 +295,7 @@ class DataConverter:
         return table
 
     @staticmethod
-    def extract_count_from_result(result: Any) -> Optional[int]:
+    def extract_count_from_result(result: Any) -> int | None:
         """
         Extract count value from SQL query result.
 

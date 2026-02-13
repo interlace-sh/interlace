@@ -4,10 +4,12 @@ Ephemeral materialisation - register in-memory for downstream use.
 Phase 0: Basic ephemeral materialisation (register with DuckDB via ibis).
 """
 
+from typing import Any
+
+import ibis
+
 from interlace.materialization.base import Materializer
 from interlace.utils.logging import get_logger
-from typing import Any
-import ibis
 
 
 class EphemeralMaterializer(Materializer):
@@ -16,9 +18,7 @@ class EphemeralMaterializer(Materializer):
     def __init__(self):
         self.logger = get_logger("interlace.materialization.ephemeral")
 
-    def materialise(
-        self, data: ibis.Table, model_name: str, schema: str, connection: Any = None, **kwargs
-    ) -> None:
+    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any = None, **kwargs) -> None:
         """
         Materialise data as ephemeral (register with ibis connection using alias).
 
@@ -64,8 +64,7 @@ class EphemeralMaterializer(Materializer):
             df = data.execute()
         except Exception as e:
             error_msg = (
-                f"Failed to execute ibis expression for ephemeral materialization "
-                f"of model '{model_name}': {str(e)}"
+                f"Failed to execute ibis expression for ephemeral materialization " f"of model '{model_name}': {str(e)}"
             )
             self.logger.error(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
@@ -75,9 +74,9 @@ class EphemeralMaterializer(Materializer):
         if fields:
             try:
                 from interlace.utils.schema_utils import (
+                    apply_schema_to_dataframe,
                     fields_to_ibis_schema,
                     merge_schemas,
-                    apply_schema_to_dataframe
                 )
 
                 # Convert fields to ibis schema
@@ -94,7 +93,7 @@ class EphemeralMaterializer(Materializer):
                 self.logger.error(
                     f"Failed to apply fields to ephemeral model '{model_name}': {e}. "
                     f"Continuing with original schema, but downstream models may fail.",
-                    exc_info=True
+                    exc_info=True,
                 )
 
         # Create temporary table with the data

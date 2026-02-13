@@ -2,15 +2,15 @@
 Schema history endpoints.
 """
 
-from typing import Any, Dict, List, Optional
 from collections import defaultdict
+from typing import Any
 
 from aiohttp import web
 
-from interlace.service.api.errors import NotFoundError, ErrorCode, ValidationError
-from interlace.service.api.handlers import BaseHandler
-from interlace.schema.tracking import get_schema_history, get_current_schema_version
 from interlace.connections.manager import get_connection as get_named_connection
+from interlace.schema.tracking import get_current_schema_version, get_schema_history
+from interlace.service.api.errors import ErrorCode, NotFoundError, ValidationError
+from interlace.service.api.handlers import BaseHandler
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.api.schema")
@@ -19,7 +19,7 @@ logger = get_logger("interlace.api.schema")
 class SchemaHandler(BaseHandler):
     """Handler for schema-related endpoints."""
 
-    def _get_connection(self) -> Optional[Any]:
+    def _get_connection(self) -> Any | None:
         """Get the default database connection from the connection manager."""
         try:
             # Determine default connection name from config
@@ -151,8 +151,8 @@ class SchemaHandler(BaseHandler):
         try:
             from_version = int(request.query.get("from", 1))
             to_version = int(request.query.get("to", 0))
-        except (ValueError, TypeError):
-            raise ValidationError("'from' and 'to' must be valid integers")
+        except (ValueError, TypeError) as e:
+            raise ValidationError("'from' and 'to' must be valid integers") from e
 
         connection = self._get_connection()
         if connection is None:
@@ -187,11 +187,9 @@ class SchemaHandler(BaseHandler):
             request=request,
         )
 
-    def _group_by_version(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _group_by_version(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Group history records by version."""
-        by_version: Dict[int, Dict[str, Any]] = defaultdict(
-            lambda: {"columns": [], "detected_at": None}
-        )
+        by_version: dict[int, dict[str, Any]] = defaultdict(lambda: {"columns": [], "detected_at": None})
 
         for record in records:
             version = record.get("version", 1)
@@ -210,18 +208,14 @@ class SchemaHandler(BaseHandler):
                 detected_at = record.get("detected_at")
                 if detected_at is not None:
                     version_data["detected_at"] = (
-                        detected_at.isoformat()
-                        if hasattr(detected_at, "isoformat")
-                        else str(detected_at)
+                        detected_at.isoformat() if hasattr(detected_at, "isoformat") else str(detected_at)
                     )
 
         # Sort by version descending (newest first)
         versions = sorted(by_version.values(), key=lambda v: v["version"], reverse=True)
         return versions
 
-    def _get_current_schema_from_model(
-        self, name: str, model: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    def _get_current_schema_from_model(self, name: str, model: dict[str, Any]) -> list[dict[str, Any]]:
         """Get current schema from model definition or database."""
         columns = []
 
@@ -240,9 +234,7 @@ class SchemaHandler(BaseHandler):
             # Mark primary keys
             primary_key = model.get("primary_key")
             if primary_key:
-                pk_set = (
-                    {primary_key} if isinstance(primary_key, str) else set(primary_key)
-                )
+                pk_set = {primary_key} if isinstance(primary_key, str) else set(primary_key)
                 for col in columns:
                     if col["name"] in pk_set:
                         col["is_primary_key"] = True
@@ -270,9 +262,7 @@ class SchemaHandler(BaseHandler):
 
         return columns
 
-    def _compute_diff(
-        self, from_records: List[Dict], to_records: List[Dict]
-    ) -> List[Dict[str, Any]]:
+    def _compute_diff(self, from_records: list[dict], to_records: list[dict]) -> list[dict[str, Any]]:
         """Compute diff between two versions."""
         from_cols = {r["column_name"]: r for r in from_records}
         to_cols = {r["column_name"]: r for r in to_records}

@@ -4,12 +4,12 @@ Configuration resolution and environment variable substitution.
 Phase 0: Resolve configuration with environment variables and placeholders.
 """
 
-from typing import Dict, Any
 import os
 import re
+from typing import Any
 
 
-def resolve_config(config_data: Dict[str, Any], env: str = "dev") -> Dict[str, Any]:
+def resolve_config(config_data: dict[str, Any], env: str = "dev") -> dict[str, Any]:
     """
     Resolve configuration with environment variable substitution.
 

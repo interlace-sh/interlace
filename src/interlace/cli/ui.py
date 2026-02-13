@@ -4,13 +4,11 @@ interlace ui - UI status commands.
 Check the status of the embedded web UI.
 """
 
-import typer
 from pathlib import Path
 
+import typer
 
-app = typer.Typer(
-    name="ui", help="Web UI information"
-)
+app = typer.Typer(name="ui", help="Web UI information")
 
 
 def get_static_dir() -> Path:

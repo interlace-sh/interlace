@@ -5,10 +5,10 @@ Supports CSV, Parquet, and JSON formats using DuckDB's native
 COPY TO functionality for optimal performance.
 """
 
-from interlace.export.base import Exporter, ExportConfig
+from interlace.export.base import ExportConfig, Exporter
 from interlace.export.csv_exporter import CSVExporter
-from interlace.export.parquet_exporter import ParquetExporter
 from interlace.export.json_exporter import JSONExporter
+from interlace.export.parquet_exporter import ParquetExporter
 
 __all__ = [
     "Exporter",
@@ -42,9 +42,7 @@ def get_exporter(format: str) -> Exporter:
     cls = exporters.get(format.lower())
     if cls is None:
         supported = ", ".join(sorted(exporters.keys()))
-        raise ValueError(
-            f"Unsupported export format: '{format}'. Supported formats: {supported}"
-        )
+        raise ValueError(f"Unsupported export format: '{format}'. Supported formats: {supported}")
     return cls()
 
 

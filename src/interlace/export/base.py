@@ -4,11 +4,10 @@ Base exporter class and configuration.
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from interlace.utils.logging import get_logger
 
@@ -36,10 +35,10 @@ class ExportConfig:
 
     # Parquet-specific
     compression: str = "snappy"  # snappy, gzip, zstd, none
-    row_group_size: Optional[int] = None
+    row_group_size: int | None = None
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> ExportConfig:
+    def from_dict(cls, d: dict[str, Any]) -> ExportConfig:
         """Create ExportConfig from a dictionary, ignoring unknown keys."""
         known = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in d.items() if k in known}
@@ -90,4 +89,5 @@ class Exporter(ABC):
     def _execute_sql(self, connection: Any, sql: str) -> None:
         """Execute a SQL statement on the connection."""
         from interlace.core.context import _execute_sql_internal
+
         _execute_sql_internal(connection, sql)

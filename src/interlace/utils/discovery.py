@@ -4,21 +4,23 @@ Model discovery utilities.
 Phase 0: Discover models from Python files and SQL files with dependency extraction.
 """
 
-from pathlib import Path
-from typing import Dict, Any, List, Set, Optional
 import importlib.util
-import re
 import inspect
+import logging
+import re
+from pathlib import Path
+from typing import Any
+
 import sqlglot
 from sqlglot import exp
-import logging
+
 from interlace.utils.hashing import calculate_file_hash, store_file_hash
 
 # In-memory cache for file hashes during discovery to avoid re-reading files
-_file_hash_cache: Dict[str, str] = {}
+_file_hash_cache: dict[str, str] = {}
 
 
-def discover_python_models(models_dir: Path, connection: Optional[Any] = None) -> Dict[str, Dict[str, Any]]:
+def discover_python_models(models_dir: Path, connection: Any | None = None) -> dict[str, dict[str, Any]]:
     """
     Discover Python models from directory.
 
@@ -74,9 +76,7 @@ def discover_python_models(models_dir: Path, connection: Optional[Any] = None) -
                             model_name = model_info.get("name")
                             schema_name = model_info.get("schema", "public")
                             if model_name:
-                                store_file_hash(
-                                    connection, model_name, schema_name, str(py_file), file_hash
-                                )
+                                store_file_hash(connection, model_name, schema_name, str(py_file), file_hash)
                         except Exception as e:
                             logger.debug(f"Could not store file hash for {model_name}: {e}")
 
@@ -87,7 +87,7 @@ def discover_python_models(models_dir: Path, connection: Optional[Any] = None) -
     return models
 
 
-def _extract_python_dependencies(func: Any) -> List[str]:
+def _extract_python_dependencies(func: Any) -> list[str]:
     """
     Extract model dependencies from Python function parameters.
 
@@ -110,7 +110,7 @@ def _extract_python_dependencies(func: Any) -> List[str]:
     return dependencies
 
 
-def discover_sql_models(models_dir: Path, connection: Optional[Any] = None) -> Dict[str, Dict[str, Any]]:
+def discover_sql_models(models_dir: Path, connection: Any | None = None) -> dict[str, dict[str, Any]]:
     """
     Discover SQL models from directory.
 
@@ -136,7 +136,7 @@ def discover_sql_models(models_dir: Path, connection: Optional[Any] = None) -> D
 
             # Parse all model definitions from the file (supports multiple models per file)
             model_definitions = _parse_multiple_sql_models(content)
-            
+
             for model_info in model_definitions:
                 if "name" in model_info:
                     model_info["file"] = str(sql_file)
@@ -160,9 +160,7 @@ def discover_sql_models(models_dir: Path, connection: Optional[Any] = None) -> D
                             model_name = model_info.get("name")
                             schema_name = model_info.get("schema", "public")
                             if model_name:
-                                store_file_hash(
-                                    connection, model_name, schema_name, str(sql_file), file_hash
-                                )
+                                store_file_hash(connection, model_name, schema_name, str(sql_file), file_hash)
                         except Exception as e:
                             logger.debug(f"Could not store file hash for {model_name}: {e}")
 
@@ -173,7 +171,7 @@ def discover_sql_models(models_dir: Path, connection: Optional[Any] = None) -> D
     return models
 
 
-def _extract_sql_dependencies(sql_content: str) -> List[str]:
+def _extract_sql_dependencies(sql_content: str) -> list[str]:
     """
     Extract model dependencies from SQL query using sqlglot.
 
@@ -184,7 +182,7 @@ def _extract_sql_dependencies(sql_content: str) -> List[str]:
     DuckDB ATTACH. The database.table format (pg_db.public) is detected but the
     connection name (pg_db) is not used as a dependency - only the table name.
     """
-    dependencies: Set[str] = set()
+    dependencies: set[str] = set()
 
     try:
         # Parse SQL - handle multiple statements
@@ -219,16 +217,16 @@ def _extract_sql_dependencies(sql_content: str) -> List[str]:
         logger.warning(f"SQL parsing failed, using regex fallback: {e}")
         dependencies.update(_extract_sql_dependencies_regex(sql_content))
 
-    return sorted(list(dependencies))
+    return sorted(dependencies)
 
 
-def _extract_sql_dependencies_regex(sql_content: str) -> Set[str]:
+def _extract_sql_dependencies_regex(sql_content: str) -> set[str]:
     """
     Fallback regex-based dependency extraction.
 
     Looks for table names in FROM and JOIN clauses.
     """
-    dependencies: Set[str] = set()
+    dependencies: set[str] = set()
 
     # Pattern to match FROM/JOIN table references
     # FROM table_name, FROM schema.table_name, JOIN table_name, etc.
@@ -253,7 +251,7 @@ def _extract_sql_dependencies_regex(sql_content: str) -> Set[str]:
     return dependencies
 
 
-def _parse_sql_annotations(content: str) -> Dict[str, Any]:
+def _parse_sql_annotations(content: str) -> dict[str, Any]:
     """Parse SQL annotations from comments."""
     annotations = {}
 
@@ -279,6 +277,7 @@ def _parse_sql_annotations(content: str) -> Dict[str, Any]:
         elif key == "fields":
             try:
                 import json
+
                 annotations[key] = json.loads(value)
             except json.JSONDecodeError:
                 # If not valid JSON, try to parse as simple key:value pairs
@@ -298,26 +297,26 @@ def _parse_sql_annotations(content: str) -> Dict[str, Any]:
     return annotations
 
 
-def _parse_multiple_sql_models(content: str) -> List[Dict[str, Any]]:
+def _parse_multiple_sql_models(content: str) -> list[dict[str, Any]]:
     """
     Parse multiple SQL model definitions from a single file.
-    
+
     Each model is defined by annotations (-- @name:, -- @schema:, etc.) followed by SQL.
     Models are separated by the next set of annotations or end of file.
-    
+
     Returns:
         List of model info dictionaries, each with its own query extracted.
     """
     models = []
-    lines = content.split('\n')
-    
+    lines = content.split("\n")
+
     current_model = None
     current_query_start = None
     i = 0
-    
+
     while i < len(lines):
         line = lines[i]
-        
+
         # Check if this line starts a new model definition
         name_match = re.match(r"--\s*@name:\s*(.+)", line)
         if name_match:
@@ -325,45 +324,45 @@ def _parse_multiple_sql_models(content: str) -> List[Dict[str, Any]]:
             if current_model and current_query_start is not None:
                 # Extract query from start to before this line
                 query_lines = lines[current_query_start:i]
-                current_model["query"] = '\n'.join(query_lines).strip()
+                current_model["query"] = "\n".join(query_lines).strip()
                 if current_model.get("query"):
                     models.append(current_model)
-            
+
             # Start new model
             current_model = {}
             # Parse all annotations for this model (they come before the SQL)
             annotation_lines = []
             j = i
-            while j < len(lines) and (lines[j].strip().startswith('--') or not lines[j].strip()):
+            while j < len(lines) and (lines[j].strip().startswith("--") or not lines[j].strip()):
                 annotation_lines.append(lines[j])
                 j += 1
-            
-            annotation_block = '\n'.join(annotation_lines)
+
+            annotation_block = "\n".join(annotation_lines)
             current_model = _parse_sql_annotations(annotation_block)
             current_query_start = j  # SQL starts after annotations
             i = j
             continue
-        
+
         i += 1
-    
+
     # Save last model
     if current_model and current_query_start is not None:
         query_lines = lines[current_query_start:]
-        current_model["query"] = '\n'.join(query_lines).strip()
+        current_model["query"] = "\n".join(query_lines).strip()
         if current_model.get("query"):
             models.append(current_model)
-    
+
     # Fallback: if no models found, try single model (SQL file without @name annotation)
     if not models:
         model_info = _parse_sql_annotations(content)
         if "name" in model_info:
             model_info["query"] = content
             models.append(model_info)
-    
+
     return models
 
 
-def discover_models(models_dir: Path, connection: Optional[Any] = None) -> Dict[str, Dict[str, Any]]:
+def discover_models(models_dir: Path, connection: Any | None = None) -> dict[str, dict[str, Any]]:
     """
     Discover all models (Python and SQL) from directory.
 
@@ -377,7 +376,7 @@ def discover_models(models_dir: Path, connection: Optional[Any] = None) -> Dict[
     global _file_hash_cache
     # Clear cache at start of discovery to ensure fresh hashes
     _file_hash_cache.clear()
-    
+
     all_models = {}
 
     # Discover Python models

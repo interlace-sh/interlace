@@ -10,11 +10,13 @@ Tests cover:
 - Configuration handling
 """
 
-import pytest
 import asyncio
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from interlace.core.executor import Executor
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
+
 from interlace.core.dependencies import DependencyGraph
+from interlace.core.executor import Executor
 
 
 class TestExecutorInitialization:
@@ -101,9 +103,7 @@ class TestDependencyLoading:
             models = {"dep_model": {"schema": "public", "connection": "duckdb_main"}}
 
             # Test that lock is created
-            await executor._load_dependency_with_lock(
-                "dep_model", mock_connection, models, "public"
-            )
+            await executor._load_dependency_with_lock("dep_model", mock_connection, models, "public")
 
             # Verify lock was created
             assert "dep_model" in executor._dep_loading_locks
@@ -178,17 +178,13 @@ class TestSchemaCaching:
             mock_connection.table.return_value = existing_table
 
             # First validation - should cache
-            result1 = await executor._validate_and_update_schema(
-                mock_table, "test_model", "public", mock_connection
-            )
+            result1 = await executor._validate_and_update_schema(mock_table, "test_model", "public", mock_connection)
 
             # Populate cache manually for test
             executor._schema_cache["public.test_model"] = mock_schema
 
             # Second validation with same schema - should use cache
-            result2 = await executor._validate_and_update_schema(
-                mock_table, "test_model", "public", mock_connection
-            )
+            result2 = await executor._validate_and_update_schema(mock_table, "test_model", "public", mock_connection)
 
             # Both should return 0 (no changes)
             assert result1 == 0
@@ -273,7 +269,16 @@ class TestRefactoredMethods:
             ready = set()
             succeeded = set()
             await executor._wait_for_task_completion(
-                executing, task_map, results, models, graph, pending, ready, new_ready, completed, succeeded
+                executing,
+                task_map,
+                results,
+                models,
+                graph,
+                pending,
+                ready,
+                new_ready,
+                completed,
+                succeeded,
             )
 
             # Verify process_completed_task was called

@@ -5,9 +5,10 @@ Compares schemas and validates compatibility.
 Supports SchemaMode for controlling validation strictness.
 """
 
-from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
+
 import ibis
+
 from interlace.schema.modes import SchemaMode
 from interlace.utils.logging import get_logger
 
@@ -18,19 +19,19 @@ logger = get_logger("interlace.schema.validation")
 class SchemaComparisonResult:
     """Result of schema comparison."""
 
-    added_columns: Dict[str, any]  # column_name -> ibis type
-    removed_columns: List[str]  # column names
-    type_changes: List[Tuple[str, any, any]]  # (column_name, old_type, new_type)
+    added_columns: dict[str, any]  # column_name -> ibis type
+    removed_columns: list[str]  # column names
+    type_changes: list[tuple[str, any, any]]  # (column_name, old_type, new_type)
     compatible: bool
-    warnings: List[str]
-    errors: List[str]
+    warnings: list[str]
+    errors: list[str]
 
 
 def compare_schemas(
     existing_schema: ibis.Schema,
     new_schema: ibis.Schema,
-    fields_schema: Optional[ibis.Schema] = None,
-    schema_mode: Optional[SchemaMode] = None,
+    fields_schema: ibis.Schema | None = None,
+    schema_mode: SchemaMode | None = None,
 ) -> SchemaComparisonResult:
     """
     Compare two schemas and identify differences.
@@ -79,13 +80,11 @@ def compare_schemas(
 
         # Merge specified fields with new_schema to ensure they exist
         from interlace.utils.schema_utils import merge_schemas
+
         new_schema = merge_schemas(new_schema, fields_schema)
 
         # Only track additions/removals/type changes for specified fields
-        added_columns = {
-            name: dtype for name, dtype in specified_fields.items()
-            if name not in existing_cols
-        }
+        added_columns = {name: dtype for name, dtype in specified_fields.items() if name not in existing_cols}
         removed_columns = []  # Don't track removals when fields_schema is specified
 
         type_changes = []
@@ -95,12 +94,8 @@ def compare_schemas(
                     type_changes.append((name, existing_cols[name], specified_fields[name]))
     else:
         # Normal comparison - track all additions/removals
-        added_columns = {
-            name: dtype for name, dtype in new_cols.items() if name not in existing_cols
-        }
-        removed_columns = [
-            name for name in existing_cols if name not in new_cols
-        ]
+        added_columns = {name: dtype for name, dtype in new_cols.items() if name not in existing_cols}
+        removed_columns = [name for name in existing_cols if name not in new_cols]
 
         type_changes = []
         for name in existing_cols:
@@ -135,26 +130,21 @@ def compare_schemas(
 
         if schema_mode == SchemaMode.STRICT:
             errors.append(
-                f"Type change for {col_name}: {old_type} → {new_type} "
-                "(strict mode rejects all type changes)"
+                f"Type change for {col_name}: {old_type} → {new_type} " "(strict mode rejects all type changes)"
             )
         elif schema_mode == SchemaMode.SAFE:
             if not is_safe:
                 errors.append(
-                    f"Unsafe type change for {col_name}: {old_type} → {new_type}. "
-                    "Use migration for unsafe casts."
+                    f"Unsafe type change for {col_name}: {old_type} → {new_type}. " "Use migration for unsafe casts."
                 )
         elif schema_mode == SchemaMode.FLEXIBLE:
             if not is_safe:
                 warnings.append(
-                    f"Unsafe type change for {col_name}: {old_type} → {new_type}. "
-                    "Will attempt coercion."
+                    f"Unsafe type change for {col_name}: {old_type} → {new_type}. " "Will attempt coercion."
                 )
         elif schema_mode == SchemaMode.LENIENT:
             if not is_safe:
-                warnings.append(
-                    f"Type coercion for {col_name}: {old_type} → {new_type}"
-                )
+                warnings.append(f"Type coercion for {col_name}: {old_type} → {new_type}")
         # IGNORE already handled above
 
     compatible = len(errors) == 0
@@ -170,10 +160,10 @@ def compare_schemas(
 
 
 def validate_schema(
-    existing_schema: Optional[ibis.Schema],
+    existing_schema: ibis.Schema | None,
     new_schema: ibis.Schema,
-    fields_schema: Optional[ibis.Schema] = None,
-    schema_mode: Optional[SchemaMode] = None,
+    fields_schema: ibis.Schema | None = None,
+    schema_mode: SchemaMode | None = None,
 ) -> SchemaComparisonResult:
     """
     Validate schema compatibility.

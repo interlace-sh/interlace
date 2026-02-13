@@ -4,9 +4,9 @@ Migration utilities.
 Helper functions for migration system.
 """
 
-from pathlib import Path
-from typing import List, Optional
 from dataclasses import dataclass
+from pathlib import Path
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.migrations")
@@ -18,11 +18,11 @@ class MigrationResult:
 
     migration_file: str
     success: bool
-    error_message: Optional[str] = None
-    sql_preview: Optional[str] = None  # SQL content for dry-run preview
+    error_message: str | None = None
+    sql_preview: str | None = None  # SQL content for dry-run preview
 
 
-def get_migration_files(migrations_dir: Path) -> List[Path]:
+def get_migration_files(migrations_dir: Path) -> list[Path]:
     """
     Get all SQL migration files from migrations directory.
 
@@ -35,13 +35,11 @@ def get_migration_files(migrations_dir: Path) -> List[Path]:
     if not migrations_dir.exists():
         return []
 
-    migration_files = [
-        f for f in migrations_dir.glob("*.sql") if f.is_file()
-    ]
+    migration_files = [f for f in migrations_dir.glob("*.sql") if f.is_file()]
     return sorted(migration_files)
 
 
-def get_executed_migrations(connection: any, environment: str) -> List[str]:
+def get_executed_migrations(connection: any, environment: str) -> list[str]:
     """
     Get list of executed migration files for an environment.
 
@@ -54,10 +52,11 @@ def get_executed_migrations(connection: any, environment: str) -> List[str]:
     """
     try:
         from interlace.core.state import _escape_sql_string
+
         safe_environment = _escape_sql_string(environment)
         query = f"""
-            SELECT migration_file 
-            FROM interlace.migration_runs 
+            SELECT migration_file
+            FROM interlace.migration_runs
             WHERE environment = '{safe_environment}' AND success = TRUE
         """
         result = connection.sql(query).execute()
@@ -72,9 +71,7 @@ def get_executed_migrations(connection: any, environment: str) -> List[str]:
         return []
 
 
-def get_all_migrations_with_status(
-    project_dir: Path, connection: any, environment: str
-) -> List[dict]:
+def get_all_migrations_with_status(project_dir: Path, connection: any, environment: str) -> list[dict]:
     """
     Get all migrations with their execution status.
 
@@ -99,10 +96,11 @@ def get_all_migrations_with_status(
     migration_status = {}
     try:
         from interlace.core.state import _escape_sql_string
+
         safe_environment = _escape_sql_string(environment)
         query = f"""
             SELECT migration_file, executed_at, executed_by, success, error_message
-            FROM interlace.migration_runs 
+            FROM interlace.migration_runs
             WHERE environment = '{safe_environment}'
             ORDER BY executed_at DESC
         """
@@ -135,18 +133,17 @@ def get_all_migrations_with_status(
     results = []
     for migration_file in sorted(all_migration_names):
         if migration_file in migration_status:
-            results.append({
-                "migration_file": migration_file,
-                **migration_status[migration_file]
-            })
+            results.append({"migration_file": migration_file, **migration_status[migration_file]})
         else:
-            results.append({
-                "migration_file": migration_file,
-                "status": "pending",
-                "executed_at": None,
-                "executed_by": None,
-                "error_message": None,
-            })
+            results.append(
+                {
+                    "migration_file": migration_file,
+                    "status": "pending",
+                    "executed_at": None,
+                    "executed_by": None,
+                    "error_message": None,
+                }
+            )
 
     return results
 
@@ -156,8 +153,8 @@ def record_migration_run(
     migration_file: str,
     environment: str,
     success: bool,
-    error_message: Optional[str] = None,
-    executed_by: Optional[str] = None,
+    error_message: str | None = None,
+    executed_by: str | None = None,
 ) -> None:
     """
     Record migration execution in database.
@@ -174,14 +171,15 @@ def record_migration_run(
 
     try:
         from interlace.core.state import _escape_sql_string
+
         safe_migration_file = _escape_sql_string(migration_file)
         safe_environment = _escape_sql_string(environment)
         safe_error_message = _escape_sql_string(error_message) if error_message else None
         safe_executed_by = _escape_sql_string(executed_by) if executed_by else None
-        
+
         # Delete existing entry if it exists (upsert)
         delete_query = f"""
-            DELETE FROM interlace.migration_runs 
+            DELETE FROM interlace.migration_runs
             WHERE migration_file = '{safe_migration_file}' AND environment = '{safe_environment}'
         """
         _execute_sql_internal(connection, delete_query)
@@ -192,11 +190,10 @@ def record_migration_run(
         success_sql = "1" if success else "0"
 
         insert_query = f"""
-            INSERT INTO interlace.migration_runs 
+            INSERT INTO interlace.migration_runs
             (migration_file, environment, executed_at, executed_by, success, error_message)
             VALUES ('{safe_migration_file}', '{safe_environment}', CURRENT_TIMESTAMP, {executed_by_sql}, {success_sql}, {error_msg_sql})
         """
         _execute_sql_internal(connection, insert_query)
     except Exception as e:
         logger.warning(f"Could not record migration run: {e}")
-

@@ -3,9 +3,10 @@ Main CLI entry point.
 """
 
 import typer
-from interlace.cli import init, run, serve, info, config, schema, ui, lineage, plan, promote
-from interlace.migrations import cli as migrate_cli
+
 from interlace import __version__
+from interlace.cli import config, info, init, lineage, plan, promote, run, schema, serve, ui
+from interlace.migrations import cli as migrate_cli
 
 
 def version_callback(value: bool):

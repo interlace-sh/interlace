@@ -6,8 +6,9 @@ Phase 2: Track failures for manual inspection and debugging.
 
 import json
 import time
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.retry.dlq")
@@ -27,11 +28,11 @@ class DLQEntry:
     # Exception type and message
     exception_type: str
     exception_message: str
-    exception_traceback: Optional[str] = None
+    exception_traceback: str | None = None
 
     # Retry metadata
     total_attempts: int = 1
-    retry_history: List[Dict[str, Any]] = None
+    retry_history: list[dict[str, Any]] = None
 
     # Timing information
     first_attempt_time: float = None
@@ -39,16 +40,16 @@ class DLQEntry:
     total_duration: float = 0.0
 
     # Model parameters (for reproducing failure)
-    model_config: Dict[str, Any] = None
-    model_dependencies: List[str] = None
+    model_config: dict[str, Any] = None
+    model_dependencies: list[str] = None
 
     # Run context
-    run_id: Optional[str] = None
-    environment: Optional[str] = None
+    run_id: str | None = None
+    environment: str | None = None
 
     # Entry metadata
     dlq_timestamp: float = None
-    dlq_id: Optional[str] = None
+    dlq_id: str | None = None
 
     def __post_init__(self):
         """Set default values."""
@@ -65,7 +66,7 @@ class DLQEntry:
         if self.last_attempt_time is None:
             self.last_attempt_time = time.time()
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage."""
         return asdict(self)
 
@@ -74,12 +75,12 @@ class DLQEntry:
         return json.dumps(self.to_dict(), default=str)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'DLQEntry':
+    def from_dict(cls, data: dict[str, Any]) -> "DLQEntry":
         """Create from dictionary."""
         return cls(**data)
 
     @classmethod
-    def from_json(cls, json_str: str) -> 'DLQEntry':
+    def from_json(cls, json_str: str) -> "DLQEntry":
         """Create from JSON string."""
         data = json.loads(json_str)
         return cls.from_dict(data)
@@ -115,7 +116,7 @@ class DeadLetterQueue:
         >>> dlq.mark_resolved(dlq_id)
     """
 
-    def __init__(self, state_store: Optional[Any] = None):
+    def __init__(self, state_store: Any | None = None):
         """
         Initialize Dead Letter Queue.
 
@@ -123,7 +124,7 @@ class DeadLetterQueue:
             state_store: StateStore instance for persistence (optional)
         """
         self.state_store = state_store
-        self._in_memory_queue: List[DLQEntry] = []
+        self._in_memory_queue: list[DLQEntry] = []
 
     def add(self, entry: DLQEntry) -> str:
         """
@@ -153,7 +154,7 @@ class DeadLetterQueue:
 
         return entry.dlq_id
 
-    def get_by_id(self, dlq_id: str) -> Optional[DLQEntry]:
+    def get_by_id(self, dlq_id: str) -> DLQEntry | None:
         """
         Get a DLQ entry by ID.
 
@@ -172,7 +173,7 @@ class DeadLetterQueue:
                     return entry
             return None
 
-    def get_by_model(self, model_name: str, limit: int = 10) -> List[DLQEntry]:
+    def get_by_model(self, model_name: str, limit: int = 10) -> list[DLQEntry]:
         """
         Get DLQ entries for a specific model.
 
@@ -190,7 +191,7 @@ class DeadLetterQueue:
             entries = [e for e in self._in_memory_queue if e.model_name == model_name]
             return sorted(entries, key=lambda e: e.dlq_timestamp, reverse=True)[:limit]
 
-    def get_recent(self, limit: int = 10) -> List[DLQEntry]:
+    def get_recent(self, limit: int = 10) -> list[DLQEntry]:
         """
         Get recent DLQ entries.
 
@@ -204,13 +205,9 @@ class DeadLetterQueue:
             return self._fetch_recent_entries(limit)
         else:
             # Sort in-memory queue by timestamp
-            return sorted(
-                self._in_memory_queue,
-                key=lambda e: e.dlq_timestamp,
-                reverse=True
-            )[:limit]
+            return sorted(self._in_memory_queue, key=lambda e: e.dlq_timestamp, reverse=True)[:limit]
 
-    def mark_resolved(self, dlq_id: str, resolution_note: Optional[str] = None):
+    def mark_resolved(self, dlq_id: str, resolution_note: str | None = None):
         """
         Mark a DLQ entry as resolved.
 
@@ -224,9 +221,7 @@ class DeadLetterQueue:
             self._mark_entry_resolved(dlq_id, resolution_note)
         else:
             # Remove from in-memory queue
-            self._in_memory_queue = [
-                e for e in self._in_memory_queue if e.dlq_id != dlq_id
-            ]
+            self._in_memory_queue = [e for e in self._in_memory_queue if e.dlq_id != dlq_id]
 
     def clear_model(self, model_name: str):
         """
@@ -240,9 +235,7 @@ class DeadLetterQueue:
         if self.state_store:
             self._clear_model_entries(model_name)
         else:
-            self._in_memory_queue = [
-                e for e in self._in_memory_queue if e.model_name != model_name
-            ]
+            self._in_memory_queue = [e for e in self._in_memory_queue if e.model_name != model_name]
 
     def clear_all(self):
         """Clear all DLQ entries."""
@@ -253,7 +246,7 @@ class DeadLetterQueue:
         else:
             self._in_memory_queue.clear()
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """
         Get DLQ statistics.
 
@@ -318,6 +311,7 @@ class DeadLetterQueue:
                     return str(val)
                 elif isinstance(val, (list, dict)):
                     import json
+
                     return f"'{json.dumps(val).replace(chr(39), chr(39)+chr(39))}'"
                 else:
                     return f"'{str(val).replace(chr(39), chr(39)+chr(39))}'"
@@ -357,7 +351,7 @@ class DeadLetterQueue:
             logger.warning(f"Failed to persist DLQ entry to database: {e}. Using in-memory storage.")
             self._in_memory_queue.append(entry)
 
-    def _fetch_entry_by_id(self, dlq_id: str) -> Optional[DLQEntry]:
+    def _fetch_entry_by_id(self, dlq_id: str) -> DLQEntry | None:
         """Fetch entry from state database by ID."""
         if not self.state_store:
             return None
@@ -383,7 +377,7 @@ class DeadLetterQueue:
             logger.debug(f"Failed to fetch DLQ entry by ID: {e}")
             return None
 
-    def _fetch_entries_by_model(self, model_name: str, limit: int) -> List[DLQEntry]:
+    def _fetch_entries_by_model(self, model_name: str, limit: int) -> list[DLQEntry]:
         """Fetch entries from state database by model."""
         if not self.state_store:
             return []
@@ -396,21 +390,19 @@ class DeadLetterQueue:
             dlq_table = "interlace.dead_letter_queue"
             escaped_name = model_name.replace("'", "''")
 
-            result = conn.sql(
-                f"""
+            result = conn.sql(f"""
                 SELECT * FROM {dlq_table}
                 WHERE model_name = '{escaped_name}' AND is_resolved = FALSE
                 ORDER BY dlq_timestamp DESC
                 LIMIT {limit}
-                """
-            ).execute()
+                """).execute()
 
             return [self._row_to_entry(row) for _, row in result.iterrows()]
         except Exception as e:
             logger.debug(f"Failed to fetch DLQ entries by model: {e}")
             return []
 
-    def _fetch_recent_entries(self, limit: int) -> List[DLQEntry]:
+    def _fetch_recent_entries(self, limit: int) -> list[DLQEntry]:
         """Fetch recent entries from state database."""
         if not self.state_store:
             return []
@@ -422,21 +414,19 @@ class DeadLetterQueue:
 
             dlq_table = "interlace.dead_letter_queue"
 
-            result = conn.sql(
-                f"""
+            result = conn.sql(f"""
                 SELECT * FROM {dlq_table}
                 WHERE is_resolved = FALSE
                 ORDER BY dlq_timestamp DESC
                 LIMIT {limit}
-                """
-            ).execute()
+                """).execute()
 
             return [self._row_to_entry(row) for _, row in result.iterrows()]
         except Exception as e:
             logger.debug(f"Failed to fetch recent DLQ entries: {e}")
             return []
 
-    def _mark_entry_resolved(self, dlq_id: str, resolution_note: Optional[str]):
+    def _mark_entry_resolved(self, dlq_id: str, resolution_note: str | None):
         """Mark entry as resolved in state database."""
         if not self.state_store:
             return
@@ -508,7 +498,7 @@ class DeadLetterQueue:
         except Exception as e:
             logger.warning(f"Failed to clear all DLQ entries: {e}")
 
-    def _fetch_stats(self) -> Dict[str, Any]:
+    def _fetch_stats(self) -> dict[str, Any]:
         """Fetch stats from state database."""
         if not self.state_store:
             return {
@@ -529,29 +519,23 @@ class DeadLetterQueue:
             dlq_table = "interlace.dead_letter_queue"
 
             # Get total count
-            total_result = conn.sql(
-                f"SELECT COUNT(*) as cnt FROM {dlq_table} WHERE is_resolved = FALSE"
-            ).execute()
+            total_result = conn.sql(f"SELECT COUNT(*) as cnt FROM {dlq_table} WHERE is_resolved = FALSE").execute()
             total = int(total_result.iloc[0]["cnt"])
 
             # Get counts by model
-            model_result = conn.sql(
-                f"""
+            model_result = conn.sql(f"""
                 SELECT model_name, COUNT(*) as cnt FROM {dlq_table}
                 WHERE is_resolved = FALSE
                 GROUP BY model_name
-                """
-            ).execute()
+                """).execute()
             by_model = {row["model_name"]: int(row["cnt"]) for _, row in model_result.iterrows()}
 
             # Get counts by exception type
-            exc_result = conn.sql(
-                f"""
+            exc_result = conn.sql(f"""
                 SELECT exception_type, COUNT(*) as cnt FROM {dlq_table}
                 WHERE is_resolved = FALSE
                 GROUP BY exception_type
-                """
-            ).execute()
+                """).execute()
             by_exception = {row["exception_type"]: int(row["cnt"]) for _, row in exc_result.iterrows()}
 
             return {

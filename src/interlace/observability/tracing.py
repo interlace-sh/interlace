@@ -15,10 +15,12 @@ Usage:
         ...
 """
 
-from typing import Dict, Any, Optional, Callable
-import functools
 import asyncio
+import functools
+from collections.abc import Callable
 from contextlib import contextmanager
+from typing import Any
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.observability.tracing")
@@ -26,15 +28,17 @@ logger = get_logger("interlace.observability.tracing")
 # Try to import OpenTelemetry (optional dependency)
 try:
     from opentelemetry import trace
+    from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-    from opentelemetry.sdk.resources import Resource
     from opentelemetry.semconv.resource import ResourceAttributes
+
     OTEL_AVAILABLE = True
 
     # Try to import OTLP exporter
     try:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
         OTLP_AVAILABLE = True
     except ImportError:
         OTLP_AVAILABLE = False
@@ -67,7 +71,7 @@ class NoOpSpan:
     def record_exception(self, exception: Exception):
         pass
 
-    def add_event(self, name: str, attributes: Optional[Dict[str, Any]] = None):
+    def add_event(self, name: str, attributes: dict[str, Any] | None = None):
         pass
 
 
@@ -100,11 +104,11 @@ class TracingManager:
         self.service_name = service_name
         self._enabled = False
         self._tracer: Any = NoOpTracer()
-        self._provider: Optional[Any] = None
+        self._provider: Any | None = None
 
     def enable(
         self,
-        endpoint: Optional[str] = None,
+        endpoint: str | None = None,
         console: bool = False,
     ):
         """
@@ -116,16 +120,17 @@ class TracingManager:
         """
         if not OTEL_AVAILABLE:
             logger.warning(
-                "OpenTelemetry not installed. "
-                "Install with: pip install opentelemetry-sdk opentelemetry-api"
+                "OpenTelemetry not installed. " "Install with: pip install opentelemetry-sdk opentelemetry-api"
             )
             return
 
         # Create resource with service info
-        resource = Resource.create({
-            ResourceAttributes.SERVICE_NAME: self.service_name,
-            ResourceAttributes.SERVICE_VERSION: "1.0.0",
-        })
+        resource = Resource.create(
+            {
+                ResourceAttributes.SERVICE_NAME: self.service_name,
+                ResourceAttributes.SERVICE_VERSION: "1.0.0",
+            }
+        )
 
         # Create tracer provider
         self._provider = TracerProvider(resource=resource)
@@ -176,7 +181,7 @@ class TracingManager:
     def span(
         self,
         name: str,
-        attributes: Optional[Dict[str, Any]] = None,
+        attributes: dict[str, Any] | None = None,
     ):
         """
         Create a span context manager.
@@ -231,7 +236,7 @@ class TracingManager:
     def dependency_loading_span(
         self,
         model_name: str,
-        dependencies: Optional[list] = None,
+        dependencies: list | None = None,
     ):
         """
         Create a span for dependency loading.
@@ -256,7 +261,7 @@ class TracingManager:
         self,
         model_name: str,
         materialise: str,
-        strategy: Optional[str] = None,
+        strategy: str | None = None,
     ):
         """
         Create a span for materialization.
@@ -281,7 +286,7 @@ class TracingManager:
     def query_span(
         self,
         query_type: str,
-        table_name: Optional[str] = None,
+        table_name: str | None = None,
     ):
         """
         Create a span for database query.
@@ -301,7 +306,7 @@ class TracingManager:
 
 
 # Global tracing manager instance
-_tracing_manager: Optional[TracingManager] = None
+_tracing_manager: TracingManager | None = None
 
 
 def get_tracer(service_name: str = "interlace") -> TracingManager:
@@ -321,7 +326,7 @@ def get_tracer(service_name: str = "interlace") -> TracingManager:
 
 
 # Decorators for tracing
-def trace_model_execution(func: Optional[Callable] = None, name: Optional[str] = None):
+def trace_model_execution(func: Callable | None = None, name: str | None = None):
     """
     Decorator to trace model execution.
 
@@ -334,6 +339,7 @@ def trace_model_execution(func: Optional[Callable] = None, name: Optional[str] =
         def execute_model_sync(model_name, ...):
             ...
     """
+
     def decorator(f: Callable) -> Callable:
         trace_name = name or f.__name__
 
@@ -362,7 +368,7 @@ def trace_model_execution(func: Optional[Callable] = None, name: Optional[str] =
         return decorator(func)
 
 
-def trace_dependency_loading(func: Optional[Callable] = None, name: Optional[str] = None):
+def trace_dependency_loading(func: Callable | None = None, name: str | None = None):
     """
     Decorator to trace dependency loading.
 
@@ -371,8 +377,8 @@ def trace_dependency_loading(func: Optional[Callable] = None, name: Optional[str
         async def load_dependencies(model_name, ...):
             ...
     """
+
     def decorator(f: Callable) -> Callable:
-        trace_name = name or f.__name__
 
         @functools.wraps(f)
         async def async_wrapper(*args, **kwargs):
@@ -399,7 +405,7 @@ def trace_dependency_loading(func: Optional[Callable] = None, name: Optional[str
         return decorator(func)
 
 
-def trace_materialization(func: Optional[Callable] = None, name: Optional[str] = None):
+def trace_materialization(func: Callable | None = None, name: str | None = None):
     """
     Decorator to trace materialization.
 
@@ -408,8 +414,8 @@ def trace_materialization(func: Optional[Callable] = None, name: Optional[str] =
         async def materialise(model_name, materialise_type, ...):
             ...
     """
+
     def decorator(f: Callable) -> Callable:
-        trace_name = name or f.__name__
 
         @functools.wraps(f)
         async def async_wrapper(*args, **kwargs):

@@ -5,7 +5,7 @@ Phase 3: Check that column(s) contain only unique values.
 """
 
 import time
-from typing import List, Optional
+
 import ibis
 
 from interlace.quality.base import (
@@ -33,11 +33,11 @@ class UniqueCheck(QualityCheck):
 
     def __init__(
         self,
-        column: Optional[str] = None,
-        columns: Optional[List[str]] = None,
+        column: str | None = None,
+        columns: list[str] | None = None,
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
     ):
         """
         Initialize unique check.
@@ -68,7 +68,7 @@ class UniqueCheck(QualityCheck):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> QualityCheckResult:
         """
         Execute uniqueness check.
@@ -96,9 +96,7 @@ class UniqueCheck(QualityCheck):
                 distinct_count = int(table[self.columns[0]].nunique().execute())
             else:
                 # For composite keys, count distinct combinations
-                distinct_count = int(
-                    table.select(self.columns).distinct().count().execute()
-                )
+                distinct_count = int(table.select(self.columns).distinct().count().execute())
 
             # Calculate duplicates
             duplicate_count = total_rows - distinct_count

@@ -2,11 +2,9 @@
 Tests for configuration loading and resolution.
 """
 
-import os
 import pytest
-from pathlib import Path
 
-from interlace.config.loader import load_config, Config, _merge_dict
+from interlace.config.loader import Config, _merge_dict, load_config
 
 
 class TestConfig:
@@ -77,9 +75,7 @@ class TestLoadConfig:
     """Tests for load_config function."""
 
     def test_load_basic_config(self, tmp_path):
-        (tmp_path / "config.yaml").write_text(
-            "name: testproj\nconnections:\n  default:\n    type: duckdb\n"
-        )
+        (tmp_path / "config.yaml").write_text("name: testproj\nconnections:\n  default:\n    type: duckdb\n")
         cfg = load_config(tmp_path)
         assert cfg.get("name") == "testproj"
 
@@ -107,9 +103,7 @@ class TestLoadConfig:
 
     def test_env_var_substitution(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MY_DB_PATH", "/data/test.duckdb")
-        (tmp_path / "config.yaml").write_text(
-            "connections:\n  default:\n    type: duckdb\n    path: ${MY_DB_PATH}\n"
-        )
+        (tmp_path / "config.yaml").write_text("connections:\n  default:\n    type: duckdb\n    path: ${MY_DB_PATH}\n")
         cfg = load_config(tmp_path, env="dev")
         conn = cfg.get("connections.default.path")
         assert conn == "/data/test.duckdb"

@@ -5,7 +5,7 @@ Phase 3: Check that column(s) do not contain NULL values.
 """
 
 import time
-from typing import List, Optional
+
 import ibis
 
 from interlace.quality.base import (
@@ -32,8 +32,8 @@ class NotNullCheck(QualityCheck):
         self,
         column: str,
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
     ):
         """
         Initialize not null check.
@@ -62,7 +62,7 @@ class NotNullCheck(QualityCheck):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> QualityCheckResult:
         """
         Execute not null check.
@@ -86,9 +86,7 @@ class NotNullCheck(QualityCheck):
             total_rows = int(table.count().execute())
 
             # Count null values
-            null_count = int(
-                table.filter(table[self.column].isnull()).count().execute()
-            )
+            null_count = int(table.filter(table[self.column].isnull()).count().execute())
 
             duration = time.time() - start_time
 

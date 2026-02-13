@@ -4,9 +4,9 @@ Retry policy configuration for model execution.
 Phase 2: Retry framework with exponential backoff for production resilience.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Type
-import asyncio
+from typing import Any
 
 
 @dataclass
@@ -55,10 +55,10 @@ class RetryPolicy:
     jitter: bool = True
 
     # Only retry these exception types (None = retry all exceptions)
-    retryable_exceptions: Optional[Tuple[Type[Exception], ...]] = None
+    retryable_exceptions: tuple[type[Exception], ...] | None = None
 
     # Circuit breaker: fail fast after N consecutive failures across all models
-    circuit_breaker_threshold: Optional[int] = None
+    circuit_breaker_threshold: int | None = None
 
     # Circuit breaker: reset after this many seconds
     circuit_breaker_timeout: float = 300.0
@@ -67,11 +67,11 @@ class RetryPolicy:
     use_dlq: bool = True
 
     # Retry on specific exit codes (for subprocess/shell command failures)
-    retry_exit_codes: Optional[Tuple[int, ...]] = None
+    retry_exit_codes: tuple[int, ...] | None = None
 
     # Custom retry condition function (optional, advanced use)
     # Signature: (exception: Exception, attempt: int) -> bool
-    retry_condition: Optional[callable] = None
+    retry_condition: Callable | None = None
 
     def __post_init__(self):
         """Validate configuration."""
@@ -128,7 +128,7 @@ class RetryPolicy:
         import random
 
         # Calculate exponential delay
-        delay = self.initial_delay * (self.exponential_base ** attempt)
+        delay = self.initial_delay * (self.exponential_base**attempt)
 
         # Add jitter to prevent thundering herd
         if self.jitter:
@@ -169,15 +169,15 @@ class RetryState:
     delays: list = field(default_factory=list)
 
     # Final result (if succeeded)
-    result: Optional[any] = None
+    result: Any | None = None
 
     # Final exception (if all retries failed)
-    final_exception: Optional[Exception] = None
+    final_exception: Exception | None = None
 
     # Whether execution succeeded
     succeeded: bool = False
 
-    def record_attempt(self, exception: Optional[Exception] = None):
+    def record_attempt(self, exception: Exception | None = None):
         """Record an attempt and its result."""
         import time
 
@@ -185,18 +185,20 @@ class RetryState:
         self.attempt_timestamps.append(time.time())
 
         if exception is not None:
-            self.exceptions.append({
-                'attempt': self.attempt,
-                'exception_type': type(exception).__name__,
-                'exception_message': str(exception),
-                'timestamp': time.time()
-            })
+            self.exceptions.append(
+                {
+                    "attempt": self.attempt,
+                    "exception_type": type(exception).__name__,
+                    "exception_message": str(exception),
+                    "timestamp": time.time(),
+                }
+            )
 
     def record_delay(self, delay: float):
         """Record the delay before next retry."""
         self.delays.append(delay)
 
-    def mark_success(self, result: any):
+    def mark_success(self, result: Any):
         """Mark execution as successful."""
         self.succeeded = True
         self.result = result
@@ -215,7 +217,7 @@ DEFAULT_RETRY_POLICY = RetryPolicy(
     max_delay=30.0,
     exponential_base=2.0,
     jitter=True,
-    use_dlq=True
+    use_dlq=True,
 )
 
 API_RETRY_POLICY = RetryPolicy(
@@ -229,7 +231,7 @@ API_RETRY_POLICY = RetryPolicy(
         TimeoutError,
         OSError,  # Network errors
     ),
-    use_dlq=True
+    use_dlq=True,
 )
 
 DATABASE_RETRY_POLICY = RetryPolicy(
@@ -243,7 +245,7 @@ DATABASE_RETRY_POLICY = RetryPolicy(
         TimeoutError,
     ),
     circuit_breaker_threshold=10,  # Fail fast if DB is down
-    use_dlq=True
+    use_dlq=True,
 )
 
 FAST_RETRY_POLICY = RetryPolicy(
@@ -252,10 +254,7 @@ FAST_RETRY_POLICY = RetryPolicy(
     max_delay=1.0,
     exponential_base=2.0,
     jitter=False,
-    use_dlq=False
+    use_dlq=False,
 )
 
-NO_RETRY_POLICY = RetryPolicy(
-    max_attempts=0,
-    use_dlq=False
-)
+NO_RETRY_POLICY = RetryPolicy(max_attempts=0, use_dlq=False)

@@ -26,8 +26,8 @@ import hashlib
 import hmac
 import json
 import time
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from interlace.streaming.adapters.base import (
     AdapterConfig,
@@ -62,13 +62,13 @@ class WebhookAdapter(MessageAdapter):
 
     def __init__(
         self,
-        endpoints: Optional[Dict[str, str]] = None,
-        headers: Optional[Dict[str, str]] = None,
-        signing_secret: Optional[str] = None,
+        endpoints: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        signing_secret: str | None = None,
         timeout: float = 30.0,
         retry_count: int = 3,
         batch_mode: bool = False,
-        config: Optional[AdapterConfig] = None,
+        config: AdapterConfig | None = None,
     ):
         super().__init__(config)
         self.endpoints = endpoints or {}
@@ -83,11 +83,10 @@ class WebhookAdapter(MessageAdapter):
         """Initialize HTTP session."""
         try:
             import aiohttp
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
-                "aiohttp is required for webhook integration. "
-                "Install it with: pip install aiohttp"
-            )
+                "aiohttp is required for webhook integration. " "Install it with: pip install aiohttp"
+            ) from e
 
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         self._session = aiohttp.ClientSession(
@@ -106,7 +105,7 @@ class WebhookAdapter(MessageAdapter):
         self,
         topic: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
     ) -> AsyncIterator[Message]:
         """
@@ -116,8 +115,7 @@ class WebhookAdapter(MessageAdapter):
         POST /api/v1/streams/{stream_name}
         """
         raise NotImplementedError(
-            "WebhookAdapter is outbound-only. "
-            "For inbound webhooks, use POST /api/v1/streams/{stream_name}"
+            "WebhookAdapter is outbound-only. " "For inbound webhooks, use POST /api/v1/streams/{stream_name}"
         )
         yield  # Make this a generator (unreachable)
 
@@ -132,7 +130,7 @@ class WebhookAdapter(MessageAdapter):
 
         await self._send_webhook(url, payload, topic)
 
-    async def produce_batch(self, topic: str, messages: List[Message]) -> int:
+    async def produce_batch(self, topic: str, messages: list[Message]) -> int:
         """Send webhooks for a batch of messages."""
         url = self.endpoints.get(topic)
         if not url:
@@ -141,10 +139,7 @@ class WebhookAdapter(MessageAdapter):
 
         if self.batch_mode:
             # Send all as single array payload
-            payloads = [
-                m.value if isinstance(m.value, dict) else {"payload": m.value}
-                for m in messages
-            ]
+            payloads = [m.value if isinstance(m.value, dict) else {"payload": m.value} for m in messages]
             await self._send_webhook(url, payloads, topic)
             return len(messages)
         else:
@@ -190,10 +185,7 @@ class WebhookAdapter(MessageAdapter):
             try:
                 async with self._session.post(url, data=body, headers=headers) as resp:
                     if resp.status < 300:
-                        logger.debug(
-                            f"Webhook sent to {url} (status={resp.status}, "
-                            f"topic={topic})"
-                        )
+                        logger.debug(f"Webhook sent to {url} (status={resp.status}, " f"topic={topic})")
                         return
                     elif resp.status >= 500:
                         # Server error - retry
@@ -205,24 +197,16 @@ class WebhookAdapter(MessageAdapter):
                     else:
                         # Client error - don't retry
                         response_text = await resp.text()
-                        logger.error(
-                            f"Webhook to {url} rejected (status={resp.status}): "
-                            f"{response_text[:200]}"
-                        )
+                        logger.error(f"Webhook to {url} rejected (status={resp.status}): " f"{response_text[:200]}")
                         return
 
             except Exception as e:
                 last_error = str(e)
-                logger.warning(
-                    f"Webhook to {url} error: {e}, "
-                    f"attempt {attempt + 1}/{self.retry_count + 1}"
-                )
+                logger.warning(f"Webhook to {url} error: {e}, " f"attempt {attempt + 1}/{self.retry_count + 1}")
 
             # Exponential backoff
             if attempt < self.retry_count:
-                delay = min(2 ** attempt, 30)
+                delay = min(2**attempt, 30)
                 await asyncio.sleep(delay)
 
-        logger.error(
-            f"Webhook to {url} failed after {self.retry_count + 1} attempts: {last_error}"
-        )
+        logger.error(f"Webhook to {url} failed after {self.retry_count + 1} attempts: {last_error}")

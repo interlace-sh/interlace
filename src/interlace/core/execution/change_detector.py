@@ -4,15 +4,14 @@ Change detection for determining if models should run.
 Phase 0: Extracted from Executor class for better separation of concerns.
 """
 
-from typing import Dict, Any, Tuple, Optional
 from pathlib import Path
+from typing import Any
+
 from interlace.core.state import StateStore
 from interlace.utils.hashing import (
-    has_file_changed,
-    has_file_changed_async,
-    get_stored_file_hash,
-    calculate_file_hash,
     calculate_file_hash_async,
+    get_stored_file_hash,
+    has_file_changed_async,
 )
 from interlace.utils.logging import get_logger
 
@@ -22,27 +21,27 @@ logger = get_logger("interlace.execution.change_detector")
 class ChangeDetector:
     """
     Determines if models should run based on change detection.
-    
+
     Phase 0: Handles file hash checking, last run timestamps, and upstream dependency changes.
     """
 
-    def __init__(self, state_store: Optional[StateStore] = None):
+    def __init__(self, state_store: StateStore | None = None):
         """
         Initialize ChangeDetector.
-        
+
         Args:
             state_store: Optional StateStore for tracking model runs and file hashes
         """
         self.state_store = state_store
-        self._file_hash_cache: Dict[tuple, str] = {}  # (model_name, schema) -> hash
+        self._file_hash_cache: dict[tuple, str] = {}  # (model_name, schema) -> hash
 
     async def should_run_model(
         self,
         model_name: str,
-        model_info: Dict[str, Any],
-        models: Dict[str, Dict[str, Any]],
+        model_info: dict[str, Any],
+        models: dict[str, dict[str, Any]],
         force: bool = False,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
         Check if model should run based on change detection.
 
@@ -111,7 +110,7 @@ class ChangeDetector:
                         model_last_run = self._get_model_last_run(
                             state_conn, model_name, model_info.get("schema", "public")
                         )
-                        
+
                         # Check if any upstream model ran after this model
                         for dep_name in dependencies:
                             dep_last_run = self._get_model_last_run(
@@ -136,12 +135,11 @@ class ChangeDetector:
         # If no changes detected, skip execution
         return False, "no_changes"
 
-    def _get_model_last_run(
-        self, connection: Any, model_name: str, schema_name: str
-    ) -> Optional[float]:
+    def _get_model_last_run(self, connection: Any, model_name: str, schema_name: str) -> float | None:
         """Get last run timestamp for a model."""
         try:
             from interlace.core.state import _escape_sql_string
+
             safe_model_name = _escape_sql_string(model_name)
             safe_schema_name = _escape_sql_string(schema_name)
             from interlace.core.context import _execute_sql_internal
@@ -163,7 +161,7 @@ class ChangeDetector:
                         last_run = result.iloc[0]["last_run"]
                         if last_run is not None:
                             # Convert to timestamp if needed
-                            import time
+
                             if hasattr(last_run, "timestamp"):
                                 return last_run.timestamp()
                             elif isinstance(last_run, (int, float)):
@@ -171,7 +169,7 @@ class ChangeDetector:
                 elif isinstance(result, (list, tuple)) and len(result) > 0:
                     last_run = result[0]
                     if last_run is not None:
-                        import time
+
                         if hasattr(last_run, "timestamp"):
                             return last_run.timestamp()
                         elif isinstance(last_run, (int, float)):
@@ -186,11 +184,11 @@ class ChangeDetector:
         connection: Any,
         model_name: str,
         schema_name: str,
-        model_info: Dict[str, Any],
+        model_info: dict[str, Any],
     ) -> None:
         """
         Update model metadata including last_run_at timestamp (UPSERT).
-        
+
         Args:
             connection: Database connection
             model_name: Model name
@@ -198,11 +196,12 @@ class ChangeDetector:
             model_info: Model info dictionary
         """
         try:
-            from interlace.core.state import _escape_sql_string
             from interlace.core.context import _execute_sql_internal
+            from interlace.core.state import _escape_sql_string
+
             safe_model_name = _escape_sql_string(model_name)
             safe_schema_name = _escape_sql_string(schema_name)
-            
+
             # Extract model metadata
             materialize = model_info.get("materialise", "table")
             strategy = model_info.get("strategy")
@@ -213,7 +212,7 @@ class ChangeDetector:
             owner = model_info.get("owner")
             source_file = model_info.get("file", "")
             source_type = model_info.get("type", "python")
-            
+
             # Escape and format values
             safe_materialize = _escape_sql_string(materialize) if materialize else "NULL"
             safe_strategy = _escape_sql_string(strategy) if strategy else "NULL"
@@ -222,27 +221,31 @@ class ChangeDetector:
             safe_owner = _escape_sql_string(owner) if owner else "NULL"
             safe_source_file = _escape_sql_string(source_file) if source_file else "NULL"
             safe_source_type = _escape_sql_string(source_type) if source_type else "NULL"
-            
+
             # Format arrays (DuckDB uses ARRAY['val1', 'val2'])
-            deps_array = "ARRAY[" + ",".join([f"'{_escape_sql_string(d)}'" for d in dependencies]) + "]" if dependencies else "NULL"
+            deps_array = (
+                "ARRAY[" + ",".join([f"'{_escape_sql_string(d)}'" for d in dependencies]) + "]"
+                if dependencies
+                else "NULL"
+            )
             tags_array = "ARRAY[" + ",".join([f"'{_escape_sql_string(t)}'" for t in tags]) + "]" if tags else "NULL"
-            
+
             # Use UPSERT: DELETE then INSERT (DuckDB doesn't support ON CONFLICT reliably)
             # First delete existing row if it exists
             delete_query = f"""
-                DELETE FROM interlace.model_metadata 
+                DELETE FROM interlace.model_metadata
                 WHERE model_name = '{safe_model_name}' AND schema_name = '{safe_schema_name}'
             """
             _execute_sql_internal(connection, delete_query)
-            
+
             # Then insert new row with all metadata
             insert_query = f"""
-                INSERT INTO interlace.model_metadata 
-                (model_name, schema_name, materialize, strategy, primary_key, dependencies, 
+                INSERT INTO interlace.model_metadata
+                (model_name, schema_name, materialize, strategy, primary_key, dependencies,
                  description, tags, owner, source_file, source_type, last_run_at, updated_at, discovered_at)
                 VALUES (
-                    '{safe_model_name}', 
-                    '{safe_schema_name}', 
+                    '{safe_model_name}',
+                    '{safe_schema_name}',
                     {f"'{safe_materialize}'" if safe_materialize != "NULL" else "NULL"},
                     {f"'{safe_strategy}'" if safe_strategy != "NULL" else "NULL"},
                     {f"'{safe_primary_key}'" if safe_primary_key != "NULL" else "NULL"},
@@ -258,10 +261,11 @@ class ChangeDetector:
                 )
             """
             _execute_sql_internal(connection, insert_query)
-            
+
             # Update file hash if source_file provided
             if source_file:
                 from interlace.utils.hashing import calculate_file_hash, store_file_hash
+
                 file_hash = calculate_file_hash(Path(source_file))
                 if file_hash:
                     store_file_hash(connection, model_name, schema_name, source_file, file_hash)
@@ -270,4 +274,3 @@ class ChangeDetector:
                     self._file_hash_cache[cache_key] = file_hash
         except Exception as e:
             logger.debug(f"Could not update model metadata for {model_name}: {e}")
-

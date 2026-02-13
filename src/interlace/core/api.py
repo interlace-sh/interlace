@@ -3,25 +3,24 @@ Programmatic API for Interlace.
 """
 
 import asyncio
-import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, List, Callable
+from typing import Any
 
-from interlace.utils.async_utils import dual
 from interlace.core.executor import Executor
-from interlace.utils.logging import get_logger
+from interlace.utils.async_utils import dual
 
 
 @dual
 async def run(
-    models: Optional[Union[List[Union[str, Callable]], Union[str, Callable]]] = None,
-    project_dir: Optional[Path] = None,
-    env: Optional[str] = None,
+    models: list[str | Callable] | str | Callable | None = None,
+    project_dir: Path | None = None,
+    env: str | None = None,
     verbose: bool = False,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
+    since: str | None = None,
+    until: str | None = None,
     **kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run Interlace models programmatically, automatically works in both sync and async contexts.
 
@@ -64,8 +63,8 @@ async def run(
         project_dir = Path(project_dir)
 
     # Initialize Interlace (config, logging, connections, state store, models)
-    from interlace.core.initialization import initialize, InitializationError
-    
+    from interlace.core.initialization import InitializationError, initialize
+
     try:
         config_obj, state_store, all_models, graph = initialize(project_dir, env=env, verbose=verbose)
         config = config_obj.data
@@ -73,27 +72,31 @@ async def run(
         # For programmatic API, we want clean error messages
         # Raise as RuntimeError so caller sees the message, not stack trace
         import sys
+
         # Print error to stderr and exit with non-zero code
         # This prevents stack trace display
         # Use logger if available, otherwise stderr
         try:
             from interlace.utils.logging import get_logger
+
             logger = get_logger("interlace.api")
             logger.error(f"Execution failed: {e}", exc_info=True)
         except Exception:
             import sys
+
             sys.stderr.write(f"ERROR: {e}\n")
         sys.exit(1)
-    
+
     if not all_models:
         logger = get_logger("interlace.api")
         if verbose:
             logger.info("No models found!")
         return {}
-    
+
     # Get display for header info
     from interlace.utils.display import get_display
-    display = get_display()
+
+    get_display()
 
     # Filter models if specific models requested
     if models is not None:
@@ -111,9 +114,7 @@ async def run(
                 if hasattr(m, "_interlace_model"):
                     model_names.add(m._interlace_model["name"])
                 else:
-                    raise ValueError(
-                        f"Callable {m} is not an Interlace model (missing @model decorator)"
-                    )
+                    raise ValueError(f"Callable {m} is not an Interlace model (missing @model decorator)")
             else:
                 raise ValueError(f"Invalid model type: {type(m)}")
 
@@ -140,12 +141,12 @@ async def run(
 
 
 def run_sync(
-    models: Optional[Union[List[Union[str, Callable]], Union[str, Callable]]] = None,
-    project_dir: Optional[Path] = None,
-    env: Optional[str] = None,
+    models: list[str | Callable] | str | Callable | None = None,
+    project_dir: Path | None = None,
+    env: str | None = None,
     verbose: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Synchronous wrapper for run().
 
@@ -154,6 +155,4 @@ def run_sync(
 
     See run() for parameter documentation.
     """
-    return asyncio.run(
-        run(models=models, project_dir=project_dir, env=env, verbose=verbose, **kwargs)
-    )
+    return asyncio.run(run(models=models, project_dir=project_dir, env=env, verbose=verbose, **kwargs))

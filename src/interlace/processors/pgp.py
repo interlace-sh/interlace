@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from interlace.sync.types import FileProcessor
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.processors.pgp")
@@ -86,4 +85,3 @@ class PGPDecryptProcessor:
                 return p.with_name(p.name[: -len(ext)])
 
         return p.with_name(p.name + ".decrypted")
-

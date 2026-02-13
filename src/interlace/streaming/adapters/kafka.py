@@ -19,10 +19,10 @@ Example:
 
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 from interlace.streaming.adapters.base import (
     AdapterConfig,
@@ -57,14 +57,14 @@ class KafkaAdapter(MessageAdapter):
     def __init__(
         self,
         bootstrap_servers: str = "localhost:9092",
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         client_id: str = "interlace",
         security_protocol: str = "PLAINTEXT",
-        sasl_mechanism: Optional[str] = None,
-        sasl_username: Optional[str] = None,
-        sasl_password: Optional[str] = None,
-        ssl_context: Optional[Any] = None,
-        config: Optional[AdapterConfig] = None,
+        sasl_mechanism: str | None = None,
+        sasl_username: str | None = None,
+        sasl_password: str | None = None,
+        ssl_context: Any | None = None,
+        config: AdapterConfig | None = None,
         **kafka_config,
     ):
         super().__init__(config)
@@ -85,11 +85,10 @@ class KafkaAdapter(MessageAdapter):
         """Connect to Kafka."""
         try:
             from aiokafka import AIOKafkaProducer
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
-                "aiokafka is required for Kafka integration. "
-                "Install it with: pip install aiokafka"
-            )
+                "aiokafka is required for Kafka integration. " "Install it with: pip install aiokafka"
+            ) from e
 
         common_config = {
             "bootstrap_servers": self.bootstrap_servers,
@@ -128,17 +127,16 @@ class KafkaAdapter(MessageAdapter):
         self,
         topic: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
     ) -> AsyncIterator[Message]:
         """Consume messages from a Kafka topic."""
         try:
             from aiokafka import AIOKafkaConsumer
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
-                "aiokafka is required for Kafka integration. "
-                "Install it with: pip install aiokafka"
-            )
+                "aiokafka is required for Kafka integration. " "Install it with: pip install aiokafka"
+            ) from e
 
         consumer_group = group_id or self.group_id or f"interlace-{topic}"
 
@@ -177,9 +175,9 @@ class KafkaAdapter(MessageAdapter):
                     key=kafka_msg.key.decode("utf-8") if kafka_msg.key else None,
                     value=value,
                     headers=headers,
-                    timestamp=datetime.fromtimestamp(
-                        kafka_msg.timestamp / 1000, tz=timezone.utc
-                    ) if kafka_msg.timestamp else None,
+                    timestamp=(
+                        datetime.fromtimestamp(kafka_msg.timestamp / 1000, tz=UTC) if kafka_msg.timestamp else None
+                    ),
                     topic=kafka_msg.topic,
                     partition=kafka_msg.partition,
                     offset=kafka_msg.offset,
@@ -195,9 +193,7 @@ class KafkaAdapter(MessageAdapter):
             raise RuntimeError("Kafka producer not connected. Call connect() first.")
 
         key = message.key.encode("utf-8") if message.key else None
-        headers = [
-            (k, v.encode("utf-8")) for k, v in message.headers.items()
-        ] if message.headers else None
+        headers = [(k, v.encode("utf-8")) for k, v in message.headers.items()] if message.headers else None
 
         value = message.value if isinstance(message.value, dict) else {"payload": message.value}
 
@@ -208,7 +204,7 @@ class KafkaAdapter(MessageAdapter):
             headers=headers,
         )
 
-    async def produce_batch(self, topic: str, messages: List[Message]) -> int:
+    async def produce_batch(self, topic: str, messages: list[Message]) -> int:
         """Produce a batch of messages to Kafka (uses batching)."""
         if not self._producer:
             raise RuntimeError("Kafka producer not connected. Call connect() first.")
@@ -250,9 +246,10 @@ class KafkaAdapter(MessageAdapter):
         elif fmt == DeserializationFormat.MSGPACK:
             try:
                 import msgpack
+
                 return msgpack.unpackb(data, raw=False)
-            except ImportError:
-                raise ImportError("msgpack is required for MSGPACK deserialization")
+            except ImportError as e:
+                raise ImportError("msgpack is required for MSGPACK deserialization") from e
 
         elif fmt == DeserializationFormat.AVRO:
             # Avro requires schema registry - pass through as bytes for now

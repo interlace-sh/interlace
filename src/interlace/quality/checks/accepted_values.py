@@ -5,7 +5,8 @@ Phase 3: Check that column values are within an expected set.
 """
 
 import time
-from typing import Any, List, Optional, Set
+from typing import Any
+
 import ibis
 
 from interlace.quality.base import (
@@ -33,10 +34,10 @@ class AcceptedValuesCheck(QualityCheck):
     def __init__(
         self,
         column: str,
-        values: List[Any],
+        values: list[Any],
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
         quote_values: bool = True,
     ):
         """
@@ -73,7 +74,7 @@ class AcceptedValuesCheck(QualityCheck):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> QualityCheckResult:
         """
         Execute accepted values check.
@@ -106,9 +107,7 @@ class AcceptedValuesCheck(QualityCheck):
                 return self._make_result(
                     status=QualityCheckStatus.PASSED,
                     table_name=table_name,
-                    message=(
-                        f"All {total_rows} rows have accepted values in '{self.column}'"
-                    ),
+                    message=(f"All {total_rows} rows have accepted values in '{self.column}'"),
                     failed_rows=0,
                     total_rows=total_rows,
                     duration=duration,
@@ -121,13 +120,7 @@ class AcceptedValuesCheck(QualityCheck):
                 # Get sample of invalid values for debugging
                 invalid_values = []
                 try:
-                    sample = (
-                        table.filter(invalid_filter)
-                        .select(self.column)
-                        .distinct()
-                        .limit(10)
-                        .execute()
-                    )
+                    sample = table.filter(invalid_filter).select(self.column).distinct().limit(10).execute()
                     invalid_values = sample[self.column].tolist()
                 except Exception:
                     pass

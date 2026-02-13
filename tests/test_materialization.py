@@ -7,11 +7,12 @@ Tests cover:
 - EphemeralMaterializer
 """
 
-import pytest
 import ibis
+import pytest
+
+from interlace.materialization.ephemeral import EphemeralMaterializer
 from interlace.materialization.table import TableMaterializer
 from interlace.materialization.view import ViewMaterializer
-from interlace.materialization.ephemeral import EphemeralMaterializer
 
 
 class TestTableMaterializer:
@@ -23,10 +24,12 @@ class TestTableMaterializer:
         materializer = TableMaterializer()
         con = ibis.duckdb.connect(":memory:")
 
-        data = ibis.memtable([
-            {"id": 1, "name": "Alice"},
-            {"id": 2, "name": "Bob"},
-        ])
+        data = ibis.memtable(
+            [
+                {"id": 1, "name": "Alice"},
+                {"id": 2, "name": "Bob"},
+            ]
+        )
 
         # Use "main" schema (DuckDB default) for simplicity
         materializer.materialise(data, "test_table", "main", con)
@@ -44,15 +47,15 @@ class TestTableMaterializer:
         materializer = TableMaterializer()
         con = ibis.duckdb.connect(":memory:")
 
-        data = ibis.memtable([
-            {"id": 1, "name": "Alice"},
-        ])
+        data = ibis.memtable(
+            [
+                {"id": 1, "name": "Alice"},
+            ]
+        )
 
         # Use "main" schema (DuckDB default) for simplicity
         table_schema = {"id": "int64", "name": "string"}
-        materializer.materialise(
-            data, "test_table", "main", con, table_schema=table_schema
-        )
+        materializer.materialise(data, "test_table", "main", con, table_schema=table_schema)
 
         # Verify table exists
         tables = con.list_tables()
@@ -66,19 +69,19 @@ class TestViewMaterializer:
         """Test materializing data as view."""
         materializer = ViewMaterializer()
         con = ibis.duckdb.connect(":memory:")
-        
+
         # Create schema first
         con.create_database("public", force=True)
-        
+
         # First create a table to reference
         table_data = ibis.memtable([{"id": 1, "name": "Alice"}])
         df = table_data.execute()
         con.create_table("source_table", obj=df, database="public")
-        
+
         # Create view from query
         view_data = con.table("source_table", database="public")
         materializer.materialise(view_data, "test_view", "public", con)
-        
+
         # Verify view exists
         # Note: list_tables may not distinguish views, but we can query it
         view = con.table("test_view", database="public")
@@ -93,13 +96,15 @@ class TestEphemeralMaterializer:
         """Test materializing data as ephemeral (temp table)."""
         materializer = EphemeralMaterializer()
         con = ibis.duckdb.connect(":memory:")
-        
-        data = ibis.memtable([
-            {"id": 1, "name": "Alice"},
-        ])
-        
+
+        data = ibis.memtable(
+            [
+                {"id": 1, "name": "Alice"},
+            ]
+        )
+
         materializer.materialise(data, "test_ephemeral", "public", con)
-        
+
         # Verify temp table exists (may not appear in list_tables)
         # But we can query it
         try:
@@ -110,5 +115,3 @@ class TestEphemeralMaterializer:
             # Temp tables may not be queryable by name in all backends
             # This is acceptable for ephemeral materialization
             pass
-
-

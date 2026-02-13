@@ -4,12 +4,12 @@ interlace schema - Schema management commands.
 Commands for comparing and managing schemas across environments.
 """
 
-import typer
 from pathlib import Path
-from typing import Optional
-from interlace.core.initialization import initialize, InitializationError
+
+import typer
+
+from interlace.core.initialization import InitializationError, initialize
 from interlace.utils.logging import get_logger
-import ibis
 
 logger = get_logger("interlace.cli.schema")
 
@@ -44,7 +44,7 @@ def schema_diff(
             conn1 = state_store1._get_connection() if state_store1 else None
         except Exception as e:
             typer.echo(f"Error loading {env1}: {e}", err=True)
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
         typer.echo(f"Loading schema from {env2}...")
         try:
@@ -52,7 +52,7 @@ def schema_diff(
             conn2 = state_store2._get_connection() if state_store2 else None
         except Exception as e:
             typer.echo(f"Error loading {env2}: {e}", err=True)
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
         if not conn1 or not conn2:
             typer.echo("Error: Could not get database connections", err=True)
@@ -81,7 +81,7 @@ def schema_diff(
         typer.echo(f"  {env1} vs {env2}\n")
 
         if schema1 is None and schema2 is None:
-            typer.echo(f"  ⚠ Model not found in either environment")
+            typer.echo("  ⚠ Model not found in either environment")
             raise typer.Exit(1)
         elif schema1 is None:
             typer.echo(f"  ⚠ Model exists only in {env2}")
@@ -118,7 +118,7 @@ def schema_diff(
             if removed:
                 typer.echo(f"  ➖ Removed columns in {env2}: {', '.join(sorted(removed))}")
             if type_changes:
-                typer.echo(f"  🔄 Type changes:")
+                typer.echo("  🔄 Type changes:")
                 for col, old_type, new_type in type_changes:
                     typer.echo(f"    - {col}: {old_type} → {new_type}")
             if common:
@@ -126,10 +126,10 @@ def schema_diff(
 
     except InitializationError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command("list")
@@ -186,8 +186,7 @@ def schema_list(
 
     except InitializationError as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
+        raise typer.Exit(1) from e

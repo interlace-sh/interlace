@@ -4,13 +4,14 @@ Tests for schema modes and flexible schema handling.
 Tests for SchemaMode enum, DataConverter with fields/strict, and schema validation.
 """
 
-import pytest
 import ibis
+import pytest
+
 from interlace.schema.modes import SchemaMode
 from interlace.schema.validation import (
-    validate_schema,
-    compare_schemas,
     SchemaComparisonResult,
+    compare_schemas,
+    validate_schema,
 )
 
 
@@ -75,11 +76,13 @@ class TestCompareSchemas:
     @pytest.fixture
     def existing_schema(self):
         """Create a sample existing schema."""
-        return ibis.schema([
-            ("id", "int64"),
-            ("name", "string"),
-            ("value", "float64"),
-        ])
+        return ibis.schema(
+            [
+                ("id", "int64"),
+                ("name", "string"),
+                ("value", "float64"),
+            ]
+        )
 
     def test_identical_schemas(self, existing_schema):
         """Test comparing identical schemas."""
@@ -92,12 +95,14 @@ class TestCompareSchemas:
 
     def test_detect_added_columns(self, existing_schema):
         """Test detecting added columns."""
-        new_schema = ibis.schema([
-            ("id", "int64"),
-            ("name", "string"),
-            ("value", "float64"),
-            ("new_col", "string"),
-        ])
+        new_schema = ibis.schema(
+            [
+                ("id", "int64"),
+                ("name", "string"),
+                ("value", "float64"),
+                ("new_col", "string"),
+            ]
+        )
 
         result = compare_schemas(existing_schema, new_schema)
 
@@ -106,10 +111,12 @@ class TestCompareSchemas:
 
     def test_detect_removed_columns(self, existing_schema):
         """Test detecting removed columns."""
-        new_schema = ibis.schema([
-            ("id", "int64"),
-            ("name", "string"),
-        ])
+        new_schema = ibis.schema(
+            [
+                ("id", "int64"),
+                ("name", "string"),
+            ]
+        )
 
         result = compare_schemas(existing_schema, new_schema)
 
@@ -118,11 +125,13 @@ class TestCompareSchemas:
 
     def test_detect_type_changes(self, existing_schema):
         """Test detecting type changes."""
-        new_schema = ibis.schema([
-            ("id", "string"),  # Changed from int64
-            ("name", "string"),
-            ("value", "float64"),
-        ])
+        new_schema = ibis.schema(
+            [
+                ("id", "string"),  # Changed from int64
+                ("name", "string"),
+                ("value", "float64"),
+            ]
+        )
 
         result = compare_schemas(existing_schema, new_schema)
 
@@ -142,17 +151,21 @@ class TestCompareSchemas:
 
     def test_with_fields_schema(self, existing_schema):
         """Test comparison with explicit fields schema."""
-        new_schema = ibis.schema([
-            ("id", "int64"),
-            ("name", "string"),
-            ("value", "float64"),
-            ("extra", "string"),  # Extra column
-        ])
+        new_schema = ibis.schema(
+            [
+                ("id", "int64"),
+                ("name", "string"),
+                ("value", "float64"),
+                ("extra", "string"),  # Extra column
+            ]
+        )
         # Only specify the fields we care about
-        fields_schema = ibis.schema([
-            ("id", "int64"),
-            ("name", "string"),
-        ])
+        fields_schema = ibis.schema(
+            [
+                ("id", "int64"),
+                ("name", "string"),
+            ]
+        )
 
         result = compare_schemas(existing_schema, new_schema, fields_schema)
 

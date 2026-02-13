@@ -4,14 +4,13 @@ interlace info - Display project information.
 Shows discovered models, connections, and project configuration.
 """
 
-import typer
 from pathlib import Path
+
+import typer
 from rich.console import Console
 from rich.table import Table
 
-app = typer.Typer(
-    name="info", help="Display Interlace project information", invoke_without_command=True
-)
+app = typer.Typer(name="info", help="Display Interlace project information", invoke_without_command=True)
 
 console = Console()
 

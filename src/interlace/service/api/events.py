@@ -7,8 +7,8 @@ Provides pub/sub mechanism for broadcasting execution events to connected client
 import asyncio
 import json
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from datetime import UTC, datetime
+from typing import Any
 
 from interlace.utils.logging import get_logger
 
@@ -34,16 +34,16 @@ class EventBus:
 
     def __init__(self):
         # Subscribers for specific event types
-        self._type_subscribers: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
+        self._type_subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
         # Subscribers for all events
-        self._all_subscribers: Set[asyncio.Queue] = set()
+        self._all_subscribers: set[asyncio.Queue] = set()
         # Track subscriber metadata for filtering
-        self._subscriber_meta: Dict[asyncio.Queue, Dict[str, Any]] = {}
+        self._subscriber_meta: dict[asyncio.Queue, dict[str, Any]] = {}
 
     def subscribe(
         self,
-        event_types: Optional[List[str]] = None,
-        flow_id: Optional[str] = None,
+        event_types: list[str] | None = None,
+        flow_id: str | None = None,
     ) -> asyncio.Queue:
         """
         Subscribe to events.
@@ -70,9 +70,7 @@ class EventBus:
         else:
             self._all_subscribers.add(queue)
 
-        logger.debug(
-            f"New subscriber: types={event_types}, flow_id={flow_id}"
-        )
+        logger.debug(f"New subscriber: types={event_types}, flow_id={flow_id}")
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
@@ -92,8 +90,8 @@ class EventBus:
     async def emit(
         self,
         event_type: str,
-        data: Dict[str, Any],
-        flow_id: Optional[str] = None,
+        data: dict[str, Any],
+        flow_id: str | None = None,
     ) -> int:
         """
         Emit an event to all relevant subscribers.
@@ -108,7 +106,7 @@ class EventBus:
         """
         event = {
             "event": event_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "data": data,
         }
 
@@ -149,7 +147,7 @@ class EventBus:
         return len(all_queues)
 
 
-def format_sse_event(event: Dict[str, Any]) -> bytes:
+def format_sse_event(event: dict[str, Any]) -> bytes:
     """
     Format event for Server-Sent Events protocol.
 

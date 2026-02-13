@@ -5,11 +5,13 @@ Phase 0: Extracted from Executor class for better separation of concerns.
 Phase 3: Added fallback connection resolution for virtual environments.
 """
 
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
 import asyncio
+from typing import TYPE_CHECKING, Any
+
 import ibis
-from interlace.utils.table_utils import try_load_table
+
 from interlace.utils.logging import get_logger
+from interlace.utils.table_utils import try_load_table
 
 if TYPE_CHECKING:
     from interlace.core.execution.schema_manager import SchemaManager
@@ -20,7 +22,7 @@ logger = get_logger("interlace.execution.dependency_loader")
 class DependencyLoader:
     """
     Loads model dependencies with proper locking to prevent race conditions.
-    
+
     Phase 0: Handles loading of dependency tables from materialized tables or ephemeral storage.
     Phase 3: Supports fallback connection resolution -- when a dependency table is not found
     in the current environment's connection, searches through fallback connections
@@ -29,15 +31,15 @@ class DependencyLoader:
 
     def __init__(
         self,
-        materialised_tables: Dict[str, ibis.Table],
+        materialised_tables: dict[str, ibis.Table],
         schema_manager: "SchemaManager",
-        dep_loading_locks: Dict[str, asyncio.Lock],
-        dep_schema_cache: Dict[str, Optional[str]],
-        fallback_connections: Optional[List[Any]] = None,
+        dep_loading_locks: dict[str, asyncio.Lock],
+        dep_schema_cache: dict[str, str | None],
+        fallback_connections: list[Any] | None = None,
     ):
         """
         Initialize DependencyLoader.
-        
+
         Args:
             materialised_tables: Dictionary of materialized tables
             schema_manager: SchemaManager instance for checking table existence
@@ -52,17 +54,17 @@ class DependencyLoader:
         self.schema_manager = schema_manager
         self._dep_loading_locks = dep_loading_locks
         self._dep_schema_cache = dep_schema_cache
-        self._fallback_connections: List[tuple] = fallback_connections or []
+        self._fallback_connections: list[tuple] = fallback_connections or []
         # Track which connection satisfied each dependency (for tracing/debugging)
-        self._dependency_sources: Dict[str, str] = {}
+        self._dependency_sources: dict[str, str] = {}
 
     async def load_model_dependencies(
         self,
-        model_info: Dict[str, Any],
+        model_info: dict[str, Any],
         model_conn: ibis.BaseBackend,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         schema: str,
-    ) -> Dict[str, ibis.Table]:
+    ) -> dict[str, ibis.Table]:
         """
         Load dependencies for a model in parallel.
 
@@ -85,17 +87,14 @@ class DependencyLoader:
             return {}
 
         # Load all dependencies in parallel
-        dep_tasks = [
-            self.load_dependency_with_lock(dep_name, model_conn, models, schema)
-            for dep_name in dependencies
-        ]
-        
+        dep_tasks = [self.load_dependency_with_lock(dep_name, model_conn, models, schema) for dep_name in dependencies]
+
         # Use gather with return_exceptions to handle individual failures
         dep_results = await asyncio.gather(*dep_tasks, return_exceptions=True)
-        
+
         # Build result dictionary, handling exceptions
-        dependency_tables: Dict[str, ibis.Table] = {}
-        for dep_name, result in zip(dependencies, dep_results):
+        dependency_tables: dict[str, ibis.Table] = {}
+        for dep_name, result in zip(dependencies, dep_results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(
                     f"Failed to load dependency '{dep_name}': {result}. "
@@ -110,9 +109,9 @@ class DependencyLoader:
         self,
         dep_name: str,
         model_conn: ibis.BaseBackend,
-        models: Dict[str, Dict[str, Any]],
+        models: dict[str, dict[str, Any]],
         schema: str,
-    ) -> Optional[ibis.Table]:
+    ) -> ibis.Table | None:
         """
         Load a dependency table with lock to optimize performance.
 
@@ -151,25 +150,25 @@ class DependencyLoader:
             # Build schema search order: cached first, then model schema, then fallbacks
             # This reduces schema probing attempts
             try_schemas = []
-            
+
             # 1. Try cached schema location first (most likely to succeed)
             cached_schema = self._dep_schema_cache.get(dep_name)
             if cached_schema is not None:
                 try_schemas.append(cached_schema)
-            
+
             # 2. Try dependency model's explicit schema (from @schema annotation)
             if dep_schema and dep_schema not in try_schemas:
                 try_schemas.append(dep_schema)
-            
+
             # 3. Try current model's schema (dependencies often in same schema)
             if schema and schema not in try_schemas:
                 try_schemas.append(schema)
-            
+
             # 4. Try common default schemas
             for default_schema in ["main", "public"]:
                 if default_schema not in try_schemas:
                     try_schemas.append(default_schema)
-            
+
             # 5. Try without schema (default schema)
             try_schemas.append(None)
 
@@ -210,15 +209,12 @@ class DependencyLoader:
                                 )
                                 return dep_table
                     except Exception as e:
-                        logger.debug(
-                            f"Failed to load '{dep_name}' from fallback "
-                            f"connection '{fallback_name}': {e}"
-                        )
+                        logger.debug(f"Failed to load '{dep_name}' from fallback " f"connection '{fallback_name}': {e}")
 
             # Failed to load from any connection
             return None
 
-    def get_dependency_sources(self) -> Dict[str, str]:
+    def get_dependency_sources(self) -> dict[str, str]:
         """
         Get a mapping of dependency names to the connection that satisfied them.        Useful for debugging virtual environments and understanding
         which connection provided each dependency.        Returns:

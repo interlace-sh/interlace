@@ -8,35 +8,35 @@ import logging
 import sys
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Any
 
 try:
-    from rich.logging import RichHandler
-    from rich.console import Console
-    RICH_AVAILABLE = True
-except ImportError:
+    import importlib.util
+
+    RICH_AVAILABLE = (
+        importlib.util.find_spec("rich.console") is not None and importlib.util.find_spec("rich.logging") is not None
+    )
+except Exception:
     RICH_AVAILABLE = False
 
 
 class FileFormatter(logging.Formatter):
     """Formatter for file logs - clean and parseable."""
-    
+
     def __init__(self):
-        super().__init__(
-            fmt="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-    
+        super().__init__(fmt="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
     def format(self, record: logging.LogRecord) -> str:
         """Format log record with full exception info for errors."""
         # Base format
         result = super().format(record)
-        
+
         # Add exception info if available
         if record.exc_info:
             import traceback
+
             result += "\n" + "".join(traceback.format_exception(*record.exc_info))
-        
+
         return result
 
 
@@ -50,7 +50,7 @@ LEVEL_MAP = {
 }
 
 
-def _parse_level(level: Union[str, int]) -> int:
+def _parse_level(level: str | int) -> int:
     """
     Parse logging level from string or int.
 
@@ -71,11 +71,11 @@ def _parse_level(level: Union[str, int]) -> int:
 
 
 def setup_logging(
-    level: Union[str, int] = logging.INFO,
-    log_file: Optional[Union[str, Path]] = None,
-    format_string: Optional[str] = None,
+    level: str | int = logging.INFO,
+    log_file: str | Path | None = None,
+    format_string: str | None = None,
     file_mode: str = "a",
-    console: Optional[Any] = None,
+    console: Any | None = None,
     console_enabled: bool = True,
     use_rich: bool = True,
 ) -> logging.Logger:
@@ -99,7 +99,7 @@ def setup_logging(
     # Remove existing handlers to avoid duplicates
     # Only clear handlers from this specific logger, not root or child loggers
     logger.handlers.clear()
-    
+
     # Also clear any file handlers from root logger that might have been added previously
     # to prevent duplicates
     root_logger = logging.getLogger()
@@ -113,7 +113,7 @@ def setup_logging(
     # Set level on interlace logger
     # Child loggers will inherit this level if not explicitly set
     logger.setLevel(level_int)
-    
+
     # Also set root logger level to ensure proper inheritance chain
     # But don't set it too low to avoid noise from other libraries
     root_logger = logging.getLogger()
@@ -125,17 +125,20 @@ def setup_logging(
         if use_rich and RICH_AVAILABLE:
             # Use LogHandler for Rich display (handles Layout integration)
             from interlace.utils.display import LogHandler
-            logger.addHandler(LogHandler(
-                level=level_int,
-                show_time=True,
-                show_path=True,
-                markup=True,
-                rich_tracebacks=True,
-                tracebacks_show_locals=False,
-                show_level=True,
-                log_time_format="[%X]",  # [HH:MM:SS] format (no date)
-                omit_repeated_times=False,  # Show timestamps for all logs
-            ))
+
+            logger.addHandler(
+                LogHandler(
+                    level=level_int,
+                    show_time=True,
+                    show_path=True,
+                    markup=True,
+                    rich_tracebacks=True,
+                    tracebacks_show_locals=False,
+                    show_level=True,
+                    log_time_format="[%X]",  # [HH:MM:SS] format (no date)
+                    omit_repeated_times=False,  # Show timestamps for all logs
+                )
+            )
         else:
             # Standard handler (Rich not available or not requested)
             # Create formatter
@@ -148,9 +151,7 @@ def setup_logging(
 
                     def format(self, record):
                         # Base format: "level: timestamp - msg"
-                        base_format = (
-                            f"{record.levelname}: {self.formatTime(record)} - {record.getMessage()}"
-                        )
+                        base_format = f"{record.levelname}: {self.formatTime(record)} - {record.getMessage()}"
 
                         # For errors, add class/file info
                         if record.levelno >= logging.ERROR:
@@ -185,7 +186,7 @@ def setup_logging(
             if isinstance(handler, logging.FileHandler) and handler.baseFilename == str(log_file.resolve()):
                 existing_file_handler = handler
                 break
-        
+
         if existing_file_handler is None:
             file_handler = logging.FileHandler(log_file, mode=file_mode)
             # Set file handler to DEBUG to capture all logs including errors
@@ -196,7 +197,7 @@ def setup_logging(
             # Add file handler ONLY to interlace logger
             # Child loggers (like "interlace.executor") will propagate to parent
             logger.addHandler(file_handler)
-        
+
         # Ensure child loggers propagate to parent (default, but be explicit)
         # This ensures errors from child loggers are captured by parent's file handler
         logger.propagate = True
@@ -205,7 +206,7 @@ def setup_logging(
 
 
 def setup_logging_from_config(
-    config: Dict[str, Any], project_dir: Optional[Path] = None, console: Optional[Any] = None
+    config: dict[str, Any], project_dir: Path | None = None, console: Any | None = None
 ) -> logging.Logger:
     """
     Setup logging from Interlace configuration.
@@ -236,7 +237,7 @@ def setup_logging_from_config(
     level = logging_config.get("level", logging.INFO)
     file_mode = logging_config.get("file_mode", "a")
     format_string = logging_config.get("format")
-    
+
     # File logging configuration
     file_enabled = logging_config.get("file_enabled", True)  # Default: enabled
     log_file = None
@@ -245,11 +246,11 @@ def setup_logging_from_config(
         if log_file is None:
             # Default log file path
             log_file = "logs/interlace.log"
-    
+
     # Console logging configuration
     console_enabled = logging_config.get("console_enabled", True)  # Default: enabled
     console_type = logging_config.get("console_type", "rich")  # Default: rich
-    
+
     # Resolve log file path if relative and project_dir provided
     if log_file and project_dir:
         log_file = Path(log_file)
@@ -271,48 +272,50 @@ def setup_logging_from_config(
 # Track if logging has been set up to avoid duplicate setup
 _logging_setup_done = False
 _logging_setup_lock = threading.Lock()
-_stored_project_dir: Optional[Path] = None
+_stored_project_dir: Path | None = None
 
 
 def _auto_setup_logging():
     """
     Automatically set up logging from global config if not already configured.
-    
+
     This is called by get_logger() to ensure logging is configured even if
     setup_logging_from_config() wasn't called explicitly.
     """
     global _logging_setup_done, _stored_project_dir
-    
+
     # Check if interlace logger already has handlers (already set up)
     interlace_logger = logging.getLogger("interlace")
     if interlace_logger.handlers:
         _logging_setup_done = True
         return
-    
+
     # Only try to auto-setup once
     if _logging_setup_done:
         return
-    
+
     with _logging_setup_lock:
         # Double-check pattern - another thread might have set it up
         if _logging_setup_done:
             return
-        
+
         # Check again if handlers were added by another thread
         if interlace_logger.handlers:
             _logging_setup_done = True
             return
-        
+
         try:
             from interlace.config.singleton import get_config
+
             config_obj = get_config()
-            
+
             if config_obj is not None:
                 # Get project_dir - try stored value first, then infer
                 project_dir = _stored_project_dir
                 if project_dir is None:
                     # Try to infer from config file location
                     from pathlib import Path
+
                     try:
                         # Check if we can find config.yaml in current or parent dirs
                         current = Path.cwd()
@@ -323,23 +326,20 @@ def _auto_setup_logging():
                             current = current.parent
                     except Exception:
                         pass
-                
+
                 # Get display console if available
                 console = None
                 try:
                     from interlace.utils.display import get_display
+
                     display = get_display()
                     if display.enabled:
                         console = display.console
                 except Exception:
                     pass
-                
+
                 # Setup logging from config
-                setup_logging_from_config(
-                    config_obj.data,
-                    project_dir=project_dir,
-                    console=console
-                )
+                setup_logging_from_config(config_obj.data, project_dir=project_dir, console=console)
                 _logging_setup_done = True
         except Exception:
             # If auto-setup fails, continue without setup
@@ -350,7 +350,7 @@ def _auto_setup_logging():
 def get_logger(name: str = "interlace") -> logging.Logger:
     """
     Get a logger instance.
-    
+
     Automatically sets up logging from global config if not already configured.
     This allows models to use logging without explicit setup_logging_from_config calls.
 
@@ -362,7 +362,7 @@ def get_logger(name: str = "interlace") -> logging.Logger:
     """
     # Auto-setup logging if not already done
     _auto_setup_logging()
-    
+
     logger = logging.getLogger(name)
     # Ensure child loggers propagate to parent (default, but be explicit)
     # This ensures errors from child loggers (e.g., "interlace.executor") are captured

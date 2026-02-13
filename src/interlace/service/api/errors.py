@@ -4,11 +4,11 @@ API error definitions and exception classes.
 Provides consistent error handling across all API endpoints.
 """
 
-from enum import Enum
-from typing import Any, Dict, Optional
+from enum import StrEnum
+from typing import Any
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """Standard API error codes."""
 
     # Client errors (4xx)
@@ -50,7 +50,7 @@ class APIError(Exception):
         code: ErrorCode,
         message: str,
         status: int = 400,
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.code = code
@@ -58,9 +58,9 @@ class APIError(Exception):
         self.status = status
         self.details = details or {}
 
-    def to_dict(self, request_id: Optional[str] = None) -> Dict[str, Any]:
+    def to_dict(self, request_id: str | None = None) -> dict[str, Any]:
         """Convert to API response format."""
-        error_dict: Dict[str, Any] = {
+        error_dict: dict[str, Any] = {
             "code": self.code.value,
             "message": self.message,
         }
@@ -91,7 +91,7 @@ class NotFoundError(APIError):
 class ValidationError(APIError):
     """Request validation error."""
 
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(
             code=ErrorCode.VALIDATION_ERROR,
             message=message,
@@ -103,7 +103,7 @@ class ValidationError(APIError):
 class ExecutionError(APIError):
     """Model execution error."""
 
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(
             code=ErrorCode.EXECUTION_ERROR,
             message=message,

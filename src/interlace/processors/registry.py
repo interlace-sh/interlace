@@ -48,4 +48,3 @@ def resolve_processors(
             raise ValueError(f"Unknown processor '{spec.name}'. Available: {list(registry.keys())}")
         resolved.append((proc, spec.config or {}))
     return resolved
-

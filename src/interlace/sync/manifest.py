@@ -7,7 +7,7 @@ Used to avoid re-downloading/re-processing unchanged SFTP files.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Any
 
 from interlace.core.context import _execute_sql_internal
 from interlace.utils.logging import get_logger
@@ -55,7 +55,7 @@ class SyncManifest:
         *,
         key: ManifestKey,
         dest_uri: str,
-        remote_fingerprint: Optional[str] = None,
+        remote_fingerprint: str | None = None,
     ) -> None:
         self._record(
             key=key,
@@ -69,8 +69,8 @@ class SyncManifest:
         self,
         *,
         key: ManifestKey,
-        dest_uri: Optional[str] = None,
-        remote_fingerprint: Optional[str] = None,
+        dest_uri: str | None = None,
+        remote_fingerprint: str | None = None,
         error_message: str,
     ) -> None:
         self._record(
@@ -86,9 +86,9 @@ class SyncManifest:
         *,
         key: ManifestKey,
         dest_uri: str,
-        remote_fingerprint: Optional[str],
+        remote_fingerprint: str | None,
         status: str,
-        error_message: Optional[str],
+        error_message: str | None,
     ) -> None:
         """
         Record a manifest row. DuckDB UPSERT support varies, so use delete+insert.
@@ -140,4 +140,3 @@ def _result_has_rows(result: Any) -> bool:
         except Exception:
             return False
     return False
-

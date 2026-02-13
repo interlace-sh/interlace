@@ -5,9 +5,9 @@ Phase 0: Basic materialization (table, view, ephemeral).
 """
 
 from interlace.materialization.base import Materializer
+from interlace.materialization.ephemeral import EphemeralMaterializer
 from interlace.materialization.table import TableMaterializer
 from interlace.materialization.view import ViewMaterializer
-from interlace.materialization.ephemeral import EphemeralMaterializer
 
 __all__ = [
     "Materializer",

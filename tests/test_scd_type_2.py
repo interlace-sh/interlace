@@ -4,9 +4,9 @@ Tests for SCD Type 2 strategy.
 Tests hash-based change detection and history tracking.
 """
 
-import pytest
+from unittest.mock import Mock
+
 import ibis
-from unittest.mock import Mock, MagicMock
 
 
 class TestSCDType2Strategy:

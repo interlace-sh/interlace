@@ -4,8 +4,10 @@ DuckDB connection via ibis.
 Phase 0: Basic DuckDB connection handling using ibis.
 """
 
+from typing import Any
+
 import ibis
-from typing import Dict, Any
+
 from interlace.connections.base import BaseConnection
 from interlace.core.context import _execute_sql_internal
 from interlace.utils.logging import get_logger
@@ -16,7 +18,7 @@ logger = get_logger("interlace.connections.duckdb")
 class DuckDBConnection(BaseConnection):
     """DuckDB connection wrapper using ibis."""
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         super().__init__(name, config)
 
     @property
@@ -49,9 +51,10 @@ class DuckDBConnection(BaseConnection):
                     if "lock" in error_str.lower() or "conflicting" in error_str.lower():
                         # Extract PID if available
                         import re
-                        pid_match = re.search(r'PID\s+(\d+)', error_str)
+
+                        pid_match = re.search(r"PID\s+(\d+)", error_str)
                         pid_info = f" (PID: {pid_match.group(1)})" if pid_match else ""
-                        
+
                         # Raise a clean error without nesting - the traceback will show the chain
                         raise RuntimeError(
                             f"Cannot connect to DuckDB database '{path}': File is locked by another process{pid_info}.\n"
@@ -91,7 +94,7 @@ class DuckDBConnection(BaseConnection):
 
         return self._connection
 
-    def _attach_external(self, attach_config: Dict[str, Any]):
+    def _attach_external(self, attach_config: dict[str, Any]):
         """
         Attach external database to DuckDB.
 
@@ -145,13 +148,7 @@ class DuckDBConnection(BaseConnection):
             password = escape_conn_value(db_config.get("password", ""))
             database = escape_conn_value(db_config.get("database", ""))
 
-            conn_str = (
-                f"host={host} "
-                f"port={port} "
-                f"user={user} "
-                f"password={password} "
-                f"database={database}"
-            )
+            conn_str = f"host={host} " f"port={port} " f"user={user} " f"password={password} " f"database={database}"
             options = _options_clause("POSTGRES", read_only)
             query = f"ATTACH '{conn_str}' AS {name}{options};"
             _execute_sql_internal(self._connection, query)
@@ -171,13 +168,7 @@ class DuckDBConnection(BaseConnection):
             password = escape_conn_value(db_config.get("password", ""))
             database = escape_conn_value(db_config.get("database", ""))
 
-            conn_str = (
-                f"host={host} "
-                f"port={port} "
-                f"user={user} "
-                f"password={password} "
-                f"database={database}"
-            )
+            conn_str = f"host={host} " f"port={port} " f"user={user} " f"password={password} " f"database={database}"
             # Load mysql extension
             try:
                 _execute_sql_internal(self._connection, "INSTALL mysql; LOAD mysql;")
@@ -192,7 +183,7 @@ class DuckDBConnection(BaseConnection):
         elif attach_type == "sqlite":
             path = attach_config.get("path", "")
             if not path:
-                raise ValueError(f"SQLite attach config missing required 'path'")
+                raise ValueError("SQLite attach config missing required 'path'")
 
             escaped_path = escape_conn_value(path)
 
@@ -211,7 +202,7 @@ class DuckDBConnection(BaseConnection):
             # Cross-file DuckDB attach (e.g., shared source layer)
             path = attach_config.get("path", "")
             if not path:
-                raise ValueError(f"DuckDB attach config missing required 'path'")
+                raise ValueError("DuckDB attach config missing required 'path'")
 
             escaped_path = escape_conn_value(path)
             options = _options_clause("", read_only)  # DuckDB is default type
@@ -225,7 +216,7 @@ class DuckDBConnection(BaseConnection):
             data_path = attach_config.get("data_path", "")
 
             if not catalog:
-                raise ValueError(f"DuckLake attach config missing required 'catalog'")
+                raise ValueError("DuckLake attach config missing required 'catalog'")
 
             escaped_catalog = escape_conn_value(catalog)
 
@@ -259,10 +250,10 @@ class DuckDBConnection(BaseConnection):
 
     @staticmethod
     def build_attach_config_for_connection(
-        conn_config: Dict[str, Any],
+        conn_config: dict[str, Any],
         attach_name: str,
         read_only: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Build an attach config dict from a connection config.
 

@@ -5,13 +5,12 @@ Provides endpoints for previewing what will happen during execution.
 """
 
 import json
-from typing import Any, Dict, List, Optional
 
 from aiohttp import web
 
-from interlace.service.api.handlers import BaseHandler
-from interlace.service.api.errors import ValidationError
 from interlace.core.impact import ImpactAnalyzer
+from interlace.service.api.errors import ValidationError
+from interlace.service.api.handlers import BaseHandler
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.api.plan")
@@ -73,7 +72,7 @@ class PlanHandler(BaseHandler):
         try:
             body = await request.json()
         except json.JSONDecodeError as e:
-            raise ValidationError(f"Invalid JSON in request body: {e.msg}")
+            raise ValidationError(f"Invalid JSON in request body: {e.msg}") from e
         except Exception:
             # Empty body is valid for this endpoint (all models will be planned)
             body = {}

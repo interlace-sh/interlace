@@ -7,7 +7,7 @@ and analyzing column references and transformations.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -44,8 +44,8 @@ class SqlLineageExtractor(LineageExtractor):
     def extract(
         self,
         model_name: str,
-        model_info: Dict[str, Any],
-        available_models: Dict[str, Dict[str, Any]],
+        model_info: dict[str, Any],
+        available_models: dict[str, dict[str, Any]],
     ) -> ColumnLineage:
         """
         Extract column lineage from a SQL model.
@@ -80,9 +80,7 @@ class SqlLineageExtractor(LineageExtractor):
             output_columns = self._get_output_columns(parsed)
 
             for col_name, col_expr in output_columns:
-                sources = self._trace_column(
-                    col_expr, col_name, model_name, parsed, schema_dict, dependencies
-                )
+                sources = self._trace_column(col_expr, col_name, model_name, parsed, schema_dict, dependencies)
 
                 col_info = ColumnInfo(
                     name=col_name,
@@ -93,9 +91,7 @@ class SqlLineageExtractor(LineageExtractor):
         except Exception as e:
             logger.debug(f"Could not parse SQL for {model_name}: {e}")
             # Fallback to basic extraction
-            columns = self._basic_lineage_extraction(
-                sql, model_name, dependencies, available_models
-            )
+            columns = self._basic_lineage_extraction(sql, model_name, dependencies, available_models)
 
         return ColumnLineage(
             model_name=model_name,
@@ -105,9 +101,9 @@ class SqlLineageExtractor(LineageExtractor):
 
     def _build_schema_dict(
         self,
-        dependencies: List[str],
-        available_models: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, Dict[str, str]]:
+        dependencies: list[str],
+        available_models: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, str]]:
         """
         Build schema dictionary for SQLGlot lineage analysis.
 
@@ -141,21 +137,19 @@ class SqlLineageExtractor(LineageExtractor):
     def _normalize_type(self, col_type: Any) -> str:
         """Normalize a column type to a string."""
         if isinstance(col_type, type):
-            if col_type == int:
+            if col_type is int:
                 return "BIGINT"
-            elif col_type == float:
+            elif col_type is float:
                 return "DOUBLE"
-            elif col_type == str:
+            elif col_type is str:
                 return "VARCHAR"
-            elif col_type == bool:
+            elif col_type is bool:
                 return "BOOLEAN"
             else:
                 return "VARCHAR"
         return str(col_type).upper()
 
-    def _get_output_columns(
-        self, parsed: exp.Expression
-    ) -> List[Tuple[str, exp.Expression]]:
+    def _get_output_columns(self, parsed: exp.Expression) -> list[tuple[str, exp.Expression]]:
         """
         Get output columns from a SELECT statement.
 
@@ -178,7 +172,7 @@ class SqlLineageExtractor(LineageExtractor):
 
         return columns
 
-    def _get_column_alias(self, expr: exp.Expression) -> Optional[str]:
+    def _get_column_alias(self, expr: exp.Expression) -> str | None:
         """Get the output name of a column expression."""
         # Check for explicit alias
         if isinstance(expr, exp.Alias):
@@ -204,9 +198,9 @@ class SqlLineageExtractor(LineageExtractor):
         col_name: str,
         model_name: str,
         parsed: exp.Expression,
-        schema_dict: Dict[str, Dict[str, str]],
-        dependencies: List[str],
-    ) -> List[ColumnLineageEdge]:
+        schema_dict: dict[str, dict[str, str]],
+        dependencies: list[str],
+    ) -> list[ColumnLineageEdge]:
         """
         Trace a column expression to find source columns.
 
@@ -225,16 +219,12 @@ class SqlLineageExtractor(LineageExtractor):
             )
 
             if lineage_result:
-                sources.extend(
-                    self._process_lineage_result(lineage_result, col_name, model_name)
-                )
+                sources.extend(self._process_lineage_result(lineage_result, col_name, model_name))
         except Exception as e:
             logger.debug(f"SQLGlot lineage failed for {col_name}: {e}")
 
         # Also do manual analysis for completeness
-        manual_sources = self._manual_trace_column(
-            col_expr, col_name, model_name, dependencies
-        )
+        manual_sources = self._manual_trace_column(col_expr, col_name, model_name, dependencies)
 
         # Merge sources, avoiding duplicates
         seen = {(s.source_model, s.source_column) for s in sources}
@@ -246,9 +236,7 @@ class SqlLineageExtractor(LineageExtractor):
 
         return sources
 
-    def _process_lineage_result(
-        self, lineage_result: Any, col_name: str, model_name: str
-    ) -> List[ColumnLineageEdge]:
+    def _process_lineage_result(self, lineage_result: Any, col_name: str, model_name: str) -> list[ColumnLineageEdge]:
         """Process SQLGlot lineage result into ColumnLineageEdge objects."""
         sources = []
 
@@ -293,8 +281,8 @@ class SqlLineageExtractor(LineageExtractor):
         col_expr: exp.Expression,
         col_name: str,
         model_name: str,
-        dependencies: List[str],
-    ) -> List[ColumnLineageEdge]:
+        dependencies: list[str],
+    ) -> list[ColumnLineageEdge]:
         """
         Manually trace column references in an expression.
 
@@ -349,9 +337,7 @@ class SqlLineageExtractor(LineageExtractor):
         trace_expr(col_expr, TransformationType.DIRECT)
         return sources
 
-    def _resolve_table_name(
-        self, col: exp.Column, dependencies: List[str]
-    ) -> Optional[str]:
+    def _resolve_table_name(self, col: exp.Column, dependencies: list[str]) -> str | None:
         """
         Resolve which dependency a column reference belongs to.
 
@@ -379,9 +365,9 @@ class SqlLineageExtractor(LineageExtractor):
         self,
         sql: str,
         model_name: str,
-        dependencies: List[str],
-        available_models: Dict[str, Dict[str, Any]],
-    ) -> List[ColumnInfo]:
+        dependencies: list[str],
+        available_models: dict[str, dict[str, Any]],
+    ) -> list[ColumnInfo]:
         """
         Basic lineage extraction when full parsing fails.
 

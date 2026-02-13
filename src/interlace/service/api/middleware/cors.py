@@ -4,18 +4,16 @@ CORS middleware configuration.
 Enables Cross-Origin Resource Sharing for the API.
 """
 
-from typing import List, Optional
-
 from aiohttp import web
 
 
 def setup_cors(
     app: web.Application,
-    origins: Optional[List[str]] = None,
+    origins: list[str] | None = None,
     allow_credentials: bool = True,
-    allow_methods: Optional[List[str]] = None,
-    allow_headers: Optional[List[str]] = None,
-    expose_headers: Optional[List[str]] = None,
+    allow_methods: list[str] | None = None,
+    allow_headers: list[str] | None = None,
+    expose_headers: list[str] | None = None,
     max_age: int = 3600,
 ) -> None:
     """

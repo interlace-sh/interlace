@@ -9,24 +9,21 @@ Manages the display of:
 This is a global singleton that can be accessed from anywhere.
 """
 
-import time
+import logging
 import threading
-import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Any, List, Union
-from rich.console import Console, ConsoleRenderable, Group
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID, RenderableType
-from rich.panel import Panel
-from rich.text import Text
-from rich.live import Live
-from rich.syntax import Syntax
-from rich.align import Align
-from interlace.core.flow import Flow, Task, TaskStatus, FlowStatus
+from typing import Any, Optional
 
-import logging
+from rich.align import Align
+from rich.console import Console, Group
 from rich.logging import RichHandler
-from rich.console import Group
+from rich.panel import Panel
+from rich.progress import BarColumn, Progress, RenderableType, SpinnerColumn, TaskID, TextColumn
+from rich.syntax import Syntax
+from rich.text import Text
+
+from interlace.core.flow import Flow, FlowStatus, Task, TaskStatus
 
 # Module-level logger for display debugging (uses separate logger to avoid recursion)
 _display_logger = logging.getLogger("interlace.display.internal")
@@ -35,21 +32,22 @@ _display_logger = logging.getLogger("interlace.display.internal")
 class LogHandler(RichHandler):
     """
     Custom RichHandler that uses Progress console for logging.
-    
+
     This handler:
     - Renders logs using RichHandler's built-in capabilities (tracebacks, markup, colors)
     - Uses the Progress console which automatically displays logs above progress bars
     - No manual display updates needed - Rich Progress handles it automatically
     """
-    
+
     def __init__(self, *args, **kwargs):
         # Don't set console here - we'll get it lazily from display.progress.console
         # This allows progress to be created after LogHandler initialization
-        if not kwargs.get('console'):
+        if not kwargs.get("console"):
             # Create a default console if none provided (fallback)
             from rich.console import Console
-            kwargs['console'] = Console()
-        
+
+            kwargs["console"] = Console()
+
         super().__init__(*args, **kwargs)
         self._cached_console = None  # Cache the progress console once found
 
@@ -59,6 +57,7 @@ class LogHandler(RichHandler):
         if self._cached_console is not None:
             try:
                 from interlace.utils.display import get_display
+
                 display = get_display()
                 # Quick check: if display is enabled and progress exists, use cached console
                 # Don't do deep validation to avoid potential deadlocks
@@ -67,10 +66,11 @@ class LogHandler(RichHandler):
             except Exception:
                 # If we can't access display, use cached console anyway
                 return self._cached_console
-        
+
         # Try to get progress console, but use non-blocking approach
         try:
             from interlace.utils.display import get_display
+
             display = get_display()
             # Use progress console if available and display is active (live context entered)
             if display.enabled and display.progress and display.live:
@@ -87,7 +87,7 @@ class LogHandler(RichHandler):
         except Exception:
             # If we can't access display (e.g., lock contention), use fallback
             pass
-        
+
         # Fallback to the console we were initialized with
         return self.console
 
@@ -96,19 +96,19 @@ class LogHandler(RichHandler):
         # CRITICAL: We must NOT raise exceptions here, as that would prevent
         # the record from propagating to other handlers (like FileHandler).
         # If we fail, we call handleError() which allows propagation to continue.
-        # 
+        #
         # IMPORTANT: This method may be called from any thread (logging handlers
         # can be called from any thread). We must be careful about accessing
         # display state to avoid deadlocks.
-        # 
+        #
         # CRITICAL ISSUE: If super().emit() blocks when writing to progress console,
         # the record never propagates to FileHandler. We need to ensure propagation
         # happens even if console logging blocks.
-        # 
+        #
         # SOLUTION: In Python logging, handlers on the same logger are called sequentially.
         # If one handler blocks, others don't get the record. So if LogHandler.emit() blocks,
         # FileHandler.emit() never gets called.
-        # 
+        #
         # WORKAROUND: Use cached console to avoid accessing display state, and if console
         # logging fails or might block, skip it gracefully. The record will still propagate
         # to FileHandler because we don't raise exceptions - we just skip console output.
@@ -153,7 +153,7 @@ class LogHandler(RichHandler):
                     # If getting progress console fails (e.g., deadlock), skip console logging
                     # The record will still propagate to FileHandler
                     pass
-            
+
             # Handle errors for model error tracking AFTER emitting
             # This ensures the record is processed by all handlers first
             # NOTE: We do this AFTER super().emit() to avoid any potential blocking
@@ -166,20 +166,20 @@ class LogHandler(RichHandler):
         except (KeyboardInterrupt, SystemExit):
             # Re-raise these so they propagate properly
             raise
-        except Exception as e:
+        except Exception:
             # If emit fails, call handleError to ensure logging continues
             # This is critical - if we don't call handleError, the record won't propagate
             # to other handlers (like FileHandler)
             self.handleError(record)
             # Don't print to stderr here as it might cause issues - just silently fail
             # The error will still be logged to file via handleError()
-    
+
     def _handle_error(self, record: logging.LogRecord):
         """Extract model name from error record and add to display error panel."""
         try:
             # Try to extract model name from record extra (set by executor)
-            model_name = getattr(record, 'model_name', None)
-            
+            model_name = getattr(record, "model_name", None)
+
             # Fallback: Try to extract model name from message (e.g., "Model 'users' failed: ...")
             if not model_name:
                 # Use record.msg directly to avoid any potential side effects from getMessage()
@@ -190,11 +190,12 @@ class LogHandler(RichHandler):
                     end = msg.find("'", start)
                     if end > start:
                         model_name = msg[start:end]
-            
+
             # If we have a model name, add to display errors (for error panel)
             if model_name:
                 try:
                     from interlace.utils.display import get_display
+
                     display = get_display()
                     if display.enabled:
                         # Get full error message including traceback if available
@@ -202,6 +203,7 @@ class LogHandler(RichHandler):
                         error_msg = record.msg % record.args if record.args else record.msg
                         if record.exc_info:
                             import traceback
+
                             error_msg += "\n" + "".join(traceback.format_exception(*record.exc_info))
                         display.add_error(model_name, error_msg)
                 except Exception:
@@ -214,14 +216,14 @@ class LogHandler(RichHandler):
 
 class StatusColumn(TextColumn):
     """Column to show task status (tick/cross)."""
-    
+
     # Fixed width for status column (all emojis are single character, but we want consistent spacing)
     STATUS_WIDTH = 1
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render status emoji with fixed width."""
         status = task.fields.get("status", "")
@@ -242,11 +244,11 @@ class StatusColumn(TextColumn):
 
 class NameColumn(TextColumn):
     """Column to show task name."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render task name."""
         return task.fields.get("name", "")
@@ -254,11 +256,11 @@ class NameColumn(TextColumn):
 
 class MaterialisationColumn(TextColumn):
     """Column to show materialisation type."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render materialisation info."""
         materialise = task.fields.get("materialise", "")
@@ -267,11 +269,11 @@ class MaterialisationColumn(TextColumn):
 
 class StrategyColumn(TextColumn):
     """Column to show strategy (if any)."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render strategy info."""
         strategy = task.fields.get("strategy", "")
@@ -283,16 +285,16 @@ class StrategyColumn(TextColumn):
 
 class StepColumn(TextColumn):
     """Column to show current execution step."""
-    
+
     # Fixed width based on longest possible step text
     # Possible values: "pending", "waiting", "ready", "executing", "materialising", "completed", "failed", "skipped"
     # Longest is "materialising" (13 chars)
     STEP_WIDTH = 13
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render current step info with fixed width."""
         step = task.fields.get("step", "")
@@ -305,11 +307,11 @@ class StepColumn(TextColumn):
 
 class RowsColumn(TextColumn):
     """Column to show rows processed."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render rows count."""
         rows = task.fields.get("rows")
@@ -322,18 +324,18 @@ class RowsColumn(TextColumn):
 
 class ArrowColumn(TextColumn):
     """Column to show arrow separator when there are changes."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render arrow if there are changes."""
         # Show arrow only if there are any changes
         has_changes = (
-            (task.fields.get("rows_inserted") is not None and task.fields.get("rows_inserted", 0) > 0) or
-            (task.fields.get("rows_updated") is not None and task.fields.get("rows_updated", 0) > 0) or
-            (task.fields.get("rows_deleted") is not None and task.fields.get("rows_deleted", 0) > 0)
+            (task.fields.get("rows_inserted") is not None and task.fields.get("rows_inserted", 0) > 0)
+            or (task.fields.get("rows_updated") is not None and task.fields.get("rows_updated", 0) > 0)
+            or (task.fields.get("rows_deleted") is not None and task.fields.get("rows_deleted", 0) > 0)
         )
         if has_changes:
             return "[dim]⇒[/dim]"
@@ -342,11 +344,11 @@ class ArrowColumn(TextColumn):
 
 class InsertedColumn(TextColumn):
     """Column to show inserted rows count."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render inserted rows count."""
         rows_inserted = task.fields.get("rows_inserted")
@@ -357,11 +359,11 @@ class InsertedColumn(TextColumn):
 
 class UpdatedColumn(TextColumn):
     """Column to show updated rows count."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render updated rows count."""
         rows_updated = task.fields.get("rows_updated")
@@ -372,11 +374,11 @@ class UpdatedColumn(TextColumn):
 
 class DeletedColumn(TextColumn):
     """Column to show deleted rows count."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("", justify="right")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render deleted rows count."""
         rows_deleted = task.fields.get("rows_deleted")
@@ -387,11 +389,11 @@ class DeletedColumn(TextColumn):
 
 class DependenciesColumn(TextColumn):
     """Column to show dependencies."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render dependencies."""
         deps = task.fields.get("dependencies", [])
@@ -402,11 +404,11 @@ class DependenciesColumn(TextColumn):
 
 class SchemaChangesColumn(TextColumn):
     """Column to show schema changes."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render schema changes."""
         changes = task.fields.get("schema_changes", 0)
@@ -417,11 +419,11 @@ class SchemaChangesColumn(TextColumn):
 
 class ExecutionTimeColumn(TextColumn):
     """Column to show execution time in seconds."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render execution time if available."""
         elapsed = task.fields.get("execution_time")
@@ -432,11 +434,11 @@ class ExecutionTimeColumn(TextColumn):
 
 class FlowTimeColumn(TextColumn):
     """Column to show flow execution time in seconds."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render flow time if available."""
         time_str = task.fields.get("time", "")
@@ -445,11 +447,11 @@ class FlowTimeColumn(TextColumn):
 
 class ErrorColumn(TextColumn):
     """Column to show error messages (first line only)."""
-    
+
     def __init__(self):
         """Initialize with empty text_format, we'll override render()."""
         super().__init__("")
-    
+
     def render(self, task: Any) -> RenderableType:
         """Render error message first line if available."""
         error_msg = task.fields.get("error_message")
@@ -466,22 +468,22 @@ class ErrorColumn(TextColumn):
 class Display:
     """
     Manages display for Interlace execution.
-    
+
     Organizes output into sections:
     - Header at top (project info)
     - Logs in middle (takes remaining space)
     - Footer at bottom (flow and task progress)
-    
+
     This is a singleton - use get_display() to get the global instance.
     """
 
     _instance: Optional["Display"] = None
     _lock = threading.Lock()
 
-    def __init__(self, console: Optional[Console] = None, enabled: bool = True, max_task_height: int = 20):
+    def __init__(self, console: Console | None = None, enabled: bool = True, max_task_height: int = 20):
         """
         Initialize display manager.
-        
+
         Args:
             console: Rich Console instance (creates new if None)
             enabled: Whether to enable display (default: True)
@@ -489,23 +491,22 @@ class Display:
         """
         self.enabled = enabled
         self.console = console if console is not None else Console()
-        self.progress: Optional[Progress] = None
-        self.progress_tasks: Dict[str, TaskID] = {}  # model_name -> task_id
-        self.flow: Optional[Flow] = None
-        self._errors: Dict[str, str] = {}  # model_name -> error_message
+        self.progress: Progress | None = None
+        self.progress_tasks: dict[str, TaskID] = {}  # model_name -> task_id
+        self.flow: Flow | None = None
+        self._errors: dict[str, str] = {}  # model_name -> error_message
         self._update_lock = threading.Lock()
-        self.flow_progress: Optional[Progress] = None
-        self.flow_progress_task_id: Optional[TaskID] = None
+        self.flow_progress: Progress | None = None
+        self.flow_progress_task_id: TaskID | None = None
         self.max_task_height = max_task_height
-        self.config: Optional[Dict[str, Any]] = None
-        self.state_store: Optional[Any] = None
-        self.models: Optional[Dict[str, Dict[str, Any]]] = None
-        self._project_name: Optional[str] = None  # Store project name for header
-        self._current_env: Optional[str] = None  # Store current environment
-        self._project_dir: Optional[Path] = None  # Store project directory for finding env configs
-        self.thread_pool_size: Optional[int] = None  # Thread pool size for determining visible tasks
-        self.task_visibility: Dict[str, bool] = {}  # Track which tasks are visible
-
+        self.config: dict[str, Any] | None = None
+        self.state_store: Any | None = None
+        self.models: dict[str, dict[str, Any]] | None = None
+        self._project_name: str | None = None  # Store project name for header
+        self._current_env: str | None = None  # Store current environment
+        self._project_dir: Path | None = None  # Store project directory for finding env configs
+        self.thread_pool_size: int | None = None  # Thread pool size for determining visible tasks
+        self.task_visibility: dict[str, bool] = {}  # Track which tasks are visible
 
     @classmethod
     def get_instance(cls) -> "Display":
@@ -516,29 +517,29 @@ class Display:
                     cls._instance = cls()
         return cls._instance
 
-    def _get_last_flow_info(self) -> Dict[str, Any]:
+    def _get_last_flow_info(self) -> dict[str, Any]:
         """Get last flow run information from state database."""
         if not self.state_store:
             return {}
-        
+
         try:
             conn = self.state_store._get_connection()
             if conn is None:
                 return {}
-            
+
             # Query last completed flow using ibis
             import ibis
+
             try:
                 flows_table = conn.table("interlace.flows")
-                
+
                 # Filter for completed/failed flows, order by completed_at desc, limit 1
                 last_flow = (
-                    flows_table
-                    .filter(flows_table.status.isin(["completed", "failed"]))
+                    flows_table.filter(flows_table.status.isin(["completed", "failed"]))
                     .order_by(ibis.desc(flows_table.completed_at))
                     .limit(1)
                 )
-                
+
                 result = last_flow.execute()
 
                 if not result.empty:
@@ -555,51 +556,56 @@ class Display:
                 _display_logger.debug(f"Could not query flows table (may not exist yet): {e}")
         except Exception as e:
             _display_logger.debug(f"Could not get last flow info: {e}")
-        
+
         return {}
 
-    def _get_connection_info(self) -> List[Dict[str, Any]]:
+    def _get_connection_info(self) -> list[dict[str, Any]]:
         """Get connection information (may be a list)."""
         if not self.config:
             return []
-        
+
         try:
             connections = self.config.get("connections", {})
             if not connections:
                 return []
-            
+
             # If connections is a list, return it directly
             if isinstance(connections, list):
                 return connections
-            
+
             # If connections is a dict, convert to list
             conn_list = []
             for conn_name, conn_config in connections.items():
                 if isinstance(conn_config, dict):
                     conn_type = conn_config.get("type", "unknown")
-                    conn_list.append({
-                        "name": conn_name,
-                        "type": conn_type,
-                    })
+                    conn_list.append(
+                        {
+                            "name": conn_name,
+                            "type": conn_type,
+                        }
+                    )
                 else:
                     # If it's just a string or other type, use it as name
-                    conn_list.append({
-                        "name": conn_name,
-                        "type": str(conn_config),
-                    })
-            
+                    conn_list.append(
+                        {
+                            "name": conn_name,
+                            "type": str(conn_config),
+                        }
+                    )
+
             return conn_list
         except Exception as e:
             _display_logger.debug(f"Could not parse connection info: {e}")
             return []
 
-    def _get_available_environments(self) -> List[str]:
+    def _get_available_environments(self) -> list[str]:
         """Get list of available environments from config files."""
         if not self._project_dir:
             return []
-        
+
         try:
             from pathlib import Path
+
             project_path = Path(self._project_dir)
             env_files = list(project_path.glob("config.*.yaml"))
             environments = []
@@ -613,10 +619,18 @@ class Display:
             _display_logger.debug(f"Could not list environment files: {e}")
             return []
 
-    def print_heading(self, project_name: str = "Interlace Project", config: Optional[Dict[str, Any]] = None, state_store: Optional[Any] = None, models: Optional[Dict[str, Dict[str, Any]]] = None, env: Optional[str] = None, project_dir: Optional[Path] = None):
+    def print_heading(
+        self,
+        project_name: str = "Interlace Project",
+        config: dict[str, Any] | None = None,
+        state_store: Any | None = None,
+        models: dict[str, dict[str, Any]] | None = None,
+        env: str | None = None,
+        project_dir: Path | None = None,
+    ):
         """
         Print project heading with key info - will appear above progress bars.
-        
+
         Args:
             project_name: Name of the project
             config: Configuration dictionary
@@ -627,21 +641,27 @@ class Display:
         """
         if not self.enabled:
             return
-        
+
         self.config = config
         self.state_store = state_store
         self.models = models
         self._project_name = project_name  # Store for later use
         self._current_env = env  # Store current environment
         self._project_dir = project_dir  # Store project directory
-        
+
         # Don't build header here - it will be built in _build_header_panel when display context is entered
         # This method just stores the config for later use
 
-    def initialize_progress(self, flow: Flow, models: Dict[str, Dict[str, Any]], graph: Any, thread_pool_size: Optional[int] = None):
+    def initialize_progress(
+        self,
+        flow: Flow,
+        models: dict[str, dict[str, Any]],
+        graph: Any,
+        thread_pool_size: int | None = None,
+    ):
         """
         Initialize progress display from Flow and models using Rich Progress.
-        
+
         Args:
             flow: Flow object tracking execution
             models: Dictionary of model definitions
@@ -650,11 +670,11 @@ class Display:
         """
         if not self.enabled:
             return
-            
+
         self.flow = flow
         self.models = models
         self.thread_pool_size = thread_pool_size
-        
+
         # Create Rich Progress display for tasks with custom columns
         # Both Progress instances share the same console so logs appear above both
         # Column order: Status, Name, Materialisation, Strategy, Dependencies, SchemaChanges, ExecutionTime, Spinner, Step, Rows, Arrow, Inserted, Updated, Deleted, Error
@@ -677,7 +697,7 @@ class Display:
             console=self.console,
             transient=False,
         )
-        
+
         # Create overall flow progress (same width as tasks, including error column for alignment)
         # Match exact column structure for alignment
         # Use the same console as progress so logs appear above both
@@ -700,7 +720,7 @@ class Display:
             console=self.progress.console,  # Use progress console so logs appear above both
             transient=False,
         )
-        
+
         # Initialize flow progress task
         total_tasks = len(flow.tasks)
         self.flow_progress_task_id = self.flow_progress.add_task(
@@ -708,13 +728,13 @@ class Display:
             total=total_tasks,
             time="",  # Initialize time field
         )
-        
+
         # Get layer mapping from graph to order progress bars by execution layer
         model_layers = graph.get_layers()
-        
+
         # Sort models by layer for progress display
         sorted_models = sorted(models.keys(), key=lambda m: (model_layers.get(m, 999), m))
-        
+
         # Calculate initial number of visible tasks: min(models, threads)
         num_models = len(sorted_models)
         if self.thread_pool_size is not None:
@@ -722,13 +742,13 @@ class Display:
         else:
             # Fallback to max_task_height if thread_pool_size not provided
             initial_visible = min(num_models, self.max_task_height)
-        
+
         # Initialize progress tasks for ALL models (we'll control visibility dynamically)
         for model_name in sorted_models:
             task = flow.tasks.get(model_name)
             if not task:
                 continue
-                
+
             # Create Rich progress task with all fields
             progress_task_id = self.progress.add_task(
                 description="",  # Empty description, using columns instead
@@ -736,15 +756,15 @@ class Display:
                 visible=(sorted_models.index(model_name) < initial_visible),  # Initially visible based on position
             )
             self.progress_tasks[model_name] = progress_task_id
-            self.task_visibility[model_name] = (sorted_models.index(model_name) < initial_visible)
-            
+            self.task_visibility[model_name] = sorted_models.index(model_name) < initial_visible
+
             # Set initial field values
             self._update_progress_task(progress_task_id, task)
 
     def set_flow(self, flow: Flow):
         """
         Set the current Flow to observe.
-        
+
         Args:
             flow: Flow object to observe
         """
@@ -757,7 +777,7 @@ class Display:
         """Update progress display from Flow/Task objects."""
         if not self.enabled or not self.progress or not self.flow:
             return
-        
+
         # CRITICAL: Use non-blocking lock acquisition to avoid deadlocks.
         # If the lock is held (e.g., by logging handler accessing display state),
         # skip this update. The next update will catch up.
@@ -767,7 +787,7 @@ class Display:
             # Lock is held - skip this update to avoid deadlock
             # This can happen if logging handler is accessing display state
             return
-        
+
         try:
             # Update overall flow progress
             if self.flow_progress and self.flow_progress_task_id is not None:
@@ -781,11 +801,11 @@ class Display:
                     status_text += f", {failed} failed"
                 if skipped > 0:
                     status_text += f", {skipped} skipped"
-                
+
                 # Get flow duration for time display
                 flow_duration = self.flow.get_duration()
                 time_str = f"{flow_duration:.2f}s" if flow_duration is not None else ""
-                
+
                 # Include skipped in completed count for progress bar
                 completed_with_skipped = completed + skipped
                 self.flow_progress.update(
@@ -794,15 +814,15 @@ class Display:
                     description=f"[bold]Flow Progress: {status_text}[/bold]",
                     time=time_str,  # Set time field for display
                 )
-            
+
             # Update individual task progress with dynamic visibility
             self._update_task_visibility()
-            
+
             # Update all tasks (visibility is handled in _update_task_visibility)
             for model_name, task in self.flow.tasks.items():
                 if model_name not in self.progress_tasks:
                     continue
-                    
+
                 task_id = self.progress_tasks[model_name]
                 self._update_progress_task(task_id, task)
         finally:
@@ -822,47 +842,47 @@ class Display:
         """
         if not self.progress or not self.flow:
             return
-        
+
         # Check if flow is complete - if so, show ALL tasks regardless of status/models/threads
         if self.flow.status in [FlowStatus.COMPLETED, FlowStatus.FAILED, FlowStatus.CANCELLED]:
             # Flow is complete: make ALL tasks visible (no limits, no filtering)
             for model_name in self.progress_tasks.keys():
                 self.task_visibility[model_name] = True
             # Update all Rich progress tasks to be visible
-            for model_name, task_id in self.progress_tasks.items():
+            for _model_name, task_id in self.progress_tasks.items():
                 try:
                     self.progress.update(task_id, visible=True)
                 except KeyError:
                     # Task doesn't exist in progress tracker - skip
                     pass
             return
-        
+
         # Determine max visible based on thread pool size or max_task_height
         num_models = len(self.flow.tasks)
         if self.thread_pool_size is not None:
             max_visible = min(num_models, self.thread_pool_size)
         else:
             max_visible = min(num_models, self.max_task_height)
-        
+
         # If models < threads, show all tasks
         if num_models <= max_visible:
             for model_name in self.progress_tasks.keys():
                 self.task_visibility[model_name] = True
             # Update Rich progress tasks
-            for model_name, task_id in self.progress_tasks.items():
+            for _model_name, task_id in self.progress_tasks.items():
                 try:
                     self.progress.update(task_id, visible=True)
                 except KeyError:
                     # Task doesn't exist in progress tracker - skip
                     pass
             return
-        
+
         # Models > threads: prioritize by status
         # Categorize all tasks by status
         executing_tasks = []  # RUNNING, MATERIALISING
-        pending_tasks = []     # PENDING, WAITING, READY
-        completed_tasks = []   # COMPLETED, FAILED, SKIPPED
-        
+        pending_tasks = []  # PENDING, WAITING, READY
+        completed_tasks = []  # COMPLETED, FAILED, SKIPPED
+
         for model_name, task in self.flow.tasks.items():
             if model_name not in self.progress_tasks:
                 continue
@@ -872,32 +892,32 @@ class Display:
                 pending_tasks.append(model_name)
             elif task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SKIPPED]:
                 completed_tasks.append(model_name)
-        
+
         # Reset all visibility first
         for model_name in self.progress_tasks.keys():
             self.task_visibility[model_name] = False
-        
+
         visible_count = 0
-        
+
         # Step 1: Always show executing tasks (they take priority)
         for model_name in executing_tasks:
             self.task_visibility[model_name] = True
             visible_count += 1
-        
+
         # Step 2: Show pending tasks up to limit
         for model_name in pending_tasks:
             if visible_count >= max_visible:
                 break
             self.task_visibility[model_name] = True
             visible_count += 1
-        
+
         # Step 3: Show completed tasks up to limit
         for model_name in completed_tasks:
             if visible_count >= max_visible:
                 break
             self.task_visibility[model_name] = True
             visible_count += 1
-        
+
         # Step 4: Update Rich progress tasks with visibility
         for model_name, task_id in self.progress_tasks.items():
             visible = self.task_visibility.get(model_name, False)
@@ -908,23 +928,23 @@ class Display:
             except KeyError:
                 # Task doesn't exist in progress tracker - skip
                 pass
-    
+
     def _update_progress_task(self, task_id: TaskID, task: Task):
         """Update a single progress task from Task object with all fields."""
         if not self.progress:
             return
-        
+
         # Get current visibility state
         visible = self.task_visibility.get(task.model_name, True)
-        
+
         # Set all fields for the task
         status_emoji = self._get_status_emoji(task.status)
-        
+
         # Get error message (first line only for error column)
         error_msg = None
         if task.status == TaskStatus.FAILED:
             error_msg = self._errors.get(task.model_name, task.error_message or "Error")
-        
+
         # Update progress task with all fields
         elapsed = task.get_duration()
         # Ensure strategy is set correctly - preserve actual strategy value, use empty string only if None
@@ -934,7 +954,7 @@ class Display:
         self.progress.update(
             task_id,
             description="",  # Empty, using columns
-            completed=1 if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SKIPPED] else 0,
+            completed=(1 if task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.SKIPPED] else 0),
             visible=visible,  # Set visibility
             # Set all custom fields
             status=status_emoji,
@@ -984,7 +1004,7 @@ class Display:
     def add_error(self, model_name: str, error_message: str):
         """
         Add error message for a model.
-        
+
         Args:
             model_name: Name of the model
             error_message: Error message
@@ -1002,25 +1022,25 @@ class Display:
         """Print error section to Progress console with syntax highlighting."""
         if not self.enabled or not self._errors:
             return
-        
+
         # Use progress console if available, otherwise main console
         console_to_use = self.progress.console if self.progress else self.console
-        
+
         # Build error content using Group to properly render Rich markup
-        from rich.console import Group
+
         error_components = []
-        
+
         for model_name, error_msg in self._errors.items():
             # Create model name header with proper Rich markup
             model_header = Text.from_markup(f"[bold red]✗ {model_name}[/bold red]")
             error_components.append(model_header)
-            
+
             # Use syntax highlighting for error messages
             error_lines = error_msg.split("\n")[:10]  # First 10 lines
             error_preview = "\n".join(error_lines)
             if len(error_msg.split("\n")) > 10:
                 error_preview += "\n  ..."
-            
+
             # Add syntax-highlighted error
             try:
                 syntax = Syntax(error_preview, "python", theme="monokai", line_numbers=False, word_wrap=True)
@@ -1028,10 +1048,10 @@ class Display:
             except Exception:
                 # Fallback to plain text with indentation
                 error_components.append(Text(f"  {error_preview}", style="dim"))
-            
+
             # Add spacing between errors
             error_components.append(Text(""))
-        
+
         if error_components:
             # Use Group to properly render all components
             error_group = Group(*error_components)
@@ -1047,24 +1067,26 @@ class Display:
         """Context manager entry - start Progress display."""
         if not self.enabled:
             return self
-        
+
         # Combine flow progress and task progress into a Group
         # Use Live to display the group (which contains both Progress instances)
         if self.progress and self.flow_progress:
             from rich.console import Group
             from rich.live import Live
+
             progress_group = Group(self.flow_progress, self.progress)
             # Use Live to display the group - this allows logs to appear above progress
             self.live = Live(progress_group, console=self.console, refresh_per_second=10, screen=False)
             self.live.__enter__()
-            
+
             # Initialize LogHandler's cached console NOW to avoid accessing display state during logging
             # This prevents potential deadlocks when errors occur
             try:
                 from interlace.utils.logging import get_logger
+
                 logger = get_logger("interlace")
                 for handler in logger.handlers:
-                    if hasattr(handler, '_cached_console') and handler._cached_console is None:
+                    if hasattr(handler, "_cached_console") and handler._cached_console is None:
                         # Set the cached console to the progress console
                         handler._cached_console = self.progress.console
             except Exception as e:
@@ -1080,13 +1102,14 @@ class Display:
         elif self.progress:
             # Just use progress if flow_progress not available
             self.progress.__enter__()
-            
+
             # Initialize LogHandler's cached console NOW to avoid accessing display state during logging
             try:
                 from interlace.utils.logging import get_logger
+
                 logger = get_logger("interlace")
                 for handler in logger.handlers:
-                    if hasattr(handler, '_cached_console') and handler._cached_console is None:
+                    if hasattr(handler, "_cached_console") and handler._cached_console is None:
                         # Set the cached console to the progress console
                         handler._cached_console = self.progress.console
             except Exception as e:
@@ -1098,24 +1121,24 @@ class Display:
                 header_panel = self._build_header_panel()
                 if header_panel:
                     self.progress.console.print(header_panel)
-        
+
         return self
-    
+
     def _build_header_panel(self):
         """Build header panel (internal method for reuse)."""
         if not self.enabled or not self._project_name:
             return None
-        
+
         # Get header info
         num_models = len(self.models) if self.models else 0
         last_flow = self._get_last_flow_info()
         conn_list = self._get_connection_info()
         available_envs = self._get_available_environments()
-        
+
         # Build header content - project name in bold blue, centered
         # Create project name text
         project_name_text = Text.from_markup(f"[bold blue]{self._project_name}[/bold blue]")
-        
+
         # Get description from config (muted style)
         description = None
         if self.config:
@@ -1128,11 +1151,11 @@ class Display:
                 description = self.config.data.get("description")
             else:
                 description = getattr(self.config, "description", None)
-        
+
         # Key info line - build as Rich Text to support markup
         info_parts_text = []
         info_parts_text.append(Text(f"{num_models} models", style="dim"))
-        
+
         # Add environments (highlight current)
         if available_envs:
             env_text = Text("Env: ", style="dim")
@@ -1145,7 +1168,7 @@ class Display:
                 else:
                     env_text.append(env, style="dim")
             info_parts_text.append(env_text)
-        
+
         if last_flow:
             completed_at = last_flow.get("completed_at")
             duration = last_flow.get("duration")
@@ -1159,10 +1182,10 @@ class Display:
                 else:
                     last_run_str = str(completed_at)
                 info_parts_text.append(Text(f"Last run: {last_run_str}", style="dim"))
-            
+
             if duration is not None:
                 info_parts_text.append(Text(f"Duration: {duration:.2f}s", style="dim"))
-        
+
         # Add connections (handle as list)
         if conn_list:
             if len(conn_list) == 1:
@@ -1174,21 +1197,20 @@ class Display:
                 # Multiple connections - show as list
                 conn_names = [f"{c.get('name', '')} ({c.get('type', '')})" for c in conn_list]
                 info_parts_text.append(Text(f"Connections: {', '.join(conn_names)}", style="dim"))
-        
+
         # Build header content - center each line
-        from rich.console import Group
-        
+
         # Build lines separately for centering
         lines = []
-        
+
         # Project name (centered)
         lines.append(Align.center(project_name_text))
-        
+
         # Description (centered, if present)
         if description:
             description_text = Text(str(description), style="dim")
             lines.append(Align.center(description_text))
-        
+
         # Info line (centered, if present)
         if info_parts_text:
             # Join info parts with " | " separator
@@ -1198,10 +1220,10 @@ class Display:
                     info_line.append(" | ", style="dim")
                 info_line.append(part)
             lines.append(Align.center(info_line))
-        
+
         # Combine all centered lines
         header_content = Group(*lines) if len(lines) > 1 else lines[0] if lines else Text()
-        
+
         # Create panel
         return Panel(
             header_content,
@@ -1231,10 +1253,10 @@ class Display:
                         _display_logger.debug(f"Error exiting progress display on interrupt: {e}")
                 # Don't suppress KeyboardInterrupt - let it propagate
                 return False
-            
+
             # Print errors before closing (for non-interrupt exits)
             self.print_errors()
-            
+
             # Exit progress context
             if self.live:
                 self.live.__exit__(exc_type, exc_val, exc_tb)
@@ -1248,7 +1270,7 @@ class Display:
 def get_display() -> Display:
     """
     Get the global Display instance.
-    
+
     Returns:
         Display: The global display instance
     """

@@ -7,6 +7,7 @@ Tests for specific bugs found during code review of:
 """
 
 import time
+
 import pytest
 
 
@@ -36,9 +37,7 @@ class TestRetryPolicyGetDelayJitter:
             delay = policy.get_delay(attempt=20)
             if delay > max_seen:
                 max_seen = delay
-            assert delay <= policy.max_delay, (
-                f"Delay {delay:.4f} exceeds max_delay {policy.max_delay}"
-            )
+            assert delay <= policy.max_delay, f"Delay {delay:.4f} exceeds max_delay {policy.max_delay}"
 
     def test_get_delay_without_jitter_respects_max_delay(self):
         """Sanity check: without jitter, max_delay is always respected."""
@@ -113,8 +112,7 @@ class TestCircuitBreakerOpenStateFailure:
         breaker.record_failure()
 
         assert breaker._failure_count == count_at_open, (
-            f"Failure count grew from {count_at_open} to "
-            f"{breaker._failure_count} while circuit was OPEN"
+            f"Failure count grew from {count_at_open} to " f"{breaker._failure_count} while circuit was OPEN"
         )
 
 
@@ -158,9 +156,7 @@ class TestDependencyGraphAddModelStaleEdges:
 
         dependents = graph.get_dependents("B")
         # Should have exactly one entry for A, not two
-        assert dependents.count("A") == 1, (
-            f"Duplicate reverse edge: get_dependents('B') = {dependents}"
-        )
+        assert dependents.count("A") == 1, f"Duplicate reverse edge: get_dependents('B') = {dependents}"
 
 
 @pytest.mark.unit
@@ -198,8 +194,7 @@ class TestDependencyGraphDetectCyclesFalsePositives:
         for cycle in cycles:
             cycle_nodes = set(cycle)
             assert cycle_nodes.issubset({"A", "B"}), (
-                f"False cycle detected: {cycle}. "
-                f"Only A and B form a real cycle; C and D do not."
+                f"False cycle detected: {cycle}. " f"Only A and B form a real cycle; C and D do not."
             )
 
     def test_detect_cycles_finds_real_cycle(self):
@@ -254,12 +249,8 @@ class TestDlqSqlValueBoolOrdering:
 
         # _sql_value returns "1"/"0" for bools, which is intentional
         # The key point: it does NOT return str(True)/"True"
-        assert _sql_value(True) != "True", (
-            "_sql_value should not return str(True) for boolean input"
-        )
-        assert _sql_value(False) != "False", (
-            "_sql_value should not return str(False) for boolean input"
-        )
+        assert _sql_value(True) != "True", "_sql_value should not return str(True) for boolean input"
+        assert _sql_value(False) != "False", "_sql_value should not return str(False) for boolean input"
 
         # Verify integers still work correctly in _sql_value
         assert _sql_value(42) == "42"

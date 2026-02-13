@@ -8,8 +8,7 @@ subscribing via SSE, and managing stream consumers.
 import asyncio
 import json
 import time
-import uuid
-from typing import Any, Dict
+from typing import Any
 
 from aiohttp import web
 
@@ -19,8 +18,8 @@ from interlace.service.api.errors import (
     NotFoundError,
     ValidationError,
 )
-from interlace.service.api.handlers import BaseHandler
 from interlace.service.api.events import format_sse_event
+from interlace.service.api.handlers import BaseHandler
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.api.streams")
@@ -58,19 +57,21 @@ class StreamsHandler(BaseHandler):
             if self.graph:
                 dependents = self.graph.get_dependents(name) or []
 
-            streams.append({
-                "name": name,
-                "schema": info.get("schema", "events"),
-                "description": info.get("description"),
-                "cursor": info.get("cursor", "rowid"),
-                "tags": info.get("tags", []),
-                "owner": info.get("owner"),
-                "fields": self._serialize_fields(info.get("fields")),
-                "auth_required": bool(info.get("auth")),
-                "validate_schema": info.get("validate_schema", False),
-                "downstream_models": dependents,
-                "endpoint": f"/api/v1/streams/{name}",
-            })
+            streams.append(
+                {
+                    "name": name,
+                    "schema": info.get("schema", "events"),
+                    "description": info.get("description"),
+                    "cursor": info.get("cursor", "rowid"),
+                    "tags": info.get("tags", []),
+                    "owner": info.get("owner"),
+                    "fields": self._serialize_fields(info.get("fields")),
+                    "auth_required": bool(info.get("auth")),
+                    "validate_schema": info.get("validate_schema", False),
+                    "downstream_models": dependents,
+                    "endpoint": f"/api/v1/streams/{name}",
+                }
+            )
 
         return await self.json_response(
             {"streams": streams, "count": len(streams)},
@@ -98,6 +99,7 @@ class StreamsHandler(BaseHandler):
         row_count = None
         try:
             from interlace.connections.manager import get_connection as get_named_connection
+
             conn_name = info.get("connection") or self._get_default_connection()
             if conn_name:
                 wrapper = get_named_connection(conn_name)
@@ -171,7 +173,7 @@ class StreamsHandler(BaseHandler):
         try:
             payload = await request.json()
         except json.JSONDecodeError as e:
-            raise ValidationError(f"Invalid JSON: {e}")
+            raise ValidationError(f"Invalid JSON: {e}") from e
 
         if isinstance(payload, dict):
             rows = [payload]
@@ -200,6 +202,7 @@ class StreamsHandler(BaseHandler):
         if conn_name:
             try:
                 from interlace.connections.manager import get_connection as get_named_connection
+
                 wrapper = get_named_connection(conn_name)
                 con = wrapper.connection
             except Exception:
@@ -212,7 +215,7 @@ class StreamsHandler(BaseHandler):
             _config=self.config,
             _event_bus=self.event_bus,
             _graph=self.graph,
-            _enqueue_run=self.service._enqueue_run if hasattr(self.service, "_enqueue_run") else None,
+            _enqueue_run=(self.service._enqueue_run if hasattr(self.service, "_enqueue_run") else None),
         )
 
         return await self.json_response(result, status=202, request=request)
@@ -260,16 +263,18 @@ class StreamsHandler(BaseHandler):
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30.0)
 
-                    sse_event = format_sse_event({
-                        "event": "stream.event",
-                        "data": {
-                            "stream": name,
-                            "event": event,
-                        },
-                    })
+                    sse_event = format_sse_event(
+                        {
+                            "event": "stream.event",
+                            "data": {
+                                "stream": name,
+                                "event": event,
+                            },
+                        }
+                    )
                     await response.write(sse_event)
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Keepalive
                     await response.write(b": keepalive\n\n")
                 except ConnectionResetError:
@@ -327,6 +332,7 @@ class StreamsHandler(BaseHandler):
         if conn_name:
             try:
                 from interlace.connections.manager import get_connection as get_named_connection
+
                 wrapper = get_named_connection(conn_name)
                 con = wrapper.connection
             except Exception:
@@ -368,8 +374,8 @@ class StreamsHandler(BaseHandler):
 
         try:
             body = await request.json()
-        except Exception:
-            raise ValidationError("Request body must be valid JSON")
+        except Exception as e:
+            raise ValidationError("Request body must be valid JSON") from e
 
         consumer_name = body.get("consumer")
         if not consumer_name:
@@ -389,6 +395,7 @@ class StreamsHandler(BaseHandler):
         if conn_name:
             try:
                 from interlace.connections.manager import get_connection as get_named_connection
+
                 wrapper = get_named_connection(conn_name)
                 con = wrapper.connection
             except Exception:
@@ -413,9 +420,8 @@ class StreamsHandler(BaseHandler):
 
     def _get_default_connection(self) -> str | None:
         """Get the default connection name from config."""
-        return (
-            self.config.get("executor", {}).get("default_connection")
-            or next(iter(self.config.get("connections", {}).keys()), None)
+        return self.config.get("executor", {}).get("default_connection") or next(
+            iter(self.config.get("connections", {}).keys()), None
         )
 
     def _serialize_fields(self, fields: Any) -> Any:
@@ -428,13 +434,10 @@ class StreamsHandler(BaseHandler):
             return [{"name": f[0], "type": str(f[1])} for f in fields if len(f) >= 2]
         # ibis.Schema
         if hasattr(fields, "names"):
-            return {
-                name: str(fields[name])
-                for name in fields.names
-            }
+            return {name: str(fields[name]) for name in fields.names}
         return str(fields)
 
-    def _check_auth(self, request: web.Request, auth_config: Dict[str, Any]) -> None:
+    def _check_auth(self, request: web.Request, auth_config: dict[str, Any]) -> None:
         """Validate request authentication against stream auth config."""
         auth_type = auth_config.get("type", "bearer")
 
@@ -476,7 +479,7 @@ class StreamsHandler(BaseHandler):
         self,
         request: web.Request,
         stream_name: str,
-        rate_config: Dict[str, Any],
+        rate_config: dict[str, Any],
     ) -> None:
         """
         Basic rate limiting check.
@@ -509,8 +512,7 @@ class StreamsHandler(BaseHandler):
         if state["count"] > max_rps:
             raise APIError(
                 code=ErrorCode.RATE_LIMITED,
-                message=f"Rate limit exceeded for stream '{stream_name}' "
-                        f"({max_rps} requests/second)",
+                message=f"Rate limit exceeded for stream '{stream_name}' " f"({max_rps} requests/second)",
                 status=429,
                 details={"limit": max_rps, "retry_after": 1},
             )

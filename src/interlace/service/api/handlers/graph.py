@@ -2,12 +2,12 @@
 Dependency graph endpoints.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 from aiohttp import web
 
-from interlace.service.api.handlers import BaseHandler
 from interlace.service.api.errors import ValidationError
+from interlace.service.api.handlers import BaseHandler
 
 
 class GraphHandler(BaseHandler):
@@ -35,7 +35,10 @@ class GraphHandler(BaseHandler):
             if invalid_models:
                 raise ValidationError(
                     f"Unknown models: {invalid_models}",
-                    details={"invalid_models": invalid_models, "available_models": list(self.models.keys())[:20]}
+                    details={
+                        "invalid_models": invalid_models,
+                        "available_models": list(self.models.keys())[:20],
+                    },
                 )
 
         # Build graph data
@@ -53,17 +56,19 @@ class GraphHandler(BaseHandler):
                 continue
 
             layer = layers.get(name, 0)
-            nodes.append({
-                "id": name,
-                "name": name,
-                "type": model.get("type", "python"),
-                "schema": model.get("schema", "public"),
-                "materialise": model.get("materialise", "table"),
-                "strategy": model.get("strategy"),
-                "layer": layer,
-                "tags": model.get("tags", []),
-                "description": model.get("description", ""),
-            })
+            nodes.append(
+                {
+                    "id": name,
+                    "name": name,
+                    "type": model.get("type", "python"),
+                    "schema": model.get("schema", "public"),
+                    "materialise": model.get("materialise", "table"),
+                    "strategy": model.get("strategy"),
+                    "layer": layer,
+                    "tags": model.get("tags", []),
+                    "description": model.get("description", ""),
+                }
+            )
 
         # Build edges from dependencies
         for name in self.models:
@@ -76,14 +81,16 @@ class GraphHandler(BaseHandler):
                     # Only include edge if both nodes are in filter
                     if models_filter and dep not in models_filter:
                         continue
-                    edges.append({
-                        "id": f"{dep}->{name}",
-                        "source": dep,
-                        "target": name,
-                    })
+                    edges.append(
+                        {
+                            "id": f"{dep}->{name}",
+                            "source": dep,
+                            "target": name,
+                        }
+                    )
 
         # Group nodes by layer for visualization hints
-        layers_grouped: Dict[int, List[str]] = {}
+        layers_grouped: dict[int, list[str]] = {}
         for node in nodes:
             layer = node["layer"]
             if layer not in layers_grouped:
@@ -128,24 +135,28 @@ class GraphHandler(BaseHandler):
             cycles = self.graph.detect_cycles()
             if cycles:
                 for cycle in cycles:
-                    issues.append({
-                        "type": "cycle",
-                        "severity": "error",
-                        "message": f"Circular dependency detected: {' -> '.join(cycle)}",
-                        "models": cycle,
-                    })
+                    issues.append(
+                        {
+                            "type": "cycle",
+                            "severity": "error",
+                            "message": f"Circular dependency detected: {' -> '.join(cycle)}",
+                            "models": cycle,
+                        }
+                    )
 
             # Check for missing dependencies
             for name in self.models:
                 deps = self.graph.get_dependencies(name)
                 for dep in deps:
                     if dep not in self.models:
-                        issues.append({
-                            "type": "missing_dependency",
-                            "severity": "warning",
-                            "message": f"Model '{name}' depends on '{dep}' which is not defined",
-                            "models": [name, dep],
-                        })
+                        issues.append(
+                            {
+                                "type": "missing_dependency",
+                                "severity": "warning",
+                                "message": f"Model '{name}' depends on '{dep}' which is not defined",
+                                "models": [name, dep],
+                            }
+                        )
 
         return await self.json_response(
             {
@@ -155,7 +166,7 @@ class GraphHandler(BaseHandler):
             request=request,
         )
 
-    def _build_tree_structure(self) -> List[Dict[str, Any]]:
+    def _build_tree_structure(self) -> list[dict[str, Any]]:
         """Build tree structure from graph for tree visualization."""
         # Find root nodes (no dependencies)
         roots = []
@@ -165,7 +176,7 @@ class GraphHandler(BaseHandler):
                 if not deps:
                     roots.append(name)
 
-        def build_subtree(name: str, visited: set) -> Dict[str, Any]:
+        def build_subtree(name: str, visited: set) -> dict[str, Any]:
             if name in visited:
                 return {"id": name, "name": name, "children": [], "cyclic": True}
 

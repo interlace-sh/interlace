@@ -8,7 +8,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import ibis
 
 from interlace.utils.logging import get_logger
@@ -59,14 +60,14 @@ class QualityCheckResult:
     status: QualityCheckStatus
     severity: QualityCheckSeverity
     table_name: str
-    column_name: Optional[str] = None
+    column_name: str | None = None
     message: str = ""
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
     failed_rows: int = 0
     total_rows: int = 0
     executed_at: datetime = field(default_factory=datetime.now)
     duration_seconds: float = 0.0
-    sql_query: Optional[str] = None
+    sql_query: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -80,7 +81,7 @@ class QualityCheckResult:
             return 0.0
         return (self.failed_rows / self.total_rows) * 100
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert result to dictionary."""
         return {
             "check_name": self.check_name,
@@ -114,11 +115,11 @@ class QualityCheck(ABC):
 
     def __init__(
         self,
-        column: Optional[str] = None,
-        columns: Optional[List[str]] = None,
+        column: str | None = None,
+        columns: list[str] | None = None,
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
         **kwargs,
     ):
         """
@@ -161,7 +162,7 @@ class QualityCheck(ABC):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> QualityCheckResult:
         """
         Execute the quality check.
@@ -180,7 +181,7 @@ class QualityCheck(ABC):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> ibis.Table:
         """
         Get ibis table reference.
@@ -205,8 +206,8 @@ class QualityCheck(ABC):
         failed_rows: int = 0,
         total_rows: int = 0,
         duration: float = 0.0,
-        details: Optional[Dict[str, Any]] = None,
-        sql_query: Optional[str] = None,
+        details: dict[str, Any] | None = None,
+        sql_query: str | None = None,
     ) -> QualityCheckResult:
         """
         Create a QualityCheckResult.

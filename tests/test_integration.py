@@ -9,14 +9,15 @@ These tests verify end-to-end functionality including:
 - Field definitions
 """
 
-import pytest
-import tempfile
 import os
-from pathlib import Path
+import tempfile
+
 import ibis
+import pytest
+
 from interlace import model
-from interlace.core.executor import Executor
 from interlace.core.dependencies import build_dependency_graph
+from interlace.core.executor import Executor
 from interlace.utils.logging import setup_logging
 
 
@@ -66,6 +67,7 @@ class TestModelExecution:
     @pytest.mark.asyncio
     async def test_simple_model_execution(self, executor, temp_db):
         """Test executing a simple model."""
+
         @model(name="users", materialise="table")
         def users():
             return [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
@@ -97,6 +99,7 @@ class TestModelExecution:
     @pytest.mark.asyncio
     async def test_model_with_dependencies(self, executor, temp_db):
         """Test model execution with dependencies."""
+
         @model(name="users", materialise="table")
         def users():
             return [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
@@ -141,6 +144,7 @@ class TestModelExecution:
     @pytest.mark.asyncio
     async def test_model_with_fields(self, executor, temp_db):
         """Test model execution with explicit fields definition."""
+
         @model(name="products", materialise="table", fields={"id": "int64", "price": "float64"})
         def products():
             return [{"id": 1, "name": "Product 1", "price": 10.50}]
@@ -177,6 +181,7 @@ class TestStrategies:
     @pytest.mark.asyncio
     async def test_merge_by_key_strategy(self, executor, temp_db):
         """Test merge_by_key strategy with single key."""
+
         @model(name="accounts", materialise="table", strategy="merge_by_key", primary_key="id")
         def accounts():
             return [{"id": 1, "name": "Account 1", "balance": 100.0}]
@@ -218,6 +223,7 @@ class TestStrategies:
     @pytest.mark.asyncio
     async def test_append_strategy(self, executor, temp_db):
         """Test append strategy."""
+
         @model(name="events", materialise="table", strategy="append")
         def events():
             return [{"id": 1, "event": "start"}]
@@ -256,6 +262,7 @@ class TestStrategies:
     @pytest.mark.asyncio
     async def test_replace_strategy(self, executor, temp_db):
         """Test replace strategy."""
+
         @model(name="config", materialise="table", strategy="replace")
         def config():
             return [{"key": "version", "value": "1.0"}]
@@ -299,6 +306,7 @@ class TestMaterialization:
     @pytest.mark.asyncio
     async def test_table_materialization(self, executor, temp_db):
         """Test table materialization."""
+
         @model(name="table_model", materialise="table")
         def table_model():
             return [{"id": 1, "data": "test"}]
@@ -325,6 +333,7 @@ class TestMaterialization:
     @pytest.mark.asyncio
     async def test_view_materialization(self, executor, temp_db):
         """Test view materialization."""
+
         @model(name="base_table", materialise="table")
         def base_table():
             return [{"id": 1, "value": 10}]
@@ -367,6 +376,7 @@ class TestMaterialization:
     @pytest.mark.asyncio
     async def test_ephemeral_materialization(self, executor, temp_db):
         """Test ephemeral materialization."""
+
         @model(name="ephemeral_model", materialise="ephemeral")
         def ephemeral_model():
             return [{"id": 1, "temp": "data"}]
@@ -410,6 +420,7 @@ class TestSchemaEvolution:
     @pytest.mark.asyncio
     async def test_add_column(self, executor, temp_db):
         """Test automatic column addition."""
+
         @model(name="schema_test", materialise="table")
         def schema_test():
             return [{"id": 1, "name": "Test"}]
@@ -443,5 +454,3 @@ class TestSchemaEvolution:
         assert "id" in schema
         assert "name" in schema
         assert "status" in schema
-
-

@@ -5,18 +5,17 @@ cache TTL, and fallback connection resolution.
 Phase 3: Environment management and multi-backend support.
 """
 
-import pytest
-import time
-from unittest.mock import MagicMock, patch, AsyncMock
-from datetime import datetime, timezone
-import ibis
+from unittest.mock import MagicMock, patch
 
-from interlace.connections.base import BaseConnection, ReadOnlyConnectionError
-from interlace.connections.ibis_generic import IbisConnection
+import duckdb
+import ibis
+import pytest
+
+from interlace.connections.base import ReadOnlyConnectionError
 from interlace.connections.duckdb import DuckDBConnection
+from interlace.connections.ibis_generic import IbisConnection
 from interlace.connections.manager import ConnectionManager
 from interlace.core.model import parse_ttl
-
 
 # ==============================================================================
 # parse_ttl tests
@@ -83,32 +82,41 @@ class TestAccessPolicies:
 
     def test_read_only_access(self):
         """Read-only connections should report as read-only."""
-        conn = DuckDBConnection("test", {
-            "type": "duckdb",
-            "path": ":memory:",
-            "access": "read",
-        })
+        conn = DuckDBConnection(
+            "test",
+            {
+                "type": "duckdb",
+                "path": ":memory:",
+                "access": "read",
+            },
+        )
         assert conn.access == "read"
         assert conn.is_read_only
 
     def test_readwrite_access_explicit(self):
         """Explicit readwrite should work."""
-        conn = DuckDBConnection("test", {
-            "type": "duckdb",
-            "path": ":memory:",
-            "access": "readwrite",
-        })
+        conn = DuckDBConnection(
+            "test",
+            {
+                "type": "duckdb",
+                "path": ":memory:",
+                "access": "readwrite",
+            },
+        )
         assert conn.access == "readwrite"
         assert not conn.is_read_only
 
     def test_invalid_access_raises(self):
         """Invalid access policy should raise ValueError."""
         with pytest.raises(ValueError, match="invalid access policy"):
-            DuckDBConnection("test", {
-                "type": "duckdb",
-                "path": ":memory:",
-                "access": "invalid",
-            })
+            DuckDBConnection(
+                "test",
+                {
+                    "type": "duckdb",
+                    "path": ":memory:",
+                    "access": "invalid",
+                },
+            )
 
     def test_assert_writable_passes_for_readwrite(self):
         """assert_writable should pass for readwrite connections."""
@@ -117,11 +125,14 @@ class TestAccessPolicies:
 
     def test_assert_writable_raises_for_read_only(self):
         """assert_writable should raise for read-only connections."""
-        conn = DuckDBConnection("test", {
-            "type": "duckdb",
-            "path": ":memory:",
-            "access": "read",
-        })
+        conn = DuckDBConnection(
+            "test",
+            {
+                "type": "duckdb",
+                "path": ":memory:",
+                "access": "read",
+            },
+        )
         with pytest.raises(ReadOnlyConnectionError, match="read-only connection"):
             conn.assert_writable("create table")
 
@@ -132,11 +143,14 @@ class TestAccessPolicies:
 
     def test_shared_flag_true(self):
         """Shared flag should be True when configured."""
-        conn = DuckDBConnection("test", {
-            "type": "duckdb",
-            "path": ":memory:",
-            "shared": True,
-        })
+        conn = DuckDBConnection(
+            "test",
+            {
+                "type": "duckdb",
+                "path": ":memory:",
+                "shared": True,
+            },
+        )
         assert conn.is_shared
 
 
@@ -192,16 +206,19 @@ class TestIbisConnection:
 
     def test_build_connect_kwargs(self):
         """Should extract connect kwargs from config, removing interlace keys."""
-        conn = IbisConnection("test", {
-            "type": "snowflake",
-            "config": {
-                "account": "myorg",
-                "user": "admin",
-                "password": "secret",
-                "storage": {"base_path": "data"},  # Should be removed
-                "pool": {"max_size": 10},  # Should be removed
+        conn = IbisConnection(
+            "test",
+            {
+                "type": "snowflake",
+                "config": {
+                    "account": "myorg",
+                    "user": "admin",
+                    "password": "secret",
+                    "storage": {"base_path": "data"},  # Should be removed
+                    "pool": {"max_size": 10},  # Should be removed
+                },
             },
-        })
+        )
         kwargs = conn._build_connect_kwargs()
         assert kwargs == {"account": "myorg", "user": "admin", "password": "secret"}
 
@@ -215,20 +232,31 @@ class TestIbisConnection:
 
     def test_access_policies_on_ibis_connection(self):
         """IbisConnection should inherit access policies from BaseConnection."""
-        conn = IbisConnection("test", {
-            "type": "snowflake",
-            "access": "read",
-            "shared": True,
-            "config": {},
-        })
+        conn = IbisConnection(
+            "test",
+            {
+                "type": "snowflake",
+                "access": "read",
+                "shared": True,
+                "config": {},
+            },
+        )
         assert conn.is_read_only
         assert conn.is_shared
 
     def test_backend_map_completeness(self):
         """Backend map should contain expected major backends."""
         expected = {
-            "mysql", "sqlite", "snowflake", "bigquery", "clickhouse",
-            "databricks", "trino", "mssql", "oracle", "datafusion",
+            "mysql",
+            "sqlite",
+            "snowflake",
+            "bigquery",
+            "clickhouse",
+            "databricks",
+            "trino",
+            "mssql",
+            "oracle",
+            "datafusion",
         }
         assert expected.issubset(set(IbisConnection.BACKEND_MAP.keys()))
 
@@ -252,21 +280,24 @@ class TestDuckDBAttach:
         source_conn.disconnect()
 
         # Create main database and attach source
-        main_conn = DuckDBConnection("main", {
-            "type": "duckdb",
-            "path": str(tmp_path / "main.duckdb"),
-            "attach": [{
+        main_conn = DuckDBConnection(
+            "main",
+            {
                 "type": "duckdb",
-                "name": "source_db",
-                "path": source_path,
-                "read_only": True,
-            }],
-        })
+                "path": str(tmp_path / "main.duckdb"),
+                "attach": [
+                    {
+                        "type": "duckdb",
+                        "name": "source_db",
+                        "path": source_path,
+                        "read_only": True,
+                    }
+                ],
+            },
+        )
 
         # Query across databases
-        result = main_conn.connection.sql(
-            "SELECT * FROM source_db.main.test_data"
-        ).execute()
+        result = main_conn.connection.sql("SELECT * FROM source_db.main.test_data").execute()
         assert len(result) == 1
         assert result.iloc[0]["name"] == "hello"
 
@@ -285,34 +316,42 @@ class TestDuckDBAttach:
         sqlite_conn.close()
 
         # Attach to DuckDB
-        main_conn = DuckDBConnection("main", {
-            "type": "duckdb",
-            "path": ":memory:",
-            "attach": [{
-                "type": "sqlite",
-                "name": "sqlite_db",
-                "path": sqlite_path,
-                "read_only": True,
-            }],
-        })
+        main_conn = DuckDBConnection(
+            "main",
+            {
+                "type": "duckdb",
+                "path": ":memory:",
+                "attach": [
+                    {
+                        "type": "sqlite",
+                        "name": "sqlite_db",
+                        "path": sqlite_path,
+                        "read_only": True,
+                    }
+                ],
+            },
+        )
 
-        result = main_conn.connection.sql(
-            "SELECT * FROM sqlite_db.items"
-        ).execute()
+        result = main_conn.connection.sql("SELECT * FROM sqlite_db.items").execute()
         assert len(result) == 1
         main_conn.close()
 
     def test_attach_invalid_type_raises(self):
         """Should raise for unsupported attach types."""
         with pytest.raises(ValueError, match="Unsupported attach type"):
-            conn = DuckDBConnection("test", {
-                "type": "duckdb",
-                "path": ":memory:",
-                "attach": [{
-                    "type": "unknown_type",
-                    "name": "test_db",
-                }],
-            })
+            conn = DuckDBConnection(
+                "test",
+                {
+                    "type": "duckdb",
+                    "path": ":memory:",
+                    "attach": [
+                        {
+                            "type": "unknown_type",
+                            "name": "test_db",
+                        }
+                    ],
+                },
+            )
             _ = conn.connection
 
     def test_attach_read_only_duckdb(self, tmp_path):
@@ -324,19 +363,24 @@ class TestDuckDBAttach:
         source_conn.disconnect()
 
         # Attach as read-only
-        main_conn = DuckDBConnection("main", {
-            "type": "duckdb",
-            "path": ":memory:",
-            "attach": [{
+        main_conn = DuckDBConnection(
+            "main",
+            {
                 "type": "duckdb",
-                "name": "ro_db",
-                "path": source_path,
-                "read_only": True,
-            }],
-        })
+                "path": ":memory:",
+                "attach": [
+                    {
+                        "type": "duckdb",
+                        "name": "ro_db",
+                        "path": source_path,
+                        "read_only": True,
+                    }
+                ],
+            },
+        )
 
-        # Writing should fail
-        with pytest.raises(Exception):
+        # Writing should fail (read-only database)
+        with pytest.raises(duckdb.Error):
             main_conn.connection.raw_sql("INSERT INTO ro_db.test VALUES (1)")
 
         main_conn.close()
@@ -344,23 +388,26 @@ class TestDuckDBAttach:
     def test_attach_name_validation(self):
         """Should reject invalid attach names."""
         with pytest.raises(ValueError, match="Invalid attach name"):
-            conn = DuckDBConnection("test", {
-                "type": "duckdb",
-                "path": ":memory:",
-                "attach": [{
+            conn = DuckDBConnection(
+                "test",
+                {
                     "type": "duckdb",
-                    "name": "bad; DROP TABLE",
-                    "path": "/tmp/test.duckdb",
-                }],
-            })
+                    "path": ":memory:",
+                    "attach": [
+                        {
+                            "type": "duckdb",
+                            "name": "bad; DROP TABLE",
+                            "path": "/tmp/test.duckdb",
+                        }
+                    ],
+                },
+            )
             _ = conn.connection
 
     def test_build_attach_config_for_duckdb(self):
         """Should build correct attach config from DuckDB connection config."""
         config = {"type": "duckdb", "path": "/data/sources.duckdb"}
-        attach = DuckDBConnection.build_attach_config_for_connection(
-            config, "sources", read_only=True
-        )
+        attach = DuckDBConnection.build_attach_config_for_connection(config, "sources", read_only=True)
         assert attach["type"] == "duckdb"
         assert attach["name"] == "sources"
         assert attach["read_only"] is True
@@ -372,9 +419,7 @@ class TestDuckDBAttach:
             "type": "postgres",
             "config": {"host": "localhost", "database": "mydb", "user": "admin"},
         }
-        attach = DuckDBConnection.build_attach_config_for_connection(
-            config, "pg_db", read_only=True
-        )
+        attach = DuckDBConnection.build_attach_config_for_connection(config, "pg_db", read_only=True)
         assert attach["type"] == "postgres"
         assert attach["name"] == "pg_db"
         assert attach["config"]["host"] == "localhost"
@@ -498,9 +543,7 @@ class TestFallbackResolution:
         # The dependency should be found in fallback
         main_conn = ibis.duckdb.connect()  # Empty connection
 
-        result = await loader.load_dependency_with_lock(
-            "source_data", main_conn, {}, "public"
-        )
+        result = await loader.load_dependency_with_lock("source_data", main_conn, {}, "public")
 
         assert result is not None
         sources = loader.get_dependency_sources()
@@ -536,9 +579,7 @@ class TestFallbackResolution:
             fallback_connections=[("fallback", mock_fallback)],
         )
 
-        result = await loader.load_dependency_with_lock(
-            "my_table", primary_conn, {}, "public"
-        )
+        result = await loader.load_dependency_with_lock("my_table", primary_conn, {}, "public")
 
         assert result is not None
         sources = loader.get_dependency_sources()

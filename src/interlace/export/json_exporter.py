@@ -7,7 +7,7 @@ from __future__ import annotations
 import json as json_module
 from typing import Any
 
-from interlace.export.base import Exporter, ExportConfig, logger
+from interlace.export.base import ExportConfig, Exporter, logger
 
 
 class JSONExporter(Exporter):

@@ -4,22 +4,21 @@ Tests for the data quality checks framework.
 Phase 3: Tests for quality checks and runner.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
-import pandas as pd
 
 from interlace.quality.base import (
-    QualityCheck,
     QualityCheckResult,
     QualityCheckSeverity,
     QualityCheckStatus,
 )
-from interlace.quality.checks.unique import UniqueCheck
-from interlace.quality.checks.not_null import NotNullCheck
 from interlace.quality.checks.accepted_values import AcceptedValuesCheck
-from interlace.quality.checks.freshness import FreshnessCheck
-from interlace.quality.checks.row_count import RowCountCheck
 from interlace.quality.checks.expression import ExpressionCheck
+from interlace.quality.checks.freshness import FreshnessCheck
+from interlace.quality.checks.not_null import NotNullCheck
+from interlace.quality.checks.row_count import RowCountCheck
+from interlace.quality.checks.unique import UniqueCheck
 from interlace.quality.runner import QualityCheckRunner, QualityCheckSummary
 
 

@@ -3,7 +3,6 @@ Health and project information endpoints.
 """
 
 import time
-from typing import Any, Dict
 
 from aiohttp import web
 
@@ -31,11 +30,13 @@ class HealthHandler(BaseHandler):
                 status = "connected"
             except Exception:
                 status = "disconnected"
-            connections_status.append({
-                "name": name,
-                "type": conn_config.get("type", "unknown"),
-                "status": status,
-            })
+            connections_status.append(
+                {
+                    "name": name,
+                    "type": conn_config.get("type", "unknown"),
+                    "status": status,
+                }
+            )
 
         # Count active flows
         active_flows = 0
@@ -117,6 +118,7 @@ class HealthHandler(BaseHandler):
         """Get interlace version."""
         try:
             from interlace import __version__
+
             return __version__
         except ImportError:
             return "0.1.0"

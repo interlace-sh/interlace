@@ -6,13 +6,12 @@ models to declare them as parameters.
 """
 
 from contextvars import ContextVar
-from typing import Optional, Any
+from typing import Any
+
 import ibis
 
 # Context variable for the current execution connection
-_current_connection: ContextVar[Optional[ibis.BaseBackend]] = ContextVar(
-    "current_connection", default=None
-)
+_current_connection: ContextVar[ibis.BaseBackend | None] = ContextVar("current_connection", default=None)
 
 
 def get_connection() -> ibis.BaseBackend:

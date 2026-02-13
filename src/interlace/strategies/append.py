@@ -4,9 +4,10 @@ Append strategy - always append new data.
 Phase 0: SQL-based append using connection.insert() with overwrite=False.
 """
 
+from typing import TYPE_CHECKING
+
 from interlace.strategies.base import Strategy
 from interlace.utils.sql_escape import escape_identifier, escape_qualified_name
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import ibis

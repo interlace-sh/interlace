@@ -2,15 +2,16 @@
 Tests for the interlace testing framework (test_model, mock_dependency, TestResult).
 """
 
-import pytest
 import ibis
-from interlace.testing import test_model, test_model_sync, mock_dependency, TestResult
-from interlace.core.model import model
+import pytest
 
+from interlace.core.model import model
+from interlace.testing import TestResult, mock_dependency, test_model, test_model_sync
 
 # ---------------------------------------------------------------------------
 # mock_dependency
 # ---------------------------------------------------------------------------
+
 
 class TestMockDependency:
     """Tests for mock_dependency helper."""
@@ -65,20 +66,23 @@ class TestMockDependency:
 # test_model_sync
 # ---------------------------------------------------------------------------
 
+
 class TestTestModelSync:
     """Tests for test_model_sync helper."""
 
     def test_simple_model(self):
         """Test a simple model that joins two tables."""
-        def enriched(users, orders):
-            return users.join(orders, users.id == orders.user_id).select(
-                users.id, users.name, orders.amount
-            )
 
-        result = test_model_sync(enriched, deps={
-            "users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}],
-            "orders": [{"id": 1, "user_id": 1, "amount": 42.0}],
-        })
+        def enriched(users, orders):
+            return users.join(orders, users.id == orders.user_id).select(users.id, users.name, orders.amount)
+
+        result = test_model_sync(
+            enriched,
+            deps={
+                "users": [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}],
+                "orders": [{"id": 1, "user_id": 1, "amount": 42.0}],
+            },
+        )
 
         assert result.status == "success"
         assert result.error is None
@@ -88,6 +92,7 @@ class TestTestModelSync:
 
     def test_model_returning_list(self):
         """Test a model that returns list of dicts (not ibis.Table)."""
+
         def api_model():
             return [{"key": "a", "value": 1}, {"key": "b", "value": 2}]
 
@@ -98,45 +103,58 @@ class TestTestModelSync:
 
     def test_model_returning_none(self):
         """Test a side-effect model that returns None."""
+
         def side_effect_model(data):
             # Do nothing, return None
             pass
 
-        result = test_model_sync(side_effect_model, deps={
-            "data": [{"x": 1}],
-        })
+        result = test_model_sync(
+            side_effect_model,
+            deps={
+                "data": [{"x": 1}],
+            },
+        )
         assert result.status == "success"
         assert result.table is None
         assert result.row_count is None
 
     def test_model_error(self):
         """Test a model that raises an error."""
+
         def bad_model(data):
             raise ValueError("Something went wrong")
 
-        result = test_model_sync(bad_model, deps={
-            "data": [{"x": 1}],
-        })
+        result = test_model_sync(
+            bad_model,
+            deps={
+                "data": [{"x": 1}],
+            },
+        )
         assert result.status == "error"
         assert "Something went wrong" in result.error
 
     def test_decorated_model(self):
         """Test a @model-decorated function."""
+
         @model(name="filtered", materialise="table")
         def filtered(users):
-            return users.filter(users.active == True)
+            return users.filter(users.active)
 
-        result = test_model_sync(filtered, deps={
-            "users": [
-                {"id": 1, "name": "Alice", "active": True},
-                {"id": 2, "name": "Bob", "active": False},
-            ],
-        })
+        result = test_model_sync(
+            filtered,
+            deps={
+                "users": [
+                    {"id": 1, "name": "Alice", "active": True},
+                    {"id": 2, "name": "Bob", "active": False},
+                ],
+            },
+        )
         assert result.status == "success"
         assert result.row_count == 1
 
     def test_duration_tracked(self):
         """Duration is tracked in the result."""
+
         def quick_model():
             return [{"x": 1}]
 
@@ -145,6 +163,7 @@ class TestTestModelSync:
 
     def test_rows_property(self):
         """rows property returns list of dicts."""
+
         def simple():
             return [{"a": 1, "b": "hello"}]
 
@@ -156,6 +175,7 @@ class TestTestModelSync:
 
     def test_df_property(self):
         """df property returns pandas DataFrame."""
+
         def simple():
             return [{"x": 10, "y": 20}]
 
@@ -166,6 +186,7 @@ class TestTestModelSync:
 
     def test_per_dependency_fields(self):
         """Fields can be specified per dependency."""
+
         def passthrough(data):
             return data
 
@@ -183,18 +204,23 @@ class TestTestModelSync:
 # test_model (async)
 # ---------------------------------------------------------------------------
 
+
 class TestTestModelAsync:
     """Tests for async test_model helper."""
 
     @pytest.mark.asyncio
     async def test_async_model(self):
         """Test an async model function."""
+
         async def async_enriched(users):
             return users.filter(users.id > 0)
 
-        result = await test_model(async_enriched, deps={
-            "users": [{"id": 1, "name": "Alice"}, {"id": -1, "name": "Ghost"}],
-        })
+        result = await test_model(
+            async_enriched,
+            deps={
+                "users": [{"id": 1, "name": "Alice"}, {"id": -1, "name": "Ghost"}],
+            },
+        )
         assert result.status == "success"
         assert result.row_count == 1
 
@@ -202,6 +228,7 @@ class TestTestModelAsync:
 # ---------------------------------------------------------------------------
 # TestResult dataclass
 # ---------------------------------------------------------------------------
+
 
 class TestTestResult:
     """Tests for TestResult dataclass."""

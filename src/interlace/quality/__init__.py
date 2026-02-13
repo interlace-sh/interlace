@@ -23,13 +23,13 @@ from interlace.quality.base import (
     QualityCheckSeverity,
     QualityCheckStatus,
 )
-from interlace.quality.runner import QualityCheckRunner
-from interlace.quality.checks.unique import UniqueCheck
-from interlace.quality.checks.not_null import NotNullCheck
 from interlace.quality.checks.accepted_values import AcceptedValuesCheck
-from interlace.quality.checks.freshness import FreshnessCheck
-from interlace.quality.checks.row_count import RowCountCheck
 from interlace.quality.checks.expression import ExpressionCheck
+from interlace.quality.checks.freshness import FreshnessCheck
+from interlace.quality.checks.not_null import NotNullCheck
+from interlace.quality.checks.row_count import RowCountCheck
+from interlace.quality.checks.unique import UniqueCheck
+from interlace.quality.runner import QualityCheckRunner
 
 __all__ = [
     # Base classes

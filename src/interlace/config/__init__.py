@@ -4,7 +4,7 @@ Configuration management.
 Phase 0: Configuration file parsing, environment resolution, connection loading.
 """
 
-from interlace.config.loader import load_config, Config
+from interlace.config.loader import Config, load_config
 from interlace.config.resolver import resolve_config
 
 __all__ = [

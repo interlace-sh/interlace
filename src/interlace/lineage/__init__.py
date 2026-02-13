@@ -6,9 +6,9 @@ identifying which input columns produce which output columns.
 """
 
 from interlace.lineage.extractor import (
-    ColumnLineageEdge,
-    ColumnLineage,
     ColumnInfo,
+    ColumnLineage,
+    ColumnLineageEdge,
     LineageExtractor,
     LineageGraph,
     TransformationType,

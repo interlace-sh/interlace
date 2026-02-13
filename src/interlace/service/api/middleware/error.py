@@ -5,9 +5,9 @@ Provides consistent error responses and request ID tracking.
 """
 
 import json
-import uuid
 import traceback
-from typing import Callable
+import uuid
+from collections.abc import Callable
 
 from aiohttp import web
 
@@ -18,9 +18,7 @@ logger = get_logger("interlace.api.middleware.error")
 
 
 @web.middleware
-async def error_middleware(
-    request: web.Request, handler: Callable
-) -> web.Response:
+async def error_middleware(request: web.Request, handler: Callable) -> web.Response:
     """
     Middleware for consistent error handling.
 

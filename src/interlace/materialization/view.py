@@ -21,9 +21,7 @@ class ViewMaterializer(Materializer):
     def __init__(self):
         self.logger = get_logger("interlace.materialization.view")
 
-    def materialise(
-        self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs
-    ) -> None:
+    def materialise(self, data: ibis.Table, model_name: str, schema: str, connection: Any, **kwargs) -> None:
         """
         Materialise data as view.
 
@@ -68,7 +66,7 @@ class ViewMaterializer(Materializer):
         if fields:
             try:
                 from interlace.utils.schema_utils import fields_to_ibis_schema, merge_schemas
-                
+
                 # Convert fields to ibis schema
                 fields_schema = fields_to_ibis_schema(fields)
                 if fields_schema:
@@ -120,8 +118,6 @@ class ViewMaterializer(Materializer):
                     pass
 
             sql_expr = str(connection.compile(data))
-            _execute_sql_internal(
-                connection, f"CREATE OR REPLACE VIEW {qualified_name} AS {sql_expr}"
-            )
+            _execute_sql_internal(connection, f"CREATE OR REPLACE VIEW {qualified_name} AS {sql_expr}")
         except Exception:
             raise

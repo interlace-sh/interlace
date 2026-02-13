@@ -8,10 +8,10 @@ Tests for bugs found through code review of:
 - core/execution/data_converter.py — Silent data corruption with mixed dict values
 """
 
-import pytest
-import time
-from unittest.mock import MagicMock, patch
 from datetime import datetime
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.mark.unit
@@ -40,12 +40,8 @@ class TestChangeDetectorSQLQuotes:
             sql = mock_exec.call_args[0][1]
 
             # Model name and schema name must be wrapped in SQL string quotes
-            assert "'my_model'" in sql, (
-                f"SQL should have quoted model_name. Got: {sql}"
-            )
-            assert "'public'" in sql, (
-                f"SQL should have quoted schema_name. Got: {sql}"
-            )
+            assert "'my_model'" in sql, f"SQL should have quoted model_name. Got: {sql}"
+            assert "'public'" in sql, f"SQL should have quoted schema_name. Got: {sql}"
 
 
 @pytest.mark.unit
@@ -85,9 +81,7 @@ class TestCachePolicyTTL:
         """StateStore has get_model_last_run_at, NOT get_model_last_run."""
         from interlace.core.state import StateStore
 
-        assert hasattr(StateStore, "get_model_last_run_at"), (
-            "StateStore should have get_model_last_run_at"
-        )
+        assert hasattr(StateStore, "get_model_last_run_at"), "StateStore should have get_model_last_run_at"
         assert not hasattr(StateStore, "get_model_last_run"), (
             "StateStore should NOT have get_model_last_run — "
             "model_executor._check_cache_policy calls this non-existent method"

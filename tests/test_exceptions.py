@@ -3,23 +3,24 @@ Tests for the exception hierarchy.
 """
 
 import pytest
+
 from interlace.exceptions import (
-    InterlaceError,
+    CircuitBreakerOpenError,
     ConfigurationError,
     ConnectionError_,
-    InterlaceConnectionError,
     ConnectionLockError,
     ConnectionNotFoundError,
-    ExecutionError,
-    ModelExecutionError,
-    DependencyError,
     DeadlockError,
+    DependencyError,
+    ExecutionError,
     InitializationError,
-    SchemaError,
+    InterlaceConnectionError,
+    InterlaceError,
     MaterializationError,
+    ModelExecutionError,
     QualityError,
     RetryError,
-    CircuitBreakerOpenError,
+    SchemaError,
     StateStoreError,
 )
 

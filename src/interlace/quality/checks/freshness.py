@@ -5,8 +5,8 @@ Phase 3: Check that timestamp column has recent data.
 """
 
 import time
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import UTC, datetime
+
 import ibis
 
 from interlace.quality.base import (
@@ -37,12 +37,12 @@ class FreshnessCheck(QualityCheck):
     def __init__(
         self,
         column: str,
-        max_age_hours: Optional[float] = None,
-        max_age_days: Optional[float] = None,
-        max_age_minutes: Optional[float] = None,
+        max_age_hours: float | None = None,
+        max_age_days: float | None = None,
+        max_age_minutes: float | None = None,
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
     ):
         """
         Initialize freshness check.
@@ -76,9 +76,7 @@ class FreshnessCheck(QualityCheck):
             total_hours += max_age_minutes / 60
 
         if total_hours <= 0:
-            raise ValueError(
-                "FreshnessCheck requires max_age_hours, max_age_days, or max_age_minutes"
-            )
+            raise ValueError("FreshnessCheck requires max_age_hours, max_age_days, or max_age_minutes")
 
         self.max_age_hours = total_hours
 
@@ -90,7 +88,7 @@ class FreshnessCheck(QualityCheck):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> QualityCheckResult:
         """
         Execute freshness check.
@@ -118,7 +116,7 @@ class FreshnessCheck(QualityCheck):
                 return self._make_result(
                     status=QualityCheckStatus.SKIPPED,
                     table_name=table_name,
-                    message=f"Table is empty, skipping freshness check",
+                    message="Table is empty, skipping freshness check",
                     total_rows=0,
                     duration=duration,
                 )
@@ -143,6 +141,7 @@ class FreshnessCheck(QualityCheck):
                 # Try pandas Timestamp
                 try:
                     import pandas as pd
+
                     if isinstance(max_timestamp, pd.Timestamp):
                         max_timestamp = max_timestamp.to_pydatetime()
                 except ImportError:
@@ -152,8 +151,8 @@ class FreshnessCheck(QualityCheck):
             now = datetime.now()
             if hasattr(max_timestamp, "tzinfo") and max_timestamp.tzinfo is not None:
                 # Use timezone-aware now
-                from datetime import timezone
-                now = datetime.now(timezone.utc)
+
+                now = datetime.now(UTC)
 
             age = now - max_timestamp
             age_hours = age.total_seconds() / 3600

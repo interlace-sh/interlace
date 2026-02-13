@@ -5,7 +5,7 @@ Phase 3: Check that table has expected row count range.
 """
 
 import time
-from typing import Optional
+
 import ibis
 
 from interlace.quality.base import (
@@ -36,11 +36,11 @@ class RowCountCheck(QualityCheck):
 
     def __init__(
         self,
-        min_count: Optional[int] = None,
-        max_count: Optional[int] = None,
+        min_count: int | None = None,
+        max_count: int | None = None,
         severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
     ):
         """
         Initialize row count check.
@@ -83,7 +83,7 @@ class RowCountCheck(QualityCheck):
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        schema: Optional[str] = None,
+        schema: str | None = None,
     ) -> QualityCheckResult:
         """
         Execute row count check.
@@ -128,13 +128,9 @@ class RowCountCheck(QualityCheck):
             else:
                 # Failed
                 if below_min:
-                    message = (
-                        f"Row count {row_count} is below minimum {self.min_count}"
-                    )
+                    message = f"Row count {row_count} is below minimum {self.min_count}"
                 else:
-                    message = (
-                        f"Row count {row_count} exceeds maximum {self.max_count}"
-                    )
+                    message = f"Row count {row_count} exceeds maximum {self.max_count}"
 
                 return self._make_result(
                     status=QualityCheckStatus.FAILED,

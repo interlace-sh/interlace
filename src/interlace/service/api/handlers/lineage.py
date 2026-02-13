@@ -4,18 +4,16 @@ Column-level lineage API endpoints.
 Provides endpoints for querying and refreshing column-level lineage.
 """
 
-from typing import Any, Dict, List, Optional
-
 from aiohttp import web
 
-from interlace.service.api.errors import NotFoundError, ErrorCode, ValidationError
-from interlace.service.api.handlers import BaseHandler
 from interlace.lineage import (
     ColumnLineage,
-    LineageGraph,
     IbisLineageExtractor,
+    LineageGraph,
     SqlLineageExtractor,
 )
+from interlace.service.api.errors import ErrorCode, NotFoundError, ValidationError
+from interlace.service.api.handlers import BaseHandler
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.api.lineage")
@@ -26,8 +24,8 @@ class LineageHandler(BaseHandler):
 
     def __init__(self, service):
         super().__init__(service)
-        self._lineage_cache: Dict[str, ColumnLineage] = {}
-        self._lineage_graph: Optional[LineageGraph] = None
+        self._lineage_cache: dict[str, ColumnLineage] = {}
+        self._lineage_graph: LineageGraph | None = None
 
     def _get_extractor(self, model_type: str):
         """Get the appropriate lineage extractor."""
@@ -35,7 +33,7 @@ class LineageHandler(BaseHandler):
             return SqlLineageExtractor()
         return IbisLineageExtractor()
 
-    def _compute_model_lineage(self, model_name: str) -> Optional[ColumnLineage]:
+    def _compute_model_lineage(self, model_name: str) -> ColumnLineage | None:
         """Compute lineage for a single model."""
         if model_name in self._lineage_cache:
             return self._lineage_cache[model_name]
@@ -117,13 +115,15 @@ class LineageHandler(BaseHandler):
                         )
                         if edge_key not in edges_set:
                             edges_set.add(edge_key)
-                            result["edges"].append({
-                                "source_model": edge.source_model,
-                                "source_column": edge.source_column,
-                                "output_model": edge.output_model,
-                                "output_column": col.name,
-                                "transformation_type": edge.transformation_type.value,
-                            })
+                            result["edges"].append(
+                                {
+                                    "source_model": edge.source_model,
+                                    "source_column": edge.source_column,
+                                    "output_model": edge.output_model,
+                                    "output_column": col.name,
+                                    "transformation_type": edge.transformation_type.value,
+                                }
+                            )
 
         return await self.json_response(result, request=request)
 
@@ -192,8 +192,8 @@ class LineageHandler(BaseHandler):
         try:
             depth = int(request.query.get("depth", 3))
             depth = max(0, min(depth, 100))  # Limit depth to prevent DoS
-        except (ValueError, TypeError):
-            raise ValidationError("'depth' must be a valid integer between 0 and 100")
+        except (ValueError, TypeError) as e:
+            raise ValidationError("'depth' must be a valid integer between 0 and 100") from e
 
         lineage = self._compute_model_lineage(model_name)
         if lineage is None:

@@ -2,11 +2,12 @@
 Flow and task history endpoints.
 """
 
-from typing import Any, Dict, List, Optional
+import builtins
+from typing import Any
 
 from aiohttp import web
 
-from interlace.service.api.errors import NotFoundError, ErrorCode, ValidationError
+from interlace.service.api.errors import ErrorCode, NotFoundError, ValidationError
 from interlace.service.api.handlers import BaseHandler
 
 # Pagination limits to prevent resource exhaustion
@@ -42,7 +43,7 @@ class FlowsHandler(BaseHandler):
             limit = int(request.query.get("limit", 50))
             offset = int(request.query.get("offset", 0))
         except (ValueError, TypeError) as e:
-            raise ValidationError(f"Invalid pagination parameter: {e}")
+            raise ValidationError(f"Invalid pagination parameter: {e}") from e
 
         # Enforce bounds to prevent resource exhaustion
         limit = max(1, min(limit, MAX_PAGE_SIZE))
@@ -70,8 +71,9 @@ class FlowsHandler(BaseHandler):
         if hasattr(self.service, "flow") and self.service.flow:
             current = self.service.flow
             # Check if it matches filters
-            if (not status_filter or current.status.value == status_filter) and \
-               (not trigger_filter or current.trigger_type == trigger_filter):
+            if (not status_filter or current.status.value == status_filter) and (
+                not trigger_filter or current.trigger_type == trigger_filter
+            ):
                 flow_dict = self._serialize_flow(current)
                 # Prepend current flow if not in results
                 if not any(f["flow_id"] == flow_dict["flow_id"] for f in flows):
@@ -123,10 +125,7 @@ class FlowsHandler(BaseHandler):
         # Check current in-memory flow first
         if hasattr(self.service, "flow") and self.service.flow:
             if self.service.flow.flow_id == flow_id:
-                tasks = [
-                    self._serialize_task(task)
-                    for task in self.service.flow.tasks.values()
-                ]
+                tasks = [self._serialize_task(task) for task in self.service.flow.tasks.values()]
                 return await self.json_response({"tasks": tasks}, request=request)
 
         # Query from state store
@@ -140,9 +139,7 @@ class FlowsHandler(BaseHandler):
 
         raise NotFoundError("Flow", flow_id, ErrorCode.FLOW_NOT_FOUND)
 
-    def _serialize_flow(
-        self, flow, include_tasks: bool = False
-    ) -> Dict[str, Any]:
+    def _serialize_flow(self, flow, include_tasks: bool = False) -> dict[str, Any]:
         """Serialize Flow object to dict."""
         # Compute task counts
         total_tasks = len(flow.tasks) if hasattr(flow, "tasks") else 0
@@ -175,18 +172,15 @@ class FlowsHandler(BaseHandler):
             "trigger_id": getattr(flow, "trigger_id", None),
             "created_by": getattr(flow, "created_by", None),
             "metadata": getattr(flow, "metadata", {}),
-            "summary": flow.get_summary() if hasattr(flow, "get_summary") else self._compute_summary(flow),
+            "summary": (flow.get_summary() if hasattr(flow, "get_summary") else self._compute_summary(flow)),
         }
 
         if include_tasks:
-            result["tasks"] = [
-                self._serialize_task(task)
-                for task in flow.tasks.values()
-            ]
+            result["tasks"] = [self._serialize_task(task) for task in flow.tasks.values()]
 
         return result
 
-    def _serialize_task(self, task) -> Dict[str, Any]:
+    def _serialize_task(self, task) -> dict[str, Any]:
         """Serialize Task object to dict."""
         return {
             "task_id": task.task_id,
@@ -215,7 +209,7 @@ class FlowsHandler(BaseHandler):
             "error_stacktrace": task.error_stacktrace,
         }
 
-    def _compute_summary(self, flow) -> Dict[str, int]:
+    def _compute_summary(self, flow) -> dict[str, int]:
         """Compute task summary for a flow."""
         summary = {
             "total_tasks": 0,
@@ -239,10 +233,10 @@ class FlowsHandler(BaseHandler):
 
     async def _query_flows(
         self,
-        status: Optional[str],
-        trigger_type: Optional[str],
-        since: Optional[str],
-        until: Optional[str],
+        status: str | None,
+        trigger_type: str | None,
+        since: str | None,
+        until: str | None,
         limit: int,
         offset: int,
     ) -> tuple:
@@ -253,7 +247,7 @@ class FlowsHandler(BaseHandler):
                 conn = self.state_store._get_connection()
                 if conn is not None:
                     # Build dynamic WHERE clause
-                    conditions: List[str] = []
+                    conditions: list[str] = []
                     if status:
                         conditions.append(f"status = '{status}'")
                     if trigger_type:
@@ -266,9 +260,7 @@ class FlowsHandler(BaseHandler):
                     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
                     # Get total count
-                    count_result = conn.sql(
-                        f"SELECT COUNT(*) AS cnt FROM interlace.flows{where}"
-                    ).execute()
+                    count_result = conn.sql(f"SELECT COUNT(*) AS cnt FROM interlace.flows{where}").execute()
                     total = int(count_result.iloc[0, 0]) if count_result is not None and len(count_result) > 0 else 0
 
                     # Get page of flows
@@ -305,11 +297,11 @@ class FlowsHandler(BaseHandler):
         total = len(flows)
 
         # Apply pagination
-        flows = flows[offset:offset + limit]
+        flows = flows[offset : offset + limit]
 
         return flows, total
 
-    async def _get_flow_from_store(self, flow_id: str) -> Optional[Dict[str, Any]]:
+    async def _get_flow_from_store(self, flow_id: str) -> dict[str, Any] | None:
         """Get a specific flow from state store or in-memory history."""
         # First check in-memory history
         for flow in getattr(self.service, "flow_history", []):
@@ -324,9 +316,7 @@ class FlowsHandler(BaseHandler):
                     from interlace.core.state import _escape_sql_string
 
                     safe_id = _escape_sql_string(flow_id)
-                    result = conn.sql(
-                        f"SELECT * FROM interlace.flows WHERE flow_id = '{safe_id}'"
-                    ).execute()
+                    result = conn.sql(f"SELECT * FROM interlace.flows WHERE flow_id = '{safe_id}'").execute()
                     if result is not None and len(result) > 0:
                         flow_dict = result.to_dict("records")[0]
                         flow_dict.setdefault("trigger", flow_dict.get("trigger_type"))
@@ -334,8 +324,7 @@ class FlowsHandler(BaseHandler):
 
                         # Fetch associated tasks
                         tasks_result = conn.sql(
-                            f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' "
-                            f"ORDER BY started_at"
+                            f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' " f"ORDER BY started_at"
                         ).execute()
                         if tasks_result is not None and len(tasks_result) > 0:
                             flow_dict["tasks"] = tasks_result.to_dict("records")
@@ -347,7 +336,7 @@ class FlowsHandler(BaseHandler):
 
         return None
 
-    async def _get_tasks_from_store(self, flow_id: str) -> Optional[List[Dict[str, Any]]]:
+    async def _get_tasks_from_store(self, flow_id: str) -> builtins.list[dict[str, Any]] | None:
         """Get tasks for a flow from state store or in-memory history."""
         # First check in-memory history
         for flow in getattr(self.service, "flow_history", []):
@@ -363,8 +352,7 @@ class FlowsHandler(BaseHandler):
 
                     safe_id = _escape_sql_string(flow_id)
                     result = conn.sql(
-                        f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' "
-                        f"ORDER BY started_at"
+                        f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' " f"ORDER BY started_at"
                     ).execute()
                     if result is not None and len(result) > 0:
                         return result.to_dict("records")

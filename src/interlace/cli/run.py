@@ -4,9 +4,11 @@ interlace run - Execute models.
 Phase 0: Execute models and pipelines.
 """
 
-import typer
 import asyncio
 from pathlib import Path
+
+import typer
+
 from interlace.core.executor import execute_models
 from interlace.utils.logging import get_logger
 
@@ -34,17 +36,18 @@ def run(
     """
     if ctx.invoked_subcommand is None:
         logger.info("Initializing Interlace...")
-        
+
         # Initialize Interlace (config, logging, connections, state store, models)
         try:
-            from interlace.core.initialization import initialize, InitializationError
+            from interlace.core.initialization import InitializationError, initialize
+
             config_obj, state_store, all_models, graph = initialize(project_dir, env=env, verbose=verbose)
             config = config_obj.data
         except InitializationError as e:
             logger.error(f"Initialization failed: {e}")
             typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1)
-        
+            raise typer.Exit(1) from e
+
         if not all_models:
             logger.warning("No models found")
             typer.echo("No models found")
@@ -67,7 +70,7 @@ def run(
 
         # Note: Logging of "Discovered..." and "Running..." is done inside execute_dynamic()
         # after the Rich header panel is displayed, so we don't log here
-        results = asyncio.run(execute_models(all_models, graph, config, force=force, since=since, until=until))
+        asyncio.run(execute_models(all_models, graph, config, force=force, since=since, until=until))
 
         # Results are already displayed in the Rich progress panel
         # No need to duplicate here

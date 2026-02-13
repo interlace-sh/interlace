@@ -7,12 +7,11 @@ and affected downstream models.
 
 import json
 from pathlib import Path
-from typing import List, Optional
 
 import typer
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from interlace.utils.logging import get_logger
@@ -41,21 +40,11 @@ def _load_config(project_dir: Path) -> dict:
 @app.callback(invoke_without_command=True)
 def plan(
     ctx: typer.Context,
-    models: Optional[List[str]] = typer.Argument(
-        None, help="Specific models to analyze (default: all)"
-    ),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Treat all models as needing to run"
-    ),
-    format: str = typer.Option(
-        "table", "--format", help="Output format: table, json, summary"
-    ),
-    show_schema: bool = typer.Option(
-        False, "--schema", "-s", help="Show detailed schema changes"
-    ),
-    project_dir: Path = typer.Option(
-        Path("."), "--project", "-p", help="Project directory"
-    ),
+    models: list[str] | None = typer.Argument(None, help="Specific models to analyze (default: all)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Treat all models as needing to run"),
+    format: str = typer.Option("table", "--format", help="Output format: table, json, summary"),
+    show_schema: bool = typer.Option(False, "--schema", "-s", help="Show detailed schema changes"),
+    project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
 ):
     """
     Preview what will happen during execution.
@@ -72,10 +61,10 @@ def plan(
     if ctx.invoked_subcommand is not None:
         return
 
-    from interlace.utils.discovery import discover_models
     from interlace.core.deps import DependencyGraph
     from interlace.core.impact import ImpactAnalyzer
     from interlace.core.state import StateStore
+    from interlace.utils.discovery import discover_models
 
     # Load project configuration
     config = _load_config(project_dir)
@@ -197,8 +186,7 @@ def _output_table(result, show_schema: bool):
                         console.print(f"  [red]-[/red] {change.column_name} ({change.old_type})")
                     else:
                         console.print(
-                            f"  [yellow]~[/yellow] {change.column_name}: "
-                            f"{change.old_type} → {change.new_type}"
+                            f"  [yellow]~[/yellow] {change.column_name}: " f"{change.old_type} → {change.new_type}"
                         )
 
     # Breaking changes

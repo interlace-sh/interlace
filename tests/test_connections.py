@@ -4,10 +4,11 @@ Tests for connection modules.
 Tests for DuckDB, Postgres, and base connection classes.
 """
 
-import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestBaseConnection:
@@ -72,7 +73,8 @@ class TestDuckDBConnection:
             db_path = Path(tmpdir) / "subdir" / "nested" / "test.duckdb"
             conn = DuckDBConnection("test", {"path": str(db_path)})
 
-            backend = conn.connection
+            # Trigger lazy connection to create directories
+            _ = conn.connection
             assert db_path.parent.exists()
 
             conn.close()
@@ -187,18 +189,14 @@ class TestS3Connection:
         """Test that base_path is inherited from BaseStorageConnection."""
         from interlace.connections.s3 import S3Connection
 
-        conn = S3Connection(
-            "test", {"config": {"bucket": "my-bucket", "storage": {"base_path": "data/"}}}
-        )
+        conn = S3Connection("test", {"config": {"bucket": "my-bucket", "storage": {"base_path": "data/"}}})
         assert conn.base_path == "data/"
 
     def test_s3_full_key_with_base_path(self):
         """Test that _full_key prepends base_path."""
         from interlace.connections.s3 import S3Connection
 
-        conn = S3Connection(
-            "test", {"config": {"bucket": "b", "storage": {"base_path": "prefix"}}}
-        )
+        conn = S3Connection("test", {"config": {"bucket": "b", "storage": {"base_path": "prefix"}}})
         assert conn._full_key("file.txt") == "prefix/file.txt"
         assert conn._full_key("/file.txt") == "prefix/file.txt"
 
@@ -325,8 +323,9 @@ class TestS3Connection:
 
     def test_s3_exists_false(self):
         """Test exists() returns False when object doesn't exist."""
-        from interlace.connections.s3 import S3Connection
         from botocore.exceptions import ClientError
+
+        from interlace.connections.s3 import S3Connection
 
         conn = S3Connection("test", {"config": {"bucket": "b"}})
         mock_client = MagicMock()
@@ -380,7 +379,7 @@ class TestSFTPConnection:
 
     def test_sftp_config_parsing(self):
         """Test that SFTP config is parsed correctly."""
-        from interlace.connections.sftp import SFTPConnection, SFTPConfig
+        from interlace.connections.sftp import SFTPConnection
 
         conn = SFTPConnection(
             "test",

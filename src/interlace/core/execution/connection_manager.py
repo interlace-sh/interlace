@@ -5,9 +5,10 @@ Phase 0: Extracted from Executor class for better separation of concerns.
 Phase 3: Extended for generic ibis backends and full ATTACH support.
 """
 
-from typing import Dict, Any
+from typing import Any
+
 import ibis
-from interlace.core.context import _execute_sql_internal
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.execution.connection_manager")
@@ -16,10 +17,10 @@ logger = get_logger("interlace.execution.connection_manager")
 class TaskConnectionManager:
     """
     Manages per-task database connections.
-    
+
     Creates isolated connections for each model execution task to enable
     safe parallel execution. Different strategies per backend type:
-    
+
     - DuckDB: New connection per task (not thread-safe), except in-memory (shared)
     - Postgres: Connection pool if available, otherwise shared
     - Cloud backends (Snowflake, BigQuery): New connections (they pool internally)
@@ -33,14 +34,14 @@ class TaskConnectionManager:
 
     def __init__(
         self,
-        connection_configs: Dict[str, Dict[str, Any]],
-        connections: Dict[str, Any],
+        connection_configs: dict[str, dict[str, Any]],
+        connections: dict[str, Any],
         default_conn_name: str,
         state_store: Any = None,
     ):
         """
         Initialize ConnectionManager.
-        
+
         Args:
             connection_configs: Dictionary of connection configurations
             connections: Dictionary of shared connection instances
@@ -191,4 +192,3 @@ class TaskConnectionManager:
 
 # Backward-compatible alias (deprecated: use TaskConnectionManager instead)
 ConnectionManager = TaskConnectionManager
-

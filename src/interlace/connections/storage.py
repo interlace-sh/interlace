@@ -4,11 +4,10 @@ Storage connection base class.
 Phase 0: Base class for storage connections (S3, local filesystem, etc.).
 """
 
-from abc import ABC
-from typing import Dict, Any
+from typing import Any
 
 
-class BaseStorageConnection(ABC):
+class BaseStorageConnection:
     """
     Base class for storage connections.
 
@@ -25,7 +24,7 @@ class BaseStorageConnection(ABC):
     Subclasses should implement storage-specific properties and methods.
     """
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         """
         Initialize storage connection.
 

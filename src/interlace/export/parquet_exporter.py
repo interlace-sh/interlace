@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from interlace.export.base import Exporter, ExportConfig, logger
+from interlace.export.base import ExportConfig, Exporter, logger
 
 
 class ParquetExporter(Exporter):

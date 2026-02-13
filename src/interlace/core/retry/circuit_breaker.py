@@ -8,17 +8,19 @@ https://martinfowler.com/bliki/CircuitBreaker.html
 """
 
 import time
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
+
+from interlace.exceptions import CircuitBreakerOpenError  # noqa: F401 - re-export
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.retry.circuit_breaker")
 
 
-class CircuitState(str, Enum):
+class CircuitState(StrEnum):
     """Circuit breaker states."""
-    CLOSED = "closed"      # Normal operation, requests allowed
-    OPEN = "open"          # Failure threshold exceeded, requests blocked
+
+    CLOSED = "closed"  # Normal operation, requests allowed
+    OPEN = "open"  # Failure threshold exceeded, requests blocked
     HALF_OPEN = "half_open"  # Testing if service recovered
 
 
@@ -78,7 +80,7 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._failure_count = 0
         self._success_count = 0
-        self._last_failure_time: Optional[float] = None
+        self._last_failure_time: float | None = None
         self._half_open_requests = 0
 
     @property
@@ -138,9 +140,7 @@ class CircuitBreaker:
             if self._failure_count >= self.failure_threshold:
                 # Too many failures, open circuit
                 self._open_circuit()
-                logger.warning(
-                    f"Circuit breaker opened after {self._failure_count} consecutive failures"
-                )
+                logger.warning(f"Circuit breaker opened after {self._failure_count} consecutive failures")
 
         elif self._state == CircuitState.HALF_OPEN:
             # Failure during recovery, re-open circuit
@@ -203,6 +203,3 @@ class CircuitBreaker:
                 else None
             ),
         }
-
-
-from interlace.exceptions import CircuitBreakerOpenError  # noqa: F401 - re-export

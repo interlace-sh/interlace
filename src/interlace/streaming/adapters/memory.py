@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 from interlace.streaming.adapters.base import (
     AdapterConfig,
@@ -46,10 +46,10 @@ class InMemoryAdapter(MessageAdapter):
     - Perfect for unit/integration tests
     """
 
-    def __init__(self, config: Optional[AdapterConfig] = None):
+    def __init__(self, config: AdapterConfig | None = None):
         super().__init__(config)
-        self._topics: Dict[str, List[Message]] = defaultdict(list)
-        self._queues: Dict[str, Dict[str, asyncio.Queue]] = defaultdict(dict)
+        self._topics: dict[str, list[Message]] = defaultdict(list)
+        self._queues: dict[str, dict[str, asyncio.Queue]] = defaultdict(dict)
         self._connected = False
 
     async def connect(self) -> None:
@@ -66,7 +66,7 @@ class InMemoryAdapter(MessageAdapter):
         self,
         topic: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
     ) -> AsyncIterator[Message]:
         """Consume messages from in-memory topic."""
@@ -88,7 +88,7 @@ class InMemoryAdapter(MessageAdapter):
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=1.0)
                     yield msg
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
                 except asyncio.CancelledError:
                     break
@@ -99,26 +99,26 @@ class InMemoryAdapter(MessageAdapter):
         """Produce a message to in-memory topic."""
         message.topic = topic
         if message.timestamp is None:
-            message.timestamp = datetime.now(timezone.utc)
+            message.timestamp = datetime.now(UTC)
         message.offset = len(self._topics[topic])
 
         # Store message
         self._topics[topic].append(message)
 
         # Deliver to consumers
-        for consumer_id, queue in self._queues.get(topic, {}).items():
+        for _consumer_id, queue in self._queues.get(topic, {}).items():
             try:
                 await queue.put(message)
             except Exception:
                 pass
 
-    async def produce_batch(self, topic: str, messages: List[Message]) -> int:
+    async def produce_batch(self, topic: str, messages: list[Message]) -> int:
         """Produce a batch of messages."""
         for msg in messages:
             await self.produce(topic, msg)
         return len(messages)
 
-    def get_topic_messages(self, topic: str) -> List[Message]:
+    def get_topic_messages(self, topic: str) -> list[Message]:
         """Get all messages in a topic (for testing)."""
         return list(self._topics.get(topic, []))
 

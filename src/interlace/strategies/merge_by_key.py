@@ -4,13 +4,15 @@ Merge by key strategy - merge based on primary key.
 Phase 0: SQL-based merge using MERGE SQL statement.
 """
 
-from interlace.strategies.base import Strategy
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
+
 import ibis  # Used for type hints and schema operations
+
+from interlace.strategies.base import Strategy
 from interlace.utils.sql_escape import escape_identifier, escape_qualified_name
 
 if TYPE_CHECKING:
-    from typing import Any
+    pass
 
 
 class MergeByKeyStrategy(Strategy):
@@ -22,7 +24,7 @@ class MergeByKeyStrategy(Strategy):
         target_table: str,
         schema: str,
         source_table: str,
-        primary_key: str | List[str],
+        primary_key: str | list[str],
         delete_mode: str = "preserve",
         **kwargs,
     ) -> str:
@@ -59,7 +61,7 @@ class MergeByKeyStrategy(Strategy):
         except Exception as e:
             # If we can't get schema, we'll use a generic approach
             # This is a fallback - ideally we should always have schema
-            raise ValueError(f"Cannot get schema for source table {source_table}: {e}")
+            raise ValueError(f"Cannot get schema for source table {source_table}: {e}") from e
 
         # Validate primary key columns exist in source table
         missing_keys = [pk for pk in primary_key if pk not in columns]
@@ -70,18 +72,16 @@ class MergeByKeyStrategy(Strategy):
             )
 
         # Build ON condition (merge condition) with proper escaping
-        on_conditions = " AND ".join([
-            f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}" 
-            for pk in primary_key
-        ])
+        on_conditions = " AND ".join(
+            [f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}" for pk in primary_key]
+        )
 
         # Build UPDATE SET clause (update all non-key columns) with proper escaping
         non_key_columns = [col for col in columns if col not in primary_key]
         if non_key_columns:
-            update_set = ", ".join([
-                f"{escape_identifier(col)} = source.{escape_identifier(col)}" 
-                for col in non_key_columns
-            ])
+            update_set = ", ".join(
+                [f"{escape_identifier(col)} = source.{escape_identifier(col)}" for col in non_key_columns]
+            )
         else:
             update_set = None  # No non-key columns to update
 
@@ -114,7 +114,7 @@ class MergeByKeyStrategy(Strategy):
             matched_clause = f"\n    WHEN MATCHED THEN UPDATE SET {update_set}"
         else:
             matched_clause = ""
-        
+
         merge_sql = f"""MERGE INTO {escaped_target} AS target
     USING {escaped_source} AS source
     ON ({on_conditions}){matched_clause}

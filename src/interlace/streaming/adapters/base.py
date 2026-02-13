@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
 
 
-class DeserializationFormat(str, Enum):
+class DeserializationFormat(StrEnum):
     """Supported message deserialization formats."""
+
     JSON = "json"
     AVRO = "avro"
     PROTOBUF = "protobuf"
@@ -32,16 +34,17 @@ class Message:
 
     Provides a unified representation regardless of source (Kafka, RabbitMQ, etc.)
     """
-    key: Optional[str] = None
-    value: Any = None
-    headers: Dict[str, str] = field(default_factory=dict)
-    timestamp: Optional[datetime] = None
-    topic: Optional[str] = None
-    partition: Optional[int] = None
-    offset: Optional[int] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    key: str | None = None
+    value: Any = None
+    headers: dict[str, str] = field(default_factory=dict)
+    timestamp: datetime | None = None
+    topic: str | None = None
+    partition: int | None = None
+    offset: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
         """Convert message to dict suitable for stream ingestion."""
         result = {}
 
@@ -67,6 +70,7 @@ class AdapterConfig:
 
     Provides common config that all adapters support.
     """
+
     # Deserialization
     format: DeserializationFormat = DeserializationFormat.JSON
 
@@ -77,17 +81,17 @@ class AdapterConfig:
     # Error handling
     max_retries: int = 3
     retry_delay_ms: int = 1000
-    dead_letter_topic: Optional[str] = None
+    dead_letter_topic: str | None = None
 
     # Transform
-    transform_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    filter_fn: Optional[Callable[[Dict[str, Any]], bool]] = None
+    transform_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    filter_fn: Callable[[dict[str, Any]], bool] | None = None
 
     # Rate limiting
-    max_messages_per_second: Optional[int] = None
+    max_messages_per_second: int | None = None
 
     # Additional adapter-specific config
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class MessageAdapter(ABC):
@@ -122,10 +126,10 @@ class MessageAdapter(ABC):
         )
     """
 
-    def __init__(self, config: Optional[AdapterConfig] = None):
+    def __init__(self, config: AdapterConfig | None = None):
         self.config = config or AdapterConfig()
         self._running = False
-        self._tasks: List[asyncio.Task] = []
+        self._tasks: list[asyncio.Task] = []
 
     @abstractmethod
     async def connect(self) -> None:
@@ -142,7 +146,7 @@ class MessageAdapter(ABC):
         self,
         topic: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
     ) -> AsyncIterator[Message]:
         """
@@ -176,7 +180,7 @@ class MessageAdapter(ABC):
     async def produce_batch(
         self,
         topic: str,
-        messages: List[Message],
+        messages: list[Message],
     ) -> int:
         """
         Produce a batch of messages.
@@ -198,9 +202,9 @@ class MessageAdapter(ABC):
         topic: str,
         stream_name: str,
         *,
-        group_id: Optional[str] = None,
+        group_id: str | None = None,
         from_beginning: bool = False,
-        config: Optional[AdapterConfig] = None,
+        config: AdapterConfig | None = None,
     ) -> None:
         """
         Bridge: consume from external topic and publish to Interlace stream.
@@ -217,7 +221,7 @@ class MessageAdapter(ABC):
         from interlace.core.stream import publish
 
         cfg = config or self.config
-        batch: List[Dict[str, Any]] = []
+        batch: list[dict[str, Any]] = []
         last_flush = asyncio.get_event_loop().time()
 
         self._running = True
@@ -234,9 +238,8 @@ class MessageAdapter(ABC):
                     event = cfg.transform_fn(event)
                 except Exception as e:
                     from interlace.utils.logging import get_logger
-                    get_logger("interlace.streaming").warning(
-                        f"Transform error for message from '{topic}': {e}"
-                    )
+
+                    get_logger("interlace.streaming").warning(f"Transform error for message from '{topic}': {e}")
                     continue
 
             # Apply filter
@@ -248,10 +251,7 @@ class MessageAdapter(ABC):
             # Flush conditions
             now = asyncio.get_event_loop().time()
             time_elapsed_ms = (now - last_flush) * 1000
-            should_flush = (
-                len(batch) >= cfg.batch_size
-                or time_elapsed_ms >= cfg.batch_timeout_ms
-            )
+            should_flush = len(batch) >= cfg.batch_size or time_elapsed_ms >= cfg.batch_timeout_ms
 
             if should_flush and batch:
                 await publish(stream_name, batch)
@@ -271,7 +271,7 @@ class MessageAdapter(ABC):
         stream_name: str,
         topic: str,
         *,
-        config: Optional[AdapterConfig] = None,
+        config: AdapterConfig | None = None,
     ) -> None:
         """
         Bridge: subscribe to Interlace stream and produce to external topic.
@@ -285,7 +285,6 @@ class MessageAdapter(ABC):
         """
         from interlace.core.stream import subscribe
 
-        cfg = config or self.config
         self._running = True
 
         async for event in subscribe(stream_name, timeout=5.0):
@@ -297,7 +296,7 @@ class MessageAdapter(ABC):
                     Message(
                         value=e,
                         topic=topic,
-                        timestamp=datetime.now(timezone.utc),
+                        timestamp=datetime.now(UTC),
                     )
                     for e in event
                 ]
@@ -306,7 +305,7 @@ class MessageAdapter(ABC):
                 msg = Message(
                     value=event,
                     topic=topic,
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=datetime.now(UTC),
                 )
                 await self.produce(topic, msg)
 

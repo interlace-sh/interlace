@@ -9,11 +9,13 @@ Phase 5: Added schema_mode and export parameters.
 Phase 6: Added cursor parameter for automatic incremental processing.
 """
 
-from typing import Optional, List, Dict, Any, Callable, Union, Tuple, TYPE_CHECKING
 import functools
 import inspect
 import re
 import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
+
 import ibis
 
 from interlace.utils.logging import get_logger
@@ -106,6 +108,7 @@ def _make_wrapper(func: Callable, model_name: str, is_async: bool) -> Callable:
     """
 
     if is_async:
+
         @functools.wraps(func)
         async def wrapper(*args, **kw):
             start_time = time.time()
@@ -113,21 +116,17 @@ def _make_wrapper(func: Callable, model_name: str, is_async: bool) -> Callable:
                 logger.debug(f"Model '{model_name}' execution started")
                 result = await func(*args, **kw)
                 elapsed = time.time() - start_time
-                logger.debug(
-                    f"Model '{model_name}' completed successfully "
-                    f"in {_format_duration(elapsed)}"
-                )
+                logger.debug(f"Model '{model_name}' completed successfully " f"in {_format_duration(elapsed)}")
                 return result
             except Exception as e:
                 elapsed = time.time() - start_time
                 # Log at DEBUG level to avoid duplication with executor-level
                 # ERROR logging which provides full context and traceback.
-                logger.debug(
-                    f"Model '{model_name}' failed after "
-                    f"{_format_duration(elapsed)}: {e}"
-                )
+                logger.debug(f"Model '{model_name}' failed after " f"{_format_duration(elapsed)}: {e}")
                 raise
+
     else:
+
         @functools.wraps(func)
         def wrapper(*args, **kw):
             start_time = time.time()
@@ -135,43 +134,37 @@ def _make_wrapper(func: Callable, model_name: str, is_async: bool) -> Callable:
                 logger.debug(f"Model '{model_name}' execution started")
                 result = func(*args, **kw)
                 elapsed = time.time() - start_time
-                logger.debug(
-                    f"Model '{model_name}' completed successfully "
-                    f"in {_format_duration(elapsed)}"
-                )
+                logger.debug(f"Model '{model_name}' completed successfully " f"in {_format_duration(elapsed)}")
                 return result
             except Exception as e:
                 elapsed = time.time() - start_time
-                logger.debug(
-                    f"Model '{model_name}' failed after "
-                    f"{_format_duration(elapsed)}: {e}"
-                )
+                logger.debug(f"Model '{model_name}' failed after " f"{_format_duration(elapsed)}: {e}")
                 raise
 
     return wrapper
 
 
 def model(
-    name: Optional[str] = None,
+    name: str | None = None,
     schema: str = "public",
-    connection: Optional[str] = None,
+    connection: str | None = None,
     materialise: str = "table",
-    strategy: Optional[str] = None,
-    primary_key: Optional[str | List[str]] = None,
-    dependencies: Optional[List[str]] = None,
-    incremental: Optional[Dict[str, Any]] = None,
-    description: Optional[str] = None,
-    tags: Optional[List[str]] = None,
-    owner: Optional[str] = None,
-    fields: Optional[Union[Dict[str, Any], List[Tuple[str, Any]], ibis.Schema]] = None,
+    strategy: str | None = None,
+    primary_key: str | list[str] | None = None,
+    dependencies: list[str] | None = None,
+    incremental: dict[str, Any] | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    owner: str | None = None,
+    fields: dict[str, Any] | list[tuple[str, Any]] | ibis.Schema | None = None,
     strict: bool = False,
-    column_mapping: Optional[Dict[str, str]] = None,
+    column_mapping: dict[str, str] | None = None,
     retry_policy: Optional["RetryPolicy"] = None,
-    cache: Optional[Dict[str, str]] = None,
-    schedule: Optional[Dict[str, str]] = None,
-    schema_mode: Optional[str] = None,
-    export: Optional[Dict[str, Any]] = None,
-    cursor: Optional[str] = None,
+    cache: dict[str, str] | None = None,
+    schedule: dict[str, str] | None = None,
+    schema_mode: str | None = None,
+    export: dict[str, Any] | None = None,
+    cursor: str | None = None,
     **kwargs,
 ):
     """
@@ -335,14 +328,12 @@ def model(
     # ------------------------------------------------------------------
     if materialise not in _VALID_MATERIALISE:
         raise ValueError(
-            f"Invalid materialise type '{materialise}'. "
-            f"Must be one of: {', '.join(sorted(_VALID_MATERIALISE))}"
+            f"Invalid materialise type '{materialise}'. " f"Must be one of: {', '.join(sorted(_VALID_MATERIALISE))}"
         )
 
     if schema_mode is not None and schema_mode not in _VALID_SCHEMA_MODES:
         raise ValueError(
-            f"Invalid schema_mode '{schema_mode}'. "
-            f"Must be one of: {', '.join(sorted(_VALID_SCHEMA_MODES))}"
+            f"Invalid schema_mode '{schema_mode}'. " f"Must be one of: {', '.join(sorted(_VALID_SCHEMA_MODES))}"
         )
 
     def decorator(func: Callable) -> Callable:

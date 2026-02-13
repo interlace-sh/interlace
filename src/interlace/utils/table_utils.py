@@ -4,19 +4,17 @@ Common table utilities to reduce code duplication.
 Extracts repeated patterns for table existence checking, schema operations, etc.
 """
 
-from typing import Optional
 import ibis
+
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.utils.table_utils")
 
 
-def check_table_exists(
-    connection: ibis.BaseBackend, table_name: str, schema: Optional[str] = None
-) -> bool:
+def check_table_exists(connection: ibis.BaseBackend, table_name: str, schema: str | None = None) -> bool:
     """
     Check if a table exists using list_tables() instead of exception handling.
-    
+
     This is a common pattern used throughout the codebase. Extracted to reduce duplication.
 
     Args:
@@ -52,8 +50,8 @@ def check_table_exists(
 def try_load_table(
     connection: ibis.BaseBackend,
     table_name: str,
-    schemas: list[Optional[str]],
-) -> Optional[ibis.Table]:
+    schemas: list[str | None],
+) -> ibis.Table | None:
     """
     Try to load a table from multiple schemas.
 
@@ -83,8 +81,8 @@ def try_load_table(
 def get_row_count_efficient(
     connection: ibis.BaseBackend,
     table: ibis.Table | str,
-    schema: Optional[str] = None,
-) -> Optional[int]:
+    schema: str | None = None,
+) -> int | None:
     """
     Get row count using SQL COUNT(*) instead of .count().execute().
 

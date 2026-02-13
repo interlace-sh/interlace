@@ -5,14 +5,14 @@ A Flow represents a top-level execution request (equivalent to a Job).
 A Task represents an individual model execution (equivalent to a Run).
 """
 
-import uuid
 import time
-from typing import Dict, Any, Optional, List
+import uuid
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+from typing import Any
 
 
-class FlowStatus(str, Enum):
+class FlowStatus(StrEnum):
     """Flow execution status."""
 
     PENDING = "pending"
@@ -22,7 +22,7 @@ class FlowStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Task execution status."""
 
     PENDING = "pending"
@@ -45,15 +45,15 @@ class Flow:
 
     flow_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     trigger_type: str = "cli"  # 'schedule', 'cli', 'api', 'event', 'webhook'
-    trigger_id: Optional[str] = None
+    trigger_id: str | None = None
     status: FlowStatus = FlowStatus.PENDING
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
-    created_by: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    started_at: float | None = None
+    completed_at: float | None = None
+    created_by: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     # Task tracking
-    tasks: Dict[str, "Task"] = field(default_factory=dict)  # model_name -> Task
+    tasks: dict[str, "Task"] = field(default_factory=dict)  # model_name -> Task
 
     def start(self):
         """Mark flow as started."""
@@ -65,7 +65,7 @@ class Flow:
         self.status = FlowStatus.COMPLETED if success else FlowStatus.FAILED
         self.completed_at = time.time()
 
-    def get_duration(self) -> Optional[float]:
+    def get_duration(self) -> float | None:
         """Get flow duration in seconds."""
         if self.started_at and self.completed_at:
             return self.completed_at - self.started_at
@@ -73,7 +73,7 @@ class Flow:
             return time.time() - self.started_at
         return None
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """Get flow summary statistics."""
         total_tasks = len(self.tasks)
         completed = sum(1 for t in self.tasks.values() if t.status == TaskStatus.COMPLETED)
@@ -81,9 +81,7 @@ class Flow:
         skipped = sum(1 for t in self.tasks.values() if t.status == TaskStatus.SKIPPED)
         running = sum(1 for t in self.tasks.values() if t.status == TaskStatus.RUNNING)
         pending = sum(
-            1
-            for t in self.tasks.values()
-            if t.status in [TaskStatus.PENDING, TaskStatus.WAITING, TaskStatus.READY]
+            1 for t in self.tasks.values() if t.status in [TaskStatus.PENDING, TaskStatus.WAITING, TaskStatus.READY]
         )
 
         return {
@@ -112,37 +110,37 @@ class Task:
     flow_id: str = ""
     model_name: str = ""
     schema_name: str = ""
-    parent_task_ids: List[str] = field(default_factory=list)  # Upstream tasks that triggered this
+    parent_task_ids: list[str] = field(default_factory=list)  # Upstream tasks that triggered this
 
     status: TaskStatus = TaskStatus.PENDING
     attempt: int = 1
     max_attempts: int = 1
 
     # Timing
-    enqueued_at: Optional[float] = None
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
+    enqueued_at: float | None = None
+    started_at: float | None = None
+    completed_at: float | None = None
 
     # Model configuration
     materialise: str = "table"
-    strategy: Optional[str] = None
-    dependencies: List[str] = field(default_factory=list)
+    strategy: str | None = None
+    dependencies: list[str] = field(default_factory=list)
 
     # Results
-    rows_processed: Optional[int] = None
-    rows_ingested: Optional[int] = None  # Raw input count before strategy
-    rows_inserted: Optional[int] = None
-    rows_updated: Optional[int] = None
-    rows_deleted: Optional[int] = None
+    rows_processed: int | None = None
+    rows_ingested: int | None = None  # Raw input count before strategy
+    rows_inserted: int | None = None
+    rows_updated: int | None = None
+    rows_deleted: int | None = None
     schema_changes: int = 0
 
     # Errors
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
-    error_stacktrace: Optional[str] = None
+    error_type: str | None = None
+    error_message: str | None = None
+    error_stacktrace: str | None = None
 
     # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def enqueue(self):
         """Mark task as enqueued."""
@@ -176,7 +174,7 @@ class Task:
         self.status = TaskStatus.SKIPPED
         self.completed_at = time.time()
 
-    def get_duration(self) -> Optional[float]:
+    def get_duration(self) -> float | None:
         """Get task duration in seconds."""
         if self.started_at and self.completed_at:
             return self.completed_at - self.started_at
@@ -184,13 +182,13 @@ class Task:
             return time.time() - self.started_at
         return None
 
-    def get_wait_time(self) -> Optional[float]:
+    def get_wait_time(self) -> float | None:
         """Get time spent waiting (enqueued to started)."""
         if self.enqueued_at and self.started_at:
             return self.started_at - self.enqueued_at
         return None
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """Get task summary."""
         return {
             "task_id": self.task_id,

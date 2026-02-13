@@ -4,7 +4,7 @@ API endpoint handlers.
 Each handler class manages a resource type (models, flows, etc.).
 """
 
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -28,7 +28,7 @@ class BaseHandler:
         return self.service.config
 
     @property
-    def models(self) -> Dict[str, Dict[str, Any]]:
+    def models(self) -> dict[str, dict[str, Any]]:
         """Get discovered models."""
         return self.service.models
 
@@ -47,7 +47,7 @@ class BaseHandler:
         """Get event bus for real-time updates."""
         return self.service.event_bus
 
-    def get_request_id(self, request: web.Request) -> Optional[str]:
+    def get_request_id(self, request: web.Request) -> str | None:
         """Get request ID from request context."""
         return request.get("request_id")
 
@@ -55,7 +55,7 @@ class BaseHandler:
         self,
         data: Any,
         status: int = 200,
-        request: Optional[web.Request] = None,
+        request: web.Request | None = None,
     ) -> web.Response:
         """Create JSON response with standard headers."""
         headers = {}

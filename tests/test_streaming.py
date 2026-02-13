@@ -5,30 +5,29 @@ Tests publish/subscribe, message adapters, stream bridge, and stream router.
 """
 
 import asyncio
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+
+import pytest
 
 from interlace.core.stream import (
-    stream,
+    _notify_listeners,
+    _stream_listeners,
+    _stream_registry,
     publish,
     publish_sync,
+    stream,
     subscribe,
-    _stream_registry,
-    _stream_listeners,
-    _notify_listeners,
 )
 from interlace.streaming.adapters.base import (
-    Message,
-    MessageAdapter,
     AdapterConfig,
     DeserializationFormat,
+    Message,
 )
 from interlace.streaming.adapters.memory import InMemoryAdapter
 from interlace.streaming.adapters.webhook import WebhookAdapter
 from interlace.streaming.bridge import StreamBridge
 from interlace.streaming.router import StreamRouter
-
 
 # ---------------------------------------------------------------------------
 # @stream decorator tests
@@ -38,6 +37,7 @@ from interlace.streaming.router import StreamRouter
 class TestStreamDecorator:
     def test_basic_stream_decorator(self):
         """Test that @stream creates proper metadata."""
+
         @stream(name="test_events", schema="events")
         def test_events():
             """Test stream."""
@@ -51,6 +51,7 @@ class TestStreamDecorator:
 
     def test_stream_decorator_defaults(self):
         """Test stream decorator default values."""
+
         @stream()
         def my_stream():
             pass
@@ -64,6 +65,7 @@ class TestStreamDecorator:
 
     def test_stream_model_integration(self):
         """Test stream creates model-like metadata for graph integration."""
+
         @stream(name="orders", schema="raw")
         def orders():
             pass
@@ -76,6 +78,7 @@ class TestStreamDecorator:
 
     def test_stream_with_auth(self):
         """Test stream with authentication config."""
+
         @stream(
             name="secure_events",
             auth={"type": "bearer", "token": "secret123"},
@@ -88,6 +91,7 @@ class TestStreamDecorator:
 
     def test_stream_with_rate_limit(self):
         """Test stream with rate limiting config."""
+
         @stream(
             name="rate_limited",
             rate_limit={"requests_per_second": 100, "burst": 200},
@@ -101,6 +105,7 @@ class TestStreamDecorator:
 
     def test_stream_with_fields(self):
         """Test stream with schema fields."""
+
         @stream(
             name="typed_events",
             fields={"user_id": "string", "amount": "float64", "timestamp": "timestamp"},
@@ -113,6 +118,7 @@ class TestStreamDecorator:
 
     def test_stream_returns_none(self):
         """Test that stream functions return None when called."""
+
         @stream(name="noop")
         def noop():
             return "should not be returned"
@@ -121,6 +127,7 @@ class TestStreamDecorator:
 
     def test_stream_registers_globally(self):
         """Test that stream is registered in global registry."""
+
         @stream(name="registered_stream")
         def registered_stream():
             pass
@@ -147,7 +154,7 @@ class TestPublish:
         mock_conn.list_tables.return_value = ["test_stream"]
         mock_conn.create_database = MagicMock()
 
-        with patch("interlace.core.stream._insert_rows") as mock_insert:
+        with patch("interlace.core.stream._insert_rows"):
             with patch("interlace.core.stream._resolve_connection", return_value=mock_conn):
                 result = await publish(
                     "test_stream",
@@ -190,6 +197,7 @@ class TestPublish:
     @pytest.mark.asyncio
     async def test_publish_from_function_reference(self):
         """Test publish accepts decorated function reference."""
+
         @stream(name="ref_stream")
         def ref_stream():
             pass
@@ -350,7 +358,7 @@ class TestSubscribe:
         stream_name = "cleanup_test"
 
         async def short_consumer():
-            async for event in subscribe(stream_name, timeout=0.2):
+            async for _event in subscribe(stream_name, timeout=0.2):
                 break  # Exit after first event
 
         async def producer():
@@ -378,7 +386,7 @@ class TestMessage:
             key="order-123",
             value={"order_id": "123", "total": 99.99},
             topic="orders",
-            timestamp=datetime(2025, 1, 15, tzinfo=timezone.utc),
+            timestamp=datetime(2025, 1, 15, tzinfo=UTC),
         )
         result = msg.to_dict()
         assert result["order_id"] == "123"
@@ -423,9 +431,7 @@ class TestInMemoryAdapter:
         adapter = InMemoryAdapter()
         await adapter.connect()
 
-        messages = [
-            Message(value={"id": i}) for i in range(5)
-        ]
+        messages = [Message(value={"id": i}) for i in range(5)]
         count = await adapter.produce_batch("batch-test", messages)
         assert count == 5
         assert len(adapter.get_topic_messages("batch-test")) == 5
@@ -544,11 +550,7 @@ class TestStreamBridge:
         adapter1 = InMemoryAdapter()
         adapter2 = InMemoryAdapter()
 
-        result = (
-            bridge
-            .add_inbound(adapter1, "topic1", "stream1")
-            .add_outbound(adapter2, "stream2", "topic2")
-        )
+        result = bridge.add_inbound(adapter1, "topic1", "stream1").add_outbound(adapter2, "stream2", "topic2")
 
         assert result is bridge
         assert len(bridge.routes) == 2

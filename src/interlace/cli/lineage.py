@@ -7,13 +7,12 @@ across models in the pipeline.
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
-from rich.panel import Panel
 
 from interlace.utils.logging import get_logger
 
@@ -81,24 +80,12 @@ def _compute_lineage(model_name: str, models: dict, computed: set = None):
 @app.command("show")
 def show(
     model: str = typer.Argument(..., help="Model name to show lineage for"),
-    column: Optional[str] = typer.Option(
-        None, "--column", "-c", help="Specific column to show lineage for"
-    ),
-    upstream: bool = typer.Option(
-        False, "--upstream", "-u", help="Show upstream lineage (sources)"
-    ),
-    downstream: bool = typer.Option(
-        False, "--downstream", "-d", help="Show downstream lineage (dependents)"
-    ),
-    depth: int = typer.Option(
-        3, "--depth", help="Maximum depth to traverse"
-    ),
-    format: str = typer.Option(
-        "tree", "--format", "-f", help="Output format: tree, table, json, dot"
-    ),
-    project_dir: Path = typer.Option(
-        Path("."), "--project", "-p", help="Project directory"
-    ),
+    column: str | None = typer.Option(None, "--column", "-c", help="Specific column to show lineage for"),
+    upstream: bool = typer.Option(False, "--upstream", "-u", help="Show upstream lineage (sources)"),
+    downstream: bool = typer.Option(False, "--downstream", "-d", help="Show downstream lineage (dependents)"),
+    depth: int = typer.Option(3, "--depth", help="Maximum depth to traverse"),
+    format: str = typer.Option("tree", "--format", "-f", help="Output format: tree, table, json, dot"),
+    project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
 ):
     """
     Show column-level lineage for a model.
@@ -109,8 +96,8 @@ def show(
         interlace lineage show dim_customer --upstream --depth 5
         interlace lineage show dim_customer --format json
     """
-    from interlace.utils.discovery import discover_models
     from interlace.lineage import LineageGraph
+    from interlace.utils.discovery import discover_models
 
     # Load project configuration
     config = _load_config(project_dir)
@@ -187,7 +174,6 @@ def show(
 
 def _output_tree(lineage, graph, column, upstream, downstream, depth):
     """Output lineage as a tree visualization."""
-    from interlace.lineage import ColumnLineage
 
     model_name = lineage.model_name
     tree = Tree(f"[bold blue]{model_name}[/bold blue]")
@@ -218,9 +204,7 @@ def _output_tree(lineage, graph, column, upstream, downstream, depth):
 
                 # Recursively show upstream if requested
                 if upstream and depth > 1:
-                    _add_upstream_tree(
-                        src_branch, graph, edge.source_model, edge.source_column, depth - 1
-                    )
+                    _add_upstream_tree(src_branch, graph, edge.source_model, edge.source_column, depth - 1)
 
     console.print(tree)
 
@@ -238,9 +222,7 @@ def _add_upstream_tree(branch, graph, model_name, column_name, remaining_depth):
         src_branch = branch.add(source_label)
 
         # Continue recursively
-        _add_upstream_tree(
-            src_branch, graph, edge.source_model, edge.source_column, remaining_depth - 1
-        )
+        _add_upstream_tree(src_branch, graph, edge.source_model, edge.source_column, remaining_depth - 1)
 
 
 def _output_table(lineage, graph, column, upstream, downstream, depth):
@@ -289,8 +271,7 @@ def _output_json(lineage, graph, column, upstream, downstream, depth):
             if upstream:
                 # Add upstream trace
                 data["upstream_trace"] = [
-                    e.to_dict()
-                    for e in graph.trace_column_upstream(lineage.model_name, column, depth)
+                    e.to_dict() for e in graph.trace_column_upstream(lineage.model_name, column, depth)
                 ]
         else:
             data = {"error": f"Column '{column}' not found"}
@@ -317,7 +298,7 @@ def _output_dot(lineage, graph, column, upstream, downstream, depth):
         src_id = f'"{src_model}.{src_col}"'
         dst_id = f'"{dst_model}.{dst_col}"'
         label = trans_type
-        lines.append(f"    {src_id} -> {dst_id} [label=\"{label}\"];")
+        lines.append(f'    {src_id} -> {dst_id} [label="{label}"];')
 
     columns_to_show = lineage.columns
     if column:
@@ -341,12 +322,8 @@ def _output_dot(lineage, graph, column, upstream, downstream, depth):
 
 @app.command("refresh")
 def refresh(
-    model: Optional[str] = typer.Argument(
-        None, help="Model name to refresh (or all if not specified)"
-    ),
-    project_dir: Path = typer.Option(
-        Path("."), "--project", "-p", help="Project directory"
-    ),
+    model: str | None = typer.Argument(None, help="Model name to refresh (or all if not specified)"),
+    project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
 ):
     """
     Refresh/recompute column lineage for models.
@@ -358,8 +335,8 @@ def refresh(
         interlace lineage refresh                    # Refresh all models
         interlace lineage refresh dim_customer       # Refresh specific model
     """
-    from interlace.utils.discovery import discover_models
     from interlace.core.state import StateStore
+    from interlace.utils.discovery import discover_models
 
     # Load project configuration
     config = _load_config(project_dir)
@@ -435,8 +412,7 @@ def refresh(
     console.print()
     console.print(
         Panel(
-            f"[green]{success_count}[/green] models processed, "
-            f"[red]{error_count}[/red] errors",
+            f"[green]{success_count}[/green] models processed, " f"[red]{error_count}[/red] errors",
             title="Lineage Refresh Complete",
         )
     )
@@ -445,9 +421,7 @@ def refresh(
 @app.command("list")
 def list_columns(
     model: str = typer.Argument(..., help="Model name to list columns for"),
-    project_dir: Path = typer.Option(
-        Path("."), "--project", "-p", help="Project directory"
-    ),
+    project_dir: Path = typer.Option(Path("."), "--project", "-p", help="Project directory"),
 ):
     """
     List all columns for a model with their lineage summary.

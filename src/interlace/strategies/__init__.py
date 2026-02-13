@@ -5,11 +5,11 @@ Phase 0: Basic strategy implementations (merge_by_key, append, replace, none).
 Phase 2: SCD Type 2 strategy for dimension history tracking.
 """
 
+from interlace.strategies.append import AppendStrategy
 from interlace.strategies.base import Strategy
 from interlace.strategies.merge_by_key import MergeByKeyStrategy
-from interlace.strategies.append import AppendStrategy
-from interlace.strategies.replace import ReplaceStrategy
 from interlace.strategies.none import NoneStrategy
+from interlace.strategies.replace import ReplaceStrategy
 from interlace.strategies.scd_type_2 import SCDType2Strategy
 
 __all__ = [

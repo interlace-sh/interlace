@@ -11,17 +11,15 @@ from __future__ import annotations
 import fnmatch
 import os
 import shutil
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from interlace.connections.manager import get_connection
 from interlace.core.state import StateStore
-from interlace.utils.logging import get_logger
-
-from interlace.sync.manifest import ManifestKey, SyncManifest
-from interlace.sync.types import RemoteFile, SFTPSyncJob, FileProcessor, DestURI
 from interlace.processors.registry import build_default_processor_registry
+from interlace.sync.manifest import ManifestKey, SyncManifest
+from interlace.sync.types import DestURI, FileProcessor, RemoteFile, SFTPSyncJob
+from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.sync.sftp")
 
@@ -88,7 +86,7 @@ def run_sftp_sync_job(
                     "remote_mtime": rf.mtime,
                     "remote_size": rf.size,
                 }
-                for spec in (job.processors or []):
+                for spec in job.processors or []:
                     proc = processor_registry.get(spec.name)
                     if proc is None:
                         raise ValueError(
@@ -256,4 +254,3 @@ def _upload_to_destination(dest_conn: Any, dest: DestURI, local_path: str) -> No
         return
 
     raise ValueError(f"Unsupported destination connection type for sync: {conn_type}")
-

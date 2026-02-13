@@ -4,10 +4,12 @@ Schema evolution logic.
 Handles applying schema changes to tables.
 """
 
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Any
+
 import ibis
+
 from interlace.core.context import _execute_sql_internal
-from interlace.schema.validation import compare_schemas, _is_safe_type_cast
+from interlace.schema.validation import _is_safe_type_cast, compare_schemas
 from interlace.utils.logging import get_logger
 
 logger = get_logger("interlace.schema.evolution")
@@ -16,8 +18,8 @@ logger = get_logger("interlace.schema.evolution")
 def get_schema_changes(
     existing_schema: ibis.Schema,
     new_schema: ibis.Schema,
-    fields_schema: Optional[ibis.Schema] = None,
-) -> Dict[str, Any]:
+    fields_schema: ibis.Schema | None = None,
+) -> dict[str, Any]:
     """
     Get schema changes that need to be applied.
 
@@ -43,7 +45,7 @@ def get_schema_changes(
 def should_apply_schema_changes(
     existing_schema: ibis.Schema,
     new_schema: ibis.Schema,
-    fields_schema: Optional[ibis.Schema] = None,
+    fields_schema: ibis.Schema | None = None,
 ) -> bool:
     """
     Check if schema changes should be applied.
@@ -73,7 +75,7 @@ def apply_schema_changes(
     schema: str,
     existing_schema: ibis.Schema,
     new_schema: ibis.Schema,
-    fields_schema: Optional[ibis.Schema] = None,
+    fields_schema: ibis.Schema | None = None,
 ) -> int:
     """
     Apply schema changes to table.
@@ -95,9 +97,7 @@ def apply_schema_changes(
     comparison = compare_schemas(existing_schema, new_schema, fields_schema)
 
     if comparison.errors:
-        raise ValueError(
-            f"Schema validation errors: {', '.join(comparison.errors)}"
-        )
+        raise ValueError(f"Schema validation errors: {', '.join(comparison.errors)}")
 
     qualified_name = f"{schema}.{model_name}"
     alter_statements = []
@@ -106,13 +106,9 @@ def apply_schema_changes(
     for col_name, col_type in comparison.added_columns.items():
         try:
             type_str = _ibis_type_to_sql(col_type)
-            alter_statements.append(
-                f"ALTER TABLE {qualified_name} ADD COLUMN {col_name} {type_str}"
-            )
+            alter_statements.append(f"ALTER TABLE {qualified_name} ADD COLUMN {col_name} {type_str}")
         except Exception as e:
-            logger.warning(
-                f"Failed to generate ADD COLUMN statement for {col_name} in {model_name}: {e}"
-            )
+            logger.warning(f"Failed to generate ADD COLUMN statement for {col_name} in {model_name}: {e}")
 
     # Removed columns: Don't drop (safe mode - preserve columns, NULL for new data)
     # Breaking changes require migrations
@@ -126,14 +122,11 @@ def apply_schema_changes(
                     f"ALTER TABLE {qualified_name} ALTER COLUMN {col_name} TYPE {new_type_str} USING CAST({col_name} AS {new_type_str})"
                 )
             except Exception as e:
-                logger.warning(
-                    f"Failed to generate ALTER COLUMN statement for {col_name} in {model_name}: {e}"
-                )
+                logger.warning(f"Failed to generate ALTER COLUMN statement for {col_name} in {model_name}: {e}")
         else:
             # Unsafe type change - should have been caught by validation
             logger.warning(
-                f"Unsafe type change for {col_name} in {model_name}: {old_type} → {new_type}. "
-                "Migration required."
+                f"Unsafe type change for {col_name} in {model_name}: {old_type} → {new_type}. " "Migration required."
             )
 
     if alter_statements:
@@ -142,9 +135,7 @@ def apply_schema_changes(
             _execute_sql_internal(connection, batch_sql)
         except Exception as e:
             # If batch execution fails, try individual statements
-            logger.warning(
-                f"Batch schema update failed for {model_name}, trying individual statements: {e}"
-            )
+            logger.warning(f"Batch schema update failed for {model_name}, trying individual statements: {e}")
             for sql in alter_statements:
                 try:
                     _execute_sql_internal(connection, sql)
@@ -197,4 +188,3 @@ def _ibis_type_to_sql(ibis_type: any) -> str:
 
     # Default to VARCHAR for unknown types
     return "VARCHAR"
-

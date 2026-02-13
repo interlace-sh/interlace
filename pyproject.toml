@@ -164,5 +164,8 @@ asyncio_default_fixture_loop_scope = "function"
 
 [dependency-groups]
 dev = [
+    "types-aiofiles>=25.1.0.20251011",
+    "types-cachetools>=6.2.0.20251022",
+    "types-paramiko>=4.0.0.20250822",
     "types-pyyaml>=6.0.12.20250915",
 ]

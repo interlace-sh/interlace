@@ -63,9 +63,9 @@ class SFTPConnection:
         transport = paramiko.Transport((cfg.host, cfg.port))
         transport.banner_timeout = cfg.connect_timeout_s
         transport.auth_timeout = cfg.connect_timeout_s
-        transport.connect_timeout = cfg.connect_timeout_s
+        transport.connect_timeout = cfg.connect_timeout_s  # type: ignore[attr-defined]
 
-        pkey = None
+        pkey: paramiko.PKey | None = None
         if cfg.private_key_path:
             # Try common key types; paramiko will raise if incompatible.
             try:
@@ -76,13 +76,16 @@ class SFTPConnection:
                 )
 
         transport.connect(
-            username=cfg.username,
+            username=cfg.username or "",
             password=cfg.password,
             pkey=pkey,
         )
 
         self._transport = transport
-        self._client = paramiko.SFTPClient.from_transport(transport)
+        client = paramiko.SFTPClient.from_transport(transport)
+        if client is None:
+            raise ConnectionError(f"Failed to create SFTP client for '{self.name}'")
+        self._client = client
         return self._client
 
     def close(self) -> None:

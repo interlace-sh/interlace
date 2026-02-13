@@ -56,6 +56,7 @@ class SchemaManager:
         self.data_converter = data_converter
 
         # Convert to LRU or TTL caches if not already
+        self._schema_cache: Any
         if isinstance(schema_cache, (LRUCache, TTLCache)):
             self._schema_cache = schema_cache
         else:
@@ -66,6 +67,7 @@ class SchemaManager:
                 self._schema_cache = LRUCache(maxsize=max_schema_cache_size)
             self._schema_cache.update(schema_cache)
 
+        self._table_existence_cache: Any
         if isinstance(table_existence_cache, (LRUCache, TTLCache)):
             self._table_existence_cache = table_existence_cache
         else:

@@ -74,6 +74,15 @@ examples/*/logs/
 # Jupyter
 .ipynb_checkpoints/
 
+# Built UI (generated from interlace.ui build)
+src/interlace/service/static/
+
+# Private architectural docs
+docs/
+
+# Docker data
+data/
+
 # AI agent configs (private)
 CLAUDE.md
 **/CLAUDE.md

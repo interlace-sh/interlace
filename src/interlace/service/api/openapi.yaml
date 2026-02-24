@@ -1,0 +1,2386 @@
+openapi: "3.0.3"
+info:
+  title: Interlace API
+  version: "0.1.2"
+  description: |
+    REST API for the Interlace data pipeline framework.
+    Provides endpoints for managing models, triggering runs, viewing execution
+    history, inspecting dependency graphs, streaming events, and querying
+    column-level lineage.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: /api/v1
+    description: Default API server (versioned prefix)
+
+tags:
+  - name: Health & Info
+    description: Service health checks and project metadata
+  - name: Models
+    description: Model catalog and metadata
+  - name: Flows
+    description: Execution history (flows and tasks)
+  - name: Runs
+    description: Trigger and manage pipeline executions
+  - name: Graph
+    description: Dependency graph (DAG) data
+  - name: Events
+    description: Real-time Server-Sent Events stream
+  - name: Lineage
+    description: Column-level lineage graph
+  - name: Plan
+    description: Impact analysis and execution plan preview
+  - name: Schema History
+    description: Schema version tracking and diff
+  - name: Streams
+    description: Event stream ingestion, subscription, and consumption
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Health & Info
+  # ---------------------------------------------------------------------------
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Health & Info]
+      summary: Health check
+      description: Returns service health status, version, uptime, and connection states.
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /project:
+    get:
+      operationId: getProject
+      tags: [Health & Info]
+      summary: Project info
+      description: Returns project name, description, model count, and configured connections.
+      responses:
+        "200":
+          description: Project metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /info:
+    get:
+      operationId: getInfo
+      tags: [Health & Info]
+      summary: Detailed service info
+      description: Returns API version, interlace version, and feature flags.
+      responses:
+        "200":
+          description: Service information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfoResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /scheduler:
+    get:
+      operationId: getSchedulerStatus
+      tags: [Health & Info]
+      summary: Scheduler status
+      description: Returns whether the scheduler is running, active scheduled models, and per-model next fire times.
+      responses:
+        "200":
+          description: Scheduler status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchedulerStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Models
+  # ---------------------------------------------------------------------------
+  /models:
+    get:
+      operationId: listModels
+      tags: [Models]
+      summary: List all models
+      description: Returns all discovered models with optional filtering by type, schema, tags, or search term.
+      parameters:
+        - name: type
+          in: query
+          description: Filter by model type
+          schema:
+            type: string
+            enum: [python, sql, stream]
+        - name: schema
+          in: query
+          description: Filter by schema name
+          schema:
+            type: string
+        - name: tags
+          in: query
+          description: Comma-separated list of tags to filter by
+          schema:
+            type: string
+        - name: search
+          in: query
+          description: Search term to match against model names
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of models
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models, total]
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ModelSummary"
+                  total:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /models/{name}:
+    get:
+      operationId: getModel
+      tags: [Models]
+      summary: Get model detail
+      description: Returns full detail for a single model including dependencies, fields, schedule, and retry policy.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+      responses:
+        "200":
+          description: Model detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /models/{name}/lineage:
+    get:
+      operationId: getModelLineage
+      tags: [Models]
+      summary: Get model lineage
+      description: Returns upstream and downstream dependency nodes and edges for a model.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+        - name: depth
+          in: query
+          description: Maximum traversal depth (0-100)
+          schema:
+            type: integer
+            default: 3
+            minimum: 0
+            maximum: 100
+        - name: direction
+          in: query
+          description: Traversal direction
+          schema:
+            type: string
+            enum: [upstream, downstream, both]
+            default: both
+      responses:
+        "200":
+          description: Model lineage graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelLineageResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /models/{name}/runs:
+    get:
+      operationId: getModelRuns
+      tags: [Models]
+      summary: Get model run history
+      description: Returns recent execution history for a specific model.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+        - name: limit
+          in: query
+          description: Maximum number of runs to return (1-100)
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Model run history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model, runs, total]
+                properties:
+                  model:
+                    type: string
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ModelRun"
+                  total:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /models/{name}/columns:
+    get:
+      operationId: getModelColumns
+      tags: [Lineage]
+      summary: Get model columns
+      description: Returns all columns for a model with their lineage source information.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+      responses:
+        "200":
+          description: Model columns with lineage
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model, columns]
+                properties:
+                  model:
+                    type: string
+                  columns:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ColumnDetail"
+                  error:
+                    type: string
+                    description: Present when lineage could not be computed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /models/{name}/columns/{column}/lineage:
+    get:
+      operationId: getColumnLineage
+      tags: [Lineage]
+      summary: Get column lineage
+      description: Traces upstream and/or downstream lineage for a specific column.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+        - name: column
+          in: path
+          required: true
+          description: Column name
+          schema:
+            type: string
+        - name: direction
+          in: query
+          description: Lineage direction
+          schema:
+            type: string
+            enum: [upstream, downstream, both]
+            default: upstream
+        - name: depth
+          in: query
+          description: Maximum traversal depth (0-100)
+          schema:
+            type: integer
+            default: 3
+            minimum: 0
+            maximum: 100
+      responses:
+        "200":
+          description: Column lineage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ColumnLineageResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Schema History
+  # ---------------------------------------------------------------------------
+  /models/{name}/schema/history:
+    get:
+      operationId: getSchemaHistory
+      tags: [Schema History]
+      summary: Get schema version history
+      description: Returns all recorded schema versions for a model with columns and detection timestamps.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+      responses:
+        "200":
+          description: Schema version history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaHistoryResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /models/{name}/schema/current:
+    get:
+      operationId: getCurrentSchema
+      tags: [Schema History]
+      summary: Get current schema
+      description: Returns the current schema version number for a model.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+      responses:
+        "200":
+          description: Current schema version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version]
+                properties:
+                  version:
+                    type: integer
+                  message:
+                    type: string
+                    description: Present when no database connection is available
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /models/{name}/schema/diff:
+    get:
+      operationId: getSchemaDiff
+      tags: [Schema History]
+      summary: Compare schema versions
+      description: Computes a column-level diff between two schema versions.
+      parameters:
+        - $ref: "#/components/parameters/ModelName"
+        - name: from
+          in: query
+          description: Source version number
+          schema:
+            type: integer
+            default: 1
+        - name: to
+          in: query
+          description: Target version number (0 = current)
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Schema diff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaDiffResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Flows
+  # ---------------------------------------------------------------------------
+  /flows:
+    get:
+      operationId: listFlows
+      tags: [Flows]
+      summary: List flows
+      description: Returns paginated execution flows with optional filtering by status, trigger type, and time range.
+      parameters:
+        - name: status
+          in: query
+          description: Filter by flow status
+          schema:
+            type: string
+            enum: [pending, running, completed, failed, cancelled]
+        - name: trigger_type
+          in: query
+          description: Filter by trigger type
+          schema:
+            type: string
+            enum: [cli, api, schedule, event, webhook]
+        - name: since
+          in: query
+          description: Filter flows started after this ISO 8601 timestamp
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: Filter flows started before this ISO 8601 timestamp
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: Maximum results per page (1-1000)
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          description: Pagination offset (0-100000)
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+            maximum: 100000
+      responses:
+        "200":
+          description: Paginated list of flows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [flows, total, has_more]
+                properties:
+                  flows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FlowSummary"
+                  total:
+                    type: integer
+                  has_more:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /flows/{flow_id}:
+    get:
+      operationId: getFlow
+      tags: [Flows]
+      summary: Get flow detail
+      description: Returns a single flow with all its tasks.
+      parameters:
+        - $ref: "#/components/parameters/FlowId"
+      responses:
+        "200":
+          description: Flow detail with tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlowDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /flows/{flow_id}/tasks:
+    get:
+      operationId: getFlowTasks
+      tags: [Flows]
+      summary: Get flow tasks
+      description: Returns all tasks belonging to a flow.
+      parameters:
+        - $ref: "#/components/parameters/FlowId"
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks]
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Runs
+  # ---------------------------------------------------------------------------
+  /runs:
+    post:
+      operationId: createRun
+      tags: [Runs]
+      summary: Trigger a run
+      description: |
+        Triggers an asynchronous pipeline execution. Returns immediately with a
+        run ID. Use the status endpoint or SSE events to track progress.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "202":
+          description: Run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRunResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /runs/{run_id}/cancel:
+    post:
+      operationId: cancelRun
+      tags: [Runs]
+      summary: Cancel a running execution
+      description: Attempts to cancel an in-progress run.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, run_id]
+                properties:
+                  status:
+                    type: string
+                    example: cancelled
+                  run_id:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /runs/{run_id}/status:
+    get:
+      operationId: getRunStatus
+      tags: [Runs]
+      summary: Get run status
+      description: Returns real-time status and progress of a running execution.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Graph
+  # ---------------------------------------------------------------------------
+  /graph:
+    get:
+      operationId: getGraph
+      tags: [Graph]
+      summary: Get dependency graph
+      description: Returns the full dependency graph with nodes, edges, and layer information suitable for DAG rendering.
+      parameters:
+        - name: format
+          in: query
+          description: Response format
+          schema:
+            type: string
+            enum: [full, layers, tree]
+            default: full
+        - name: models
+          in: query
+          description: Comma-separated list of models to include (default is all)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dependency graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /graph/validate:
+    get:
+      operationId: validateGraph
+      tags: [Graph]
+      summary: Validate graph
+      description: Checks for cycles and missing dependencies in the dependency graph.
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphValidationResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Events (SSE)
+  # ---------------------------------------------------------------------------
+  /events:
+    get:
+      operationId: getEventStream
+      tags: [Events]
+      summary: SSE event stream
+      description: |
+        Opens a Server-Sent Events connection for real-time updates. The
+        connection sends keepalive comments every 30 seconds. Supported event
+        types include flow and task lifecycle events.
+      parameters:
+        - name: flow_id
+          in: query
+          description: Subscribe only to events for this flow
+          schema:
+            type: string
+        - name: types
+          in: query
+          description: Comma-separated event types to subscribe to
+          schema:
+            type: string
+            example: flow.started,task.completed
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each event has `event:` and `data:` fields.
+                  Event types: connected, flow.started, flow.completed, flow.failed,
+                  flow.cancelled, task.enqueued, task.waiting, task.ready, task.running,
+                  task.materialising, task.completed, task.failed, task.skipped, task.progress.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Lineage
+  # ---------------------------------------------------------------------------
+  /lineage:
+    get:
+      operationId: getFullLineage
+      tags: [Lineage]
+      summary: Get full lineage graph
+      description: Returns column-level lineage across all (or filtered) models with edges representing data flow.
+      parameters:
+        - name: models
+          in: query
+          description: Comma-separated list of models to include (default is all)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Full lineage graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FullLineageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /lineage/refresh:
+    post:
+      operationId: refreshLineage
+      tags: [Lineage]
+      summary: Refresh lineage data
+      description: Recomputes and caches column lineage for all or specified models.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                models:
+                  type: array
+                  items:
+                    type: string
+                  description: Model names to refresh (default is all)
+      responses:
+        "200":
+          description: Refresh result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineageRefreshResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Plan / Impact Analysis
+  # ---------------------------------------------------------------------------
+  /plan:
+    get:
+      operationId: getPlan
+      tags: [Plan]
+      summary: Get execution plan
+      description: Previews which models will run and detects potential breaking changes without executing anything.
+      parameters:
+        - name: models
+          in: query
+          description: Comma-separated list of models (default is all)
+          schema:
+            type: string
+        - name: force
+          in: query
+          description: Treat all models as needing to run
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Execution plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createPlan
+      tags: [Plan]
+      summary: Create execution plan
+      description: Same as GET but accepts the model list and force flag in the request body.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                models:
+                  type: array
+                  items:
+                    type: string
+                  description: Model names to plan (default is all)
+                force:
+                  type: boolean
+                  default: false
+                  description: Treat all models as needing to run
+      responses:
+        "200":
+          description: Execution plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Streams
+  # ---------------------------------------------------------------------------
+  /streams:
+    get:
+      operationId: listStreams
+      tags: [Streams]
+      summary: List streams
+      description: Returns all registered event streams with metadata and downstream model information.
+      parameters:
+        - name: schema
+          in: query
+          description: Filter by schema name
+          schema:
+            type: string
+        - name: tag
+          in: query
+          description: Filter by tag
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of streams
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [streams, count]
+                properties:
+                  streams:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StreamSummary"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /streams/{name}:
+    get:
+      operationId: getStream
+      tags: [Streams]
+      summary: Get stream detail
+      description: Returns full detail for a stream including row count, endpoints, and retention config.
+      parameters:
+        - $ref: "#/components/parameters/StreamName"
+      responses:
+        "200":
+          description: Stream detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: publishToStream
+      tags: [Streams]
+      summary: Publish events to stream
+      description: Appends one or more events into the stream table and triggers downstream models.
+      parameters:
+        - $ref: "#/components/parameters/StreamName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  additionalProperties: true
+                  description: Single event object
+                - type: array
+                  items:
+                    type: object
+                    additionalProperties: true
+                  description: Array of event objects
+      responses:
+        "202":
+          description: Events accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StreamPublishResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /streams/{name}/subscribe:
+    get:
+      operationId: subscribeToStream
+      tags: [Streams]
+      summary: SSE subscription
+      description: Opens a Server-Sent Events connection to receive real-time events published to this stream.
+      parameters:
+        - $ref: "#/components/parameters/StreamName"
+        - name: filter
+          in: query
+          description: Optional JSON filter expression
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-Sent Events stream. Each event has type `stream.event`
+                  with data containing the stream name and event payload.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /streams/{name}/consume:
+    post:
+      operationId: consumeFromStream
+      tags: [Streams]
+      summary: Consume batch
+      description: Consumes a batch of unprocessed events from the stream using cursor-based tracking.
+      parameters:
+        - $ref: "#/components/parameters/StreamName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsumeRequest"
+      responses:
+        "200":
+          description: Consumed events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumeResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /streams/{name}/ack:
+    post:
+      operationId: ackStreamEvents
+      tags: [Streams]
+      summary: Acknowledge consumed events
+      description: Advances the consumer cursor after successfully processing events.
+      parameters:
+        - $ref: "#/components/parameters/StreamName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AckRequest"
+      responses:
+        "200":
+          description: Acknowledgement result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, acknowledged]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  acknowledged:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+  # ---------------------------------------------------------------------------
+  # Security Schemes
+  # ---------------------------------------------------------------------------
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: "API key passed as Bearer token: `Authorization: Bearer <key>`"
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "API key passed via `X-API-Key` header"
+
+  # ---------------------------------------------------------------------------
+  # Reusable Parameters
+  # ---------------------------------------------------------------------------
+  parameters:
+    ModelName:
+      name: name
+      in: path
+      required: true
+      description: Model name
+      schema:
+        type: string
+    FlowId:
+      name: flow_id
+      in: path
+      required: true
+      description: Flow identifier
+      schema:
+        type: string
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      description: Run identifier
+      schema:
+        type: string
+    StreamName:
+      name: name
+      in: path
+      required: true
+      description: Stream name
+      schema:
+        type: string
+
+  # ---------------------------------------------------------------------------
+  # Reusable Responses
+  # ---------------------------------------------------------------------------
+  responses:
+    ValidationError:
+      description: Request validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: "'force' must be a boolean (true/false)"
+              request_id: req_abc123
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: "Missing API key. Provide via Authorization: Bearer <key> or X-API-Key header."
+              request_id: req_abc123
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: FORBIDDEN
+              message: "API key 'reader' lacks 'execute' permission"
+              request_id: req_abc123
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: MODEL_NOT_FOUND
+              message: "Model 'unknown_model' not found"
+              request_id: req_abc123
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: RATE_LIMITED
+              message: "Rate limit exceeded for key 'ci-pipeline'"
+              details:
+                limit: 100
+                retry_after: 0.5
+              request_id: req_abc123
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred
+              request_id: req_abc123
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+    # -- Error ---------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              enum:
+                - INVALID_REQUEST
+                - VALIDATION_ERROR
+                - MODEL_NOT_FOUND
+                - FLOW_NOT_FOUND
+                - TASK_NOT_FOUND
+                - CONNECTION_NOT_FOUND
+                - RUN_NOT_FOUND
+                - RESOURCE_NOT_FOUND
+                - RATE_LIMITED
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - INTERNAL_ERROR
+                - DATABASE_ERROR
+                - EXECUTION_ERROR
+                - CONNECTION_ERROR
+                - SERVICE_UNAVAILABLE
+            message:
+              type: string
+              description: Human-readable error message
+            details:
+              type: object
+              additionalProperties: true
+              description: Additional error context
+            request_id:
+              type: string
+              description: Request identifier for support reference
+
+    # -- Health & Info -------------------------------------------------------
+    ConnectionStatus:
+      type: object
+      required: [name, type, status]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+          enum: [connected, disconnected]
+
+    HealthResponse:
+      type: object
+      required: [status, version, uptime_seconds]
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: "0.1.2"
+        uptime_seconds:
+          type: number
+          format: float
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectionStatus"
+        scheduler_running:
+          type: boolean
+        active_flows:
+          type: integer
+        subscribers:
+          type: integer
+          description: Number of active SSE subscribers
+
+    ProjectResponse:
+      type: object
+      required: [name, models_count]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        environment:
+          type: string
+        project_dir:
+          type: string
+        models_count:
+          type: integer
+        connections:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+        state_enabled:
+          type: boolean
+
+    InfoResponse:
+      type: object
+      required: [api_version, interlace_version, features]
+      properties:
+        api_version:
+          type: string
+          example: v1
+        interlace_version:
+          type: string
+          example: "0.1.2"
+        features:
+          type: object
+          properties:
+            scheduling:
+              type: boolean
+            streams:
+              type: boolean
+            sync:
+              type: boolean
+            quality_checks:
+              type: boolean
+            retry_framework:
+              type: boolean
+
+    ScheduledModelStatus:
+      type: object
+      required: [model, schedule]
+      properties:
+        model:
+          type: string
+        schedule:
+          type: object
+          additionalProperties: true
+          description: Schedule config (cron or every_s)
+        next_fire_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_run_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    SchedulerStatusResponse:
+      type: object
+      required: [running, scheduled_models, models]
+      properties:
+        running:
+          type: boolean
+        scheduled_models:
+          type: integer
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScheduledModelStatus"
+
+    # -- Models --------------------------------------------------------------
+    ModelSummary:
+      type: object
+      required: [name, type, schema, materialise]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [python, sql, stream]
+        schema:
+          type: string
+        materialise:
+          type: string
+          enum: [table, view, ephemeral, none]
+        strategy:
+          type: string
+          nullable: true
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        owner:
+          type: string
+          nullable: true
+        layer:
+          type: integer
+          description: Execution layer in the DAG
+        has_schedule:
+          type: boolean
+
+    ModelDetail:
+      type: object
+      required: [name, type, schema, materialise, strategy, dependencies, dependents]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [python, sql, stream]
+        schema:
+          type: string
+        connection:
+          type: string
+        materialise:
+          type: string
+          enum: [table, view, ephemeral, none]
+        strategy:
+          type: string
+        primary_key:
+          type: array
+          items:
+            type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+        dependents:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        owner:
+          type: string
+          nullable: true
+        file:
+          type: string
+        file_hash:
+          type: string
+        layer:
+          type: integer
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+          description: Column name to type mapping
+        incremental:
+          type: object
+          additionalProperties: true
+          nullable: true
+        schedule:
+          type: object
+          additionalProperties: true
+          nullable: true
+        retry_policy:
+          $ref: "#/components/schemas/RetryPolicy"
+
+    RetryPolicy:
+      type: object
+      nullable: true
+      properties:
+        max_attempts:
+          type: integer
+        initial_delay:
+          type: number
+          format: float
+        max_delay:
+          type: number
+          format: float
+        exponential_base:
+          type: number
+          format: float
+
+    ModelLineageResponse:
+      type: object
+      required: [root, nodes, edges]
+      properties:
+        root:
+          type: string
+          description: The model name this lineage is rooted on
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphEdge"
+
+    ModelRun:
+      type: object
+      required: [flow_id, flow_status, task_status]
+      properties:
+        flow_id:
+          type: string
+        flow_status:
+          type: string
+        flow_started_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        trigger_type:
+          type: string
+        task_status:
+          type: string
+        duration_seconds:
+          type: number
+          format: float
+          nullable: true
+        rows_processed:
+          type: integer
+          nullable: true
+        started_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        error_message:
+          type: string
+          nullable: true
+
+    # -- Flows ---------------------------------------------------------------
+    FlowSummary:
+      type: object
+      required: [flow_id, status]
+      properties:
+        flow_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled]
+        started_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        completed_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        duration_seconds:
+          type: number
+          format: float
+          nullable: true
+        total_tasks:
+          type: integer
+        completed_tasks:
+          type: integer
+        failed_tasks:
+          type: integer
+        total_rows:
+          type: integer
+          nullable: true
+        trigger:
+          type: string
+          nullable: true
+        trigger_type:
+          type: string
+          nullable: true
+        trigger_id:
+          type: string
+          nullable: true
+        created_by:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+        summary:
+          $ref: "#/components/schemas/FlowTaskSummary"
+
+    FlowDetail:
+      allOf:
+        - $ref: "#/components/schemas/FlowSummary"
+        - type: object
+          properties:
+            tasks:
+              type: array
+              items:
+                $ref: "#/components/schemas/Task"
+
+    FlowTaskSummary:
+      type: object
+      properties:
+        total_tasks:
+          type: integer
+        pending:
+          type: integer
+        waiting:
+          type: integer
+        ready:
+          type: integer
+        running:
+          type: integer
+        materialising:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        skipped:
+          type: integer
+
+    Task:
+      type: object
+      required: [task_id, flow_id, model_name, status]
+      properties:
+        task_id:
+          type: string
+        flow_id:
+          type: string
+        model_name:
+          type: string
+        schema_name:
+          type: string
+        status:
+          type: string
+          enum: [pending, waiting, ready, running, materialising, completed, failed, skipped]
+        attempt:
+          type: integer
+        max_attempts:
+          type: integer
+        enqueued_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        started_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        completed_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        duration_seconds:
+          type: number
+          format: float
+          nullable: true
+        wait_time_seconds:
+          type: number
+          format: float
+          nullable: true
+        materialise:
+          type: string
+          nullable: true
+        strategy:
+          type: string
+          nullable: true
+        dependencies:
+          type: array
+          items:
+            type: string
+        rows_processed:
+          type: integer
+          nullable: true
+        rows_ingested:
+          type: integer
+          nullable: true
+        rows_inserted:
+          type: integer
+          nullable: true
+        rows_updated:
+          type: integer
+          nullable: true
+        rows_deleted:
+          type: integer
+          nullable: true
+        schema_changes:
+          type: integer
+          nullable: true
+        error_type:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        error_stacktrace:
+          type: string
+          nullable: true
+
+    # -- Runs ----------------------------------------------------------------
+    CreateRunRequest:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Model names to run (null or omitted runs all models)
+        force:
+          type: boolean
+          default: false
+          description: Force execution even if no changes detected
+        trigger_metadata:
+          type: object
+          additionalProperties: true
+          description: Optional metadata to attach to the run
+        since:
+          type: string
+          nullable: true
+          description: Backfill start date (implies force=true)
+        until:
+          type: string
+          nullable: true
+          description: Backfill end date
+
+    CreateRunResponse:
+      type: object
+      required: [run_id, status, models, estimated_tasks]
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          example: accepted
+        models:
+          type: array
+          items:
+            type: string
+        estimated_tasks:
+          type: integer
+
+    RunStatusResponse:
+      type: object
+      required: [run_id, status, progress, tasks]
+      properties:
+        run_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled]
+        started_at:
+          type: number
+          format: float
+          nullable: true
+          description: Unix timestamp
+        elapsed_seconds:
+          type: number
+          format: float
+          nullable: true
+        progress:
+          type: object
+          required: [total_tasks, completed, failed, running, pending]
+          properties:
+            total_tasks:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+            running:
+              type: integer
+            pending:
+              type: integer
+        tasks:
+          type: array
+          items:
+            type: object
+            properties:
+              model_name:
+                type: string
+              status:
+                type: string
+              rows_processed:
+                type: integer
+                nullable: true
+              duration_seconds:
+                type: number
+                format: float
+                nullable: true
+
+    # -- Graph ---------------------------------------------------------------
+    GraphNode:
+      type: object
+      required: [id, name, type]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        schema:
+          type: string
+        materialise:
+          type: string
+        strategy:
+          type: string
+          nullable: true
+        layer:
+          type: integer
+        tags:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+
+    GraphEdge:
+      type: object
+      required: [source, target]
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+        target:
+          type: string
+
+    GraphTreeNode:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        cyclic:
+          type: boolean
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphTreeNode"
+
+    GraphResponse:
+      type: object
+      required: [nodes, edges, layers, stats]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphEdge"
+        layers:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: Layer index to list of model names
+        stats:
+          type: object
+          required: [total_nodes, total_edges, max_layer]
+          properties:
+            total_nodes:
+              type: integer
+            total_edges:
+              type: integer
+            max_layer:
+              type: integer
+        tree:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphTreeNode"
+          description: Present when format=tree
+        nodes_by_layer:
+          type: array
+          items:
+            type: object
+            properties:
+              layer:
+                type: integer
+              nodes:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GraphNode"
+          description: Present when format=layers
+
+    GraphValidationIssue:
+      type: object
+      required: [type, severity, message, models]
+      properties:
+        type:
+          type: string
+          enum: [cycle, missing_dependency]
+        severity:
+          type: string
+          enum: [error, warning]
+        message:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+
+    GraphValidationResponse:
+      type: object
+      required: [valid, issues]
+      properties:
+        valid:
+          type: boolean
+          description: True if no errors (warnings are allowed)
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphValidationIssue"
+
+    # -- Lineage -------------------------------------------------------------
+    LineageEdge:
+      type: object
+      required: [source_model, source_column, output_model, output_column, transformation_type]
+      properties:
+        source_model:
+          type: string
+        source_column:
+          type: string
+        output_model:
+          type: string
+        output_column:
+          type: string
+        transformation_type:
+          type: string
+          description: "e.g. direct, expression, aggregation"
+
+    ColumnDetail:
+      type: object
+      required: [name, sources]
+      properties:
+        name:
+          type: string
+        data_type:
+          type: string
+          nullable: true
+        nullable:
+          type: boolean
+          nullable: true
+        is_primary_key:
+          type: boolean
+        description:
+          type: string
+          nullable: true
+        sources:
+          type: array
+          items:
+            type: object
+            required: [model, column, transformation]
+            properties:
+              model:
+                type: string
+              column:
+                type: string
+              transformation:
+                type: string
+
+    ColumnLineageEdge:
+      type: object
+      required: [source_model, source_column, output_model, output_column, transformation]
+      properties:
+        source_model:
+          type: string
+        source_column:
+          type: string
+        output_model:
+          type: string
+        output_column:
+          type: string
+        transformation:
+          type: string
+
+    ColumnLineageResponse:
+      type: object
+      required: [model, column, sources, dependents]
+      properties:
+        model:
+          type: string
+        column:
+          type: string
+        data_type:
+          type: string
+          nullable: true
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ColumnLineageEdge"
+        dependents:
+          type: array
+          items:
+            $ref: "#/components/schemas/ColumnLineageEdge"
+
+    FullLineageResponse:
+      type: object
+      required: [models, edges]
+      properties:
+        models:
+          type: object
+          additionalProperties:
+            type: object
+            required: [columns]
+            properties:
+              columns:
+                type: array
+                items:
+                  type: object
+                  required: [name, sources_count]
+                  properties:
+                    name:
+                      type: string
+                    data_type:
+                      type: string
+                      nullable: true
+                    sources_count:
+                      type: integer
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/LineageEdge"
+
+    LineageRefreshResponse:
+      type: object
+      required: [success, errors]
+      properties:
+        success:
+          type: integer
+          description: Number of models successfully refreshed
+        errors:
+          type: integer
+          description: Number of models that failed
+        error_details:
+          type: array
+          nullable: true
+          items:
+            type: object
+            required: [model, error]
+            properties:
+              model:
+                type: string
+              error:
+                type: string
+
+    # -- Plan / Impact -------------------------------------------------------
+    SchemaChange:
+      type: object
+      required: [column_name, change_type]
+      properties:
+        column_name:
+          type: string
+        change_type:
+          type: string
+          enum: [added, removed, type_changed]
+        old_type:
+          type: string
+          nullable: true
+        new_type:
+          type: string
+          nullable: true
+
+    BreakingChange:
+      type: object
+      required: [model_name, change_type, description, severity]
+      properties:
+        model_name:
+          type: string
+        change_type:
+          type: string
+          enum: [column_removed, column_type_changed, model_removed, primary_key_changed]
+        description:
+          type: string
+        affected_downstream:
+          type: array
+          items:
+            type: string
+        column_name:
+          type: string
+          nullable: true
+        severity:
+          type: string
+          enum: [warning, error]
+
+    ModelImpact:
+      type: object
+      required: [model_name, will_run]
+      properties:
+        model_name:
+          type: string
+        will_run:
+          type: boolean
+        run_reason:
+          type: string
+          nullable: true
+          enum: [file_changed, upstream_changed, first_run, force, config_changed, schema_changed]
+        downstream_affected:
+          type: array
+          items:
+            type: string
+        schema_changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaChange"
+        breaking_changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/BreakingChange"
+        file_changed:
+          type: boolean
+        upstream_changed:
+          type: array
+          items:
+            type: string
+
+    PlanResponse:
+      type: object
+      required: [models_to_run, models_skipped, breaking_changes, total_affected, has_breaking_changes, summary]
+      properties:
+        models_to_run:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelImpact"
+        models_skipped:
+          type: array
+          items:
+            type: string
+        breaking_changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/BreakingChange"
+        total_affected:
+          type: integer
+        has_breaking_changes:
+          type: boolean
+        summary:
+          type: object
+          required: [will_run, skipped, warnings, errors]
+          properties:
+            will_run:
+              type: integer
+            skipped:
+              type: integer
+            warnings:
+              type: integer
+            errors:
+              type: integer
+
+    # -- Schema History ------------------------------------------------------
+    SchemaColumn:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        nullable:
+          type: boolean
+        is_primary_key:
+          type: boolean
+
+    SchemaVersion:
+      type: object
+      required: [version, columns]
+      properties:
+        version:
+          type: integer
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaColumn"
+        detected_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    SchemaHistoryResponse:
+      type: object
+      required: [versions, total]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaVersion"
+        total:
+          type: integer
+        message:
+          type: string
+          description: Present when no database connection is available
+
+    SchemaDiffEntry:
+      type: object
+      required: [name, change]
+      properties:
+        name:
+          type: string
+        change:
+          type: string
+          enum: [added, removed, modified, unchanged]
+        old_type:
+          type: string
+          nullable: true
+        new_type:
+          type: string
+          nullable: true
+
+    SchemaDiffResponse:
+      type: object
+      required: [diff, from_version, to_version]
+      properties:
+        diff:
+          type: array
+          items:
+            $ref: "#/components/schemas/SchemaDiffEntry"
+        from_version:
+          type: integer
+        to_version:
+          type: integer
+        message:
+          type: string
+          description: Present when no database connection is available
+
+    # -- Streams -------------------------------------------------------------
+    StreamSummary:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        schema:
+          type: string
+        description:
+          type: string
+          nullable: true
+        cursor:
+          type: string
+          example: rowid
+        tags:
+          type: array
+          items:
+            type: string
+        owner:
+          type: string
+          nullable: true
+        fields:
+          oneOf:
+            - type: object
+              additionalProperties:
+                type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  type:
+                    type: string
+          nullable: true
+        auth_required:
+          type: boolean
+        validate_schema:
+          type: boolean
+        downstream_models:
+          type: array
+          items:
+            type: string
+        endpoint:
+          type: string
+
+    StreamDetail:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        schema:
+          type: string
+        description:
+          type: string
+          nullable: true
+        cursor:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        owner:
+          type: string
+          nullable: true
+        fields:
+          oneOf:
+            - type: object
+              additionalProperties:
+                type: string
+            - type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  type:
+                    type: string
+          nullable: true
+        auth_required:
+          type: boolean
+        validate_schema:
+          type: boolean
+        rate_limit:
+          type: object
+          additionalProperties: true
+          nullable: true
+        retention:
+          type: object
+          additionalProperties: true
+          nullable: true
+        downstream_models:
+          type: array
+          items:
+            type: string
+        row_count:
+          type: integer
+          nullable: true
+        endpoints:
+          type: object
+          properties:
+            publish:
+              type: string
+            subscribe:
+              type: string
+            consume:
+              type: string
+
+    StreamPublishResponse:
+      type: object
+      required: [status, stream, rows_received]
+      properties:
+        status:
+          type: string
+          example: accepted
+        stream:
+          type: string
+        rows_received:
+          type: integer
+        triggered_models:
+          type: array
+          items:
+            type: string
+
+    ConsumeRequest:
+      type: object
+      required: [consumer]
+      properties:
+        consumer:
+          type: string
+          description: Consumer name or identifier
+        batch_size:
+          type: integer
+          default: 100
+          minimum: 1
+          maximum: 10000
+          description: Maximum number of events to return
+
+    ConsumeResponse:
+      type: object
+      required: [stream, consumer, events, count]
+      properties:
+        stream:
+          type: string
+        consumer:
+          type: string
+        events:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        count:
+          type: integer
+
+    AckRequest:
+      type: object
+      required: [consumer]
+      properties:
+        consumer:
+          type: string
+          description: Consumer name or identifier
+        events:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: Events to acknowledge (must include _interlace_rowid)

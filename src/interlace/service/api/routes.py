@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from interlace.service.api.handlers.docs import openapi_yaml, swagger_ui
 from interlace.service.api.handlers.events import EventsHandler
 from interlace.service.api.handlers.flows import FlowsHandler
 from interlace.service.api.handlers.graph import GraphHandler
@@ -45,6 +46,14 @@ def setup_routes(app: web.Application, service: "InterlaceService") -> None:
 
     # API version prefix
     prefix = "/api/v1"
+
+    # API documentation (outside versioned prefix)
+    app.router.add_routes(
+        [
+            web.get("/api/docs", swagger_ui),
+            web.get("/api/openapi.yaml", openapi_yaml),
+        ]
+    )
 
     # Register routes
     app.router.add_routes(

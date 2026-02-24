@@ -24,7 +24,7 @@ from interlace.core.context import _execute_sql_internal
 from interlace.core.executor import Executor
 from interlace.core.initialization import InitializationError, initialize
 from interlace.service.api import EventBus, setup_routes
-from interlace.service.api.middleware import error_middleware, setup_cors
+from interlace.service.api.middleware import error_middleware, setup_auth, setup_cors
 from interlace.service.api.routes import setup_legacy_routes
 from interlace.service.cron_parser import CronParseError, next_fire_time_cron
 from interlace.sync.sftp_sync import run_sftp_sync_job
@@ -581,6 +581,11 @@ def run_service(
             f"http://{host}:{port}",
         ]
     setup_cors(app, origins=cors_origins)
+
+    # Setup API key authentication (if configured)
+    auth_config = svc.config.get("service.auth", {}) if svc.config else {}
+    if isinstance(auth_config, dict) and auth_config:
+        setup_auth(app, auth_config)
 
     # Register new API routes
     setup_routes(app, svc)

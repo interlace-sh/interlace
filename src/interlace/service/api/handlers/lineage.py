@@ -288,14 +288,6 @@ class LineageHandler(BaseHandler):
                     if self.state_store:
                         self.state_store.clear_model_lineage(model_name)
                         for col in lineage.columns:
-                            self.state_store.save_model_column(
-                                model_name=model_name,
-                                column_name=col.name,
-                                data_type=col.data_type,
-                                is_nullable=col.nullable,
-                                is_primary_key=col.is_primary_key,
-                                description=col.description,
-                            )
                             for edge in col.sources:
                                 self.state_store.save_column_lineage(
                                     output_model=model_name,

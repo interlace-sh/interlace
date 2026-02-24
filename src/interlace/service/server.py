@@ -602,7 +602,8 @@ def run_service(
         static_dir = Path(__file__).parent / "static"
         if static_dir.exists() and (static_dir / "index.html").exists():
             # Serve SvelteKit build output (_app/) - hashed filenames, long cache
-            app.router.add_static("/_app", static_dir / "_app", name="sveltekit_app")
+            if (static_dir / "_app").exists():
+                app.router.add_static("/_app", static_dir / "_app", name="sveltekit_app")
 
             # Serve static assets (logos, images, etc.)
             if (static_dir / "assets").exists():
@@ -648,6 +649,10 @@ def run_service(
         logger.info(f"API available at http://{host}:{port}/api/v1/")
 
     async def on_cleanup(app: web.Application) -> None:
+        # Drain SSE subscribers first so their handlers exit cleanly
+        if svc.event_bus:
+            await svc.event_bus.shutdown()
+            await asyncio.sleep(0.1)  # let handler coroutines finish
         await svc.stop_background_tasks()
 
     app.on_startup.append(on_startup)

@@ -2,7 +2,8 @@
 Flow and task history endpoints.
 """
 
-import builtins
+from __future__ import annotations
+
 from typing import Any
 
 from aiohttp import web
@@ -231,6 +232,62 @@ class FlowsHandler(BaseHandler):
 
         return summary
 
+    def _normalize_stored_flow(self, f: dict[str, Any], tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Normalize a flow dict from state store to match the API schema."""
+        import math
+
+        f.setdefault("trigger", f.get("trigger_type"))
+        f.setdefault("metadata", {})
+
+        # Compute task aggregates if tasks are available
+        if tasks is not None:
+            total = len(tasks)
+            completed = sum(1 for t in tasks if t.get("status") == "completed")
+            failed = sum(1 for t in tasks if t.get("status") == "failed")
+            skipped = sum(1 for t in tasks if t.get("status") == "skipped")
+            total_rows = 0
+            for t in tasks:
+                rp = t.get("rows_processed")
+                if isinstance(rp, (int, float)) and not math.isnan(rp):
+                    total_rows += int(rp)
+            f["total_tasks"] = total
+            f["completed_tasks"] = completed
+            f["failed_tasks"] = failed
+            f["total_rows"] = total_rows if total_rows > 0 else None
+            f.setdefault(
+                "summary",
+                {
+                    "total_tasks": total,
+                    "completed": completed,
+                    "failed": failed,
+                    "skipped": skipped,
+                },
+            )
+        else:
+            f.setdefault("total_tasks", 0)
+            f.setdefault("completed_tasks", 0)
+            f.setdefault("failed_tasks", 0)
+            f.setdefault("total_rows", None)
+            f.setdefault("summary", {})
+
+        return f
+
+    def _normalize_stored_task(self, t: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a task dict from state store to match the API schema."""
+        import json as _json
+
+        # Parse dependencies from JSON string if needed
+        deps = t.get("dependencies")
+        if isinstance(deps, str):
+            try:
+                t["dependencies"] = _json.loads(deps)
+            except (ValueError, TypeError):
+                t["dependencies"] = []
+        elif deps is None:
+            t["dependencies"] = []
+
+        return t
+
     async def _query_flows(
         self,
         status: str | None,
@@ -271,10 +328,42 @@ class FlowsHandler(BaseHandler):
 
                     if result is not None and len(result) > 0:
                         flows = result.to_dict("records")
-                        # Normalise keys for API response
+
+                        # Fetch task counts per flow for aggregates
+                        flow_ids = [f["flow_id"] for f in flows if f.get("flow_id")]
+                        task_counts: dict[str, dict[str, int]] = {}
+                        if flow_ids:
+                            placeholders = ", ".join(f"'{fid}'" for fid in flow_ids)
+                            tc_result = conn.sql(
+                                f"SELECT flow_id, status, COUNT(*) as cnt, "
+                                f"COALESCE(SUM(CASE WHEN rows_processed IS NOT NULL THEN rows_processed ELSE 0 END), 0) as total_rows "
+                                f"FROM interlace.tasks WHERE flow_id IN ({placeholders}) "
+                                f"GROUP BY flow_id, status"
+                            ).execute()
+                            if tc_result is not None and len(tc_result) > 0:
+                                for row in tc_result.to_dict("records"):
+                                    fid = row["flow_id"]
+                                    if fid not in task_counts:
+                                        task_counts[fid] = {"total": 0, "completed": 0, "failed": 0, "total_rows": 0}
+                                    cnt = int(row["cnt"]) if row.get("cnt") else 0
+                                    rows = int(row["total_rows"]) if row.get("total_rows") else 0
+                                    task_counts[fid]["total"] += cnt
+                                    task_counts[fid]["total_rows"] += rows
+                                    if row.get("status") == "completed":
+                                        task_counts[fid]["completed"] += cnt
+                                    elif row.get("status") == "failed":
+                                        task_counts[fid]["failed"] += cnt
+
                         for f in flows:
-                            f.setdefault("trigger", f.get("trigger_type"))
-                            f.setdefault("summary", {})
+                            fid = f.get("flow_id")
+                            tc = task_counts.get(fid, {})
+                            f["total_tasks"] = tc.get("total", 0)
+                            f["completed_tasks"] = tc.get("completed", 0)
+                            f["failed_tasks"] = tc.get("failed", 0)
+                            tr = tc.get("total_rows", 0)
+                            f["total_rows"] = tr if tr > 0 else None
+                            self._normalize_stored_flow(f)
+
                         return flows, total
             except Exception:
                 pass  # Fall back to in-memory
@@ -319,24 +408,24 @@ class FlowsHandler(BaseHandler):
                     result = conn.sql(f"SELECT * FROM interlace.flows WHERE flow_id = '{safe_id}'").execute()
                     if result is not None and len(result) > 0:
                         flow_dict = result.to_dict("records")[0]
-                        flow_dict.setdefault("trigger", flow_dict.get("trigger_type"))
-                        flow_dict.setdefault("summary", {})
 
                         # Fetch associated tasks
                         tasks_result = conn.sql(
                             f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' " f"ORDER BY started_at"
                         ).execute()
+                        tasks_list: list[dict[str, Any]] = []
                         if tasks_result is not None and len(tasks_result) > 0:
-                            flow_dict["tasks"] = tasks_result.to_dict("records")
-                        else:
-                            flow_dict["tasks"] = []
+                            tasks_list = [self._normalize_stored_task(t) for t in tasks_result.to_dict("records")]
+
+                        flow_dict = self._normalize_stored_flow(flow_dict, tasks_list)
+                        flow_dict["tasks"] = tasks_list
                         return flow_dict  # type: ignore[no-any-return]
             except Exception:
                 pass
 
         return None
 
-    async def _get_tasks_from_store(self, flow_id: str) -> builtins.list[dict[str, Any]] | None:
+    async def _get_tasks_from_store(self, flow_id: str) -> list[dict[str, Any]] | None:
         """Get tasks for a flow from state store or in-memory history."""
         # First check in-memory history
         for flow in getattr(self.service, "flow_history", []):
@@ -355,7 +444,7 @@ class FlowsHandler(BaseHandler):
                         f"SELECT * FROM interlace.tasks WHERE flow_id = '{safe_id}' " f"ORDER BY started_at"
                     ).execute()
                     if result is not None and len(result) > 0:
-                        return result.to_dict("records")  # type: ignore[no-any-return]
+                        return [self._normalize_stored_task(t) for t in result.to_dict("records")]
             except Exception:
                 pass
 

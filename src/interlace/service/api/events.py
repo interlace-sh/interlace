@@ -139,6 +139,17 @@ class EventBus:
 
         return notified
 
+    async def shutdown(self) -> None:
+        """Signal all subscribers to disconnect by sending a sentinel ``None``."""
+        all_queues: set[asyncio.Queue] = set(self._all_subscribers)
+        for subscribers in self._type_subscribers.values():
+            all_queues.update(subscribers)
+        for queue in all_queues:
+            try:
+                await queue.put(None)  # sentinel
+            except Exception:
+                pass
+
     def subscriber_count(self) -> int:
         """Get total number of active subscribers."""
         all_queues = set(self._all_subscribers)

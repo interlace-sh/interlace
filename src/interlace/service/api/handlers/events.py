@@ -98,6 +98,9 @@ class EventsHandler(BaseHandler):
                 try:
                     # Wait for event with timeout for keepalive
                     event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    if event is None:
+                        # Shutdown sentinel received
+                        break
                     try:
                         await response.write(format_sse_event(event))
                     except (ConnectionResetError, BrokenPipeError, OSError) as e:
@@ -113,8 +116,8 @@ class EventsHandler(BaseHandler):
                 except asyncio.CancelledError:
                     break
 
-        except (ConnectionResetError, BrokenPipeError):
-            logger.debug("SSE client disconnected (connection reset)")
+        except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError):
+            pass
         except Exception as e:
             logger.warning(f"SSE stream error: {e}")
         finally:

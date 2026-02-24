@@ -4,12 +4,69 @@ API endpoint handlers.
 Each handler class manages a resource type (models, flows, etc.).
 """
 
+import datetime
+import json
+import math
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 if TYPE_CHECKING:
     from interlace.service.server import InterlaceService
+
+
+def _sanitize(obj: Any) -> Any:
+    """Recursively sanitize data for JSON serialization.
+
+    Converts NaN/Inf floats to None, pandas Timestamps to ISO strings,
+    numpy types to native Python, and pandas NA/NaT to None.
+    """
+    if obj is None:
+        return None
+
+    # Check for float NaN/Inf first (most common issue from DuckDB)
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+
+    if isinstance(obj, (str, int, bool)):
+        return obj
+
+    # Handle pandas NA/NaT
+    try:
+        import pandas as pd
+
+        if isinstance(obj, type(pd.NaT)) or pd.isna(obj):
+            return None
+    except (ImportError, TypeError, ValueError):
+        pass
+
+    # Handle datetime types (including pandas Timestamp)
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    if isinstance(obj, datetime.date):
+        return obj.isoformat()
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+
+    # Handle numpy arrays and scalars
+    if hasattr(obj, "tolist") and hasattr(obj, "dtype") and hasattr(obj, "shape"):
+        if getattr(obj, "ndim", 0) > 0:
+            return [_sanitize(x) for x in obj.tolist()]
+        val = obj.item()
+        return _sanitize(val)
+    if hasattr(obj, "item"):
+        val = obj.item()
+        return _sanitize(val)
+
+    # Recurse into dicts and lists
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(x) for x in obj]
+
+    return obj
 
 
 class BaseHandler:
@@ -63,4 +120,4 @@ class BaseHandler:
             request_id = self.get_request_id(request)
             if request_id:
                 headers["X-Request-ID"] = request_id
-        return web.json_response(data, status=status, headers=headers)
+        return web.json_response(_sanitize(data), status=status, headers=headers)

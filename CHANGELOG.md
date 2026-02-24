@@ -5,6 +5,20 @@ All notable changes to Interlace will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-24
+
+### Added
+- **API key authentication middleware:** Global auth for `interlace serve` with Bearer token and X-API-Key header support, per-key permissions (read/write/execute), path whitelisting, and configurable via `service.auth` in config.yaml.
+- **Rate limiting:** In-memory token bucket rate limiter per API key, configurable via `service.auth.rate_limit` in config.yaml.
+- **OpenAPI/Swagger documentation:** Full OpenAPI 3.0 specification (32 endpoints, 46 schemas) served at `/api/openapi.yaml` with interactive Swagger UI at `/api/docs`.
+- **Quality check executor integration:** Quality checks are now executed post-materialization during `interlace run`. Supports both `@model(quality_checks=[...])` decorator-level and `config.yaml` quality section configuration. Results stored in `interlace.quality_results` state table.
+- **`force` parameter on programmatic API:** `run(force=True)` re-executes all models regardless of change detection.
+- **Integration tests:** 6 end-to-end tests running the basic example project, verifying model execution, quality checks, change detection, and force re-execution.
+
+### Fixed
+- Display singleton no longer crashes when reused across multiple `run()` calls (cleared stale progress state in `set_flow()`).
+- Guard against stale Rich progress task IDs from previous runs.
+
 ## [0.1.2] - 2026-02-24
 
 ### Changed
@@ -81,6 +95,7 @@ Initial release of Interlace — a Python/SQL-first data pipeline framework.
 
 **Environments:** Config overlay merging, data promotion CLI
 
+[0.2.0]: https://github.com/marklidenberg/interlace/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/marklidenberg/interlace/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/marklidenberg/interlace/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/marklidenberg/interlace/releases/tag/v0.1.0

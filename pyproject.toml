@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interlace"
-version = "0.1.2"
+version = "0.2.0"
 description = "A modern, Python/SQL-first data orchestration & pipeline framework"
 readme = "README.md"
 requires-python = ">=3.12"

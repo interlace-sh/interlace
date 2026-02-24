@@ -4,7 +4,7 @@ Interlace - A modern, Python/SQL-first data pipeline framework.
 Phase 0 (MVP): Core functionality for basic data pipeline execution.
 """
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 # Core exports
 # Global config

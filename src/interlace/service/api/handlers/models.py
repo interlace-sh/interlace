@@ -150,7 +150,10 @@ class ModelsHandler(BaseHandler):
 
         return await self.json_response(
             {
+                "model": name,
                 "root": name,
+                "direction": direction,
+                "depth": depth,
                 "nodes": nodes,
                 "edges": unique_edges,
             },
@@ -309,6 +312,83 @@ class ModelsHandler(BaseHandler):
             "started_at": task.started_at,
             "error_message": task.error_message,
         }
+
+    async def stats(self, request: web.Request) -> web.Response:
+        """
+        GET /api/v1/models/{name}/stats
+
+        Get aggregate statistics for a model.
+        """
+        name = request.match_info["name"]
+
+        if name not in self.models:
+            raise NotFoundError("Model", name, ErrorCode.MODEL_NOT_FOUND)
+
+        total_rows: int | None = None
+        last_run_at: float | None = None
+        avg_duration_seconds: float | None = None
+
+        # Compute from state store
+        if self.state_store:
+            try:
+                conn = self.state_store._get_connection()
+                if conn is not None:
+                    from interlace.core.state import _escape_sql_string
+
+                    safe_name = _escape_sql_string(name)
+                    result = conn.sql(
+                        f"SELECT "
+                        f"  MAX(rows_processed) AS total_rows, "
+                        f"  MAX(completed_at) AS last_run_at, "
+                        f"  AVG(duration_seconds) AS avg_duration_seconds "
+                        f"FROM interlace.tasks "
+                        f"WHERE model_name = '{safe_name}' AND status = 'completed'"
+                    ).execute()
+                    if result is not None and len(result) > 0:
+                        row = result.to_dict("records")[0]
+                        rp = row.get("total_rows")
+                        if rp is not None:
+                            import math
+
+                            if not (isinstance(rp, float) and math.isnan(rp)):
+                                total_rows = int(rp)
+                        lr = row.get("last_run_at")
+                        if lr is not None:
+                            last_run_at = float(lr) if isinstance(lr, (int, float)) else None
+                        ad = row.get("avg_duration_seconds")
+                        if ad is not None:
+                            import math
+
+                            if not (isinstance(ad, float) and math.isnan(ad)):
+                                avg_duration_seconds = round(float(ad), 3)
+            except Exception:
+                pass
+
+        # Fallback: compute from in-memory flow history
+        if last_run_at is None:
+            durations: list[float] = []
+            for flow in getattr(self.service, "flow_history", []):
+                if hasattr(flow, "tasks") and name in flow.tasks:
+                    task = flow.tasks[name]
+                    if task.status.value == "completed":
+                        if task.rows_processed is not None and total_rows is None:
+                            total_rows = task.rows_processed
+                        if task.completed_at is not None and (last_run_at is None or task.completed_at > last_run_at):
+                            last_run_at = task.completed_at
+                        d = task.get_duration() if hasattr(task, "get_duration") else None
+                        if d is not None:
+                            durations.append(d)
+            if durations:
+                avg_duration_seconds = round(sum(durations) / len(durations), 3)
+
+        return await self.json_response(
+            {
+                "total_rows": total_rows,
+                "last_run_at": last_run_at,
+                "avg_duration_seconds": avg_duration_seconds,
+            },
+            request=request,
+        )
 
     def _serialize_retry_policy(self, policy: Any) -> dict[str, Any] | None:
         """Serialize retry policy to dict."""

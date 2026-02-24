@@ -105,7 +105,7 @@ class SchemaHandler(BaseHandler):
         """
         GET /api/v1/models/{name}/schema/current
 
-        Get current schema version number.
+        Get current schema version with columns.
         """
         name = request.match_info["name"]
 
@@ -117,15 +117,29 @@ class SchemaHandler(BaseHandler):
 
         connection = self._get_connection()
         if connection is None:
+            columns = self._get_current_schema_from_model(name, model)
             return await self.json_response(
-                {"version": 0, "message": "No database connection"},
+                {"version": 0, "columns": columns, "message": "No database connection"},
                 request=request,
             )
 
         version = get_current_schema_version(connection, name, schema_name)
 
+        # Get columns for the current version
+        columns: list[dict] = []
+        if version > 0:
+            history = get_schema_history(connection, name, schema_name, version)
+            if history:
+                grouped = self._group_by_version(history)
+                if grouped:
+                    columns = grouped[0].get("columns", [])
+
+        # Fallback to model definition or database introspection
+        if not columns:
+            columns = self._get_current_schema_from_model(name, model)
+
         return await self.json_response(
-            {"version": version},
+            {"version": version, "columns": columns},
             request=request,
         )
 
@@ -178,9 +192,22 @@ class SchemaHandler(BaseHandler):
         # Compute diff
         diff = self._compute_diff(from_history, to_history)
 
+        # Build structured lists for UI convenience
+        added = [{"name": d["name"], "type": d.get("new_type")} for d in diff if d["change"] == "added"]
+        removed = [{"name": d["name"], "type": d.get("old_type")} for d in diff if d["change"] == "removed"]
+        modified = [
+            {"column": d["name"], "old_type": d.get("old_type"), "new_type": d.get("new_type")}
+            for d in diff
+            if d["change"] == "modified"
+        ]
+
         return await self.json_response(
             {
+                "model": name,
                 "diff": diff,
+                "added": added,
+                "removed": removed,
+                "modified": modified,
                 "from_version": from_version,
                 "to_version": to_version,
             },

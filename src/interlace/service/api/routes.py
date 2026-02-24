@@ -68,6 +68,7 @@ def setup_routes(app: web.Application, service: "InterlaceService") -> None:
             web.get(f"{prefix}/models/{{name}}", models.get),
             web.get(f"{prefix}/models/{{name}}/lineage", models.lineage),
             web.get(f"{prefix}/models/{{name}}/runs", models.runs),
+            web.get(f"{prefix}/models/{{name}}/stats", models.stats),
             # Flows (execution history)
             web.get(f"{prefix}/flows", flows.list),
             web.get(f"{prefix}/flows/{{flow_id}}", flows.get),

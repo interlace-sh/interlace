@@ -965,7 +965,7 @@ class ModelExecutor:
             if conn is None:
                 return
             from interlace.core.context import _execute_sql_internal
-            from interlace.core.state import _escape_sql_string, _sql_value
+            from interlace.core.state import _sql_value
 
             flow_id = self.flow.flow_id if self.flow else None
             task_id = None

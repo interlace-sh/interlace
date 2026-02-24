@@ -16,7 +16,6 @@ from interlace.service.api.middleware.auth import (
 )
 from interlace.service.api.middleware.error import error_middleware
 
-
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------

@@ -74,9 +74,7 @@ class TestBasicProjectExecution:
             os.chdir(old_cwd)
 
         for model_name, model_result in result.items():
-            assert model_result.get("status") == "success", (
-                f"Model '{model_name}' failed: {model_result}"
-            )
+            assert model_result.get("status") == "success", f"Model '{model_name}' failed: {model_result}"
 
     async def test_models_produce_rows(self, project_dir: Path) -> None:
         """Models should produce non-zero rows."""
@@ -91,9 +89,7 @@ class TestBasicProjectExecution:
 
         for model_name in ["users", "orders", "products"]:
             rows = result[model_name].get("rows")
-            assert rows is not None and rows > 0, (
-                f"Model '{model_name}' produced no rows: {result[model_name]}"
-            )
+            assert rows is not None and rows > 0, f"Model '{model_name}' produced no rows: {result[model_name]}"
 
     async def test_quality_checks_execute(self, project_dir: Path) -> None:
         """Quality checks configured in config.yaml should execute."""
@@ -102,7 +98,7 @@ class TestBasicProjectExecution:
         old_cwd = os.getcwd()
         os.chdir(project_dir)
         try:
-            result = await run(project_dir=project_dir, force=True)
+            await run(project_dir=project_dir, force=True)
         finally:
             os.chdir(old_cwd)
 
@@ -164,6 +160,6 @@ class TestBasicProjectExecution:
 
         # All models should succeed (not be skipped)
         for model_name, model_result in result2.items():
-            assert model_result.get("status") == "success", (
-                f"Model '{model_name}' was not re-executed on force: {model_result}"
-            )
+            assert (
+                model_result.get("status") == "success"
+            ), f"Model '{model_name}' was not re-executed on force: {model_result}"

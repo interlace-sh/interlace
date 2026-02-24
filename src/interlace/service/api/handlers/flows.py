@@ -4,6 +4,7 @@ Flow and task history endpoints.
 
 from __future__ import annotations
 
+import builtins
 from typing import Any
 
 from aiohttp import web
@@ -232,7 +233,9 @@ class FlowsHandler(BaseHandler):
 
         return summary
 
-    def _normalize_stored_flow(self, f: dict[str, Any], tasks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def _normalize_stored_flow(
+        self, f: dict[str, Any], tasks: builtins.list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
         """Normalize a flow dict from state store to match the API schema."""
         import math
 
@@ -419,13 +422,13 @@ class FlowsHandler(BaseHandler):
 
                         flow_dict = self._normalize_stored_flow(flow_dict, tasks_list)
                         flow_dict["tasks"] = tasks_list
-                        return flow_dict  # type: ignore[no-any-return]
+                        return flow_dict
             except Exception:
                 pass
 
         return None
 
-    async def _get_tasks_from_store(self, flow_id: str) -> list[dict[str, Any]] | None:
+    async def _get_tasks_from_store(self, flow_id: str) -> builtins.list[dict[str, Any]] | None:
         """Get tasks for a flow from state store or in-memory history."""
         # First check in-memory history
         for flow in getattr(self.service, "flow_history", []):

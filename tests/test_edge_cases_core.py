@@ -9,7 +9,7 @@ Tests for bugs found through code review of:
 """
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

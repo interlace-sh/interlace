@@ -126,7 +126,7 @@ class SchemaHandler(BaseHandler):
         version = get_current_schema_version(connection, name, schema_name)
 
         # Get columns for the current version
-        columns: list[dict] = []
+        columns = []
         if version > 0:
             history = get_schema_history(connection, name, schema_name, version)
             if history:

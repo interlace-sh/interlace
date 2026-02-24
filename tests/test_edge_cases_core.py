@@ -32,16 +32,16 @@ class TestChangeDetectorSQLQuotes:
 
         detector = ChangeDetector(state_store=None)
 
-        with patch("interlace.core.context._execute_sql_internal") as mock_exec:
-            mock_exec.return_value = None
-            detector._get_model_last_run(MagicMock(), "my_model", "public")
+        mock_conn = MagicMock()
+        mock_conn.sql.return_value.execute.return_value = None
+        detector._get_model_last_run(mock_conn, "my_model", "public")
 
-            assert mock_exec.called, "_execute_sql_internal should be called"
-            sql = mock_exec.call_args[0][1]
+        assert mock_conn.sql.called, "connection.sql should be called"
+        sql = mock_conn.sql.call_args[0][0]
 
-            # Model name and schema name must be wrapped in SQL string quotes
-            assert "'my_model'" in sql, f"SQL should have quoted model_name. Got: {sql}"
-            assert "'public'" in sql, f"SQL should have quoted schema_name. Got: {sql}"
+        # Model name and schema name must be wrapped in SQL string quotes
+        assert "'my_model'" in sql, f"SQL should have quoted model_name. Got: {sql}"
+        assert "'public'" in sql, f"SQL should have quoted schema_name. Got: {sql}"
 
 
 @pytest.mark.unit

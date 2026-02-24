@@ -36,16 +36,23 @@ class ViewMaterializer(Materializer):
             **kwargs: Additional parameters (may include file_path, file_hash)
         """
         # Check if view should be recreated (file hash changed)
+        # Only skip recreation if the view already exists AND the file hasn't changed
         file_path = kwargs.get("file_path")
         if file_path:
             try:
-                # Try to get state connection from kwargs (passed from executor)
                 state_conn = kwargs.get("state_connection")
                 if state_conn:
                     if not has_file_changed(state_conn, model_name, schema, Path(file_path)):
-                        # File hasn't changed, skip view recreation
-                        self.logger.debug(f"View {model_name} unchanged, skipping recreation")
-                        return
+                        # File hasn't changed — but only skip if the view actually exists
+                        view_exists = False
+                        try:
+                            existing = connection.list_tables(database=schema)
+                            view_exists = model_name in existing
+                        except Exception:
+                            pass
+                        if view_exists:
+                            self.logger.debug(f"View {model_name} unchanged, skipping recreation")
+                            return
             except Exception as e:
                 self.logger.debug(f"Could not check file hash for view {model_name}: {e}, recreating view")
         # Create database (schema) if it doesn't exist using ibis create_database()

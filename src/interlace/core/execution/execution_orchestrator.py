@@ -109,10 +109,12 @@ class ExecutionOrchestrator:
         # Create flow for this execution
         trigger_type = self.config.get("trigger", {}).get("type", "cli")
         trigger_id = self.config.get("trigger", {}).get("id")
+        model_selection = self.config.get("_model_selection")
         self.flow = Flow(
             trigger_type=trigger_type,
             trigger_id=trigger_id,
             metadata={"models": list(models.keys())},
+            model_selection=model_selection,
         )
         self.flow.start()
         # Update materialization manager and model executor with flow
@@ -429,6 +431,7 @@ class ExecutionOrchestrator:
                         task = self.flow.tasks[model_name]
                         task.skip()
                         task.error_message = error_msg
+                        task.skipped_reason = "upstream_failed"
                         if self.state_store:
                             self.state_store.save_task(task)
 
@@ -680,6 +683,11 @@ class ExecutionOrchestrator:
                                 sys.stderr.write(f"ERROR: Model '{model_name}' failed: {error_msg}\n")
                                 sys.stderr.write(f"ERROR: Logging also failed: {log_error}\n")
                         # Don't add to succeeded - model failed
+                    elif result_status == "skipped":
+                        flow_task.skip()
+                        flow_task.skipped_reason = result.get("reason")
+                        # Skipped models count as succeeded for dependency resolution
+                        succeeded.add(model_name)
                     else:
                         flow_task.complete(success=True)
                         flow_task.rows_processed = result.get("rows")

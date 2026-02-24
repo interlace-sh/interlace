@@ -54,7 +54,9 @@ def run(
             raise typer.Exit(1)
 
         # Filter models if specific tasks requested
+        model_selection: str | None = None
         if tasks:
+            model_selection = " ".join(tasks)
             # Only run requested models and their dependencies
             models_to_run = set(tasks)
             # Add dependencies
@@ -67,6 +69,9 @@ def run(
         # Backfill implies forced re-execution
         if since is not None:
             force = True
+
+        # Store model selection in config for flow tracking
+        config["_model_selection"] = model_selection
 
         # Note: Logging of "Discovered..." and "Running..." is done inside execute_dynamic()
         # after the Rich header panel is displayed, so we don't log here

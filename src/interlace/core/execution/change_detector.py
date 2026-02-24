@@ -136,44 +136,27 @@ class ChangeDetector:
         return False, "no_changes"
 
     def _get_model_last_run(self, connection: Any, model_name: str, schema_name: str) -> float | None:
-        """Get last run timestamp for a model."""
+        """Get last run timestamp for a model from model_metadata (O(1) lookup)."""
         try:
             from interlace.core.state import _escape_sql_string
 
             safe_model_name = _escape_sql_string(model_name)
             safe_schema_name = _escape_sql_string(schema_name)
-            from interlace.core.context import _execute_sql_internal
 
             query = f"""
-                SELECT MAX(completed_at) as last_run
-                FROM interlace.tasks
+                SELECT last_run_at
+                FROM interlace.model_metadata
                 WHERE model_name = '{safe_model_name}'
                   AND schema_name = '{safe_schema_name}'
-                  AND status = 'completed'
             """
-            result = _execute_sql_internal(connection, query)
-            if result is not None:
-                # Result is typically a DataFrame or similar
-                # Extract the timestamp value
-                if hasattr(result, "iloc") and hasattr(result, "columns"):
-                    # DataFrame result
-                    if len(result) > 0:
-                        last_run = result.iloc[0]["last_run"]
-                        if last_run is not None:
-                            # Convert to timestamp if needed
-
-                            if hasattr(last_run, "timestamp"):
-                                return float(last_run.timestamp())
-                            elif isinstance(last_run, (int, float)):
-                                return float(last_run)
-                elif isinstance(result, (list, tuple)) and len(result) > 0:
-                    last_run = result[0]
-                    if last_run is not None:
-
-                        if hasattr(last_run, "timestamp"):
-                            return float(last_run.timestamp())
-                        elif isinstance(last_run, (int, float)):
-                            return float(last_run)
+            result = connection.sql(query).execute()
+            if result is not None and len(result) > 0:
+                last_run = result.iloc[0]["last_run_at"] if hasattr(result, "iloc") else None
+                if last_run is not None:
+                    if hasattr(last_run, "timestamp"):
+                        return float(last_run.timestamp())
+                    elif isinstance(last_run, (int, float)):
+                        return float(last_run)
             return None
         except Exception as e:
             logger.debug(f"Could not get last run for {model_name}: {e}")

@@ -197,7 +197,7 @@ class ModelExecutor:
                         f"for '{model_name}' (cursor save suppressed)"
                     )
                 elif self.state_store:
-                    last_value = self.state_store.get_cursor_value(model_name)
+                    last_value = self.state_store.get_cursor_value(model_name, schema_name=schema)
                     if last_value is not None:
                         logger.debug(
                             f"Cursor '{cursor_column}' for '{model_name}': " f"last_processed_value={last_value}"
@@ -309,7 +309,7 @@ class ModelExecutor:
                 if cursor_column and cursor_new_values and self.state_store and not skip_cursor_save:
                     # Use the highest new max across all dependencies
                     best_value = _max_cursor_value(*cursor_new_values.values())
-                    self.state_store.save_cursor_value(model_name, cursor_column, best_value)
+                    self.state_store.save_cursor_value(model_name, cursor_column, best_value, schema_name=schema)
                     logger.debug(f"Cursor '{cursor_column}' for '{model_name}' " f"updated to {best_value}")
 
                 task = None
@@ -444,7 +444,7 @@ class ModelExecutor:
             # Skip during backfill to preserve the real high-water mark
             if cursor_column and cursor_new_values and self.state_store and not skip_cursor_save:
                 best_value = _max_cursor_value(*cursor_new_values.values())
-                self.state_store.save_cursor_value(model_name, cursor_column, best_value)
+                self.state_store.save_cursor_value(model_name, cursor_column, best_value, schema_name=schema)
                 logger.debug(f"Cursor '{cursor_column}' for '{model_name}' " f"updated to {best_value}")
 
             elapsed = time.time() - execution_start_time
@@ -465,7 +465,7 @@ class ModelExecutor:
                 try:
                     state_conn = self.state_store._get_connection()
                     if state_conn and self._update_model_last_run:
-                        self._update_model_last_run(state_conn, model_name, schema)
+                        self._update_model_last_run(state_conn, model_name, schema, model_info)
                 except Exception as e:
                     logger.debug(f"Could not update last_run_at for {model_name}: {e}")
 

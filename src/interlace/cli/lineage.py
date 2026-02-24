@@ -379,17 +379,8 @@ def refresh(
             # Clear existing lineage for this model
             state_store.clear_model_lineage(model_name)
 
-            # Save columns and lineage edges
+            # Save lineage edges
             for col in lineage.columns:
-                state_store.save_model_column(
-                    model_name=model_name,
-                    column_name=col.name,
-                    data_type=col.data_type,
-                    is_nullable=col.nullable,
-                    is_primary_key=col.is_primary_key,
-                    description=col.description,
-                )
-
                 for edge in col.sources:
                     state_store.save_column_lineage(
                         output_model=model_name,

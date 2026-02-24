@@ -19,6 +19,7 @@ async def run(
     verbose: bool = False,
     since: str | None = None,
     until: str | None = None,
+    force: bool = False,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -131,7 +132,7 @@ async def run(
         config["_since"] = since
     if until is not None:
         config["_until"] = until
-    force = since is not None  # Backfill implies forced re-execution
+    force = force or (since is not None)  # Backfill implies forced re-execution
 
     # Execute models
     executor = Executor(config)

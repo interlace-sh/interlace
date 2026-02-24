@@ -771,9 +771,10 @@ class Display:
             flow: Flow object to observe
         """
         self.flow = flow
-        # Auto-update when flow is set
-        if self.enabled:
-            self.update_from_flow()
+        # Clear stale progress state from previous runs (singleton reuse).
+        # initialize_progress() will re-populate these for the new flow.
+        self.progress_tasks = {}
+        self.task_visibility = {}
 
     def update_from_flow(self) -> None:
         """Update progress display from Flow/Task objects."""
@@ -934,6 +935,9 @@ class Display:
     def _update_progress_task(self, task_id: TaskID, task: Task) -> None:
         """Update a single progress task from Task object with all fields."""
         if not self.progress:
+            return
+        # Guard against stale task IDs from previous runs (singleton reuse)
+        if task_id not in self.progress._tasks:
             return
 
         # Get current visibility state

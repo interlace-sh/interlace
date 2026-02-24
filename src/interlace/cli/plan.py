@@ -62,7 +62,7 @@ def plan(
     if ctx.invoked_subcommand is not None:
         return
 
-    from interlace.core.deps import DependencyGraph
+    from interlace.core.dependencies import DependencyGraph
     from interlace.core.impact import ImpactAnalyzer
     from interlace.core.state import StateStore
     from interlace.utils.discovery import discover_models
@@ -84,7 +84,9 @@ def plan(
         raise typer.Exit(0)
 
     # Build dependency graph
-    graph = DependencyGraph(all_models)
+    graph = DependencyGraph()
+    for model_name, model_info in all_models.items():
+        graph.add_model(model_name, model_info.get("dependencies"))
 
     # Initialize state store
     state_store = StateStore(config)

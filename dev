@@ -16,7 +16,7 @@ case "${1:-help}" in
     uv run ruff check "$DIR/src/" "$DIR/tests/"
     ;;
   typecheck)
-    uv run mypy "$DIR/src/interlace/" --ignore-missing-imports
+    uv run mypy "$DIR/src/interlace/"
     ;;
   test)
     cd "$DIR" && uv run pytest "${@:2}"

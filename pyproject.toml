@@ -124,6 +124,22 @@ module = [
     "aioresponses.*",
     "yaml",
     "yaml.*",
+    "pandas",
+    "pandas.*",
+    "pyarrow",
+    "pyarrow.*",
+    "prometheus_client",
+    "prometheus_client.*",
+    "opentelemetry",
+    "opentelemetry.*",
+    "redis",
+    "redis.*",
+    "aio_pika",
+    "aio_pika.*",
+    "aiokafka",
+    "aiokafka.*",
+    "msgpack",
+    "msgpack.*",
 ]
 ignore_missing_imports = true
 

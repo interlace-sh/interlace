@@ -7,6 +7,7 @@ Phase 2: Track failures for manual inspection and debugging.
 import json
 import time
 from dataclasses import asdict, dataclass
+from datetime import UTC
 from typing import Any
 
 from interlace.utils.logging import get_logger
@@ -316,6 +317,15 @@ class DeadLetterQueue:
                 else:
                     return f"'{str(val).replace(chr(39), chr(39)+chr(39))}'"
 
+            def sql_timestamp(epoch: float | None) -> str:
+                """Convert float epoch seconds to a SQL TIMESTAMP literal."""
+                if epoch is None:
+                    return "NULL"
+                from datetime import datetime
+
+                dt = datetime.fromtimestamp(epoch, tz=UTC)
+                return f"TIMESTAMP '{dt.strftime('%Y-%m-%d %H:%M:%S')}'"
+
             # Insert the entry
             _execute_sql_internal(
                 conn,
@@ -325,7 +335,7 @@ class DeadLetterQueue:
                     exception_traceback, total_attempts, retry_history,
                     first_attempt_time, last_attempt_time, total_duration,
                     model_config, model_dependencies, run_id, environment,
-                    dlq_timestamp, is_resolved
+                    is_resolved
                 ) VALUES (
                     {sql_value(entry.dlq_id)},
                     {sql_value(entry.model_name)},
@@ -334,14 +344,13 @@ class DeadLetterQueue:
                     {sql_value(entry.exception_traceback)},
                     {sql_value(entry.total_attempts)},
                     {sql_value(entry.retry_history)},
-                    {sql_value(entry.first_attempt_time)},
-                    {sql_value(entry.last_attempt_time)},
+                    {sql_timestamp(entry.first_attempt_time)},
+                    {sql_timestamp(entry.last_attempt_time)},
                     {sql_value(entry.total_duration)},
                     {sql_value(entry.model_config)},
                     {sql_value(entry.model_dependencies)},
                     {sql_value(entry.run_id)},
                     {sql_value(entry.environment)},
-                    {sql_value(entry.dlq_timestamp)},
                     FALSE
                 )
                 """,
@@ -393,7 +402,7 @@ class DeadLetterQueue:
             result = conn.sql(f"""
                 SELECT * FROM {dlq_table}
                 WHERE model_name = '{escaped_name}' AND is_resolved = FALSE
-                ORDER BY dlq_timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT {limit}
                 """).execute()
 
@@ -417,7 +426,7 @@ class DeadLetterQueue:
             result = conn.sql(f"""
                 SELECT * FROM {dlq_table}
                 WHERE is_resolved = FALSE
-                ORDER BY dlq_timestamp DESC
+                ORDER BY created_at DESC
                 LIMIT {limit}
                 """).execute()
 
@@ -602,6 +611,6 @@ class DeadLetterQueue:
             model_dependencies=model_dependencies or [],
             run_id=row.get("run_id"),
             environment=row.get("environment"),
-            dlq_timestamp=to_float(row.get("dlq_timestamp")),
+            dlq_timestamp=to_float(row.get("created_at")),
             dlq_id=row.get("dlq_id"),
         )

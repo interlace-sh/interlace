@@ -757,21 +757,7 @@ def _update_consumer_cursor(
     from interlace.core.context import _execute_sql_internal
 
     try:
-        # Ensure table exists
-        _execute_sql_internal(
-            con,
-            """
-            CREATE TABLE IF NOT EXISTS interlace.stream_consumers (
-                stream_name VARCHAR NOT NULL,
-                consumer_name VARCHAR NOT NULL,
-                last_cursor BIGINT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (stream_name, consumer_name)
-            )
-            """,
-        )
-
-        # Upsert cursor
+        # Upsert cursor (table created by StateStore._initialize_stream_tables)
         _execute_sql_internal(
             con,
             f"DELETE FROM interlace.stream_consumers "

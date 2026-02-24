@@ -191,8 +191,19 @@ class TestStateStoreLineage:
 
     def test_save_model_column(self, store_with_duckdb):
         store = store_with_duckdb
-        store.save_model_column("users", "id", data_type="BIGINT", is_primary_key=True)
-        store.save_model_column("users", "name", data_type="VARCHAR")
+        # get_model_columns reads from schema_history (populated during materialization),
+        # so insert test data there directly.
+        conn = store._get_connection()
+        from interlace.core.state import _execute_sql_internal, _sql_value
+
+        _execute_sql_internal(
+            conn,
+            f"INSERT INTO interlace.schema_history (model_name, schema_name, version, column_name, column_type, is_nullable, is_primary_key) VALUES ({_sql_value('users')}, 'main', 1, 'id', 'BIGINT', false, true)",
+        )
+        _execute_sql_internal(
+            conn,
+            f"INSERT INTO interlace.schema_history (model_name, schema_name, version, column_name, column_type, is_nullable, is_primary_key) VALUES ({_sql_value('users')}, 'main', 1, 'name', 'VARCHAR', true, false)",
+        )
 
         cols = store.get_model_columns("users")
         assert len(cols) == 2
@@ -202,12 +213,10 @@ class TestStateStoreLineage:
     def test_clear_lineage(self, store_with_duckdb):
         store = store_with_duckdb
         store.save_column_lineage("m1", "col1", "src", "scol", "direct")
-        store.save_model_column("m1", "col1", "VARCHAR")
 
         store.clear_model_lineage("m1")
 
         assert store.get_column_lineage("m1") == []
-        assert store.get_model_columns("m1") == []
 
 
 class TestStateStoreScheduler:

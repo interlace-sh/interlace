@@ -51,6 +51,7 @@ class Flow:
     completed_at: float | None = None
     created_by: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    model_selection: str | None = None  # NULL = all models, otherwise the selection expression
 
     # Task tracking
     tasks: dict[str, "Task"] = field(default_factory=dict)  # model_name -> Task
@@ -138,6 +139,9 @@ class Task:
     error_type: str | None = None
     error_message: str | None = None
     error_stacktrace: str | None = None
+
+    # Skip tracking
+    skipped_reason: str | None = None  # NULL = ran normally, e.g. 'no_changes', 'cached', 'upstream_failed'
 
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)

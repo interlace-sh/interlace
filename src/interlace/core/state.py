@@ -107,6 +107,10 @@ class StateStore:
                     created_by VARCHAR,
                     metadata JSON,
                     duration_seconds DOUBLE,
+                    model_selection VARCHAR,
+                    models_total INTEGER,
+                    models_succeeded INTEGER,
+                    models_failed INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """,
@@ -144,6 +148,7 @@ class StateStore:
                     error_type VARCHAR,
                     error_message TEXT,
                     error_stacktrace TEXT,
+                    skipped_reason VARCHAR,
                     metadata JSON,
                     duration_seconds DOUBLE,
                     wait_time_seconds DOUBLE,
@@ -224,7 +229,6 @@ class StateStore:
                     model_dependencies JSON,
                     run_id VARCHAR,
                     environment VARCHAR,
-                    dlq_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     resolved_at TIMESTAMP,
                     resolution_note TEXT,
                     is_resolved BOOLEAN DEFAULT FALSE,
@@ -259,27 +263,6 @@ class StateStore:
         except Exception as e:
             logger.debug(f"Could not create column_lineage table (non-fatal): {e}")
 
-        # Model columns table - stores column metadata for each model
-        model_columns_table = f"{schema_name}.model_columns"
-        try:
-            _execute_sql_internal(
-                conn,
-                f"""
-                CREATE TABLE IF NOT EXISTS {model_columns_table} (
-                    model_name VARCHAR NOT NULL,
-                    column_name VARCHAR NOT NULL,
-                    data_type VARCHAR,
-                    is_nullable BOOLEAN DEFAULT TRUE,
-                    is_primary_key BOOLEAN DEFAULT FALSE,
-                    description TEXT,
-                    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (model_name, column_name)
-                )
-                """,
-            )
-        except Exception as e:
-            logger.debug(f"Could not create model_columns table (non-fatal): {e}")
-
     def _initialize_stream_tables(self, conn: ibis.BaseBackend, schema_name: str) -> None:
         """Create stream consumer tracking tables."""
         # Stream consumers table - tracks cursor position per consumer per stream
@@ -292,9 +275,6 @@ class StateStore:
                     stream_name VARCHAR NOT NULL,
                     consumer_name VARCHAR NOT NULL,
                     last_cursor BIGINT NOT NULL DEFAULT 0,
-                    events_consumed BIGINT DEFAULT 0,
-                    last_consumed_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (stream_name, consumer_name)
                 )
@@ -302,25 +282,6 @@ class StateStore:
             )
         except Exception as e:
             logger.debug(f"Could not create stream_consumers table (non-fatal): {e}")
-
-        # Stream publish log - tracks publish events for auditing
-        publish_log_table = f"{schema_name}.stream_publish_log"
-        try:
-            _execute_sql_internal(
-                conn,
-                f"""
-                CREATE TABLE IF NOT EXISTS {publish_log_table} (
-                    publish_id VARCHAR PRIMARY KEY,
-                    stream_name VARCHAR NOT NULL,
-                    rows_received INTEGER NOT NULL,
-                    source VARCHAR,
-                    published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    triggered_models VARCHAR
-                )
-                """,
-            )
-        except Exception as e:
-            logger.debug(f"Could not create stream_publish_log table (non-fatal): {e}")
 
     def _initialize_cursor_state_table(self, conn: ibis.BaseBackend, schema_name: str) -> None:
         """Create cursor state table for automatic incremental processing.
@@ -335,11 +296,12 @@ class StateStore:
                 f"""
                 CREATE TABLE IF NOT EXISTS {cursor_table} (
                     model_name VARCHAR NOT NULL,
+                    schema_name VARCHAR NOT NULL DEFAULT 'public',
                     cursor_column VARCHAR NOT NULL DEFAULT 'rowid',
                     last_processed_value VARCHAR,
                     last_run_at TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (model_name)
+                    PRIMARY KEY (model_name, schema_name)
                 )
                 """,
             )
@@ -350,11 +312,12 @@ class StateStore:
     # Cursor state CRUD
     # ------------------------------------------------------------------
 
-    def get_cursor_value(self, model_name: str) -> str | None:
+    def get_cursor_value(self, model_name: str, schema_name: str = "public") -> str | None:
         """Get the last processed cursor value for a model.
 
         Args:
             model_name: Name of the model
+            schema_name: Schema name (default "public")
 
         Returns:
             The last processed cursor value as a string, or ``None`` if no
@@ -367,8 +330,10 @@ class StateStore:
         try:
             cursor_table = "interlace.cursor_state"
             safe_name = _escape_sql_string(model_name)
+            safe_schema = _escape_sql_string(schema_name)
             result = conn.sql(
-                f"SELECT last_processed_value FROM {cursor_table} " f"WHERE model_name = '{safe_name}'"
+                f"SELECT last_processed_value FROM {cursor_table} "
+                f"WHERE model_name = '{safe_name}' AND schema_name = '{safe_schema}'"
             ).execute()
 
             if result is not None and len(result) > 0:
@@ -379,11 +344,12 @@ class StateStore:
             logger.debug(f"Could not get cursor value for {model_name}: {e}")
             return None
 
-    def delete_cursor_value(self, model_name: str) -> None:
+    def delete_cursor_value(self, model_name: str, schema_name: str = "public") -> None:
         """Delete cursor state for a model, forcing full reprocessing next run.
 
         Args:
             model_name: Name of the model whose cursor state should be deleted.
+            schema_name: Schema name (default "public")
         """
         conn = self._get_connection()
         if conn is None:
@@ -392,14 +358,15 @@ class StateStore:
         try:
             cursor_table = "interlace.cursor_state"
             safe_name = _escape_sql_string(model_name)
+            safe_schema = _escape_sql_string(schema_name)
             _execute_sql_internal(
                 conn,
-                f"DELETE FROM {cursor_table} WHERE model_name = '{safe_name}'",
+                f"DELETE FROM {cursor_table} WHERE model_name = '{safe_name}' AND schema_name = '{safe_schema}'",
             )
         except Exception as e:
             logger.warning(f"Could not delete cursor value for {model_name}: {e}")
 
-    def save_cursor_value(self, model_name: str, cursor_column: str, value: str) -> None:
+    def save_cursor_value(self, model_name: str, cursor_column: str, value: str, schema_name: str = "public") -> None:
         """Save the last processed cursor value for a model.
 
         Uses delete-then-insert for upsert portability across backends.
@@ -408,6 +375,7 @@ class StateStore:
             model_name: Name of the model
             cursor_column: Name of the cursor column (e.g. ``"event_id"``)
             value: The cursor value to persist (stringified)
+            schema_name: Schema name (default "public")
         """
         conn = self._get_connection()
         if conn is None:
@@ -416,6 +384,7 @@ class StateStore:
         try:
             cursor_table = "interlace.cursor_state"
             safe_name = _escape_sql_string(model_name)
+            safe_schema = _escape_sql_string(schema_name)
             safe_col = _escape_sql_string(cursor_column)
             safe_val = _escape_sql_string(str(value))
 
@@ -423,7 +392,7 @@ class StateStore:
             try:
                 _execute_sql_internal(
                     conn,
-                    f"DELETE FROM {cursor_table} WHERE model_name = '{safe_name}'",
+                    f"DELETE FROM {cursor_table} WHERE model_name = '{safe_name}' AND schema_name = '{safe_schema}'",
                 )
             except Exception:
                 pass
@@ -432,8 +401,8 @@ class StateStore:
             _execute_sql_internal(
                 conn,
                 f"INSERT INTO {cursor_table} "
-                f"(model_name, cursor_column, last_processed_value, last_run_at, updated_at) "
-                f"VALUES ('{safe_name}', '{safe_col}', '{safe_val}', "
+                f"(model_name, schema_name, cursor_column, last_processed_value, last_run_at, updated_at) "
+                f"VALUES ('{safe_name}', '{safe_schema}', '{safe_col}', '{safe_val}', "
                 f"CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
             )
         except Exception as e:
@@ -515,20 +484,13 @@ class StateStore:
                     strategy VARCHAR,
                     primary_key VARCHAR,
                     dependencies TEXT[],
-                    incremental_type VARCHAR,
-                    incremental_column VARCHAR,
-                    incremental_period VARCHAR,
-                    schedule JSON,
-                    schedule_timezone VARCHAR,
                     description TEXT,
                     tags TEXT[],
                     owner VARCHAR,
                     source_file VARCHAR,
                     source_type VARCHAR,
-                    checksum VARCHAR,
                     discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_active BOOLEAN DEFAULT TRUE,
                     last_run_at TIMESTAMP,
                     PRIMARY KEY (model_name, schema_name)
                 )
@@ -553,6 +515,9 @@ class StateStore:
             schema_name = "interlace"
             flows_table = f"{schema_name}.flows"
 
+            # Compute summary counts from tasks
+            summary = flow.get_summary()
+
             # Build row data
             row_data = {
                 "flow_id": flow.flow_id,
@@ -564,6 +529,10 @@ class StateStore:
                 "created_by": flow.created_by,
                 "metadata": json.dumps(flow.metadata) if flow.metadata else None,
                 "duration_seconds": flow.get_duration(),
+                "model_selection": flow.model_selection,
+                "models_total": summary["total_tasks"],
+                "models_succeeded": summary["completed"],
+                "models_failed": summary["failed"],
             }
 
             # Delete existing row if it exists (upsert behavior)
@@ -628,6 +597,7 @@ class StateStore:
                 "error_type": task.error_type,
                 "error_message": task.error_message,
                 "error_stacktrace": task.error_stacktrace,
+                "skipped_reason": task.skipped_reason,
                 "metadata": json.dumps(task.metadata) if task.metadata else None,
                 "duration_seconds": task.get_duration(),
                 "wait_time_seconds": task.get_wait_time(),
@@ -726,62 +696,6 @@ class StateStore:
         except Exception as e:
             logger.debug(f"Failed to save column lineage: {e}")
 
-    def save_model_column(
-        self,
-        model_name: str,
-        column_name: str,
-        data_type: str | None = None,
-        is_nullable: bool = True,
-        is_primary_key: bool = False,
-        description: str | None = None,
-    ) -> None:
-        """
-        Save column metadata for a model.
-
-        Args:
-            model_name: Name of the model
-            column_name: Name of the column
-            data_type: Column data type
-            is_nullable: Whether the column can be null
-            is_primary_key: Whether the column is a primary key
-            description: Optional column description
-        """
-        conn = self._get_connection()
-        if conn is None:
-            return
-
-        try:
-            schema_name = "interlace"
-            columns_table = f"{schema_name}.model_columns"
-
-            # Delete existing column if it exists (upsert behavior)
-            try:
-                _execute_sql_internal(
-                    conn,
-                    f"""DELETE FROM {columns_table}
-                        WHERE model_name = {_sql_value(model_name)}
-                        AND column_name = {_sql_value(column_name)}""",
-                )
-            except Exception:
-                pass
-
-            # Insert the column metadata
-            _execute_sql_internal(
-                conn,
-                f"""INSERT INTO {columns_table}
-                    (model_name, column_name, data_type, is_nullable, is_primary_key, description)
-                    VALUES (
-                        {_sql_value(model_name)},
-                        {_sql_value(column_name)},
-                        {_sql_value(data_type)},
-                        {1 if is_nullable else 0},
-                        {1 if is_primary_key else 0},
-                        {_sql_value(description)}
-                    )""",
-            )
-        except Exception as e:
-            logger.debug(f"Failed to save model column: {e}")
-
     def get_column_lineage(self, model_name: str, column_name: str | None = None) -> list[Any]:
         """
         Get column lineage for a model.
@@ -837,12 +751,19 @@ class StateStore:
             return []
 
         try:
-            schema_name = "interlace"
-            columns_table = f"{schema_name}.model_columns"
-
-            sql = f"""SELECT * FROM {columns_table}
-                     WHERE model_name = {_sql_value(model_name)}
-                     ORDER BY column_name"""
+            # Read from schema_history (populated during materialization) instead of
+            # model_columns which is only populated by `interlace lineage refresh`.
+            # Use the latest version per schema_name for this model.
+            sql = f"""SELECT sh.column_name, sh.column_type AS data_type, sh.is_nullable, sh.is_primary_key
+                     FROM interlace.schema_history sh
+                     INNER JOIN (
+                         SELECT schema_name, MAX(version) AS max_version
+                         FROM interlace.schema_history
+                         WHERE model_name = {_sql_value(model_name)}
+                         GROUP BY schema_name
+                     ) latest ON sh.schema_name = latest.schema_name AND sh.version = latest.max_version
+                     WHERE sh.model_name = {_sql_value(model_name)}
+                     ORDER BY sh.column_name"""
 
             result = _execute_sql_internal(conn, sql)
             if result is not None:
@@ -966,15 +887,10 @@ class StateStore:
         try:
             schema_name = "interlace"
             lineage_table = f"{schema_name}.column_lineage"
-            columns_table = f"{schema_name}.model_columns"
 
             _execute_sql_internal(
                 conn,
                 f"DELETE FROM {lineage_table} WHERE output_model = {_sql_value(model_name)}",
-            )
-            _execute_sql_internal(
-                conn,
-                f"DELETE FROM {columns_table} WHERE model_name = {_sql_value(model_name)}",
             )
         except Exception as e:
             logger.debug(f"Failed to clear model lineage: {e}")

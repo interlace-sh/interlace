@@ -103,7 +103,7 @@ def track_schema_version(
                     {new_version},
                     '{safe_col_name}',
                     '{safe_type_str}',
-                    TRUE,
+                    {1 if col_type.nullable else 0},
                     {1 if is_pk else 0},
                     CURRENT_TIMESTAMP
                 )

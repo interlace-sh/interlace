@@ -165,6 +165,7 @@ def model(
     schema_mode: str | None = None,
     export: dict[str, Any] | None = None,
     cursor: str | None = None,
+    quality_checks: list[dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> Callable[[Callable], Callable]:
     """
@@ -315,6 +316,10 @@ def model(
                 after successful execution. Useful for side-effect models that
                 send notifications, call APIs, etc.
                 Example: cursor="event_id" or cursor="rowid"
+        quality_checks: Optional list of quality check configurations to run
+                after materialization. Each dict must include ``type`` (e.g.
+                "not_null", "unique") and check-specific fields.
+                Example: quality_checks=[{"type": "not_null", "column": "id"}]
         **kwargs: Additional model metadata
 
     Raises:
@@ -361,6 +366,7 @@ def model(
             "schema_mode": schema_mode,
             "export": export,
             "cursor": cursor,
+            "quality_checks": quality_checks,
             **kwargs,
         }
 

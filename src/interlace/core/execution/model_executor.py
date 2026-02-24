@@ -440,6 +440,43 @@ class ModelExecutor:
                 except Exception as e:
                     logger.warning(f"Export failed for {model_name}: {e}")
 
+            # Run quality checks post-materialization
+            quality_checks_config = model_info.get("quality_checks")
+            quality_summary = None
+            if quality_checks_config and materialise != "ephemeral":
+                try:
+                    from interlace.quality.runner import QualityCheckRunner
+
+                    runner = QualityCheckRunner(connection=model_conn)
+                    quality_summary = runner.run_model_checks(
+                        model_name=model_name,
+                        model_info=model_info,
+                        schema=schema,
+                        connection=model_conn,
+                    )
+                    if quality_summary:
+                        # Store results in state store
+                        if self.state_store:
+                            self._save_quality_results(model_name, schema, quality_summary)
+                        # Update task with quality status
+                        if self.flow and model_name in self.flow.tasks:
+                            if quality_summary.has_failures:
+                                self.flow.tasks[model_name].metadata["quality_status"] = "failed"
+                            elif quality_summary.has_warnings:
+                                self.flow.tasks[model_name].metadata["quality_status"] = "warn"
+                            else:
+                                self.flow.tasks[model_name].metadata["quality_status"] = "passed"
+                        # Raise if fail_on_error and there are ERROR-severity failures
+                        if quality_summary.has_failures and model_info.get("quality_fail_on_error", False):
+                            from interlace.exceptions import QualityError
+
+                            raise QualityError(
+                                f"Quality checks failed for '{model_name}': "
+                                f"{quality_summary.failed}/{quality_summary.total_checks} checks failed"
+                            )
+                except ImportError:
+                    logger.debug("Quality module not available, skipping quality checks")
+
             # Save cursor watermark on success (data-returning models)
             # Skip during backfill to preserve the real high-water mark
             if cursor_column and cursor_new_values and self.state_store and not skip_cursor_save:
@@ -918,3 +955,42 @@ class ModelExecutor:
         # Unknown strategy -- don't skip
         logger.warning(f"Model '{model_name}': unknown cache strategy '{strategy}'")
         return None
+
+    def _save_quality_results(self, model_name: str, schema: str, summary: Any) -> None:
+        """Persist quality check results to the state store."""
+        if not self.state_store:
+            return
+        try:
+            conn = self.state_store._get_connection()
+            if conn is None:
+                return
+            from interlace.core.context import _execute_sql_internal
+            from interlace.core.state import _escape_sql_string, _sql_value
+
+            flow_id = self.flow.flow_id if self.flow else None
+            task_id = None
+            if self.flow and model_name in self.flow.tasks:
+                task_id = self.flow.tasks[model_name].task_id
+
+            for result in summary.results:
+                _execute_sql_internal(
+                    conn,
+                    f"INSERT INTO interlace.quality_results "
+                    f"(check_name, check_type, model_name, schema_name, status, severity, "
+                    f"message, failed_rows, total_rows, duration_seconds, flow_id, task_id) "
+                    f"VALUES ("
+                    f"{_sql_value(result.check_name)}, "
+                    f"{_sql_value(result.check_type)}, "
+                    f"{_sql_value(model_name)}, "
+                    f"{_sql_value(schema)}, "
+                    f"{_sql_value(result.status.value)}, "
+                    f"{_sql_value(result.severity.value)}, "
+                    f"{_sql_value(result.message)}, "
+                    f"{result.failed_rows}, "
+                    f"{result.total_rows}, "
+                    f"{result.duration_seconds}, "
+                    f"{_sql_value(flow_id)}, "
+                    f"{_sql_value(task_id)})",
+                )
+        except Exception as e:
+            logger.debug(f"Could not save quality results for {model_name}: {e}")

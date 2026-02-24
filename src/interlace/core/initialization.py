@@ -178,6 +178,20 @@ class InterlaceInitializer:
                 logger.info("No models found in models directory")
             return {}, None
 
+        # Merge quality checks from config.yaml into model_info.
+        # Config-level checks are defaults; decorator-level checks take precedence.
+        if self.config:
+            quality_config = self.config.data.get("quality", {})
+            if isinstance(quality_config, dict) and quality_config.get("enabled", True):
+                fail_on_error = quality_config.get("fail_on_error", False)
+                checks_by_model = quality_config.get("checks", {})
+                if isinstance(checks_by_model, dict):
+                    for model_name, model_info in models.items():
+                        if model_name in checks_by_model and not model_info.get("quality_checks"):
+                            model_info["quality_checks"] = checks_by_model[model_name]
+                        if model_info.get("quality_checks"):
+                            model_info.setdefault("quality_fail_on_error", fail_on_error)
+
         # Build dependency graph
         try:
             graph = build_dependency_graph(models)

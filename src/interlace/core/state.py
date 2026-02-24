@@ -263,6 +263,32 @@ class StateStore:
         except Exception as e:
             logger.debug(f"Could not create column_lineage table (non-fatal): {e}")
 
+        # Quality results table - stores quality check outcomes per model run
+        quality_results_table = f"{schema_name}.quality_results"
+        try:
+            _execute_sql_internal(
+                conn,
+                f"""
+                CREATE TABLE IF NOT EXISTS {quality_results_table} (
+                    check_name VARCHAR NOT NULL,
+                    check_type VARCHAR NOT NULL,
+                    model_name VARCHAR NOT NULL,
+                    schema_name VARCHAR NOT NULL DEFAULT 'public',
+                    status VARCHAR NOT NULL,
+                    severity VARCHAR NOT NULL,
+                    message TEXT,
+                    failed_rows INTEGER DEFAULT 0,
+                    total_rows INTEGER DEFAULT 0,
+                    duration_seconds DOUBLE DEFAULT 0,
+                    flow_id VARCHAR,
+                    task_id VARCHAR,
+                    executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            )
+        except Exception as e:
+            logger.debug(f"Could not create quality_results table (non-fatal): {e}")
+
     def _initialize_stream_tables(self, conn: ibis.BaseBackend, schema_name: str) -> None:
         """Create stream consumer tracking tables."""
         # Stream consumers table - tracks cursor position per consumer per stream

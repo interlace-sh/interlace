@@ -313,7 +313,7 @@ class IbisLineageExtractor(LineageExtractor):
         )
         if isinstance(op, agg_ops):
             # Check if op has an 'arg' attribute for the aggregated column
-            if hasattr(op, "arg"):
+            if op is not None and hasattr(op, "arg"):
                 arg = op.arg
                 if hasattr(arg, "op"):
                     inner_sources = self._analyze_operation(
@@ -332,7 +332,7 @@ class IbisLineageExtractor(LineageExtractor):
             getattr(ops, "Lead", type(None)),
         )
         if isinstance(op, window_ops):
-            if hasattr(op, "arg"):
+            if op is not None and hasattr(op, "arg"):
                 arg = op.arg
                 if hasattr(arg, "op"):
                     inner_sources = self._analyze_operation(

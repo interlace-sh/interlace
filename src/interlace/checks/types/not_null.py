@@ -1,37 +1,37 @@
 """
-Not NULL quality check.
+Not NULL check.
 
-Phase 3: Check that column(s) do not contain NULL values.
+Check that column(s) do not contain NULL values.
 """
 
 import time
 
 import ibis
 
-from interlace.quality.base import (
-    QualityCheck,
-    QualityCheckResult,
-    QualityCheckSeverity,
-    QualityCheckStatus,
+from interlace.checks.base import (
+    Check,
+    CheckResult,
+    CheckSeverity,
+    CheckStatus,
 )
 from interlace.utils.logging import get_logger
 
-logger = get_logger("interlace.quality.checks.not_null")
+logger = get_logger("interlace.checks.types.not_null")
 
 
-class NotNullCheck(QualityCheck):
+class NotNullCheck(Check):
     """
     Check that a column does not contain NULL values.
 
     Usage:
         NotNullCheck(column="email")
-        NotNullCheck(column="user_id", severity=QualityCheckSeverity.WARN)
+        NotNullCheck(column="user_id", severity=CheckSeverity.WARN)
     """
 
     def __init__(
         self,
         column: str,
-        severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
+        severity: CheckSeverity = CheckSeverity.ERROR,
         name: str | None = None,
         description: str | None = None,
     ):
@@ -63,36 +63,20 @@ class NotNullCheck(QualityCheck):
         connection: ibis.BaseBackend,
         table_name: str,
         schema: str | None = None,
-    ) -> QualityCheckResult:
-        """
-        Execute not null check.
-
-        Counts NULL values in the specified column.
-
-        Args:
-            connection: ibis connection
-            table_name: Table to check
-            schema: Schema containing the table
-
-        Returns:
-            QualityCheckResult with null check outcome
-        """
+    ) -> CheckResult:
+        """Execute not null check."""
         start_time = time.time()
 
         try:
             table = self._get_table(connection, table_name, schema)
-
-            # Get total row count
             total_rows = int(table.count().execute())
-
-            # Count null values
             null_count = int(table.filter(table[self.column].isnull()).count().execute())
 
             duration = time.time() - start_time
 
             if null_count == 0:
                 return self._make_result(
-                    status=QualityCheckStatus.PASSED,
+                    status=CheckStatus.PASSED,
                     table_name=table_name,
                     message=f"Column '{self.column}' has no NULL values ({total_rows} rows checked)",
                     failed_rows=0,
@@ -102,11 +86,11 @@ class NotNullCheck(QualityCheck):
                 )
             else:
                 return self._make_result(
-                    status=QualityCheckStatus.FAILED,
+                    status=CheckStatus.FAILED,
                     table_name=table_name,
                     message=(
                         f"Column '{self.column}' has {null_count} NULL values "
-                        f"({null_count}/{total_rows} = {null_count/total_rows*100:.1f}%)"
+                        f"({null_count}/{total_rows} = {null_count / total_rows * 100:.1f}%)"
                     ),
                     failed_rows=null_count,
                     total_rows=total_rows,
@@ -122,7 +106,7 @@ class NotNullCheck(QualityCheck):
             duration = time.time() - start_time
             logger.error(f"Error running not_null check: {e}")
             return self._make_result(
-                status=QualityCheckStatus.ERROR,
+                status=CheckStatus.ERROR,
                 table_name=table_name,
                 message=f"Error running not_null check: {str(e)}",
                 duration=duration,

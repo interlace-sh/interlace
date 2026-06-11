@@ -11,11 +11,10 @@ Tests cover:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from interlace.core.dependencies import DependencyGraph
 from interlace.core.executor import Executor
 
 
@@ -113,40 +112,6 @@ class TestDependencyLoading:
 class TestSchemaCaching:
     """Test schema validation and caching."""
 
-    def test_check_table_exists_uses_cache(self):
-        """Test that table existence checks are cached."""
-        config = {
-            "name": "Test",
-            "connections": {"duckdb_main": {"type": "duckdb", "path": ":memory:"}},
-        }
-
-        with (
-            patch("interlace.core.executor.init_connections"),
-            patch("interlace.core.executor.get_connection") as mock_get_conn,
-        ):
-            mock_conn = Mock()
-            mock_conn.connection = MagicMock()
-            mock_conn.config = {"type": "duckdb", "path": ":memory:"}
-            mock_get_conn.return_value = mock_conn
-
-            executor = Executor(config)
-
-            # Mock connection
-            mock_connection = MagicMock()
-            mock_connection.list_tables.return_value = ["test_table"]
-
-            # First call - should check and cache
-            result1 = executor._check_table_exists(mock_connection, "test_table", "public")
-
-            # Second call - should use cache (list_tables should not be called again)
-            mock_connection.list_tables.reset_mock()
-            result2 = executor._check_table_exists(mock_connection, "test_table", "public")
-
-            # Results should be the same
-            assert result1 == result2
-            # Cache should be populated
-            assert ("test_table", "public") in executor._table_existence_cache
-
     @pytest.mark.asyncio
     async def test_schema_validation_uses_cache(self):
         """Test that schema validation uses cache to skip redundant comparisons."""
@@ -189,167 +154,6 @@ class TestSchemaCaching:
             # Both should return 0 (no changes)
             assert result1 == 0
             assert result2 == 0
-
-
-class TestRefactoredMethods:
-    """Test refactored helper methods."""
-
-    @pytest.mark.asyncio
-    async def test_start_model_execution(self):
-        """Test _start_model_execution helper method."""
-        config = {
-            "name": "Test",
-            "connections": {"duckdb_main": {"type": "duckdb", "path": ":memory:"}},
-        }
-
-        with (
-            patch("interlace.core.executor.init_connections"),
-            patch("interlace.core.executor.get_connection") as mock_get_conn,
-        ):
-            mock_conn = Mock()
-            mock_conn.connection = MagicMock()
-            mock_conn.config = {"type": "duckdb", "path": ":memory:"}
-            mock_get_conn.return_value = mock_conn
-
-            executor = Executor(config)
-            executor.flow = MagicMock()
-            executor.flow.tasks = {}
-
-            models = {"test_model": {"type": "python", "function": lambda: None}}
-            graph = DependencyGraph()
-            task_map = {}
-
-            # Mock execute_model
-            executor.execute_model = AsyncMock(return_value={"status": "success"})
-
-            await executor._start_model_execution("test_model", models, graph, task_map)
-
-            # Verify task was created
-            assert "test_model" in task_map
-            assert isinstance(task_map["test_model"], asyncio.Task)
-
-    @pytest.mark.asyncio
-    async def test_wait_for_task_completion(self):
-        """Test _wait_for_task_completion helper method."""
-        config = {
-            "name": "Test",
-            "connections": {"duckdb_main": {"type": "duckdb", "path": ":memory:"}},
-        }
-
-        with (
-            patch("interlace.core.executor.init_connections"),
-            patch("interlace.core.executor.get_connection") as mock_get_conn,
-        ):
-            mock_conn = Mock()
-            mock_conn.connection = MagicMock()
-            mock_conn.config = {"type": "duckdb", "path": ":memory:"}
-            mock_get_conn.return_value = mock_conn
-
-            executor = Executor(config)
-
-            # Create a completed task
-            async def dummy_task():
-                return {"status": "success", "model": "test"}
-
-            task = asyncio.create_task(dummy_task())
-            await task  # Complete it
-
-            executing = {"test"}
-            task_map = {"test": task}
-            results = {}
-            models = {}
-            graph = DependencyGraph()
-            pending = set()
-            new_ready = set()
-            completed = set()
-
-            # Mock process_completed_task
-            executor._process_completed_task = AsyncMock()
-
-            ready = set()
-            succeeded = set()
-            await executor._wait_for_task_completion(
-                executing,
-                task_map,
-                results,
-                models,
-                graph,
-                pending,
-                ready,
-                new_ready,
-                completed,
-                succeeded,
-            )
-
-            # Verify process_completed_task was called
-            executor._process_completed_task.assert_called_once()
-
-
-class TestErrorHandling:
-    """Test error handling in executor."""
-
-    @pytest.mark.asyncio
-    async def test_process_failed_task_handles_errors(self):
-        """Test that _process_failed_task properly handles errors."""
-        config = {
-            "name": "Test",
-            "connections": {"duckdb_main": {"type": "duckdb", "path": ":memory:"}},
-        }
-
-        with (
-            patch("interlace.core.executor.init_connections"),
-            patch("interlace.core.executor.get_connection") as mock_get_conn,
-        ):
-            mock_conn = Mock()
-            mock_conn.connection = MagicMock()
-            mock_conn.config = {"type": "duckdb", "path": ":memory:"}
-            mock_get_conn.return_value = mock_conn
-
-            executor = Executor(config)
-            executor.flow = MagicMock()
-            executor.flow.tasks = {}
-            executor.progress = None
-
-            # Create a failed task
-            async def failing_task():
-                raise ValueError("Test error")
-
-            task = asyncio.create_task(failing_task())
-            try:
-                await task
-            except ValueError:
-                pass
-
-            executing = {"test"}
-            task_map = {"test": task}
-            results = {}
-            models = {}
-            graph = DependencyGraph()
-            pending = set()
-            ready = set()
-            new_ready = set()
-            completed = set()
-            succeeded = set()
-
-            await executor._process_failed_task(
-                task,
-                ValueError("Test error"),
-                executing,
-                completed,
-                succeeded,
-                results,
-                task_map,
-                models,
-                graph,
-                pending,
-                ready,
-                new_ready,
-            )
-
-            # Verify error was recorded
-            assert "test" in results
-            assert results["test"]["status"] == "error"
-            assert "test" in completed
 
 
 class TestConfigurationConstants:

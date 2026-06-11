@@ -1,7 +1,7 @@
 """
-Accepted values quality check.
+Accepted values check.
 
-Phase 3: Check that column values are within an expected set.
+Check that column values are within an expected set.
 """
 
 import time
@@ -9,18 +9,18 @@ from typing import Any
 
 import ibis
 
-from interlace.quality.base import (
-    QualityCheck,
-    QualityCheckResult,
-    QualityCheckSeverity,
-    QualityCheckStatus,
+from interlace.checks.base import (
+    Check,
+    CheckResult,
+    CheckSeverity,
+    CheckStatus,
 )
 from interlace.utils.logging import get_logger
 
-logger = get_logger("interlace.quality.checks.accepted_values")
+logger = get_logger("interlace.checks.types.accepted_values")
 
 
-class AcceptedValuesCheck(QualityCheck):
+class AcceptedValuesCheck(Check):
     """
     Check that column values are within a specified set of accepted values.
 
@@ -35,22 +35,11 @@ class AcceptedValuesCheck(QualityCheck):
         self,
         column: str,
         values: list[Any],
-        severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
+        severity: CheckSeverity = CheckSeverity.ERROR,
         name: str | None = None,
         description: str | None = None,
         quote_values: bool = True,
     ):
-        """
-        Initialize accepted values check.
-
-        Args:
-            column: Column to check
-            values: List of accepted values
-            severity: Severity level for failures
-            name: Custom check name
-            description: Check description
-            quote_values: Whether to quote string values in messages
-        """
         super().__init__(
             column=column,
             severity=severity,
@@ -75,29 +64,14 @@ class AcceptedValuesCheck(QualityCheck):
         connection: ibis.BaseBackend,
         table_name: str,
         schema: str | None = None,
-    ) -> QualityCheckResult:
-        """
-        Execute accepted values check.
-
-        Finds values not in the accepted set.
-
-        Args:
-            connection: ibis connection
-            table_name: Table to check
-            schema: Schema containing the table
-
-        Returns:
-            QualityCheckResult with check outcome
-        """
+    ) -> CheckResult:
+        """Execute accepted values check."""
         start_time = time.time()
 
         try:
             table = self._get_table(connection, table_name, schema)
-
-            # Get total row count
             total_rows = int(table.count().execute())
 
-            # Filter for rows with unaccepted values
             invalid_filter = ~table[self.column].isin(self.values)
             invalid_count = int(table.filter(invalid_filter).count().execute())
 
@@ -105,20 +79,16 @@ class AcceptedValuesCheck(QualityCheck):
 
             if invalid_count == 0:
                 return self._make_result(
-                    status=QualityCheckStatus.PASSED,
+                    status=CheckStatus.PASSED,
                     table_name=table_name,
-                    message=(f"All {total_rows} rows have accepted values in '{self.column}'"),
+                    message=f"All {total_rows} rows have accepted values in '{self.column}'",
                     failed_rows=0,
                     total_rows=total_rows,
                     duration=duration,
-                    details={
-                        "column": self.column,
-                        "accepted_values": self.values,
-                    },
+                    details={"column": self.column, "accepted_values": self.values},
                 )
             else:
-                # Get sample of invalid values for debugging
-                invalid_values = []
+                invalid_values: list[Any] = []
                 try:
                     sample = table.filter(invalid_filter).select(self.column).distinct().limit(10).execute()
                     invalid_values = sample[self.column].tolist()
@@ -126,7 +96,7 @@ class AcceptedValuesCheck(QualityCheck):
                     pass
 
                 return self._make_result(
-                    status=QualityCheckStatus.FAILED,
+                    status=CheckStatus.FAILED,
                     table_name=table_name,
                     message=(
                         f"Found {invalid_count} rows with values not in accepted set "
@@ -147,7 +117,7 @@ class AcceptedValuesCheck(QualityCheck):
             duration = time.time() - start_time
             logger.error(f"Error running accepted_values check: {e}")
             return self._make_result(
-                status=QualityCheckStatus.ERROR,
+                status=CheckStatus.ERROR,
                 table_name=table_name,
                 message=f"Error running accepted_values check: {str(e)}",
                 duration=duration,

@@ -7,7 +7,6 @@ Phase 3: Prometheus metrics, OpenTelemetry tracing, and structured logging.
 from interlace.observability.metrics import (
     MetricsRegistry,
     connection_pool_gauge,
-    dlq_counter,
     get_metrics_registry,
     model_execution_histogram,
     model_rows_counter,
@@ -35,7 +34,6 @@ __all__ = [
     "model_rows_counter",
     "connection_pool_gauge",
     "retry_counter",
-    "dlq_counter",
     # Tracing
     "TracingManager",
     "get_tracer",

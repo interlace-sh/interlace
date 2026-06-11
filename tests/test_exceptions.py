@@ -5,7 +5,7 @@ Tests for the exception hierarchy.
 import pytest
 
 from interlace.exceptions import (
-    CircuitBreakerOpenError,
+    CheckError,
     ConfigurationError,
     ConnectionError_,
     ConnectionLockError,
@@ -18,7 +18,6 @@ from interlace.exceptions import (
     InterlaceError,
     MaterializationError,
     ModelExecutionError,
-    QualityError,
     RetryError,
     SchemaError,
     StateStoreError,
@@ -42,9 +41,8 @@ class TestHierarchy:
             InitializationError,
             SchemaError,
             MaterializationError,
-            QualityError,
+            CheckError,
             RetryError,
-            CircuitBreakerOpenError,
             StateStoreError,
         ],
     )
@@ -53,9 +51,6 @@ class TestHierarchy:
 
     def test_connection_alias(self):
         assert InterlaceConnectionError is ConnectionError_
-
-    def test_circuit_breaker_inherits_retry(self):
-        assert issubclass(CircuitBreakerOpenError, RetryError)
 
     def test_model_execution_inherits_execution(self):
         assert issubclass(ModelExecutionError, ExecutionError)

@@ -9,7 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import paramiko
+try:
+    import paramiko
+except ImportError:
+    raise ImportError("SFTP connections require paramiko. Install with: pip install 'interlace[sftp]'") from None
 
 
 @dataclass(frozen=True)

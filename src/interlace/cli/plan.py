@@ -88,7 +88,14 @@ def plan(
     for model_name, model_info in all_models.items():
         graph.add_model(model_name, model_info.get("dependencies"))
 
-    # Initialize state store
+    # Initialize connections and state store
+    from interlace.connections.manager import init_connections
+
+    try:
+        init_connections(config)
+    except Exception as e:
+        logger.debug(f"Could not initialize connections: {e}")
+
     state_store = StateStore(config)
 
     # Try to get change detector

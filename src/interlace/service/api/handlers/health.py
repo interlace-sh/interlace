@@ -94,7 +94,7 @@ class HealthHandler(BaseHandler):
                 "scheduling": True,
                 "streams": True,
                 "sync": True,
-                "quality_checks": True,
+                "checks": True,
                 "retry_framework": True,
             },
         }

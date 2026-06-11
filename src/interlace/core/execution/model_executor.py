@@ -3,6 +3,7 @@ Model execution for Python and SQL models.
 
 Phase 0: Extracted from Executor class for better separation of concerns.
 Phase 2: Added retry framework integration for transient failure handling.
+Phase 3: Added observability (tracing + metrics) integration.
 """
 
 import asyncio
@@ -17,6 +18,8 @@ import ibis
 from interlace.core.context import get_connection as get_context_connection
 from interlace.core.context import set_connection
 from interlace.core.execution.config import ModelExecutorConfig
+from interlace.observability.metrics import model_execution_histogram, model_rows_counter
+from interlace.observability.tracing import get_tracer
 from interlace.utils.logging import get_logger
 from interlace.utils.table_utils import check_table_exists
 
@@ -73,15 +76,15 @@ class ModelExecutor:
         self.state_store = config.state_store
         self.flow = config.flow
         self.display = config.display
+        self.event_bus = config.event_bus
         self._get_row_count = config.get_row_count_func
         self._update_model_last_run = config.update_model_last_run_func
         self._log_model_end = config.log_model_end_func
         self._prepare_model_execution = config.prepare_model_execution_func
         self._store_materialised_table = config.store_materialised_table_func
 
-        # Phase 2: Retry framework components
+        # Retry framework
         self.retry_manager = config.retry_manager
-        self.dlq = config.dlq
 
         # Backfill overrides
         self.since = config.since
@@ -143,6 +146,13 @@ class ModelExecutor:
         model_type, materialise, schema, strategy_name, start_time = self._prepare_model_execution(
             model_name, model_info
         )
+
+        # Start tracing span for model execution
+        tracer = get_tracer()
+        trace_span = tracer.model_execution_span(
+            model_name, model_type=model_type, materialise=materialise, schema=schema
+        )
+        trace_span.__enter__()
 
         # Get model's connection (defaults to default connection)
         model_conn_name = model_info.get("connection") or self.connection_manager._default_conn_name
@@ -215,7 +225,11 @@ class ModelExecutor:
 
                     # Capture new max cursor value BEFORE filtering
                     try:
-                        max_val = dep_table.select(dep_table[cursor_column].max().name("_max_cursor")).execute()
+                        loop = asyncio.get_event_loop()
+                        max_val = await loop.run_in_executor(
+                            self.executor_pool,
+                            dep_table.select(dep_table[cursor_column].max().name("_max_cursor")).execute,
+                        )
                         if max_val is not None and len(max_val) > 0:
                             new_max = max_val.iloc[0, 0]
                             if new_max is not None:
@@ -272,29 +286,7 @@ class ModelExecutor:
             if retry_policy and self.retry_manager:
                 # Execute with retry framework
                 logger.debug(f"Model '{model_name}' has retry policy: max_attempts={retry_policy.max_attempts}")
-                try:
-                    result = await self.retry_manager.execute(_core_execute, policy=retry_policy, model_name=model_name)
-                except Exception as e:
-                    # All retries exhausted - add to DLQ if configured
-                    if self.dlq and retry_policy.use_dlq:
-                        from interlace.core.retry import DLQEntry
-
-                        entry = DLQEntry(
-                            model_name=model_name,
-                            exception_type=type(e).__name__,
-                            exception_message=str(e),
-                            exception_traceback=traceback.format_exc(),
-                            total_attempts=retry_policy.max_attempts + 1,
-                            model_config={
-                                "schema": schema,
-                                "materialise": materialise,
-                                "strategy": strategy_name,
-                                "connection": model_conn_name,
-                            },
-                            model_dependencies=list(dependency_tables.keys()),
-                        )
-                        self.dlq.add(entry)
-                    raise
+                result = await self.retry_manager.execute(_core_execute, policy=retry_policy, model_name=model_name)
             else:
                 # Execute without retry (original behavior)
                 result = await _core_execute()
@@ -329,6 +321,7 @@ class ModelExecutor:
                         rows_processed=None,
                     )
 
+                model_execution_histogram(model_name, elapsed, status="success", materialise=materialise)
                 return {"status": "success", "model": model_name, "rows": None, "elapsed": elapsed}
 
             # Setup reference table for schema validation
@@ -371,6 +364,8 @@ class ModelExecutor:
             if self.flow and model_name in self.flow.tasks:
                 task = self.flow.tasks[model_name]
                 task.mark_materialising()
+                if self.event_bus:
+                    await self.event_bus.emit("task.materialising", task.get_summary(), flow_id=self.flow.flow_id)
                 if self.state_store:
                     self.state_store.save_task(task)
                 # Update display to show materialising status
@@ -440,42 +435,42 @@ class ModelExecutor:
                 except Exception as e:
                     logger.warning(f"Export failed for {model_name}: {e}")
 
-            # Run quality checks post-materialization
-            quality_checks_config = model_info.get("quality_checks")
-            quality_summary = None
-            if quality_checks_config and materialise != "ephemeral":
+            # Run checks post-materialisation
+            checks_config = model_info.get("checks")
+            check_summary = None
+            if checks_config and materialise != "ephemeral":
                 try:
-                    from interlace.quality.runner import QualityCheckRunner
+                    from interlace.checks.runner import CheckRunner
 
-                    runner = QualityCheckRunner(connection=model_conn)
-                    quality_summary = runner.run_model_checks(
+                    runner = CheckRunner(connection=model_conn)
+                    check_summary = runner.run_model_checks(
                         model_name=model_name,
                         model_info=model_info,
                         schema=schema,
                         connection=model_conn,
                     )
-                    if quality_summary:
+                    if check_summary:
                         # Store results in state store
                         if self.state_store:
-                            self._save_quality_results(model_name, schema, quality_summary)
-                        # Update task with quality status
+                            self._save_check_results(model_name, schema, check_summary)
+                        # Update task with check status
                         if self.flow and model_name in self.flow.tasks:
-                            if quality_summary.has_failures:
-                                self.flow.tasks[model_name].metadata["quality_status"] = "failed"
-                            elif quality_summary.has_warnings:
-                                self.flow.tasks[model_name].metadata["quality_status"] = "warn"
+                            if check_summary.has_failures:
+                                self.flow.tasks[model_name].metadata["check_status"] = "failed"
+                            elif check_summary.has_warnings:
+                                self.flow.tasks[model_name].metadata["check_status"] = "warn"
                             else:
-                                self.flow.tasks[model_name].metadata["quality_status"] = "passed"
+                                self.flow.tasks[model_name].metadata["check_status"] = "passed"
                         # Raise if fail_on_error and there are ERROR-severity failures
-                        if quality_summary.has_failures and model_info.get("quality_fail_on_error", False):
-                            from interlace.exceptions import QualityError
+                        if check_summary.has_failures and model_info.get("checks_fail_on_error", False):
+                            from interlace.exceptions import CheckError
 
-                            raise QualityError(
-                                f"Quality checks failed for '{model_name}': "
-                                f"{quality_summary.failed}/{quality_summary.total_checks} checks failed"
+                            raise CheckError(
+                                f"Checks failed for '{model_name}': "
+                                f"{check_summary.failed}/{check_summary.total_checks} checks failed"
                             )
                 except ImportError:
-                    logger.debug("Quality module not available, skipping quality checks")
+                    logger.debug("Checks module not available, skipping checks")
 
             # Save cursor watermark on success (data-returning models)
             # Skip during backfill to preserve the real high-water mark
@@ -520,6 +515,11 @@ class ModelExecutor:
                     rows_deleted=task.rows_deleted if task else None,
                     schema_changes=task.schema_changes if task else 0,
                 )
+
+            # Record observability metrics
+            model_execution_histogram(model_name, elapsed, status="success", materialise=materialise)
+            if rows is not None:
+                model_rows_counter(model_name, "ingested", rows)
 
             return {"status": "success", "model": model_name, "rows": rows, "elapsed": elapsed}
 
@@ -601,6 +601,9 @@ class ModelExecutor:
                 # No user frames found - show just the error type and message
                 error_traceback = "".join(traceback.format_exception_only(exc_type, exc_value))
 
+            # Record error metrics
+            model_execution_histogram(model_name, elapsed, status="error", materialise=materialise)
+
             # Error is stored in Flow/Task object via display.add_error()
             # Store both the traceback string and the exception info for Rich formatting
             return {
@@ -612,6 +615,9 @@ class ModelExecutor:
                 "elapsed": elapsed,
             }
         finally:
+            # Close tracing span
+            trace_span.__exit__(None, None, None)
+
             # Clean up connection to prevent resource leaks
             # Note: For DuckDB, connections are lightweight but should still be closed
             # For Postgres with pooling, return connection to pool instead of closing
@@ -737,7 +743,8 @@ class ModelExecutor:
                         connection.create_table(dep_name, obj=dep_table, temp=True)
                     except (TypeError, AttributeError, NotImplementedError):
                         # Backend doesn't support direct ibis.Table - fall back to DataFrame
-                        df = dep_table.execute()
+                        loop = asyncio.get_event_loop()
+                        df = await loop.run_in_executor(self.executor_pool, dep_table.execute)
                         connection.create_table(dep_name, obj=df, temp=True)
             except Exception as create_error:
                 # Log warning - SQL query may fail if this dependency is referenced
@@ -775,7 +782,10 @@ class ModelExecutor:
             # Performance: Use limit(0) for cheap validation (schema only, no data fetch)
             # Then return the same result expression (no re-parsing)
             try:
-                _ = result.limit(0).execute()  # Cheap validation - only fetches schema
+                loop = asyncio.get_event_loop()
+                _ = await loop.run_in_executor(
+                    self.executor_pool, result.limit(0).execute
+                )  # Cheap validation - only fetches schema
                 return result  # Return validated expression directly (no re-parsing)
             except Exception as exec_error:
                 error_msg = str(exec_error).lower()
@@ -956,8 +966,8 @@ class ModelExecutor:
         logger.warning(f"Model '{model_name}': unknown cache strategy '{strategy}'")
         return None
 
-    def _save_quality_results(self, model_name: str, schema: str, summary: Any) -> None:
-        """Persist quality check results to the state store."""
+    def _save_check_results(self, model_name: str, schema: str, summary: Any) -> None:
+        """Persist check results to the state store."""
         if not self.state_store:
             return
         try:
@@ -975,7 +985,7 @@ class ModelExecutor:
             for result in summary.results:
                 _execute_sql_internal(
                     conn,
-                    f"INSERT INTO interlace.quality_results "
+                    f"INSERT INTO interlace.check_results "
                     f"(check_name, check_type, model_name, schema_name, status, severity, "
                     f"message, failed_rows, total_rows, duration_seconds, flow_id, task_id) "
                     f"VALUES ("
@@ -993,4 +1003,4 @@ class ModelExecutor:
                     f"{_sql_value(task_id)})",
                 )
         except Exception as e:
-            logger.debug(f"Could not save quality results for {model_name}: {e}")
+            logger.debug(f"Could not save check results for {model_name}: {e}")

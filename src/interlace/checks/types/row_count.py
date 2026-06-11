@@ -1,57 +1,41 @@
 """
-Row count quality check.
+Row count check.
 
-Phase 3: Check that table has expected row count range.
+Check that table has expected row count range.
 """
 
 import time
 
 import ibis
 
-from interlace.quality.base import (
-    QualityCheck,
-    QualityCheckResult,
-    QualityCheckSeverity,
-    QualityCheckStatus,
+from interlace.checks.base import (
+    Check,
+    CheckResult,
+    CheckSeverity,
+    CheckStatus,
 )
 from interlace.utils.logging import get_logger
 
-logger = get_logger("interlace.quality.checks.row_count")
+logger = get_logger("interlace.checks.types.row_count")
 
 
-class RowCountCheck(QualityCheck):
+class RowCountCheck(Check):
     """
     Check that a table has a row count within expected bounds.
 
     Usage:
-        # At least 100 rows
         RowCountCheck(min_count=100)
-
-        # Between 1000 and 10000 rows
         RowCountCheck(min_count=1000, max_count=10000)
-
-        # Exactly 0 rows (empty table)
-        RowCountCheck(min_count=0, max_count=0)
     """
 
     def __init__(
         self,
         min_count: int | None = None,
         max_count: int | None = None,
-        severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
+        severity: CheckSeverity = CheckSeverity.ERROR,
         name: str | None = None,
         description: str | None = None,
     ):
-        """
-        Initialize row count check.
-
-        Args:
-            min_count: Minimum expected row count (inclusive)
-            max_count: Maximum expected row count (inclusive)
-            severity: Severity level for failures
-            name: Custom check name
-            description: Check description
-        """
         super().__init__(
             severity=severity,
             name=name,
@@ -84,56 +68,36 @@ class RowCountCheck(QualityCheck):
         connection: ibis.BaseBackend,
         table_name: str,
         schema: str | None = None,
-    ) -> QualityCheckResult:
-        """
-        Execute row count check.
-
-        Args:
-            connection: ibis connection
-            table_name: Table to check
-            schema: Schema containing the table
-
-        Returns:
-            QualityCheckResult with row count check outcome
-        """
+    ) -> CheckResult:
+        """Execute row count check."""
         start_time = time.time()
 
         try:
             table = self._get_table(connection, table_name, schema)
-
-            # Get row count
             row_count = int(table.count().execute())
-
             duration = time.time() - start_time
 
-            # Check bounds
             below_min = self.min_count is not None and row_count < self.min_count
             above_max = self.max_count is not None and row_count > self.max_count
 
             if not below_min and not above_max:
-                # Passed
                 bounds_str = self._bounds_str()
                 return self._make_result(
-                    status=QualityCheckStatus.PASSED,
+                    status=CheckStatus.PASSED,
                     table_name=table_name,
                     message=f"Row count {row_count} is within expected range {bounds_str}",
                     total_rows=row_count,
                     duration=duration,
-                    details={
-                        "row_count": row_count,
-                        "min_count": self.min_count,
-                        "max_count": self.max_count,
-                    },
+                    details={"row_count": row_count, "min_count": self.min_count, "max_count": self.max_count},
                 )
             else:
-                # Failed
                 if below_min:
                     message = f"Row count {row_count} is below minimum {self.min_count}"
                 else:
                     message = f"Row count {row_count} exceeds maximum {self.max_count}"
 
                 return self._make_result(
-                    status=QualityCheckStatus.FAILED,
+                    status=CheckStatus.FAILED,
                     table_name=table_name,
                     message=message,
                     failed_rows=row_count,
@@ -152,7 +116,7 @@ class RowCountCheck(QualityCheck):
             duration = time.time() - start_time
             logger.error(f"Error running row_count check: {e}")
             return self._make_result(
-                status=QualityCheckStatus.ERROR,
+                status=CheckStatus.ERROR,
                 table_name=table_name,
                 message=f"Error running row_count check: {str(e)}",
                 duration=duration,

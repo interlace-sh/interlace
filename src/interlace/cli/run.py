@@ -28,6 +28,7 @@ def run(
     force: bool = typer.Option(False, "--force", "-f", help="Force execution (bypass change detection)"),
     since: str | None = typer.Option(None, "--since", help="Backfill: override cursor start value (e.g. '2024-01-01')"),
     until: str | None = typer.Option(None, "--until", help="Backfill: upper bound for cursor filter"),
+    checks_only: bool = typer.Option(False, "--checks-only", help="Run checks only (skip model execution)"),
 ) -> None:
     """
     Execute models.
@@ -65,6 +66,21 @@ def run(
                 models_to_run.update(deps)
 
             all_models = {k: v for k, v in all_models.items() if k in models_to_run}
+
+        # Checks-only mode: run checks against existing tables, skip execution
+        if checks_only:
+            from interlace.core.checks_runner import run_checks_only
+
+            results = asyncio.run(run_checks_only(all_models, config))
+            if not results:
+                typer.echo("No checks configured on any model.")
+            else:
+                failed = sum(1 for r in results.values() if r.get("status") == "failed")
+                passed = sum(1 for r in results.values() if r.get("status") == "passed")
+                typer.echo(f"Checks: {passed} passed, {failed} failed")
+                if failed:
+                    raise typer.Exit(1)
+            return
 
         # Backfill implies forced re-execution
         if since is not None:

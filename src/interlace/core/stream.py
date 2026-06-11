@@ -6,7 +6,7 @@ They provide:
 - Automatic HTTP endpoints for webhooks (/streams/{name})
 - Programmatic publish() API for event ingestion
 - Async subscribe() for consuming stream events
-- Message queue adapter pattern for Kafka/RabbitMQ/Redis/etc.
+- Message adapter pattern for external system integration
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def stream(
     ingestion tables that can receive data via:
     - publish() API (programmatic)
     - HTTP endpoints (/streams/{name}) when serve() is running
-    - Message queue adapters (Kafka, RabbitMQ, etc.)
+    - Message adapters (webhooks, polling, pub/sub)
 
     Args:
         name: Stream name (defaults to function name)
@@ -726,12 +726,13 @@ def _get_consumer_cursor(
 ) -> int | None:
     """Get the current cursor position for a consumer."""
     from interlace.core.context import _execute_sql_internal
+    from interlace.core.state import _sql_value
 
     try:
         result = _execute_sql_internal(
             con,
             f"SELECT last_cursor FROM interlace.stream_consumers "
-            f"WHERE stream_name = '{stream_name}' AND consumer_name = '{consumer_name}'",
+            f"WHERE stream_name = {_sql_value(stream_name)} AND consumer_name = {_sql_value(consumer_name)}",
         )
         if result is not None:
             if hasattr(result, "fetchone"):
@@ -755,19 +756,20 @@ def _update_consumer_cursor(
 ) -> None:
     """Update cursor position for a consumer."""
     from interlace.core.context import _execute_sql_internal
+    from interlace.core.state import _sql_value
 
     try:
         # Upsert cursor (table created by StateStore._initialize_stream_tables)
         _execute_sql_internal(
             con,
             f"DELETE FROM interlace.stream_consumers "
-            f"WHERE stream_name = '{stream_name}' AND consumer_name = '{consumer_name}'",
+            f"WHERE stream_name = {_sql_value(stream_name)} AND consumer_name = {_sql_value(consumer_name)}",
         )
         _execute_sql_internal(
             con,
             f"INSERT INTO interlace.stream_consumers "
             f"(stream_name, consumer_name, last_cursor, updated_at) "
-            f"VALUES ('{stream_name}', '{consumer_name}', {cursor_value}, CURRENT_TIMESTAMP)",
+            f"VALUES ({_sql_value(stream_name)}, {_sql_value(consumer_name)}, {int(cursor_value)}, CURRENT_TIMESTAMP)",
         )
     except Exception as e:
         logger.warning(f"Failed to update consumer cursor: {e}")

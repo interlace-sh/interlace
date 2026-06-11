@@ -4,10 +4,13 @@ Interlace - A modern, Python/SQL-first data pipeline framework.
 Phase 0 (MVP): Core functionality for basic data pipeline execution.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # Core exports
 # Global config
+# Checks
+from interlace.checks import Check, CheckResult, CheckRunner, CheckSummary, check
+from interlace.checks.decorator import PythonCheck
 from interlace.config.singleton import config
 
 # Programmatic API
@@ -20,7 +23,7 @@ from interlace.core.stream import ack, consume, publish, publish_sync, stream, s
 
 # Exceptions
 from interlace.exceptions import (
-    CircuitBreakerOpenError,
+    CheckError,
     ConfigurationError,
     ConnectionLockError,
     ConnectionNotFoundError,
@@ -32,7 +35,6 @@ from interlace.exceptions import (
     InterlaceError,
     MaterializationError,
     ModelExecutionError,
-    QualityError,
     RetryError,
     SchemaError,
     StateStoreError,
@@ -92,8 +94,14 @@ __all__ = [
     "InitializationError",
     "SchemaError",
     "MaterializationError",
-    "QualityError",
+    "CheckError",
     "RetryError",
-    "CircuitBreakerOpenError",
     "StateStoreError",
+    # Checks
+    "Check",
+    "CheckResult",
+    "CheckRunner",
+    "CheckSummary",
+    "PythonCheck",
+    "check",
 ]

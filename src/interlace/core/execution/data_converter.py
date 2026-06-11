@@ -219,7 +219,7 @@ class DataConverter:
                 raise ValueError(
                     f"Unsupported return type: {type(data)}. "
                     f"Supported types: dict, list of dicts, ibis.Table, generator (yield). "
-                    f"For pandas.DataFrame support, install pandas."
+                    f"For pandas.DataFrame support: pip install 'interlace[pandas]'"
                 ) from e
 
         # Apply column mapping (renames) before creating table

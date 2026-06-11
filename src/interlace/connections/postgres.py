@@ -80,43 +80,9 @@ class PostgresConnectionPool:
         """
         start_time = asyncio.get_event_loop().time()
 
+        # Step 1: Acquire semaphore with timeout (limits concurrent connections)
         try:
-            # Acquire semaphore (limits concurrent connections)
             await asyncio.wait_for(self._semaphore.acquire(), timeout=self.timeout)
-
-            wait_time = asyncio.get_event_loop().time() - start_time
-            # Update running average of wait time
-            if self._metrics["wait_time_seconds"] == 0:
-                self._metrics["wait_time_seconds"] = wait_time
-            else:
-                self._metrics["wait_time_seconds"] = self._metrics["wait_time_seconds"] * 0.9 + wait_time * 0.1
-
-            # Create ibis connection (synchronous, but we're limiting concurrency)
-            try:
-                ibis_conn = ibis.postgres.connect(
-                    host=self.host,
-                    port=self.port,
-                    user=self.user,
-                    password=self.password,
-                    database=self.database,
-                )
-
-                async with self._lock:
-                    self._active_connections += 1
-                    self._metrics["active_connections"] = self._active_connections
-                    self._metrics["total_connections_created"] += 1
-
-                logger.debug(f"Created Postgres connection " f"(active={self._active_connections}/{self.max_size})")
-
-                return ibis_conn
-
-            except Exception as e:
-                # Release semaphore on error
-                self._semaphore.release()
-                self._metrics["connection_errors"] += 1
-                logger.error(f"Failed to create Postgres connection: {e}")
-                raise
-
         except TimeoutError as e:
             self._metrics["pool_exhaustions"] += 1
             self._metrics["connection_errors"] += 1
@@ -125,9 +91,36 @@ class PostgresConnectionPool:
                 f"(timeout={self.timeout}s, max_connections={self.max_size}, "
                 f"active={self._active_connections})"
             ) from e
+
+        # Step 2: Create connection — always release semaphore on failure
+        try:
+            wait_time = asyncio.get_event_loop().time() - start_time
+            # Update running average of wait time
+            if self._metrics["wait_time_seconds"] == 0:
+                self._metrics["wait_time_seconds"] = wait_time
+            else:
+                self._metrics["wait_time_seconds"] = self._metrics["wait_time_seconds"] * 0.9 + wait_time * 0.1
+
+            ibis_conn = ibis.postgres.connect(
+                host=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database,
+            )
+
+            async with self._lock:
+                self._active_connections += 1
+                self._metrics["active_connections"] = self._active_connections
+                self._metrics["total_connections_created"] += 1
+
+            logger.debug(f"Created Postgres connection (active={self._active_connections}/{self.max_size})")
+
+            return ibis_conn
         except Exception as e:
+            self._semaphore.release()
             self._metrics["connection_errors"] += 1
-            logger.error(f"Failed to acquire Postgres connection from pool: {e}")
+            logger.error(f"Failed to create Postgres connection: {e}")
             raise
 
     async def return_connection(self, connection: ibis.BaseBackend) -> None:

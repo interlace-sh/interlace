@@ -216,6 +216,31 @@ class ModelsHandler(BaseHandler):
         elif isinstance(pk, str):
             pk = [pk]
 
+        # Build columns array from fields
+        columns = []
+        if fields and isinstance(fields, dict):
+            for col_name, col_type in fields.items():
+                columns.append(
+                    {
+                        "name": col_name,
+                        "type": str(col_type),
+                        "data_type": str(col_type),
+                        "nullable": True,
+                        "is_primary_key": col_name in (set(pk) if pk else set()),
+                    }
+                )
+
+        # Serialize schedule to display string
+        schedule_raw = model.get("schedule")
+        schedule_str = None
+        if schedule_raw:
+            if isinstance(schedule_raw, dict):
+                schedule_str = schedule_raw.get("cron") or (
+                    f"every {schedule_raw['every_s']}s" if "every_s" in schedule_raw else str(schedule_raw)
+                )
+            else:
+                schedule_str = str(schedule_raw)
+
         return {
             "name": name,
             "type": model.get("type", "python"),
@@ -232,9 +257,11 @@ class ModelsHandler(BaseHandler):
             "file": model.get("file", ""),
             "file_hash": model.get("file_hash", ""),
             "layer": layer,
+            "has_schedule": schedule_raw is not None,
+            "schedule": schedule_str,
+            "columns": columns,
             "fields": fields,
             "incremental": model.get("incremental"),
-            "schedule": model.get("schedule"),
             "retry_policy": self._serialize_retry_policy(model.get("retry_policy")),
         }
 
@@ -252,7 +279,9 @@ class ModelsHandler(BaseHandler):
             "type": model.get("type", "unknown"),
             "schema": model.get("schema", "public"),
             "materialise": model.get("materialise", "table"),
+            "strategy": model.get("strategy"),
             "layer": layer,
+            "tags": model.get("tags", []),
         }
 
     async def runs(self, request: web.Request) -> web.Response:
@@ -303,13 +332,16 @@ class ModelsHandler(BaseHandler):
 
         return {
             "flow_id": flow.flow_id,
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "task_status": task.status.value,
             "flow_status": flow.status.value,
             "flow_started_at": flow.started_at,
             "trigger_type": flow.trigger_type,
-            "task_status": task.status.value,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
             "duration_seconds": duration,
             "rows_processed": task.rows_processed,
-            "started_at": task.started_at,
             "error_message": task.error_message,
         }
 
@@ -397,8 +429,7 @@ class ModelsHandler(BaseHandler):
         if hasattr(policy, "__dict__"):
             return {
                 "max_attempts": getattr(policy, "max_attempts", 3),
-                "initial_delay": getattr(policy, "initial_delay", 1.0),
-                "max_delay": getattr(policy, "max_delay", 60.0),
-                "exponential_base": getattr(policy, "exponential_base", 2.0),
+                "delay_seconds": getattr(policy, "initial_delay", 1.0),
+                "backoff_multiplier": getattr(policy, "exponential_base", 2.0),
             }
         return None

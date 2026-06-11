@@ -1,25 +1,25 @@
 """
-Unique constraint quality check.
+Unique constraint check.
 
-Phase 3: Check that column(s) contain only unique values.
+Check that column(s) contain only unique values.
 """
 
 import time
 
 import ibis
 
-from interlace.quality.base import (
-    QualityCheck,
-    QualityCheckResult,
-    QualityCheckSeverity,
-    QualityCheckStatus,
+from interlace.checks.base import (
+    Check,
+    CheckResult,
+    CheckSeverity,
+    CheckStatus,
 )
 from interlace.utils.logging import get_logger
 
-logger = get_logger("interlace.quality.checks.unique")
+logger = get_logger("interlace.checks.types.unique")
 
 
-class UniqueCheck(QualityCheck):
+class UniqueCheck(Check):
     """
     Check that a column or combination of columns contains unique values.
 
@@ -35,20 +35,10 @@ class UniqueCheck(QualityCheck):
         self,
         column: str | None = None,
         columns: list[str] | None = None,
-        severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
+        severity: CheckSeverity = CheckSeverity.ERROR,
         name: str | None = None,
         description: str | None = None,
     ):
-        """
-        Initialize unique check.
-
-        Args:
-            column: Single column to check for uniqueness
-            columns: Multiple columns for composite uniqueness
-            severity: Severity level for failures
-            name: Custom check name
-            description: Check description
-        """
         super().__init__(
             column=column,
             columns=columns,
@@ -69,56 +59,35 @@ class UniqueCheck(QualityCheck):
         connection: ibis.BaseBackend,
         table_name: str,
         schema: str | None = None,
-    ) -> QualityCheckResult:
-        """
-        Execute uniqueness check.
-
-        Counts duplicate values and reports failures.
-
-        Args:
-            connection: ibis connection
-            table_name: Table to check
-            schema: Schema containing the table
-
-        Returns:
-            QualityCheckResult with uniqueness check outcome
-        """
+    ) -> CheckResult:
+        """Execute uniqueness check."""
         start_time = time.time()
 
         try:
             table = self._get_table(connection, table_name, schema)
-
-            # Get total row count
             total_rows = int(table.count().execute())
 
-            # Count distinct values for the column(s)
             if len(self.columns) == 1:
                 distinct_count = int(table[self.columns[0]].nunique().execute())
             else:
-                # For composite keys, count distinct combinations
                 distinct_count = int(table.select(self.columns).distinct().count().execute())
 
-            # Calculate duplicates
             duplicate_count = total_rows - distinct_count
-
             duration = time.time() - start_time
 
             if duplicate_count == 0:
                 return self._make_result(
-                    status=QualityCheckStatus.PASSED,
+                    status=CheckStatus.PASSED,
                     table_name=table_name,
                     message=f"All {total_rows} rows have unique values for {self.columns}",
                     failed_rows=0,
                     total_rows=total_rows,
                     duration=duration,
-                    details={
-                        "distinct_count": distinct_count,
-                        "columns": self.columns,
-                    },
+                    details={"distinct_count": distinct_count, "columns": self.columns},
                 )
             else:
                 return self._make_result(
-                    status=QualityCheckStatus.FAILED,
+                    status=CheckStatus.FAILED,
                     table_name=table_name,
                     message=(
                         f"Found {duplicate_count} duplicate values in {self.columns} "
@@ -138,7 +107,7 @@ class UniqueCheck(QualityCheck):
             duration = time.time() - start_time
             logger.error(f"Error running unique check: {e}")
             return self._make_result(
-                status=QualityCheckStatus.ERROR,
+                status=CheckStatus.ERROR,
                 table_name=table_name,
                 message=f"Error running unique check: {str(e)}",
                 duration=duration,

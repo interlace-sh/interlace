@@ -178,19 +178,40 @@ class InterlaceInitializer:
                 logger.info("No models found in models directory")
             return {}, None
 
-        # Merge quality checks from config.yaml into model_info.
+        # Merge checks from config.yaml into model_info.
         # Config-level checks are defaults; decorator-level checks take precedence.
         if self.config:
-            quality_config = self.config.data.get("quality", {})
-            if isinstance(quality_config, dict) and quality_config.get("enabled", True):
-                fail_on_error = quality_config.get("fail_on_error", False)
-                checks_by_model = quality_config.get("checks", {})
+            checks_config = self.config.data.get("checks", {})
+            if isinstance(checks_config, dict) and checks_config.get("enabled", True):
+                fail_on_error = checks_config.get("fail_on_error", False)
+                checks_by_model = checks_config.get("models", {})
                 if isinstance(checks_by_model, dict):
                     for model_name, model_info in models.items():
-                        if model_name in checks_by_model and not model_info.get("quality_checks"):
-                            model_info["quality_checks"] = checks_by_model[model_name]
-                        if model_info.get("quality_checks"):
-                            model_info.setdefault("quality_fail_on_error", fail_on_error)
+                        if model_name in checks_by_model and not model_info.get("checks"):
+                            model_info["checks"] = checks_by_model[model_name]
+                        if model_info.get("checks"):
+                            model_info.setdefault("checks_fail_on_error", fail_on_error)
+
+        # Discover SQL check files from checks/ directory
+        try:
+            from interlace.checks.discovery import discover_python_checks, discover_sql_checks
+
+            sql_checks = discover_sql_checks(self.project_dir)
+            for model_name, check_list in sql_checks.items():
+                if model_name in models:
+                    existing = models[model_name].get("checks") or []
+                    models[model_name]["checks"] = existing + check_list
+
+            python_checks = discover_python_checks()
+            for model_name, check_list in python_checks.items():
+                if model_name in models:
+                    existing = models[model_name].get("checks") or []
+                    models[model_name]["checks"] = existing + check_list
+        except Exception as e:
+            from interlace.utils.logging import get_logger as _get_logger
+
+            _logger = _get_logger("interlace.initialization")
+            _logger.debug(f"Check discovery skipped: {e}")
 
         # Build dependency graph
         try:

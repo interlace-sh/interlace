@@ -1322,7 +1322,7 @@ components:
               type: boolean
             sync:
               type: boolean
-            quality_checks:
+            checks:
               type: boolean
             retry_framework:
               type: boolean

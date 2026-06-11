@@ -1,7 +1,7 @@
 """
 Prometheus metrics for Interlace.
 
-Phase 3: Export metrics for model execution, connection pools, retries, and DLQ.
+Phase 3: Export metrics for model execution, connection pools, and retries.
 
 Usage:
     from interlace.observability import get_metrics_registry
@@ -59,8 +59,6 @@ class MetricsRegistry:
             "connection_pool_active": {},  # pool_name -> count
             "connection_pool_max": {},  # pool_name -> max
             "retry_total": {},  # model -> {success: N, failure: N}
-            "dlq_entries": {},  # model -> count
-            "circuit_breaker_state": {},  # model -> state
         }
         self._lock = threading.Lock()
 
@@ -117,22 +115,6 @@ class MetricsRegistry:
             "interlace_retry_total",
             "Total retry attempts",
             ["model", "outcome"],  # outcome: success, failure, exhausted
-            registry=self._registry,
-        )
-
-        # Dead letter queue gauge
-        self._dlq_gauge = Gauge(
-            "interlace_dlq_entries",
-            "Number of entries in dead letter queue",
-            ["model"],
-            registry=self._registry,
-        )
-
-        # Circuit breaker state gauge
-        self._circuit_breaker_gauge = Gauge(
-            "interlace_circuit_breaker_state",
-            "Circuit breaker state (0=closed, 1=open, 2=half_open)",
-            ["model"],
             registry=self._registry,
         )
 
@@ -282,44 +264,6 @@ class MetricsRegistry:
         if PROMETHEUS_AVAILABLE and self._registry:
             self._retry_counter.labels(model=model, outcome=outcome).inc()
 
-    def record_dlq_entry(self, model: str, count: int = 1) -> None:
-        """
-        Record DLQ entry.
-
-        Args:
-            model: Model name
-            count: Number of entries (can be negative to decrement)
-        """
-        if not self._enabled:
-            return
-
-        with self._lock:
-            self._internal_metrics["dlq_entries"][model] = self._internal_metrics["dlq_entries"].get(model, 0) + count
-
-        if PROMETHEUS_AVAILABLE and self._registry:
-            current = self._internal_metrics["dlq_entries"].get(model, 0)
-            self._dlq_gauge.labels(model=model).set(max(0, current))
-
-    def record_circuit_breaker_state(self, model: str, state: str) -> None:
-        """
-        Record circuit breaker state.
-
-        Args:
-            model: Model name
-            state: State (closed, open, half_open)
-        """
-        if not self._enabled:
-            return
-
-        state_map = {"closed": 0, "open": 1, "half_open": 2}
-        state_value = state_map.get(state, 0)
-
-        with self._lock:
-            self._internal_metrics["circuit_breaker_state"][model] = state
-
-        if PROMETHEUS_AVAILABLE and self._registry:
-            self._circuit_breaker_gauge.labels(model=model).set(state_value)
-
     @contextmanager
     def time_model_execution(
         self,
@@ -364,8 +308,6 @@ class MetricsRegistry:
                 "connection_pool_active": dict(self._internal_metrics["connection_pool_active"]),
                 "connection_pool_max": dict(self._internal_metrics["connection_pool_max"]),
                 "retry_total": dict(self._internal_metrics["retry_total"]),
-                "dlq_entries": dict(self._internal_metrics["dlq_entries"]),
-                "circuit_breaker_state": dict(self._internal_metrics["circuit_breaker_state"]),
             }
 
     def start_http_server(self, port: int = 9090, addr: str = "") -> None:
@@ -443,8 +385,3 @@ def connection_pool_gauge(connection: str, active: int, max_size: int, wait_time
 def retry_counter(model: str, outcome: str) -> None:
     """Record retry counter."""
     get_metrics_registry().record_retry(model, outcome)
-
-
-def dlq_counter(model: str, count: int = 1) -> None:
-    """Record DLQ counter."""
-    get_metrics_registry().record_dlq_entry(model, count)

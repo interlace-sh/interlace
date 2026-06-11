@@ -36,7 +36,7 @@ def dual[T](func: Callable[..., Awaitable[T]]) -> Callable[..., T]:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
-        return coro if loop.is_running() else asyncio.run(coro)  # type: ignore[arg-type]
+        return coro if loop.is_running() else asyncio.run(coro)
 
     sync_or_async_call = functools.update_wrapper(sync_or_async_call, func)
     return sync_or_async_call

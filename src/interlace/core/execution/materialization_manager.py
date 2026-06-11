@@ -68,7 +68,6 @@ class MaterializationManager:
     ) -> None:
         """Materialise data using materialiser."""
         # Materialisation is synchronous - call directly (DuckDB connections are not thread-safe)
-        # TODO: Consider making ibis operations async or use connection pooling
         # Pass fields and any additional kwargs to materializer
         materialize_kwargs = {"fields": fields}
         materialize_kwargs.update(kwargs)
@@ -226,7 +225,10 @@ class MaterializationManager:
             try:
                 connection.create_table(temp_table_name, obj=new_data, temp=True)
             except (TypeError, AttributeError, ValueError, NotImplementedError):
-                df = new_data.execute()
+                import asyncio
+
+                loop = asyncio.get_event_loop()
+                df = await loop.run_in_executor(None, new_data.execute)
                 connection.create_table(temp_table_name, obj=df, temp=True)
             insert_sql = strategy.generate_sql(connection, model_name, schema, temp_table_name)
             if insert_sql:

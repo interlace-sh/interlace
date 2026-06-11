@@ -99,20 +99,23 @@ class RunsHandler(BaseHandler):
         run_id = request.match_info["run_id"]
 
         # Check if this is the current running flow
-        if hasattr(self.service, "flow") and self.service.flow:
-            if self.service.flow.flow_id == run_id:
-                # Attempt to cancel
-                if hasattr(self.service, "cancel_current_run"):
-                    await self.service.cancel_current_run()
-                    return await self.json_response(
-                        {"status": "cancelled", "run_id": run_id},
-                        request=request,
-                    )
+        is_current = hasattr(self.service, "flow") and self.service.flow and self.service.flow.flow_id == run_id
 
-        # Check if already completed
+        if is_current:
+            await self.service.cancel_current_run()
+            return await self.json_response(
+                {"status": "cancelled", "run_id": run_id},
+                request=request,
+            )
+
+        # Check if already completed in state store
         if self.state_store:
-            # Could check state store for completed flows
-            pass
+            flow = self.state_store.get_flow(run_id)
+            if flow:
+                return await self.json_response(
+                    {"status": "already_completed", "run_id": run_id},
+                    request=request,
+                )
 
         raise NotFoundError("Run", run_id, ErrorCode.RUN_NOT_FOUND)
 
@@ -275,15 +278,7 @@ class RunsHandler(BaseHandler):
                     exec_config["_since"] = since
                 if until is not None:
                     exec_config["_until"] = until
-                executor = Executor(exec_config)
-
-                # Emit flow started event
-                if self.event_bus:
-                    await self.event_bus.emit(
-                        "flow.started",
-                        {"flow_id": run_id, "models": list(models.keys())},
-                        flow_id=run_id,
-                    )
+                executor = Executor(exec_config, event_bus=self.event_bus)
 
                 results = await executor.execute_dynamic(models, self.graph, force=force)
 
@@ -314,39 +309,12 @@ class RunsHandler(BaseHandler):
 
                 flow.complete(success=not has_failures)
 
-                # Build enriched event data
-                summary = flow.get_summary()
-                total_rows = sum(t.rows_processed for t in flow.tasks.values() if t.rows_processed is not None)
-                event_type = "flow.failed" if has_failures else "flow.completed"
-                event_data = {
-                    "flow_id": run_id,
-                    "status": flow.status.value,
-                    "completed_tasks": summary["completed"],
-                    "failed_tasks": summary["failed"],
-                    "total_tasks": summary["total_tasks"],
-                    "duration_seconds": flow.get_duration(),
-                    "total_rows": total_rows,
-                }
-
-                # Emit flow event
-                if self.event_bus:
-                    await self.event_bus.emit(
-                        event_type,
-                        event_data,
-                        flow_id=run_id,
-                    )
-            except Exception as e:
+                # Note: flow.completed/flow.failed events are now emitted
+                # by the ExecutionOrchestrator via the EventBus
+            except Exception:
                 # Mark flow as failed
                 flow.status = FlowStatus.FAILED
                 flow.completed_at = time.time()
-
-                # Emit flow failed event
-                if self.event_bus:
-                    await self.event_bus.emit(
-                        "flow.failed",
-                        {"flow_id": run_id, "error": str(e)},
-                        flow_id=run_id,
-                    )
             finally:
                 # Save to history
                 self.service.save_flow_to_history(flow)

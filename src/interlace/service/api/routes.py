@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from interlace.service.api.handlers.checks import ChecksHandler
 from interlace.service.api.handlers.docs import openapi_yaml, swagger_ui
 from interlace.service.api.handlers.events import EventsHandler
 from interlace.service.api.handlers.flows import FlowsHandler
@@ -42,6 +43,7 @@ def setup_routes(app: web.Application, service: "InterlaceService") -> None:
     lineage = LineageHandler(service)
     plan = PlanHandler(service)
     schema = SchemaHandler(service)
+    checks = ChecksHandler(service)
     streams = StreamsHandler(service)
 
     # API version prefix
@@ -94,6 +96,11 @@ def setup_routes(app: web.Application, service: "InterlaceService") -> None:
             web.get(f"{prefix}/models/{{name}}/schema/history", schema.get_history),
             web.get(f"{prefix}/models/{{name}}/schema/current", schema.get_current_version),
             web.get(f"{prefix}/models/{{name}}/schema/diff", schema.compare_versions),
+            # Checks
+            web.get(f"{prefix}/checks", checks.list_all),
+            web.get(f"{prefix}/checks/results", checks.results),
+            web.post(f"{prefix}/checks/run", checks.run),
+            web.get(f"{prefix}/models/{{name}}/checks", checks.list_for_model),
             # Streams (webhook/event ingestion)
             web.get(f"{prefix}/streams", streams.list),
             web.get(f"{prefix}/streams/{{name}}", streams.get),

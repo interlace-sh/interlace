@@ -43,7 +43,10 @@ class PGPDecryptProcessor:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Import lazily so environments without pgpy can still run other processors.
-        import pgpy
+        try:
+            import pgpy
+        except ImportError:
+            raise ImportError("PGP decryption requires pgpy. Install with: pip install 'interlace[pgp]'") from None
 
         # Load private key
         key, _ = pgpy.PGPKey.from_file(str(key_path))

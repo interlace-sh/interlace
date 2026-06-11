@@ -143,7 +143,7 @@ class API:
                         If None, no rate limiting (default: None)
             rate_limit_interval: Time interval in seconds for rate limiting (default: 1.0)
         """
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip("/") + "/"
         self.default_headers = headers or {}
         self.auth_func = auth
         self.max_concurrent = max_concurrent

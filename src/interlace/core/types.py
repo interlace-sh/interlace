@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any, Literal, TypedDict
 
 import ibis
-import pandas
 
 # ---------------------------------------------------------------------------
 # Domain type aliases — use these instead of ``Any`` where possible
@@ -18,8 +17,9 @@ import pandas
 #: Any ibis backend connection
 ConnectionBackend = ibis.BaseBackend
 
-#: The output a model function may return before conversion
-ModelOutput = ibis.Table | pandas.DataFrame | list | dict | None
+#: The output a model function may return before conversion.
+#: pandas.DataFrame is supported when the [pandas] extra is installed.
+ModelOutput = ibis.Table | list | dict | None
 
 #: Materialization strategy names
 StrategyName = Literal["merge_by_key", "append", "replace", "scd_type_2", "none"]

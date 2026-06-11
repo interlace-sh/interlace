@@ -240,9 +240,9 @@ def _execute_promotion(
                 try:
                     src_table = src_backend.table(model_name, database=model_schema)
                 except Exception:
-                    # Try without database parameter
+                    # Fallback to raw SQL for schema-qualified access
                     try:
-                        src_table = src_backend.table(f"{model_schema}.{model_name}")
+                        src_table = src_backend.sql(f"SELECT * FROM {model_schema}.{model_name}")
                     except Exception:
                         console.print(f"  [yellow]⊘[/yellow] {model_name}: table not found in source")
                         skipped += 1

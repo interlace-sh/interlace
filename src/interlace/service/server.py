@@ -27,14 +27,23 @@ from interlace.service.api import EventBus, setup_routes
 from interlace.service.api.middleware import error_middleware, setup_auth, setup_cors
 from interlace.service.api.routes import setup_legacy_routes
 from interlace.service.cron_parser import CronParseError, next_fire_time_cron
-from interlace.sync.sftp_sync import run_sftp_sync_job
-from interlace.sync.types import ProcessorSpec, SFTPSyncJob
 from interlace.utils.logging import get_logger
+
+# SFTP sync is optional — requires interlace[sftp]
+try:
+    from interlace.sync.sftp_sync import run_sftp_sync_job
+    from interlace.sync.types import ProcessorSpec, SFTPSyncJob
+
+    _SFTP_AVAILABLE = True
+except ImportError:
+    _SFTP_AVAILABLE = False
 
 logger = get_logger("interlace.service")
 
 
-def _job_from_dict(job_dict: dict[str, Any]) -> SFTPSyncJob:
+def _job_from_dict(job_dict: dict[str, Any]) -> Any:
+    if not _SFTP_AVAILABLE:
+        raise ImportError("SFTP sync requires paramiko. Install with: pip install 'interlace[sftp]'")
     processors = [
         ProcessorSpec(name=p["name"], config=p.get("config"))
         for p in (job_dict.get("processors") or [])
@@ -84,6 +93,7 @@ class InterlaceService:
         self._run_lock = asyncio.Lock()
         self._background_tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
+        self._current_run_task: asyncio.Task[None] | None = None
 
     def save_flow_to_history(self, flow: Any) -> None:
         """Save a completed flow to in-memory history."""
@@ -92,6 +102,17 @@ class InterlaceService:
         # Trim to max size
         if len(self.flow_history) > self.max_flow_history:
             self.flow_history = self.flow_history[: self.max_flow_history]
+
+    async def cancel_current_run(self) -> None:
+        """Cancel the currently running execution task.
+
+        Sends an asyncio cancellation signal which is handled gracefully
+        by ExecutionOrchestrator (cancels pending model tasks, updates
+        flow status to failed).
+        """
+        if self._current_run_task and not self._current_run_task.done():
+            self._current_run_task.cancel()
+            logger.info("Cancellation signal sent to current run")
 
     def initialize(self) -> None:
         config_obj, state_store, all_models, graph = initialize(self.project_dir, env=self.env, verbose=self.verbose)
@@ -108,8 +129,9 @@ class InterlaceService:
         Phase B/C: scheduler is interval/cron-based and uses StateStore as durability layer.
         """
         self._stopping.clear()
-        # Sync jobs loop (interval-based per job)
-        self._background_tasks.append(asyncio.create_task(self._sync_loop()))
+        # Sync jobs loop (interval-based per job, requires interlace[sftp])
+        if _SFTP_AVAILABLE and self.config.get("sync", {}).get("jobs"):
+            self._background_tasks.append(asyncio.create_task(self._sync_loop()))
         if enable_scheduler:
             self._scheduler_running = True
             self._background_tasks.append(asyncio.create_task(self._model_schedule_loop()))
@@ -360,8 +382,9 @@ class InterlaceService:
                     await ex.execute_dynamic(selected_models, self.graph, force=force)
                 finally:
                     ex.executor_pool.shutdown(wait=False)
+                    self._current_run_task = None
 
-        asyncio.create_task(_run_task())
+        self._current_run_task = asyncio.create_task(_run_task())
 
     async def handle_health(self, request: web.Request) -> web.Response:
         return web.json_response({"status": "ok"})
@@ -405,6 +428,11 @@ class InterlaceService:
         Body:
           { "job_id": "..." }  # optional, defaults to first job
         """
+        if not _SFTP_AVAILABLE:
+            return web.json_response(
+                {"error": "SFTP sync requires paramiko. Install with: pip install 'interlace[sftp]'"},
+                status=501,
+            )
         try:
             payload = await request.json()
         except Exception:

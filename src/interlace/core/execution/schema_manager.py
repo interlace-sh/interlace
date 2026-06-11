@@ -4,10 +4,11 @@ Schema management for validating and evolving table schemas.
 Phase 0: Extracted from Executor class for better separation of concerns.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any
 
 import ibis
-import pandas as pd
 from cachetools import LRUCache, TTLCache
 
 from interlace.core.context import _execute_sql_internal
@@ -33,14 +34,14 @@ class SchemaManager:
 
     def __init__(
         self,
-        data_converter: "DataConverter",
+        data_converter: DataConverter,
         schema_cache: dict[str, ibis.Schema],
         table_existence_cache: dict[tuple, bool],
         max_schema_cache_size: int = 1000,
         max_existence_cache_size: int = 2000,
         schema_cache_ttl: float | None = None,
         existence_cache_ttl: float | None = None,
-    ):
+    ) -> None:
         """
         Initialize SchemaManager.
 
@@ -102,7 +103,7 @@ class SchemaManager:
 
     async def setup_reference_table(
         self,
-        data: ibis.Table | pd.DataFrame | list | dict,
+        data: ibis.Table | Any | list | dict,
         model_name: str,
         connection: ibis.BaseBackend,
         model_info: dict[str, Any] | None = None,
@@ -327,7 +328,7 @@ class SchemaManager:
         self,
         connection: ibis.BaseBackend,
         table_name: str,
-        obj: ibis.Table | pd.DataFrame,
+        obj: ibis.Table | Any,
         schema: str,
         overwrite: bool = False,
     ) -> None:

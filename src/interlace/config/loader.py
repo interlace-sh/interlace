@@ -4,7 +4,6 @@ Configuration file loading.
 Phase 0: Load and parse config.yaml files.
 """
 
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -177,29 +176,3 @@ def _merge_dict(base: dict, override: dict) -> None:
             _merge_dict(base[key], value)
         else:
             base[key] = value
-
-
-def _substitute_env_vars(data: Any) -> Any:
-    """
-    Substitute environment variables in config.
-
-    Supports ${VAR_NAME} syntax and {env} placeholder.
-    """
-    if isinstance(data, dict):
-        return {k: _substitute_env_vars(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [_substitute_env_vars(item) for item in data]
-    elif isinstance(data, str):
-        # Substitute ${VAR_NAME}
-        import re
-
-        def replace_var(match: re.Match[str]) -> str:
-            var_name = match.group(1)
-            return os.getenv(var_name, match.group(0))
-
-        result = re.sub(r"\${([^}]+)}", replace_var, data)
-        # Note: {env} placeholder substitution is handled in resolve_config()
-        # This function does basic env var substitution only
-        return result
-    else:
-        return data

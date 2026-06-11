@@ -32,7 +32,7 @@ class TestAPIInitialization:
         """Test API initializes with default configuration values."""
         api = API(base_url="https://api.example.com")
 
-        assert api.base_url == "https://api.example.com"
+        assert api.base_url == "https://api.example.com/"
         assert api.default_headers == {}
         assert api.auth_func is None
         assert api.max_concurrent == 10
@@ -54,7 +54,7 @@ class TestAPIInitialization:
             convert_camel_case=False,
         )
 
-        assert api.base_url == "https://api.example.com"
+        assert api.base_url == "https://api.example.com/"
         assert api.default_headers == {"X-Custom": "value"}
         assert api.max_concurrent == 5
         assert api.max_retries == 3
@@ -62,10 +62,13 @@ class TestAPIInitialization:
         assert api.timeout.total == 60
         assert api.convert_camel_case is False
 
-    def test_api_init_strips_trailing_slash(self):
-        """Test that base_url trailing slash is stripped."""
+    def test_api_init_normalises_trailing_slash(self):
+        """Test that base_url always ends with a trailing slash (aiohttp requirement)."""
         api = API(base_url="https://api.example.com/")
-        assert api.base_url == "https://api.example.com"
+        assert api.base_url == "https://api.example.com/"
+
+        api2 = API(base_url="https://api.example.com")
+        assert api2.base_url == "https://api.example.com/"
 
 
 class TestAPIContextManager:
@@ -80,7 +83,7 @@ class TestAPIContextManager:
             assert api.session is not None
             assert isinstance(api.session, aiohttp.ClientSession)
             # Check private attribute _base_url
-            assert str(api.session._base_url) == "https://api.example.com"
+            assert str(api.session._base_url) == "https://api.example.com/"
 
         # Session should be closed after context exit (set to None with ref counting)
         assert api.session is None or api.session.closed

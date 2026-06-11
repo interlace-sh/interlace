@@ -118,17 +118,6 @@ class TestMetricsRegistry:
         assert metrics["retry_total"]["api_model"]["success"] == 2
         assert metrics["retry_total"]["api_model"]["failure"] == 1
 
-    def test_record_dlq_entry(self):
-        """Test recording DLQ entries."""
-        registry = MetricsRegistry()
-        registry.enable()
-
-        registry.record_dlq_entry(model="failed_model", count=1)
-        registry.record_dlq_entry(model="failed_model", count=1)
-
-        metrics = registry.get_metrics()
-        assert metrics["dlq_entries"]["failed_model"] == 2
-
     def test_time_model_execution_context_manager(self):
         """Test timing context manager."""
         registry = MetricsRegistry()

@@ -67,7 +67,7 @@ class CSVExporter(Exporter):
             try:
                 table = connection.table(table_name, database=schema)
             except Exception:
-                table = connection.table(f"{schema}.{table_name}")
+                table = connection.sql(f"SELECT * FROM {schema}.{table_name}")
 
             df = table.execute()
             df.to_csv(

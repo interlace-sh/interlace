@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
 from interlace.core.dependencies import DependencyGraph
+from interlace.core.events import EventBus
 from interlace.core.flow import Flow, Task, TaskStatus
 from interlace.utils.logging import get_logger
 
@@ -43,6 +44,7 @@ class ExecutionOrchestrator:
         task_timeout: float = 3600.0,
         thread_pool_size: int | None = None,
         executor_flow_setter: Callable[[Flow], None] | None = None,
+        event_bus: EventBus | None = None,
     ):
         """
         Initialize ExecutionOrchestrator.
@@ -58,6 +60,7 @@ class ExecutionOrchestrator:
             task_timeout: Task timeout in seconds
             thread_pool_size: Thread pool size for display
             executor_flow_setter: Callback to set flow on Executor (for backward compatibility)
+            event_bus: Optional EventBus for broadcasting execution events
         """
         self.model_executor = model_executor
         self.change_detector = change_detector
@@ -69,8 +72,14 @@ class ExecutionOrchestrator:
         self.task_timeout = task_timeout
         self.thread_pool_size = thread_pool_size
         self.executor_flow_setter = executor_flow_setter
+        self.event_bus = event_bus
         self.flow: Flow | None = None
         self._force_execution = False
+
+    async def _emit(self, event_type: str, data: dict[str, Any]) -> None:
+        """Emit an event if the event bus is available."""
+        if self.event_bus and self.flow:
+            await self.event_bus.emit(event_type, data, flow_id=self.flow.flow_id)
 
     async def execute_dynamic(
         self, models: dict[str, dict[str, Any]], graph: DependencyGraph, force: bool = False
@@ -117,6 +126,7 @@ class ExecutionOrchestrator:
             model_selection=model_selection,
         )
         self.flow.start()
+        await self._emit("flow.started", {"flow_id": self.flow.flow_id, "models": list(models.keys())})
         # Update materialization manager and model executor with flow
         self.materialization_manager.flow = self.flow
         self.model_executor.flow = self.flow
@@ -163,6 +173,7 @@ class ExecutionOrchestrator:
             task.enqueue()
             task.mark_waiting()  # Initially waiting for dependencies
             self.flow.tasks[model_name] = task
+            await self._emit("task.waiting", task.get_summary())
 
             # Save task to state database
             if self.state_store:
@@ -251,6 +262,7 @@ class ExecutionOrchestrator:
                     # Update task status
                     if model_name in self.flow.tasks:
                         self.flow.tasks[model_name].status = TaskStatus.SKIPPED
+                        await self._emit("task.skipped", self.flow.tasks[model_name].get_summary())
                         if self.display:
                             self.display.update_from_flow()
 
@@ -276,6 +288,7 @@ class ExecutionOrchestrator:
             # Complete flow with failure status
             if self.flow:
                 self.flow.complete(success=False)
+                await self._emit("flow.cancelled", self.flow.get_summary())
                 if self.state_store:
                     self.state_store.save_flow(self.flow)
 
@@ -287,6 +300,8 @@ class ExecutionOrchestrator:
             # Check if any tasks failed
             has_failures = any(t.status == TaskStatus.FAILED for t in self.flow.tasks.values())
             self.flow.complete(success=not has_failures)
+            event_type = "flow.failed" if has_failures else "flow.completed"
+            await self._emit(event_type, self.flow.get_summary())
 
             # Save completed flow to state database
             if self.state_store:
@@ -384,6 +399,7 @@ class ExecutionOrchestrator:
                         if model_name in self.flow.tasks:
                             self.flow.tasks[model_name].complete(success=False)
                             self.flow.tasks[model_name].error_message = f"Missing dependencies: {', '.join(missing)}"
+                            await self._emit("task.failed", self.flow.tasks[model_name].get_summary())
                             if self.state_store:
                                 self.state_store.save_task(self.flow.tasks[model_name])
                     break
@@ -432,6 +448,7 @@ class ExecutionOrchestrator:
                         task.skip()
                         task.error_message = error_msg
                         task.skipped_reason = "upstream_failed"
+                        await self._emit("task.skipped", task.get_summary())
                         if self.state_store:
                             self.state_store.save_task(task)
 
@@ -448,6 +465,7 @@ class ExecutionOrchestrator:
                     if model_name in self.flow.tasks:
                         task = self.flow.tasks[model_name]
                         task.mark_ready()
+                        await self._emit("task.ready", task.get_summary())
                         if self.state_store:
                             self.state_store.save_task(task)
 
@@ -484,6 +502,7 @@ class ExecutionOrchestrator:
         if model_name in self.flow.tasks:
             flow_task = self.flow.tasks[model_name]
             flow_task.mark_ready()  # Dependencies satisfied
+            await self._emit("task.ready", flow_task.get_summary())
             # Note: task.start() and logging happen in execute_model() via _prepare_model_execution()
 
         # Progress will be updated in execute_model() when execution actually starts
@@ -634,6 +653,7 @@ class ExecutionOrchestrator:
                         flow_task.complete(success=False)
                         error_msg = result.get("error", "Unknown error")
                         flow_task.error_message = error_msg
+                        await self._emit("task.failed", flow_task.get_summary())
 
                         # Log error - models can return errors as results instead of raising exceptions
                         error_message = f"Model '{model_name}' failed: {error_msg}"
@@ -686,11 +706,13 @@ class ExecutionOrchestrator:
                     elif result_status == "skipped":
                         flow_task.skip()
                         flow_task.skipped_reason = result.get("reason")
+                        await self._emit("task.skipped", flow_task.get_summary())
                         # Skipped models count as succeeded for dependency resolution
                         succeeded.add(model_name)
                     else:
                         flow_task.complete(success=True)
                         flow_task.rows_processed = result.get("rows")
+                        await self._emit("task.completed", flow_task.get_summary())
                         # schema_changes already set during execution
                         # Add to succeeded set - model completed successfully
                         succeeded.add(model_name)
@@ -779,6 +801,7 @@ class ExecutionOrchestrator:
                     flow_task.complete(success=False)
                     flow_task.error_message = str(error)  # Short message for progress bar
                     flow_task.error_stacktrace = error_traceback
+                    await self._emit("task.failed", flow_task.get_summary())
 
                 # Log error with full traceback - this will appear in logs above progress bars and in file
                 error_message = f"Model '{model_name}' failed: {str(error)}"
@@ -872,6 +895,7 @@ class ExecutionOrchestrator:
                             flow_task = self.flow.tasks[dependent]
                             flow_task.skip()  # Use method to set completed_at timestamp
                             flow_task.error_message = error_msg
+                            await self._emit("task.skipped", flow_task.get_summary())
                             if self.state_store:
                                 self.state_store.save_task(flow_task)
 

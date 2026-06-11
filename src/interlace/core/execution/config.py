@@ -2,8 +2,6 @@
 Configuration objects for execution components.
 
 Reduces coupling by using configuration objects instead of many parameters.
-
-Phase 2: Added retry_manager and dlq for retry framework support.
 """
 
 from collections.abc import Callable
@@ -15,6 +13,7 @@ import ibis
 if TYPE_CHECKING:
     from concurrent.futures import ThreadPoolExecutor
 
+    from interlace.core.events import EventBus
     from interlace.core.execution.change_detector import ChangeDetector
     from interlace.core.execution.connection_manager import TaskConnectionManager
     from interlace.core.execution.data_converter import DataConverter
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
     from interlace.core.execution.materialization_manager import MaterializationManager
     from interlace.core.execution.schema_manager import SchemaManager
     from interlace.core.flow import Flow
-    from interlace.core.retry import DeadLetterQueue, RetryManager
+    from interlace.core.retry import RetryManager
     from interlace.core.state import StateStore
     from interlace.materialization.base import Materializer
     from interlace.utils.display import Display
@@ -44,10 +43,10 @@ class ModelExecutorConfig:
     state_store: Optional["StateStore"] = None
     flow: Optional["Flow"] = None
     display: Optional["Display"] = None
+    event_bus: Optional["EventBus"] = None
 
-    # Phase 2: Retry framework components
+    # Retry framework
     retry_manager: Optional["RetryManager"] = None
-    dlq: Optional["DeadLetterQueue"] = None
 
     # Backfill overrides (--since / --until)
     since: str | None = None

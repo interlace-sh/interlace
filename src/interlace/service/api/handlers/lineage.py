@@ -134,43 +134,100 @@ class LineageHandler(BaseHandler):
         GET /api/v1/models/{name}/columns
 
         Get all columns for a model with their lineage information.
+        Falls back to model fields or database introspection if lineage
+        computation fails.
         """
         name = request.match_info["name"]
 
         if name not in self.models:
             raise NotFoundError("Model", name, ErrorCode.MODEL_NOT_FOUND)
 
+        model = self.models[name]
         lineage = self._compute_model_lineage(name)
+        lineage_error = None
 
-        if lineage is None:
-            return await self.json_response(
-                {"model": name, "columns": [], "error": "Could not compute lineage"},
-                request=request,
-            )
+        if lineage is not None:
+            # Full lineage available — return enriched columns
+            columns = []
+            for col in lineage.columns:
+                col_data = {
+                    "name": col.name,
+                    "data_type": col.data_type,
+                    "nullable": col.nullable,
+                    "is_primary_key": col.is_primary_key,
+                    "description": col.description,
+                    "sources": [
+                        {
+                            "model": edge.source_model,
+                            "column": edge.source_column,
+                            "transformation": edge.transformation_type.value,
+                        }
+                        for edge in col.sources
+                    ],
+                }
+                columns.append(col_data)
+        else:
+            # Lineage failed — fall back to model fields / DB introspection
+            lineage_error = "Could not compute lineage"
+            columns = self._columns_from_model(name, model)
 
-        columns = []
-        for col in lineage.columns:
-            col_data = {
-                "name": col.name,
-                "data_type": col.data_type,
-                "nullable": col.nullable,
-                "is_primary_key": col.is_primary_key,
-                "description": col.description,
-                "sources": [
-                    {
-                        "model": edge.source_model,
-                        "column": edge.source_column,
-                        "transformation": edge.transformation_type.value,
-                    }
-                    for edge in col.sources
-                ],
-            }
-            columns.append(col_data)
+        result: dict[str, Any] = {"model": name, "columns": columns}
+        if lineage_error:
+            result["lineage_error"] = lineage_error
 
-        return await self.json_response(
-            {"model": name, "columns": columns},
-            request=request,
-        )
+        return await self.json_response(result, request=request)
+
+    def _columns_from_model(self, name: str, model: dict[str, Any]) -> list[dict[str, Any]]:
+        """Build column list from model fields or database introspection."""
+        # Determine primary key set
+        pk = model.get("primary_key")
+        if pk is None:
+            pk_set: set[str] = set()
+        elif isinstance(pk, str):
+            pk_set = {pk}
+        else:
+            pk_set = set(pk)
+
+        # Try model fields first
+        fields = model.get("fields")
+        if fields and hasattr(fields, "items"):
+            return [
+                {
+                    "name": col_name,
+                    "data_type": str(col_type),
+                    "nullable": True,
+                    "is_primary_key": col_name in pk_set,
+                    "description": None,
+                    "sources": [],
+                }
+                for col_name, col_type in fields.items()
+            ]
+
+        # Try database introspection
+        try:
+            from interlace.connections.manager import get_connection as get_named_connection
+
+            conn_name = model.get("connection") or self.config.get("executor", {}).get("default_connection", "default")
+            wrapper = get_named_connection(conn_name)
+            con = wrapper.connection
+            schema_name = model.get("schema", "public")
+            table = con.table(name, database=schema_name)
+            schema = table.schema()
+            return [
+                {
+                    "name": col_name,
+                    "data_type": str(col_type),
+                    "nullable": True,
+                    "is_primary_key": col_name in pk_set,
+                    "description": None,
+                    "sources": [],
+                }
+                for col_name, col_type in schema.items()
+            ]
+        except Exception:
+            pass
+
+        return []
 
     async def get_column_lineage(self, request: web.Request) -> web.Response:
         """
@@ -309,9 +366,9 @@ class LineageHandler(BaseHandler):
 
         return await self.json_response(
             {
-                "success": success_count,
+                "success": error_count == 0 and success_count > 0,
                 "errors": error_count,
-                "error_details": errors if errors else None,
+                "error_details": [f"{e['model']}: {e['error']}" for e in errors] if errors else [],
             },
             request=request,
         )

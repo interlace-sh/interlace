@@ -14,8 +14,6 @@ from interlace.connections.duckdb import DuckDBConnection
 from interlace.connections.filesystem import FilesystemConnection
 from interlace.connections.ibis_generic import IbisConnection
 from interlace.connections.postgres import PostgresConnection
-from interlace.connections.s3 import S3Connection
-from interlace.connections.sftp import SFTPConnection
 from interlace.connections.storage import BaseStorageConnection
 from interlace.exceptions import ConnectionNotFoundError
 from interlace.utils.logging import get_logger
@@ -58,10 +56,22 @@ class ConnectionManager:
 
             # Storage connections
             elif conn_type == "s3":
+                try:
+                    from interlace.connections.s3 import S3Connection
+                except ImportError:
+                    raise ImportError(
+                        f"S3 connection '{name}' requires boto3. " f"Install with: pip install 'interlace[s3]'"
+                    ) from None
                 self._connections[name] = S3Connection(name, conn_config)
             elif conn_type == "filesystem":
                 self._connections[name] = FilesystemConnection(name, conn_config)
             elif conn_type == "sftp":
+                try:
+                    from interlace.connections.sftp import SFTPConnection
+                except ImportError:
+                    raise ImportError(
+                        f"SFTP connection '{name}' requires paramiko. " f"Install with: pip install 'interlace[sftp]'"
+                    ) from None
                 self._connections[name] = SFTPConnection(name, conn_config)
 
             # Generic ibis backends (Snowflake, BigQuery, MySQL, ClickHouse, etc.)
@@ -149,7 +159,7 @@ class ConnectionManager:
                 if isinstance(conn_obj, BaseConnection):
                     # Queryable connections: trigger lazy ibis backend init
                     _ = conn_obj.connection
-                elif isinstance(conn_obj, SFTPConnection):
+                elif hasattr(conn_obj, "_parse_config"):
                     # SFTP: validate config is parseable (don't actually connect)
                     cfg = conn_obj._parse_config()
                     if not cfg.host:

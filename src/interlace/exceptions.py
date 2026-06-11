@@ -19,9 +19,8 @@ Hierarchy::
     ├── InitializationError       - startup orchestration failures
     ├── SchemaError               - schema validation / evolution
     ├── MaterializationError      - table/view/ephemeral materialisation
-    ├── QualityError              - data quality check failures
-    ├── RetryError                - retry exhaustion, circuit breaker
-    │   └── CircuitBreakerOpenError
+    ├── CheckError                - data check failures
+    ├── RetryError                - retry exhaustion
     └── StateStoreError           - state database read/write
 """
 
@@ -134,11 +133,11 @@ class MaterializationError(InterlaceError):
     """Raised when table/view/ephemeral materialization fails."""
 
 
-# --- Quality -----------------------------------------------------------------
+# --- Checks ------------------------------------------------------------------
 
 
-class QualityError(InterlaceError):
-    """Raised when data quality checks fail with error severity."""
+class CheckError(InterlaceError):
+    """Raised when data checks fail with error severity."""
 
 
 # --- Retry -------------------------------------------------------------------
@@ -146,10 +145,6 @@ class QualityError(InterlaceError):
 
 class RetryError(InterlaceError):
     """Raised when all retry attempts are exhausted."""
-
-
-class CircuitBreakerOpenError(RetryError):
-    """Raised when the circuit breaker is open and rejecting calls."""
 
 
 # --- State store -------------------------------------------------------------

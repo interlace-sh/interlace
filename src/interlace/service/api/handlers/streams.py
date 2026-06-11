@@ -57,17 +57,28 @@ class StreamsHandler(BaseHandler):
             if self.graph:
                 dependents = self.graph.get_dependents(name) or []
 
+            # Best-effort row count
+            row_count = None
+            try:
+                from interlace.connections.manager import get_connection as get_named_connection
+
+                conn_name = info.get("connection") or self._get_default_connection()
+                if conn_name:
+                    wrapper = get_named_connection(conn_name)
+                    con = wrapper.connection
+                    s = info.get("schema", "events")
+                    tables = con.list_tables(database=s)
+                    if name in tables:
+                        row_count = con.table(name, database=s).count().execute()
+            except Exception:
+                pass
+
             streams.append(
                 {
                     "name": name,
                     "schema": info.get("schema", "events"),
                     "description": info.get("description"),
-                    "cursor": info.get("cursor", "rowid"),
-                    "tags": info.get("tags", []),
-                    "owner": info.get("owner"),
-                    "fields": self._serialize_fields(info.get("fields")),
-                    "auth_required": bool(info.get("auth")),
-                    "validate_schema": info.get("validate_schema", False),
+                    "row_count": row_count,
                     "downstream_models": dependents,
                     "endpoint": f"/api/v1/streams/{name}",
                 }
@@ -114,6 +125,31 @@ class StreamsHandler(BaseHandler):
         except Exception:
             pass
 
+        # Build auth info in frontend-expected format
+        auth_config = info.get("auth")
+        auth_info = None
+        if auth_config:
+            auth_info = {
+                "type": auth_config.get("type", "bearer") if isinstance(auth_config, dict) else "bearer",
+                "required": True,
+            }
+
+        # Build rate limiting in frontend-expected format
+        rate_config = info.get("rate_limit")
+        rate_limiting = None
+        if rate_config and isinstance(rate_config, dict):
+            rps = rate_config.get("requests_per_second", 0)
+            rate_limiting = {"requests_per_minute": int(rps * 60) if rps else 0}
+
+        # Build retention in frontend-expected format
+        retention_raw = info.get("retention")
+        retention = None
+        if retention_raw and isinstance(retention_raw, dict):
+            retention = {
+                "max_age_hours": retention_raw.get("max_age_hours", 0),
+                "max_events": retention_raw.get("max_events", 0),
+            }
+
         stream_detail = {
             "name": name,
             "schema": info.get("schema", "events"),
@@ -122,17 +158,18 @@ class StreamsHandler(BaseHandler):
             "tags": info.get("tags", []),
             "owner": info.get("owner"),
             "fields": self._serialize_fields(info.get("fields")),
-            "auth_required": bool(info.get("auth")),
             "validate_schema": info.get("validate_schema", False),
-            "rate_limit": info.get("rate_limit"),
-            "retention": info.get("retention"),
             "downstream_models": dependents,
             "row_count": row_count,
-            "endpoints": {
-                "publish": f"/api/v1/streams/{name}",
-                "subscribe": f"/api/v1/streams/{name}/subscribe",
-                "consume": f"/api/v1/streams/{name}/consume",
-            },
+            "endpoints": [
+                {"method": "POST", "path": f"/api/v1/streams/{name}", "description": "Publish events"},
+                {"method": "GET", "path": f"/api/v1/streams/{name}/subscribe", "description": "Subscribe via SSE"},
+                {"method": "POST", "path": f"/api/v1/streams/{name}/consume", "description": "Consume event batch"},
+                {"method": "POST", "path": f"/api/v1/streams/{name}/ack", "description": "Acknowledge events"},
+            ],
+            "auth": auth_info,
+            "rate_limiting": rate_limiting,
+            "retention": retention,
         }
 
         return await self.json_response(stream_detail, request=request)
@@ -217,6 +254,10 @@ class StreamsHandler(BaseHandler):
             _graph=self.graph,
             _enqueue_run=(self.service._enqueue_run if hasattr(self.service, "_enqueue_run") else None),
         )
+
+        # Ensure response includes "published" field for frontend compatibility
+        if isinstance(result, dict) and "published" not in result:
+            result["published"] = result.get("rows_received", len(rows))
 
         return await self.json_response(result, status=202, request=request)
 
@@ -316,11 +357,11 @@ class StreamsHandler(BaseHandler):
         except Exception:
             body = {}
 
-        consumer_name = body.get("consumer")
+        consumer_name = body.get("consumer") or body.get("consumer_id")
         if not consumer_name:
             raise ValidationError("'consumer' is required")
 
-        batch_size = int(body.get("batch_size", 100))
+        batch_size = int(body.get("batch_size") or body.get("limit") or 100)
         if batch_size < 1 or batch_size > 10000:
             raise ValidationError("'batch_size' must be between 1 and 10000")
 
@@ -377,11 +418,14 @@ class StreamsHandler(BaseHandler):
         except Exception as e:
             raise ValidationError("Request body must be valid JSON") from e
 
-        consumer_name = body.get("consumer")
-        if not consumer_name:
-            raise ValidationError("'consumer' is required")
+        consumer_name = body.get("consumer") or body.get("consumer_id") or "default"
 
+        # Accept either "events" (list of event objects) or "event_ids" (list of IDs)
         events = body.get("events", [])
+        event_ids = body.get("event_ids")
+        if event_ids and not events:
+            events = [{"_interlace_rowid": eid} for eid in event_ids]
+
         if not events:
             return await self.json_response(
                 {"status": "ok", "acknowledged": 0},

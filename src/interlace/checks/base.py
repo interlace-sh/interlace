@@ -1,7 +1,7 @@
 """
-Base classes for data quality checks.
+Base classes for data checks.
 
-Phase 3: Abstract base class for quality checks with common interface.
+Abstract base class for checks with common interface.
 """
 
 from abc import ABC, abstractmethod
@@ -14,19 +14,19 @@ import ibis
 
 from interlace.utils.logging import get_logger
 
-logger = get_logger("interlace.quality.base")
+logger = get_logger("interlace.checks.base")
 
 
-class QualityCheckSeverity(Enum):
-    """Severity levels for quality check failures."""
+class CheckSeverity(Enum):
+    """Severity levels for check failures."""
 
     ERROR = "error"  # Fail the pipeline
     WARN = "warn"  # Log warning, continue pipeline
     INFO = "info"  # Informational only
 
 
-class QualityCheckStatus(Enum):
-    """Status of a quality check execution."""
+class CheckStatus(Enum):
+    """Status of a check execution."""
 
     PASSED = "passed"
     FAILED = "failed"
@@ -35,9 +35,9 @@ class QualityCheckStatus(Enum):
 
 
 @dataclass
-class QualityCheckResult:
+class CheckResult:
     """
-    Result of a quality check execution.
+    Result of a check execution.
 
     Attributes:
         check_name: Name of the check
@@ -57,8 +57,8 @@ class QualityCheckResult:
 
     check_name: str
     check_type: str
-    status: QualityCheckStatus
-    severity: QualityCheckSeverity
+    status: CheckStatus
+    severity: CheckSeverity
     table_name: str
     column_name: str | None = None
     message: str = ""
@@ -71,8 +71,8 @@ class QualityCheckResult:
 
     @property
     def passed(self) -> bool:
-        """Check if the quality check passed."""
-        return self.status == QualityCheckStatus.PASSED
+        """Check if the check passed."""
+        return self.status == CheckStatus.PASSED
 
     @property
     def failure_rate(self) -> float:
@@ -100,14 +100,14 @@ class QualityCheckResult:
         }
 
 
-class QualityCheck(ABC):
+class Check(ABC):
     """
-    Abstract base class for quality checks.
+    Abstract base class for data checks.
 
     Subclasses implement specific check types (unique, not_null, etc.).
 
     Usage:
-        class UniqueCheck(QualityCheck):
+        class UniqueCheck(Check):
             def run(self, connection, table_name, schema=None):
                 # Implement uniqueness check
                 ...
@@ -117,13 +117,13 @@ class QualityCheck(ABC):
         self,
         column: str | None = None,
         columns: list[str] | None = None,
-        severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
+        severity: CheckSeverity = CheckSeverity.ERROR,
         name: str | None = None,
         description: str | None = None,
         **kwargs: Any,
     ) -> None:
         """
-        Initialize quality check.
+        Initialize check.
 
         Args:
             column: Single column to check
@@ -163,9 +163,9 @@ class QualityCheck(ABC):
         connection: ibis.BaseBackend,
         table_name: str,
         schema: str | None = None,
-    ) -> QualityCheckResult:
+    ) -> CheckResult:
         """
-        Execute the quality check.
+        Execute the check.
 
         Args:
             connection: ibis database connection
@@ -173,7 +173,7 @@ class QualityCheck(ABC):
             schema: Schema/database containing the table
 
         Returns:
-            QualityCheckResult with check outcome
+            CheckResult with check outcome
         """
         pass
 
@@ -200,7 +200,7 @@ class QualityCheck(ABC):
 
     def _make_result(
         self,
-        status: QualityCheckStatus,
+        status: CheckStatus,
         table_name: str,
         message: str,
         failed_rows: int = 0,
@@ -208,13 +208,13 @@ class QualityCheck(ABC):
         duration: float = 0.0,
         details: dict[str, Any] | None = None,
         sql_query: str | None = None,
-    ) -> QualityCheckResult:
+    ) -> CheckResult:
         """
-        Create a QualityCheckResult.
+        Create a CheckResult.
 
         Helper method to create consistent result objects.
         """
-        return QualityCheckResult(
+        return CheckResult(
             check_name=self.check_name,
             check_type=self.check_type,
             status=status,

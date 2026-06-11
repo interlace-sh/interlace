@@ -65,7 +65,8 @@ class ViewMaterializer(Materializer):
                 _execute_sql_internal(connection, f"CREATE SCHEMA IF NOT EXISTS {schema}")
         except Exception as e:
             if "already exists" not in str(e).lower() and "duplicate" not in str(e).lower():
-                self.logger.warning(f"Database creation issue (may already exist): {e}")
+                self.logger.warning(f"Schema creation failed: {e}")
+                raise
 
         # Apply fields if provided (adds/replaces fields in schema)
         # For views, we execute to DataFrame, apply schema via memtable, then use the new table

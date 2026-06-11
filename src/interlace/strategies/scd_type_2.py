@@ -132,6 +132,12 @@ class SCDType2Strategy(Strategy):
         if tracked_columns is None:
             tracked_columns = [col for col in source_columns if col not in primary_key]
 
+        if not tracked_columns:
+            raise ValueError(
+                f"SCD Type 2 requires at least one non-primary-key column to track changes. "
+                f"All source columns {source_columns} are primary keys."
+            )
+
         # Validate tracked columns exist
         missing_cols = set(tracked_columns) - set(source_columns)
         if missing_cols:
@@ -141,8 +147,12 @@ class SCDType2Strategy(Strategy):
         hash_expr = self._build_hash_expression(tracked_columns, "source")
 
         # Build ON condition for matching business key with current records
+        # Use IS NOT DISTINCT FROM to correctly match NULL keys (NULL = NULL is NULL in SQL)
         on_conditions = " AND ".join(
-            [f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}" for pk in primary_key]
+            [
+                f"target.{escape_identifier(pk)} IS NOT DISTINCT FROM source.{escape_identifier(pk)}"
+                for pk in primary_key
+            ]
         )
 
         # Build column lists with proper escaping
@@ -340,6 +350,12 @@ WHERE target.{escaped_is_current} = TRUE
 
         if tracked_columns is None:
             tracked_columns = [col for col in source_columns if col not in primary_key]
+
+        if not tracked_columns:
+            raise ValueError(
+                f"SCD Type 2 requires at least one non-primary-key column to track changes. "
+                f"All source columns {source_columns} are primary keys."
+            )
 
         hash_expr = self._build_hash_expression(tracked_columns, "source")
 

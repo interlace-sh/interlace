@@ -72,8 +72,12 @@ class MergeByKeyStrategy(Strategy):
             )
 
         # Build ON condition (merge condition) with proper escaping
+        # Use IS NOT DISTINCT FROM to correctly match NULL keys (NULL = NULL is NULL in SQL)
         on_conditions = " AND ".join(
-            [f"target.{escape_identifier(pk)} = source.{escape_identifier(pk)}" for pk in primary_key]
+            [
+                f"target.{escape_identifier(pk)} IS NOT DISTINCT FROM source.{escape_identifier(pk)}"
+                for pk in primary_key
+            ]
         )
 
         # Build UPDATE SET clause (update all non-key columns) with proper escaping

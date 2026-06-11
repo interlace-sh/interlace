@@ -351,7 +351,14 @@ def refresh(
     console.print("[dim]Discovering models...[/dim]")
     models = discover_models(models_dir)
 
-    # Initialize state store
+    # Initialize connections and state store
+    from interlace.connections.manager import init_connections
+
+    try:
+        init_connections(config)
+    except Exception as e:
+        logger.debug(f"Could not initialize connections: {e}")
+
     state_store = StateStore(config)
 
     # Determine which models to process

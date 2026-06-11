@@ -1,7 +1,7 @@
 """
-Custom expression quality check.
+Custom expression check.
 
-Phase 3: Check using custom SQL/ibis expression.
+Check using custom ibis expression.
 """
 
 import time
@@ -10,34 +10,27 @@ from typing import Any
 
 import ibis
 
-from interlace.quality.base import (
-    QualityCheck,
-    QualityCheckResult,
-    QualityCheckSeverity,
-    QualityCheckStatus,
+from interlace.checks.base import (
+    Check,
+    CheckResult,
+    CheckSeverity,
+    CheckStatus,
 )
 from interlace.utils.logging import get_logger
 
-logger = get_logger("interlace.quality.checks.expression")
+logger = get_logger("interlace.checks.types.expression")
 
 
-class ExpressionCheck(QualityCheck):
+class ExpressionCheck(Check):
     """
     Check using a custom expression.
 
-    Allows defining custom quality checks with ibis expressions or SQL.
+    Allows defining custom checks with ibis expressions.
 
     Usage:
-        # Using ibis expression
         ExpressionCheck(
             expression=lambda t: t["amount"] > 0,
             name="positive_amount"
-        )
-
-        # Check that a computed value equals expected
-        ExpressionCheck(
-            expression=lambda t: t["start_date"] <= t["end_date"],
-            name="valid_date_range"
         )
     """
 
@@ -46,20 +39,9 @@ class ExpressionCheck(QualityCheck):
         expression: Callable[[ibis.Table], Any],
         name: str,
         description: str | None = None,
-        severity: QualityCheckSeverity = QualityCheckSeverity.ERROR,
+        severity: CheckSeverity = CheckSeverity.ERROR,
         invert: bool = False,
     ):
-        """
-        Initialize expression check.
-
-        Args:
-            expression: Function that takes an ibis.Table and returns a boolean column
-                       True means the row passes, False means it fails
-            name: Name for this check (required)
-            description: Check description
-            severity: Severity level for failures
-            invert: If True, invert the expression (True means fail)
-        """
         super().__init__(
             severity=severity,
             name=name,
@@ -83,68 +65,48 @@ class ExpressionCheck(QualityCheck):
         connection: ibis.BaseBackend,
         table_name: str,
         schema: str | None = None,
-    ) -> QualityCheckResult:
-        """
-        Execute expression check.
-
-        Args:
-            connection: ibis connection
-            table_name: Table to check
-            schema: Schema containing the table
-
-        Returns:
-            QualityCheckResult with check outcome
-        """
+    ) -> CheckResult:
+        """Execute expression check."""
         start_time = time.time()
 
         try:
             table = self._get_table(connection, table_name, schema)
-
-            # Get total row count
             total_rows = int(table.count().execute())
 
             if total_rows == 0:
                 duration = time.time() - start_time
                 return self._make_result(
-                    status=QualityCheckStatus.SKIPPED,
+                    status=CheckStatus.SKIPPED,
                     table_name=table_name,
                     message="Table is empty, skipping expression check",
                     total_rows=0,
                     duration=duration,
                 )
 
-            # Apply expression
             condition = self.expression(table)
-
-            # If invert, swap pass/fail
             if self.invert:
                 condition = ~condition
 
-            # Count rows that fail (where expression is False)
             failed_count = int(table.filter(~condition).count().execute())
-
             duration = time.time() - start_time
 
             if failed_count == 0:
                 return self._make_result(
-                    status=QualityCheckStatus.PASSED,
+                    status=CheckStatus.PASSED,
                     table_name=table_name,
                     message=f"All {total_rows} rows pass expression check '{self.name}'",
                     failed_rows=0,
                     total_rows=total_rows,
                     duration=duration,
-                    details={
-                        "expression_name": self.name,
-                        "inverted": self.invert,
-                    },
+                    details={"expression_name": self.name, "inverted": self.invert},
                 )
             else:
                 return self._make_result(
-                    status=QualityCheckStatus.FAILED,
+                    status=CheckStatus.FAILED,
                     table_name=table_name,
                     message=(
                         f"{failed_count} of {total_rows} rows fail expression check '{self.name}' "
-                        f"({failed_count/total_rows*100:.1f}%)"
+                        f"({failed_count / total_rows * 100:.1f}%)"
                     ),
                     failed_rows=failed_count,
                     total_rows=total_rows,
@@ -160,7 +122,7 @@ class ExpressionCheck(QualityCheck):
             duration = time.time() - start_time
             logger.error(f"Error running expression check '{self.name}': {e}")
             return self._make_result(
-                status=QualityCheckStatus.ERROR,
+                status=CheckStatus.ERROR,
                 table_name=table_name,
                 message=f"Error running expression check: {str(e)}",
                 duration=duration,

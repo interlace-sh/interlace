@@ -48,12 +48,9 @@ The roadmap is organised into phases, with each phase building on previous work:
 ### Retry Framework ✅ (Completed January 2025)
 - [x] `RetryPolicy` dataclass with exponential backoff configuration
 - [x] `RetryManager` for async/sync execution with retry
-- [x] `CircuitBreaker` pattern for fail-fast behaviour (CLOSED → OPEN → HALF_OPEN)
-- [x] `DeadLetterQueue` for tracking failed executions
 - [x] `retry_policy` parameter on `@model` decorator
 - [x] Pre-configured policies: `DEFAULT_RETRY_POLICY`, `API_RETRY_POLICY`, `DATABASE_RETRY_POLICY`
 - [x] Integration with model executor for automatic retry on transient failures
-- [x] Comprehensive test suite (43 tests)
 
 ### Data Loading Strategies ✅
 - [x] Strategy definitions (`merge_by_key`, `append`, `replace`, `none`)
@@ -235,9 +232,6 @@ Full pipeline management UI with standard orchestrator features:
 
 ### Error Handling and Recovery ✅
 - [x] Retry strategies with exponential backoff (`RetryPolicy`, `RetryManager`)
-- [x] Dead-letter queues for failed events (`DeadLetterQueue`)
-- [x] Circuit breakers for external dependencies (`CircuitBreaker`)
-- [x] Graceful degradation (CLOSED → OPEN → HALF_OPEN states)
 - [x] Error categorisation and handling strategies
 - [x] Automatic recovery from transient failures
 

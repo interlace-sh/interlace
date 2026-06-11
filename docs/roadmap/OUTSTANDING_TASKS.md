@@ -1,6 +1,6 @@
 # Outstanding Tasks
 
-**Date:** February 2026
+**Date:** April 2026
 **Scope:** Remaining work items prioritised by impact.
 
 ---
@@ -25,22 +25,22 @@ The stream handler already has per-stream bearer/api-key auth (`service/api/hand
 
 ---
 
-### 2. Quality Check Executor Integration
+### 2. Quality Check `--quality-only` CLI Flag
 
-**Status:** FRAMEWORK EXISTS, WIRING MISSING
-**Priority:** High - Framework fully implemented but never called during `interlace run`
+**Status:** MINOR REMAINING WORK
+**Priority:** Medium
 
-The quality check framework (`quality/` module with 6 check types and `QualityCheckRunner`) is complete but disconnected from the execution pipeline.
+Quality check executor integration is **complete**:
+- `@model(quality_checks=...)` decorator parameter (`core/model.py:168`)
+- Config-level check merging during initialisation (`core/initialization.py:181-193`)
+- Post-materialisation execution via `QualityCheckRunner` (`core/execution/model_executor.py:447-482`)
+- Result persistence to `interlace.quality_results` state table (`core/state.py:268-292`)
+- Pipeline blocking on ERROR severity with `quality_fail_on_error` flag
 
-**Work Required:**
-- Add `quality_checks` parameter to `@model()` decorator
-- Propagate config-level quality checks to model_info during initialisation
-- Call `QualityCheckRunner.run_model_checks()` post-materialisation in `model_executor.py`
-- Store quality results in state store (`quality_results` table)
-- Surface results in CLI output and API responses
-- `--quality-only` flag for running checks without re-materialising
+**Remaining:**
+- `--quality-only` flag for `interlace run` to execute checks without re-materialising
 
-**Effort:** Medium (2-3 days)
+**Effort:** Low (1 day)
 
 ---
 
@@ -165,7 +165,7 @@ These items were previously listed as outstanding but are now fully implemented:
 | **Impact Analysis** | ✅ Complete | `interlace plan` CLI + API endpoint |
 | **Schema Diffing** | ✅ Complete | API endpoint + CLI support |
 | SCD Type 2 Strategy | ✅ Complete | Hash-based change detection |
-| Retry Framework | ✅ Complete | Policy, manager, circuit breaker, DLQ |
+| Retry Framework | ✅ Complete | Policy + manager with exponential backoff |
 | Data Quality Checks | ✅ Complete | 6 check types + runner (not yet integrated into execution) |
 | Observability | ✅ Complete | Prometheus, OpenTelemetry, structured logging |
 

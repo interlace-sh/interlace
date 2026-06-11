@@ -2,7 +2,7 @@
 
 Quick reference for implementation status across Interlace features.
 
-**Last Updated:** February 2026
+**Last Updated:** April 2026
 
 ## Status Legend
 
@@ -37,8 +37,8 @@ Quick reference for implementation status across Interlace features.
 | DuckDB | ✅ Implemented | `connections/duckdb.py` |
 | PostgreSQL | ✅ Implemented | `connections/postgres.py` |
 | Filesystem | ✅ Implemented | `connections/filesystem.py` |
-| SFTP | ✅ Implemented | `connections/sftp.py` |
-| S3 | ✅ Implemented | `connections/s3.py` |
+| SFTP | ✅ Implemented | `connections/sftp.py` (requires `interlace[sftp]`) |
+| S3 | ✅ Implemented | `connections/s3.py` (requires `interlace[s3]`) |
 | Generic Ibis (18+ backends) | ✅ Implemented | `connections/ibis_generic.py` |
 
 ### Connection Features ✅
@@ -58,8 +58,6 @@ Quick reference for implementation status across Interlace features.
 |---------|--------|----------|
 | RetryPolicy | ✅ Implemented | `core/retry/policy.py` |
 | RetryManager | ✅ Implemented | `core/retry/manager.py` |
-| CircuitBreaker | ✅ Implemented | `core/retry/circuit_breaker.py` |
-| DeadLetterQueue | ✅ Implemented | `core/retry/dlq.py` |
 
 ### Data Quality ✅
 | Check Type | Status | Location |
@@ -71,7 +69,7 @@ Quick reference for implementation status across Interlace features.
 | `row_count` | ✅ Implemented | `quality/checks/row_count.py` |
 | `expression` | ✅ Implemented | `quality/checks/expression.py` |
 
-**Note:** Quality framework is fully implemented but not yet integrated into the execution pipeline (checks are not automatically run post-materialization). Integration is planned for v0.2.0.
+**Note:** Checks run automatically post-materialisation when configured via `@model(checks=...)`, `config.yaml`, `@check` decorator, or SQL check files. Results are persisted to `interlace.check_results`. Run checks standalone with `--checks-only` CLI flag.
 
 ### Streaming ✅
 | Feature | Status | Location |
@@ -79,13 +77,11 @@ Quick reference for implementation status across Interlace features.
 | `@stream` decorator | ✅ Implemented | `core/stream.py` (773 lines) |
 | HTTP endpoint generation | ✅ Implemented | `service/api/handlers/streams.py` |
 | `publish()` API | ✅ Implemented | `core/stream.py` |
-| Webhook adapter | ✅ Implemented | `streaming/adapters/webhook.py` |
-| Polling adapter | ✅ Implemented | `streaming/adapters/polling.py` |
-| Pub/Sub adapter | ✅ Implemented | `streaming/adapters/pubsub.py` |
-| Message queue adapter | ✅ Implemented | `streaming/adapters/message_queue.py` |
-| Filesystem adapter | ✅ Implemented | `streaming/adapters/filesystem.py` |
+| Webhook adapter (outbound) | ✅ Implemented | `streaming/adapters/webhook.py` |
+| RabbitMQ adapter | ✅ Implemented | `streaming/adapters/rabbitmq.py` (requires `interlace[stream]`) |
+| In-memory adapter (testing) | ✅ Implemented | `streaming/adapters/memory.py` |
 | Per-stream auth (bearer/api-key) | ✅ Implemented | `service/api/handlers/streams.py` |
-| Consumer cursor tracking | ✅ Implemented | `core/state.py` |
+| Consumer cursor tracking | ✅ Implemented | `core/state/` |
 
 ### Testing Framework ✅
 | Feature | Status | Location |
@@ -108,7 +104,7 @@ Quick reference for implementation status across Interlace features.
 | Forward-only migration runner | ✅ Implemented | `migrations/runner.py` (173 lines) |
 | Migration CLI (`interlace migrate`) | ✅ Implemented | `migrations/cli.py` (128 lines) |
 | Migration utilities | ✅ Implemented | `migrations/utils.py` |
-| Version tracking (`migration_runs` table) | ✅ Implemented | `core/state.py` |
+| Version tracking (`migration_runs` table) | ✅ Implemented | `core/state/` |
 | Dry-run mode | ✅ Implemented | `migrations/runner.py` |
 | Rollback support | 📋 Planned | - |
 
@@ -126,18 +122,18 @@ Quick reference for implementation status across Interlace features.
 | Interval scheduling | ✅ Implemented | `service/server.py` |
 | `schedule` parameter on `@model` | ✅ Implemented | `core/model.py` |
 | Background model schedule loop | ✅ Implemented | `service/server.py` |
-| Scheduler persistence (`last_run_at`) | ✅ Implemented | `core/state.py` + `service/server.py` |
+| Scheduler persistence (`last_run_at`) | ✅ Implemented | `core/state/` + `service/server.py` |
 | Missed-job handling (run-once misfire) | ✅ Implemented | `service/server.py` |
 | Scheduler status API (`/api/v1/scheduler`) | ✅ Implemented | `service/api/handlers/health.py` |
 
 ### State Management ✅
 | Feature | Status | Location |
 |---------|--------|----------|
-| StateStore (11 tables) | ✅ Implemented | `core/state.py` |
-| Execution state persistence | ✅ Implemented | `core/state.py` |
-| Lineage state persistence | ✅ Implemented | `core/state.py` |
-| File hash tracking | ✅ Implemented | `core/state.py` |
-| Schema history tracking | ✅ Implemented | `core/state.py` |
+| StateStore (11 tables) | ✅ Implemented | `core/state/` |
+| Execution state persistence | ✅ Implemented | `core/state/` |
+| Lineage state persistence | ✅ Implemented | `core/state/` |
+| File hash tracking | ✅ Implemented | `core/state/` |
+| Schema history tracking | ✅ Implemented | `core/state/` |
 
 ### Schema Flexibility ✅
 | Feature | Status | Location |

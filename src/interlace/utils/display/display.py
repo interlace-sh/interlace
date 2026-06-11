@@ -57,7 +57,7 @@ class LogHandler(RichHandler):
         # Use cached console if available to avoid repeated lookups and potential deadlocks
         if self._cached_console is not None:
             try:
-                from interlace.utils.display import get_display
+                from interlace.utils.display.display import get_display
 
                 display = get_display()
                 # Quick check: if display is enabled and progress exists, use cached console
@@ -70,7 +70,7 @@ class LogHandler(RichHandler):
 
         # Try to get progress console, but use non-blocking approach
         try:
-            from interlace.utils.display import get_display
+            from interlace.utils.display.display import get_display
 
             display = get_display()
             # Use progress console if available and display is active (live context entered)
@@ -195,7 +195,7 @@ class LogHandler(RichHandler):
             # If we have a model name, add to display errors (for error panel)
             if model_name:
                 try:
-                    from interlace.utils.display import get_display
+                    from interlace.utils.display.display import get_display
 
                     display = get_display()
                     if display.enabled:
@@ -529,20 +529,13 @@ class Display:
             if conn is None:
                 return {}
 
-            # Query last completed flow using ibis
-            import ibis
-
             try:
-                flows_table = conn.table("interlace.flows")
-
-                # Filter for completed/failed flows, order by completed_at desc, limit 1
-                last_flow = (
-                    flows_table.filter(flows_table.status.isin(["completed", "failed"]))
-                    .order_by(ibis.desc(flows_table.completed_at))
-                    .limit(1)
-                )
-
-                result = last_flow.execute()
+                result = conn.sql(
+                    "SELECT flow_id, started_at, completed_at, duration_seconds, status "
+                    "FROM interlace.flows "
+                    "WHERE status IN ('completed', 'failed') "
+                    "ORDER BY completed_at DESC LIMIT 1"
+                ).execute()
 
                 if not result.empty:
                     row = result.iloc[0]

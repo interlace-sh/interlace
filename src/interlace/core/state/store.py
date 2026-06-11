@@ -85,11 +85,13 @@ class StateStore:
 
         schema_name = "interlace"
 
-        # Create schema
+        # Create schema — if this fails, the state store cannot function
         try:
             _execute_sql_internal(conn, f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
         except Exception as e:
-            logger.warning(f"Could not create schema {schema_name}: {e}")
+            logger.error(f"Could not create state store schema '{schema_name}': {e}")
+            self._initialized = False
+            return
 
         # Create flows table
         flows_table = f"{schema_name}.flows"
@@ -166,9 +168,6 @@ class StateStore:
         # Create file sync manifest table (SFTP sync + processors)
         self._initialize_file_sync_tables(conn, schema_name)
 
-        # Create dead letter queue table (retry framework)
-        self._initialize_dlq_tables(conn, schema_name)
-
         # Create column lineage tables
         self._initialize_lineage_tables(conn, schema_name)
 
@@ -207,38 +206,6 @@ class StateStore:
         except Exception as e:
             logger.debug(f"Could not create file_sync_manifest table (non-fatal): {e}")
 
-    def _initialize_dlq_tables(self, conn: ibis.BaseBackend, schema_name: str) -> None:
-        """Create dead letter queue table for tracking failed model executions."""
-        dlq_table = f"{schema_name}.dead_letter_queue"
-        try:
-            _execute_sql_internal(
-                conn,
-                f"""
-                CREATE TABLE IF NOT EXISTS {dlq_table} (
-                    dlq_id VARCHAR PRIMARY KEY,
-                    model_name VARCHAR NOT NULL,
-                    exception_type VARCHAR NOT NULL,
-                    exception_message TEXT,
-                    exception_traceback TEXT,
-                    total_attempts INTEGER DEFAULT 1,
-                    retry_history JSON,
-                    first_attempt_time TIMESTAMP,
-                    last_attempt_time TIMESTAMP,
-                    total_duration DOUBLE DEFAULT 0.0,
-                    model_config JSON,
-                    model_dependencies JSON,
-                    run_id VARCHAR,
-                    environment VARCHAR,
-                    resolved_at TIMESTAMP,
-                    resolution_note TEXT,
-                    is_resolved BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """,
-            )
-        except Exception as e:
-            logger.debug(f"Could not create dead_letter_queue table (non-fatal): {e}")
-
     def _initialize_lineage_tables(self, conn: ibis.BaseBackend, schema_name: str) -> None:
         """Create column-level lineage tracking tables."""
         # Column lineage table - stores lineage edges between columns
@@ -263,13 +230,13 @@ class StateStore:
         except Exception as e:
             logger.debug(f"Could not create column_lineage table (non-fatal): {e}")
 
-        # Quality results table - stores quality check outcomes per model run
-        quality_results_table = f"{schema_name}.quality_results"
+        # Check results table - stores check outcomes per model run
+        check_results_table = f"{schema_name}.check_results"
         try:
             _execute_sql_internal(
                 conn,
                 f"""
-                CREATE TABLE IF NOT EXISTS {quality_results_table} (
+                CREATE TABLE IF NOT EXISTS {check_results_table} (
                     check_name VARCHAR NOT NULL,
                     check_type VARCHAR NOT NULL,
                     model_name VARCHAR NOT NULL,
@@ -287,7 +254,18 @@ class StateStore:
                 """,
             )
         except Exception as e:
-            logger.debug(f"Could not create quality_results table (non-fatal): {e}")
+            logger.debug(f"Could not create check_results table (non-fatal): {e}")
+
+        # Migrate old quality_results table if it exists
+        try:
+            _execute_sql_internal(
+                conn,
+                f"INSERT INTO {check_results_table} SELECT * FROM {schema_name}.quality_results",
+            )
+            _execute_sql_internal(conn, f"DROP TABLE {schema_name}.quality_results")
+            logger.debug("Migrated quality_results to check_results")
+        except Exception:
+            pass  # Old table doesn't exist, nothing to migrate
 
     def _initialize_stream_tables(self, conn: ibis.BaseBackend, schema_name: str) -> None:
         """Create stream consumer tracking tables."""
@@ -414,23 +392,24 @@ class StateStore:
             safe_col = _escape_sql_string(cursor_column)
             safe_val = _escape_sql_string(str(value))
 
-            # Delete existing row
+            # Wrap delete+insert in a transaction to prevent cursor loss on crash
+            _execute_sql_internal(conn, "BEGIN TRANSACTION")
             try:
                 _execute_sql_internal(
                     conn,
                     f"DELETE FROM {cursor_table} WHERE model_name = '{safe_name}' AND schema_name = '{safe_schema}'",
                 )
+                _execute_sql_internal(
+                    conn,
+                    f"INSERT INTO {cursor_table} "
+                    f"(model_name, schema_name, cursor_column, last_processed_value, last_run_at, updated_at) "
+                    f"VALUES ('{safe_name}', '{safe_schema}', '{safe_col}', '{safe_val}', "
+                    f"CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                )
+                _execute_sql_internal(conn, "COMMIT")
             except Exception:
-                pass
-
-            # Insert new row
-            _execute_sql_internal(
-                conn,
-                f"INSERT INTO {cursor_table} "
-                f"(model_name, schema_name, cursor_column, last_processed_value, last_run_at, updated_at) "
-                f"VALUES ('{safe_name}', '{safe_schema}', '{safe_col}', '{safe_val}', "
-                f"CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            )
+                _execute_sql_internal(conn, "ROLLBACK")
+                raise
         except Exception as e:
             logger.warning(f"Could not save cursor value for {model_name}: {e}")
 
@@ -567,8 +546,8 @@ class StateStore:
                     conn,
                     f"DELETE FROM {flows_table} WHERE flow_id = {_sql_value(flow.flow_id)}",
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not delete existing flow row (may not exist): {e}")
 
             # Insert using explicit column list to handle NULLs properly
             columns = list(row_data.keys())
@@ -635,8 +614,8 @@ class StateStore:
                     conn,
                     f"DELETE FROM {tasks_table} WHERE task_id = {_sql_value(task.task_id)}",
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not delete existing task row (may not exist): {e}")
 
             # Insert using explicit column list to handle NULLs properly
             # Build column list and values, handling NULLs
@@ -700,8 +679,8 @@ class StateStore:
                         AND source_model = {_sql_value(source_model)}
                         AND source_column = {_sql_value(source_column)}""",
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not delete existing lineage edge (may not exist): {e}")
 
             # Insert the lineage edge
             _execute_sql_internal(
@@ -885,8 +864,8 @@ class StateStore:
                 ).execute()
                 if verify is not None and len(verify) > 0:
                     return  # UPDATE succeeded
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not update model_metadata for {model_name} (may not exist): {e}")
 
             # Row doesn't exist – insert minimal metadata row
             _execute_sql_internal(

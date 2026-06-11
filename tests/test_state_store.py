@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from interlace.core.context import _execute_sql_internal
 from interlace.core.flow import Flow, Task
 from interlace.core.state import StateStore, _escape_sql_string, _sql_value
 
@@ -105,6 +106,35 @@ class TestStateStoreCursor:
         store = store_with_duckdb
         store.save_cursor_value("model_x", "ts", "2024-01-15T10:30:00")
         assert store.get_cursor_value("model_x") == "2024-01-15T10:30:00"
+
+    def test_cursor_save_is_atomic(self, store_with_duckdb):
+        """Cursor save uses a transaction so value is preserved on partial failure."""
+        from unittest.mock import patch
+
+        store = store_with_duckdb
+
+        # Save an initial cursor value
+        store.save_cursor_value("atomic_model", "event_id", "100")
+        assert store.get_cursor_value("atomic_model") == "100"
+
+        # Patch _execute_sql_internal to fail on the INSERT (after DELETE succeeds)
+        original_execute = _execute_sql_internal
+        call_count = {"n": 0}
+
+        def failing_insert(conn, sql, *args, **kwargs):
+            # Let BEGIN, DELETE, and ROLLBACK through; fail on INSERT
+            if sql.strip().startswith("INSERT INTO interlace.cursor_state"):
+                call_count["n"] += 1
+                raise RuntimeError("Simulated crash during INSERT")
+            return original_execute(conn, sql, *args, **kwargs)
+
+        with patch("interlace.core.state.store._execute_sql_internal", side_effect=failing_insert):
+            store.save_cursor_value("atomic_model", "event_id", "200")
+
+        # The INSERT failed, but since it's wrapped in a transaction, the
+        # original value should still be intact (ROLLBACK undid the DELETE)
+        assert call_count["n"] > 0, "INSERT should have been attempted"
+        assert store.get_cursor_value("atomic_model") == "100"
 
 
 class TestStateStoreFlowTask:

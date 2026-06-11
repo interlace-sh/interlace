@@ -2,19 +2,12 @@
 Stream bridge - connects external message systems to Interlace streams.
 
 Provides a high-level API for setting up bidirectional bridges between
-messaging systems and Interlace streams with lifecycle management.
+messaging adapters and Interlace streams with lifecycle management.
 
 Example:
-    from interlace.streaming import StreamBridge, KafkaAdapter, WebhookAdapter
+    from interlace.streaming import StreamBridge, WebhookAdapter
 
     bridge = StreamBridge()
-
-    # Kafka -> Interlace
-    bridge.add_inbound(
-        KafkaAdapter(bootstrap_servers="localhost:9092"),
-        source_topic="orders",
-        target_stream="order_events",
-    )
 
     # Interlace -> Webhook
     bridge.add_outbound(
@@ -63,7 +56,7 @@ class StreamBridge:
         bridge = StreamBridge()
 
         # Add routes
-        bridge.add_inbound(kafka, "orders-topic", "order_events")
+        bridge.add_inbound(adapter, "orders-topic", "order_events")
         bridge.add_outbound(webhook, "alerts", "alerts-topic")
 
         # Run

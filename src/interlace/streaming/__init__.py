@@ -1,18 +1,14 @@
 """
 Streaming module for Interlace.
 
-Provides message queue adapters and streaming utilities for integrating
-Interlace streams with external messaging systems (Kafka, RabbitMQ, Redis, etc.).
+Provides message adapters and streaming utilities for integrating
+Interlace streams with external systems via webhooks, polling, and pub/sub.
 
 Usage:
-    from interlace.streaming import KafkaAdapter, RedisAdapter, WebhookAdapter
+    from interlace.streaming import WebhookAdapter, StreamBridge
 
-    # Consume from Kafka -> publish to Interlace stream
-    adapter = KafkaAdapter(bootstrap_servers="localhost:9092")
-    await adapter.consume_to_stream("kafka-topic", "interlace_stream")
-
-    # Subscribe to Interlace stream -> produce to Kafka
-    await adapter.stream_to_produce("interlace_stream", "kafka-topic")
+    adapter = WebhookAdapter(url="https://example.com/webhook")
+    bridge = StreamBridge()
 """
 
 from interlace.streaming.adapters.base import (

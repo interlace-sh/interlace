@@ -71,7 +71,7 @@ class RabbitMQAdapter(MessageAdapter):
             import aio_pika
         except ImportError as e:
             raise ImportError(
-                "aio-pika is required for RabbitMQ integration. " "Install it with: pip install aio-pika"
+                "RabbitMQ integration requires aio-pika. Install with: pip install 'interlace[stream]'"
             ) from e
 
         self._connection = await aio_pika.connect_robust(self.url)
@@ -112,7 +112,7 @@ class RabbitMQAdapter(MessageAdapter):
         import importlib.util
 
         if importlib.util.find_spec("aio_pika") is None:
-            raise ImportError("aio-pika is required for RabbitMQ integration. " "Install it with: pip install aio-pika")
+            raise ImportError("RabbitMQ integration requires aio-pika. Install with: pip install 'interlace[stream]'")
 
         if not self._channel:
             raise RuntimeError("RabbitMQ not connected. Call connect() first.")
@@ -162,7 +162,7 @@ class RabbitMQAdapter(MessageAdapter):
             import aio_pika
         except ImportError as e:
             raise ImportError(
-                "aio-pika is required for RabbitMQ integration. " "Install it with: pip install aio-pika"
+                "RabbitMQ integration requires aio-pika. Install with: pip install 'interlace[stream]'"
             ) from e
 
         if not self._exchange:

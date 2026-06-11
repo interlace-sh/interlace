@@ -1,8 +1,8 @@
 """
 Base message adapter interface.
 
-All messaging system adapters (Kafka, RabbitMQ, Redis, etc.) implement this
-interface to provide a unified way to bridge external message queues with
+All message adapters (webhook, polling, pub/sub, etc.) implement this
+interface to provide a unified way to bridge external systems with
 Interlace streams.
 """
 
@@ -32,7 +32,7 @@ class Message:
     """
     A message from an external messaging system.
 
-    Provides a unified representation regardless of source (Kafka, RabbitMQ, etc.)
+    Provides a unified representation regardless of source.
     """
 
     key: str | None = None
@@ -106,23 +106,17 @@ class MessageAdapter(ABC):
     - consume(): Raw async iterator over messages
 
     Implementations provided:
-    - KafkaAdapter: Apache Kafka (requires aiokafka)
-    - RedisAdapter: Redis Streams/Pub-Sub (requires aioredis)
-    - RabbitMQAdapter: RabbitMQ/AMQP (requires aio-pika)
     - WebhookAdapter: Outbound HTTP webhooks
+    - PollingAdapter: Periodic HTTP polling
+    - PubSubAdapter: Pub/sub messaging
     - InMemoryAdapter: In-process testing adapter
 
     Example:
-        adapter = KafkaAdapter(bootstrap_servers="localhost:9092")
-
-        # External -> Interlace
-        task = asyncio.create_task(
-            adapter.consume_to_stream("orders-topic", "order_events")
-        )
+        adapter = WebhookAdapter(url="https://example.com/webhook")
 
         # Interlace -> External
-        task2 = asyncio.create_task(
-            adapter.stream_to_produce("processed_orders", "processed-topic")
+        task = asyncio.create_task(
+            adapter.stream_to_produce("processed_orders", "webhook-target")
         )
     """
 

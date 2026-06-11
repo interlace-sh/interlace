@@ -1,0 +1,41 @@
+name: data-warehouse
+
+connections:
+  default:
+    type: duckdb
+    path: "data/warehouse.duckdb"
+
+state:
+  connection: default
+  schema: interlace
+
+models:
+  default_schema: public
+  default_materialize: table
+
+checks:
+  enabled: true
+  fail_on_error: true
+  models:
+    dim_customer:
+      - type: not_null
+        column: customer_id
+      - type: unique
+        column: customer_id
+        # Unique among current records only — SCD2 creates history rows
+      - type: freshness
+        column: valid_from
+        max_age: "7d"
+        severity: warn
+    fact_orders:
+      - type: not_null
+        column: order_id
+      - type: row_count
+        min_count: 1
+      - type: relationships
+        column: customer_id
+        to_table: dim_customer
+        to_column: customer_id
+
+logging:
+  level: INFO

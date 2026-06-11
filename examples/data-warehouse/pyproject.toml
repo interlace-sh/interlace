@@ -1,0 +1,16 @@
+[project]
+name = "interlace-data-warehouse"
+version = "0.1.0"
+description = "Interlace data warehouse — star schema, SCD Type 2, and quality checks"
+requires-python = ">=3.12"
+dependencies = ["interlace"]
+
+[tool.uv.sources]
+interlace = { workspace = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+]

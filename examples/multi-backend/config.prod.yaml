@@ -1,0 +1,24 @@
+# Production environment overlay — full Postgres + SQLite
+# Usage: INTERLACE_ENV=prod interlace run
+
+connections:
+  default:
+    type: duckdb
+    path: "data/warehouse.duckdb"
+    attach:
+      - type: postgres
+        name: pg
+        read_only: true
+        config:
+          host: ${POSTGRES_HOST}
+          port: ${POSTGRES_PORT:-5432}
+          database: ${POSTGRES_DB}
+          user: ${POSTGRES_USER}
+          password: ${POSTGRES_PASSWORD}
+      - type: sqlite
+        name: legacy
+        path: "data/legacy.sqlite"
+        read_only: true
+
+logging:
+  level: WARNING

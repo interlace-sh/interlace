@@ -1,0 +1,10 @@
+name: testing
+
+connections:
+  default:
+    type: duckdb
+    path: "data/testing.duckdb"
+
+models:
+  default_schema: public
+  default_materialize: table

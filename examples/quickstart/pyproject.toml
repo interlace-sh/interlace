@@ -1,0 +1,9 @@
+[project]
+name = "interlace-quickstart"
+version = "0.1.0"
+description = "Interlace quickstart — coffee shop pipeline"
+requires-python = ">=3.12"
+dependencies = ["interlace"]
+
+[tool.uv.sources]
+interlace = { workspace = true }

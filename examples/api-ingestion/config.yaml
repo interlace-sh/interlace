@@ -1,0 +1,32 @@
+name: api-ingestion
+
+connections:
+  default:
+    type: duckdb
+    path: "data/weather.duckdb"
+
+state:
+  connection: default
+  schema: interlace
+
+models:
+  default_schema: public
+  default_materialize: table
+
+retry:
+  max_attempts: 5
+  initial_delay: 2
+  max_delay: 60
+  exponential_base: 2.0
+  jitter: true
+
+circuit_breaker:
+  failure_threshold: 10
+  recovery_timeout: 120
+
+dlq:
+  enabled: true
+  max_entries: 500
+
+logging:
+  level: INFO

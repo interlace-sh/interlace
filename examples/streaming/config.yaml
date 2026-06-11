@@ -1,0 +1,17 @@
+name: streaming
+
+connections:
+  default:
+    type: duckdb
+    path: "data/streaming.duckdb"
+
+state:
+  connection: default
+  schema: interlace
+
+models:
+  default_schema: public
+  default_materialize: table
+
+logging:
+  level: INFO

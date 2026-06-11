@@ -1,0 +1,32 @@
+name: ecommerce
+
+connections:
+  default:
+    type: duckdb
+    path: "data/ecommerce.duckdb"
+
+state:
+  connection: default
+  schema: interlace
+
+models:
+  default_schema: public
+  default_materialize: table
+
+checks:
+  enabled: true
+  fail_on_error: true
+  models:
+    customer_lifetime_value:
+      - type: row_count
+        min_count: 1
+      - type: not_null
+        column: total_spent
+    monthly_revenue:
+      - type: not_null
+        column: month
+      - type: row_count
+        min_count: 1
+
+logging:
+  level: INFO

@@ -1,0 +1,9 @@
+# Production environment overlay
+# Usage: INTERLACE_ENV=prod interlace run
+
+checks:
+  fail_on_error: true
+
+logging:
+  level: WARNING
+  file: "logs/interlace.log"

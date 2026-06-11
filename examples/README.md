@@ -1,156 +1,93 @@
-# Interlace Test Projects
+# Interlace Examples
 
-This directory contains test projects demonstrating Interlace functionality.
+A progressive learning path from your first pipeline to production patterns.
 
-## Projects
+## Learning Path
 
-### Basic (`basic/`)
+### Tier 1 — Getting Started
 
-A simple project demonstrating core functionality:
-- CSV ingestion
-- Basic strategies (append, merge_by_key, replace)
-- Table and view materialization
-- Simple transformations
+| Example | Time | What You'll Learn |
+|---------|------|-------------------|
+| [quickstart](quickstart/) | 5 min | `@model`, CSV loading, strategies, views |
+| [ecommerce](ecommerce/) | 20 min | All strategies, materialisations, checks, testing, SQL models |
 
-**Use Case**: Learning Interlace basics, quick testing
+### Tier 2 — Production Patterns
 
-### Comprehensive (`comprehensive/`)
+| Example | Time | What You'll Learn |
+|---------|------|-------------------|
+| [testing](testing/) | 15 min | `test_model_sync()`, `mock_dependency()`, `TestResult`, pytest integration |
+| [api-ingestion](api-ingestion/) | 15 min | `retry_policy=`, `cache=`, `schedule=`, `cursor=`, async models |
+| [streaming](streaming/) | 15 min | `@stream`, `publish()`, `subscribe()`, `consume()`, event-driven pipelines |
+| [incremental](incremental/) | 15 min | `cursor=`, `cache=`, `incremental=`, `export=`, `run()` API, backfill |
 
-A comprehensive project covering all Interlace features:
-- ✅ All materialization types (table, view, ephemeral)
-- ✅ All strategies (merge_by_key, append, replace, none)
-- ✅ Schema evolution (explicit fields, automatic column addition)
-- ✅ Migrations (SQL migration files)
-- ✅ SQL models
-- ✅ Python models
-- ✅ Change detection
-- ✅ File hash tracking
+### Tier 3 — Advanced
 
-**Use Case**: Testing all features, reference implementation
+| Example | Time | What You'll Learn |
+|---------|------|-------------------|
+| [data-warehouse](data-warehouse/) | 30 min | `strategy="scd_type_2"`, star schema, freshness checks, relationships checks |
+| [multi-backend](multi-backend/) | 20 min | DuckDB ATTACH (Postgres, SQLite), cross-DB joins, environment overlays |
 
-### API (`api/`)
+### Benchmarks
 
-Demonstrates API integration:
-- REST API consumption
-- Paginated API requests
-- Async model execution
-- API data transformation
+| Example | Description |
+|---------|-------------|
+| [benchmarks/tpch](benchmarks/tpch/) | 22 standard TPC-H queries — SQL model reference |
+| [benchmarks/tpcds](benchmarks/tpcds/) | 99 TPC-DS queries — advanced SQL patterns |
 
-**Use Case**: API integration patterns, external data sources
+## Feature Coverage
 
-### TPC-H (`tpch/`)
+| Feature | QS | EC | TST | API | STR | INC | DW | MB |
+|---------|:--:|:--:|:---:|:---:|:---:|:---:|:--:|:--:|
+| `@model` basics | x | x | x | x | x | x | x | x |
+| `@stream` | | | | | **x** | | | |
+| `strategy="scd_type_2"` | | | | | | | **x** | |
+| `cursor=` | | | | **x** | x | **x** | | |
+| `export=` | | **x** | | | | **x** | | x |
+| `cache=` | | | | **x** | | **x** | | |
+| `schedule=` | | | | **x** | | **x** | | |
+| `schema_mode=` | | **x** | | | | | x | |
+| `column_mapping=` | | **x** | | | | | | |
+| `materialise="none"` | | | | **x** | **x** | **x** | | |
+| Model `retry_policy=` | | | | **x** | | x | | |
+| Inline `checks=` | | **x** | | | | | x | |
+| `interlace.testing` | | x | **x** | | | | | |
+| DuckDB ATTACH | | | | | | | | **x** |
+| `run()` API | | | x | | | **x** | | |
+| `incremental=` | | | | | | **x** | | |
+| `strict=True` / `fields=` | | **x** | x | | x | | x | |
+| `publish()` / `subscribe()` | | | | | **x** | | | |
+| Environment overlays | | x | | | | | | x |
+| SQL models | | x | | x | | | | |
+| Migrations | | x | | | | | | |
+| Tags / owner | | x | | | | | x | |
+| Async models | | | x | x | x | | | |
+| Checks: freshness | | | | | | | **x** | |
+| Checks: relationships | | **x** | | | | | **x** | |
+| Checks: pattern | | **x** | | | | | | |
+| SQL check files | | **x** | | | | | | |
 
-TPC-H benchmark implementation:
-- All 22 standard TPC-H queries
-- Data generation using DuckDB dbgen
-- SQL model examples
-- Performance testing
+**Bold** = primary teaching target for that feature.
 
-**Use Case**: Benchmarking, SQL query patterns
-
-### TPC-DS (`tpcds/`)
-
-TPC-DS benchmark framework:
-- TPC-DS query examples
-- Data generation framework
-- Complex SQL patterns
-
-**Use Case**: Advanced SQL patterns, data warehouse testing
-
-### TPC-DI (`tpcdi/`)
-
-TPC-DI data integration benchmark:
-- Complete ETL pipeline
-- Source, staging, and warehouse models
-- Dimension and fact tables
-- Data integration patterns
-
-**Use Case**: ETL patterns, data warehouse architecture
+**Legend:** QS=quickstart, EC=ecommerce, TST=testing, API=api-ingestion, STR=streaming, INC=incremental, DW=data-warehouse, MB=multi-backend
 
 ## Quick Start
 
-### Run Basic Project
-
 ```bash
-cd projects/basic
-interlace run
-```
+pip install interlace   # or: uv add interlace
 
-### Run Comprehensive Project
-
-```bash
-cd projects/comprehensive
-
-# Run all models
-interlace run
-
-# Run migrations
-interlace migrate
-```
-
-### Run API Project
-
-```bash
-cd projects/api
-interlace run
-```
-
-### Run TPC Projects
-
-```bash
-cd projects/tpch
-interlace run
-
-# Or
-cd projects/tpcds
-interlace run
-
-# Or
-cd projects/tpcdi
+cd examples/quickstart
 interlace run
 ```
 
 ## Project Structure
 
-Each project follows a standard structure:
+Every example follows the same layout:
 
 ```
-project_name/
-├── config.yaml          # Project configuration
-├── models/              # Model definitions (Python and SQL)
-├── migrations/          # SQL migration files (if applicable)
-├── data/                # Data files (CSV, etc.)
-└── README.md            # Project-specific documentation
+example-name/
+├── config.yaml     # Connection + pipeline config
+├── pyproject.toml   # Python project metadata
+├── README.md        # What you'll learn + how to run
+├── data/            # CSV seed data
+└── models/          # @model and @stream definitions
 ```
-
-## Best Practices
-
-All projects demonstrate Interlace best practices:
-
-1. **Ibis-first**: All transformations use ibis operations
-2. **Explicit schemas**: Use `fields` for strict control when needed
-3. **Migrations**: Use migrations for breaking schema changes
-4. **Strategies**: Choose appropriate strategy for each use case
-5. **Materialization**: Use views for computed data, tables for persisted data
-6. **Dependencies**: Leverage implicit dependencies for clean code
-7. **File organization**: Group related models in files
-8. **Documentation**: Include README with usage instructions
-
-## Testing
-
-These projects serve as:
-- **Functional tests**: Verify all features work correctly
-- **Integration tests**: Test end-to-end workflows
-- **Examples**: Demonstrate best practices
-- **Reference**: Implementation patterns for users
-
-## Contributing
-
-When adding new test projects:
-1. Follow the standard project structure
-2. Include comprehensive README
-3. Cover relevant functionality
-4. Use best practices
-5. Include sample data
-6. Document expected behavior
-

@@ -1,0 +1,9 @@
+[project]
+name = "interlace-streaming"
+version = "0.1.0"
+description = "Interlace streaming — IoT sensor patterns"
+requires-python = ">=3.12"
+dependencies = ["interlace"]
+
+[tool.uv.sources]
+interlace = { workspace = true }

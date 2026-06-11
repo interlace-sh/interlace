@@ -2,7 +2,7 @@
 Integration tests that run interlace against example projects.
 
 These tests verify end-to-end behaviour: model discovery, execution,
-state store population, and quality checks running post-materialization.
+state store population, and checks running post-materialisation.
 """
 
 from __future__ import annotations
@@ -91,8 +91,8 @@ class TestBasicProjectExecution:
             rows = result[model_name].get("rows")
             assert rows is not None and rows > 0, f"Model '{model_name}' produced no rows: {result[model_name]}"
 
-    async def test_quality_checks_execute(self, project_dir: Path) -> None:
-        """Quality checks configured in config.yaml should execute."""
+    async def test_checks_execute(self, project_dir: Path) -> None:
+        """Checks configured in config.yaml should execute."""
         from interlace.core.api import run
 
         old_cwd = os.getcwd()
@@ -102,7 +102,7 @@ class TestBasicProjectExecution:
         finally:
             os.chdir(old_cwd)
 
-        # The basic example configures quality checks for: users, orders, products
+        # The ecommerce example configures checks for: orders, products
         # All should succeed (pass). Check via the state store by re-initializing.
         from interlace.core.initialization import initialize
 
@@ -117,9 +117,9 @@ class TestBasicProjectExecution:
         conn = state_store._get_connection()
         assert conn is not None
 
-        # Quality results should exist
-        qr = conn.sql("SELECT * FROM interlace.quality_results ORDER BY model_name, check_name").execute()
-        assert len(qr) >= 3, f"Expected >= 3 quality results, got {len(qr)}"
+        # Check results should exist
+        qr = conn.sql("SELECT * FROM interlace.check_results ORDER BY model_name, check_name").execute()
+        assert len(qr) >= 3, f"Expected >= 3 check results, got {len(qr)}"
 
         # Check specific models
         models_checked = set(qr["model_name"].tolist())

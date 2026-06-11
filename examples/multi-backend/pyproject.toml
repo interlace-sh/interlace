@@ -1,0 +1,9 @@
+[project]
+name = "interlace-multi-backend"
+version = "0.1.0"
+description = "Interlace multi-backend — cross-database patterns with DuckDB ATTACH"
+requires-python = ">=3.12"
+dependencies = ["interlace"]
+
+[tool.uv.sources]
+interlace = { workspace = true }

@@ -57,15 +57,6 @@ class RetryPolicy:
     # Only retry these exception types (None = retry all exceptions)
     retryable_exceptions: tuple[type[Exception], ...] | None = None
 
-    # Circuit breaker: fail fast after N consecutive failures across all models
-    circuit_breaker_threshold: int | None = None
-
-    # Circuit breaker: reset after this many seconds
-    circuit_breaker_timeout: float = 300.0
-
-    # Dead letter queue: store failed runs for manual inspection
-    use_dlq: bool = True
-
     # Retry on specific exit codes (for subprocess/shell command failures)
     retry_exit_codes: tuple[int, ...] | None = None
 
@@ -83,8 +74,6 @@ class RetryPolicy:
             raise ValueError("max_delay must be >= initial_delay")
         if self.exponential_base < 1.0:
             raise ValueError("exponential_base must be >= 1.0")
-        if self.circuit_breaker_threshold is not None and self.circuit_breaker_threshold < 1:
-            raise ValueError("circuit_breaker_threshold must be >= 1")
 
     def should_retry(self, exception: Exception, attempt: int) -> bool:
         """
@@ -217,7 +206,6 @@ DEFAULT_RETRY_POLICY = RetryPolicy(
     max_delay=30.0,
     exponential_base=2.0,
     jitter=True,
-    use_dlq=True,
 )
 
 API_RETRY_POLICY = RetryPolicy(
@@ -231,7 +219,6 @@ API_RETRY_POLICY = RetryPolicy(
         TimeoutError,
         OSError,  # Network errors
     ),
-    use_dlq=True,
 )
 
 DATABASE_RETRY_POLICY = RetryPolicy(
@@ -244,8 +231,6 @@ DATABASE_RETRY_POLICY = RetryPolicy(
         ConnectionError,
         TimeoutError,
     ),
-    circuit_breaker_threshold=10,  # Fail fast if DB is down
-    use_dlq=True,
 )
 
 FAST_RETRY_POLICY = RetryPolicy(
@@ -254,7 +239,6 @@ FAST_RETRY_POLICY = RetryPolicy(
     max_delay=1.0,
     exponential_base=2.0,
     jitter=False,
-    use_dlq=False,
 )
 
-NO_RETRY_POLICY = RetryPolicy(max_attempts=0, use_dlq=False)
+NO_RETRY_POLICY = RetryPolicy(max_attempts=0)

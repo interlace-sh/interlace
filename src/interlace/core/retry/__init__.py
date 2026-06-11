@@ -1,12 +1,10 @@
 """
 Retry framework for handling transient failures in model execution.
 
-Phase 2: Production-grade retry with exponential backoff, circuit breaker, and DLQ.
+Provides exponential backoff with jitter for production resilience.
 """
 
-from interlace.core.retry.circuit_breaker import CircuitBreaker, CircuitState
-from interlace.core.retry.dlq import DeadLetterQueue, DLQEntry
-from interlace.core.retry.manager import CircuitBreakerOpenError, RetryManager
+from interlace.core.retry.manager import RetryManager
 from interlace.core.retry.policy import (
     API_RETRY_POLICY,
     DATABASE_RETRY_POLICY,
@@ -28,11 +26,4 @@ __all__ = [
     "NO_RETRY_POLICY",
     # Manager
     "RetryManager",
-    "CircuitBreakerOpenError",
-    # Circuit Breaker
-    "CircuitBreaker",
-    "CircuitState",
-    # Dead Letter Queue
-    "DeadLetterQueue",
-    "DLQEntry",
 ]

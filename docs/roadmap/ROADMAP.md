@@ -2,6 +2,12 @@
 
 This document outlines the development roadmap for Interlace, organised by phases with priorities and milestones.
 
+> **v2 architecture (June 2026):** a first-principles greenfield redesign has been approved —
+> sqlglot AST + Arrow as the internal contract, DuckLake-backed snapshots with virtual data
+> environments and plan/apply, a durable stream log, and a work-queue orchestrator. See
+> [docs/architecture/v2-design.md](../architecture/v2-design.md). The phases below describe the
+> v0.x line; new feature work should be evaluated against the v2 design first.
+
 ## Roadmap Philosophy
 
 The roadmap is organised into phases, with each phase building on previous work:

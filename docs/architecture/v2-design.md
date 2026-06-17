@@ -237,15 +237,47 @@ it later.
 
 ## 6. State & environments
 
-**State store:** SQLite (WAL mode) by default — many small transactional writes during runs are
-exactly what DuckDB is bad at and SQLite is great at; Postgres for shared/team deployments (and
-it can double as the DuckLake catalog). Versioned schema with built-in migrations:
+**State store:** SQLite (WAL mode) by default; Postgres for shared/team deployments (and it can
+double as the DuckLake catalog). Versioned schema with built-in migrations:
 
 ```
 snapshots, intervals, environments, runs, task_attempts, check_results,
 lineage_edges, event_log, work_queue, leases, trigger_state, alerts, api_keys,
 stream_meta, stream_offsets, stream_watermarks, rate_limits
 ```
+
+**Why SQLite and not the existing DuckDB.** The architecture has two planes that want opposite
+things from a database, so it uses the right engine for each rather than forcing one to do both:
+
+| Plane | Holds | Access pattern | Engine |
+|---|---|---|---|
+| Data plane | model tables, materializations | bulk scans/aggregations, few large writes | **DuckDB/DuckLake** (OLAP, columnar) |
+| Control plane | state store, work queue, stream log | many tiny indexed point-writes, frequent durable commits | **SQLite → Postgres** (OLTP, row store) |
+
+The control plane is an OLTP workload — claim a task row, heartbeat, commit a stream offset,
+append an event, bump an interval — i.e. high-frequency, single-row, commit-heavy traffic.
+Reasons DuckDB is the wrong tool for it:
+
+1. **OLAP vs OLTP.** DuckDB is columnar, built to scan/aggregate large tables; thousands of
+   small single-row commits per second is close to a pathological case. SQLite's B-tree row
+   store does exactly that (WAL: ~10k–50k durable commits/s on one node), which is what makes
+   "HTTP 200 ⇒ fsynced" achievable on the stream ingest path.
+2. **Single-writer contention.** DuckDB allows one writer per file. Sharing the warehouse DuckDB
+   for state would make every heartbeat/offset-commit contend with model materialization; a
+   *separate* DuckDB file gains nothing (two files of an engine still doing OLTP badly).
+3. **Concurrent claim semantics.** The work queue needs atomic multi-worker row claims —
+   SQLite (`BEGIN IMMEDIATE`) and Postgres (`FOR UPDATE SKIP LOCKED`) express this cleanly; DuckDB's
+   single-writer MVCC does not.
+4. **Scale-out path.** The store protocols swap SQLite → Postgres — two OLTP row stores with
+   identical transactional semantics. DuckDB isn't on that path (the multi-node target is Postgres).
+
+The cost of "an additional technology" is near zero: `sqlite3` is in the Python standard library
+(no dependency, no service), and DuckLake's catalog is *already* SQLite locally. This is the
+conventional split (sqlmesh keeps state in a transactional DB; Airflow/Dagster use Postgres for
+metadata, never the warehouse). SQLite is the default, not mandatory — the requirement is "a
+transactional store separate from the analytical engine"; pointing the store at Postgres from
+day one is the only other sanctioned option. What we do **not** do is back the OLTP control plane
+with the OLAP DuckDB engine.
 
 **Virtual data environments** (sqlmesh, adopted):
 

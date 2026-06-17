@@ -1,0 +1,5 @@
+# proto-managed toolchain versions (https://moonrepo.dev/proto)
+# Run `proto install` to install these pinned tools.
+moon = "2.3.3"
+python = "3.12"
+uv = "0.10.2"

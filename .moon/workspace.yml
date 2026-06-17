@@ -1,0 +1,9 @@
+$schema: 'https://moonrepo.dev/schemas/workspace.json'
+
+# Single-project repo: the root is the interlace package.
+projects:
+  interlace: '.'
+
+# Hash inputs from git's view of the tree, so gitignored dirs (.venv) are excluded.
+hasher:
+  walkStrategy: 'vcs'

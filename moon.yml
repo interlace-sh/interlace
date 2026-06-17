@@ -1,0 +1,48 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+layer: 'library'
+language: 'python'
+
+# Tasks run through uv (which owns the virtualenv); moon is the runner + cache layer.
+# Replaces the former ./dev script. Pass extra args after `--`, e.g.
+#   moon run interlace:test -- tests/test_interval.py -k missing
+tasks:
+  sync:
+    command: 'uv sync --extra dev'
+    toolchain: 'system'
+    options:
+      cache: false
+      runInCI: false
+
+  fmt:
+    script: 'uv run black src tests && uv run ruff check --fix src tests'
+    inputs: ['src/**/*', 'tests/**/*']
+    options:
+      cache: false
+
+  lint:
+    command: 'uv run ruff check src tests'
+    toolchain: 'system'
+    inputs: ['src/**/*', 'tests/**/*', 'pyproject.toml']
+
+  check:
+    script: 'uv run black --check src tests && uv run ruff check src tests'
+    inputs: ['src/**/*', 'tests/**/*', 'pyproject.toml']
+
+  typecheck:
+    command: 'uv run mypy src/interlace'
+    toolchain: 'system'
+    inputs: ['src/**/*', 'pyproject.toml']
+
+  test:
+    command: 'uv run pytest'
+    toolchain: 'system'
+    inputs: ['src/**/*', 'tests/**/*', 'pyproject.toml']
+    options:
+      cache: false
+
+  test-fast:
+    script: 'uv run pytest -x -q -m "not slow and not requires_db"'
+    inputs: ['src/**/*', 'tests/**/*', 'pyproject.toml']
+    options:
+      cache: false

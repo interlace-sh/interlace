@@ -3,5 +3,6 @@
 from __future__ import annotations
 
 from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode
+from interlace.engines.duckdb import DuckDBAdapter
 
-__all__ = ["EngineAdapter", "EngineCaps", "LoadMode"]
+__all__ = ["DuckDBAdapter", "EngineAdapter", "EngineCaps", "LoadMode"]

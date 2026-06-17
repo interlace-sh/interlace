@@ -7,12 +7,10 @@ the framework invents its own type system.
 
 from __future__ import annotations
 
-from typing import TypeAlias
-
 import pyarrow as pa
 
 # The canonical schema type used throughout the IR.
-ArrowSchema: TypeAlias = pa.Schema
+type ArrowSchema = pa.Schema
 
 
 def schema_from_fields(fields: dict[str, pa.DataType]) -> ArrowSchema:

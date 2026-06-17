@@ -1,9 +1,0 @@
-[project]
-name = "interlace-incremental"
-version = "0.1.0"
-description = "Interlace incremental — cursor-based processing, caching, and scheduling"
-requires-python = ">=3.12"
-dependencies = ["interlace"]
-
-[tool.uv.sources]
-interlace = { workspace = true }

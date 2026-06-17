@@ -1,49 +1,35 @@
-"""
-Base strategy interface.
+"""Materialisation strategies as AST builders.
 
-Phase 0: Abstract base class for all strategies.
+A strategy turns "this relation, into this table, for this interval" into a list
+of canonical sqlglot statements. It never returns SQL strings and never hard-codes
+a dialect — that is what made v0.x strategies DuckDB-only. ``EngineCaps`` lets a
+strategy choose a portable fallback (e.g. ``DELETE`` + ``INSERT`` when ``MERGE``
+is unavailable).
 """
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import ClassVar
 
-if TYPE_CHECKING:
-    import ibis
+from sqlglot import exp
+
+from interlace.engines.base import EngineCaps
+from interlace.ir.relation import SqlRelation, TableRef
+from interlace.state.interval import Interval
 
 
 class Strategy(ABC):
-    """Base class for data loading strategies."""
+    """Builds the statements that write a relation into its target table."""
+
+    name: ClassVar[str]
 
     @abstractmethod
-    def generate_sql(
+    def plan_statements(
         self,
-        connection: "ibis.BaseBackend",
-        target_table: str,
-        schema: str,
-        source_table: str,
-        **kwargs: Any,
-    ) -> str | None:
-        """
-        Generate SQL for strategy execution.
-
-        Args:
-            connection: ibis connection backend
-            target_table: Target table name
-            schema: Schema/database name
-            source_table: Source table name (temp table with new data)
-            **kwargs: Strategy-specific parameters
-
-        Returns:
-            SQL string to execute, or None if strategy doesn't need SQL
-            (e.g., replace/append use connection.insert() instead)
-        """
-        return None
-
-    def needs_temp_table(self) -> bool:
-        """
-        Whether this strategy needs a temp table.
-
-        Returns:
-            True if strategy requires temp table for SQL generation
-        """
-        return False
+        relation: SqlRelation,
+        target: TableRef,
+        caps: EngineCaps,
+        interval: Interval | None = None,
+    ) -> list[exp.Expression]:
+        """Return canonical-dialect ASTs; the engine adapter transpiles them."""

@@ -1,107 +1,27 @@
+"""Interlace v2 — Python/SQL-first data platform.
+
+Transformation (sqlmesh-grade snapshots, virtual environments, plan/apply),
+built-in orchestration (durable work queue + unified triggers), and durable
+streaming ingestion — in one process. See docs/architecture/v2-design.md.
+
+This package is under active greenfield construction; the public surface is the
+``@model`` / ``@stream`` / ``@check`` decorators plus the core IR types.
 """
-Interlace - A modern, Python/SQL-first data pipeline framework.
 
-Phase 0 (MVP): Core functionality for basic data pipeline execution.
-"""
+from __future__ import annotations
 
-__version__ = "0.2.1"
+from interlace.dsl.decorators import check, model, stream
+from interlace.ir.relation import EngineRef, SqlRelation, StreamRelation, TableRef
 
-# Core exports
-# Global config
-# Checks
-from interlace.checks import Check, CheckResult, CheckRunner, CheckSummary, check
-from interlace.checks.decorator import PythonCheck
-from interlace.config.singleton import config
-
-# Programmatic API
-from interlace.core.api import run, run_sync
-from interlace.core.context import get_connection, sql
-from interlace.core.dependencies import build_dependency_graph
-from interlace.core.executor import execute_models
-from interlace.core.model import model
-from interlace.core.stream import ack, consume, publish, publish_sync, stream, subscribe
-
-# Exceptions
-from interlace.exceptions import (
-    CheckError,
-    ConfigurationError,
-    ConnectionLockError,
-    ConnectionNotFoundError,
-    DeadlockError,
-    DependencyError,
-    ExecutionError,
-    InitializationError,
-    InterlaceConnectionError,
-    InterlaceError,
-    MaterializationError,
-    ModelExecutionError,
-    RetryError,
-    SchemaError,
-    StateStoreError,
-)
-
-# Testing utilities
-from interlace.testing import TestResult, mock_dependency, test_model, test_model_sync
-
-# API utilities
-from interlace.utils.api import API, basic_auth_token, oauth2_token
-
-# Logging utilities
-from interlace.utils.logging import get_logger, setup_logging, setup_logging_from_config
+__version__ = "2.0.0.dev0"
 
 __all__ = [
-    # Core decorators
+    "EngineRef",
+    "SqlRelation",
+    "StreamRelation",
+    "TableRef",
+    "__version__",
+    "check",
     "model",
     "stream",
-    # Stream API
-    "publish",
-    "publish_sync",
-    "subscribe",
-    "consume",
-    "ack",
-    # Execution
-    "execute_models",
-    "build_dependency_graph",
-    "get_connection",
-    "sql",
-    "run",
-    "run_sync",
-    # Logging
-    "setup_logging",
-    "setup_logging_from_config",
-    "get_logger",
-    # API utilities
-    "API",
-    "oauth2_token",
-    "basic_auth_token",
-    # Testing
-    "test_model",
-    "test_model_sync",
-    "mock_dependency",
-    "TestResult",
-    # Config
-    "config",
-    # Exceptions
-    "InterlaceError",
-    "ConfigurationError",
-    "InterlaceConnectionError",
-    "ConnectionLockError",
-    "ConnectionNotFoundError",
-    "ExecutionError",
-    "ModelExecutionError",
-    "DependencyError",
-    "DeadlockError",
-    "InitializationError",
-    "SchemaError",
-    "MaterializationError",
-    "CheckError",
-    "RetryError",
-    "StateStoreError",
-    # Checks
-    "Check",
-    "CheckResult",
-    "CheckRunner",
-    "CheckSummary",
-    "PythonCheck",
-    "check",
 ]

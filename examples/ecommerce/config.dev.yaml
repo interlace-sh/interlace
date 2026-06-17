@@ -1,8 +1,0 @@
-# Development environment overlay
-# Usage: INTERLACE_ENV=dev interlace run
-
-checks:
-  fail_on_error: false
-
-logging:
-  level: DEBUG

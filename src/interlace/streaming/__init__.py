@@ -1,32 +1,7 @@
-"""
-Streaming module for Interlace.
+"""Durable streaming: the stream log, micro-batch materializer, and consumers."""
 
-Provides message adapters and streaming utilities for integrating
-Interlace streams with external systems via webhooks, polling, and pub/sub.
+from __future__ import annotations
 
-Usage:
-    from interlace.streaming import WebhookAdapter, StreamBridge
+from interlace.streaming.log import AppendResult, Event, Lease, StoredEvent, StreamLog
 
-    adapter = WebhookAdapter(url="https://example.com/webhook")
-    bridge = StreamBridge()
-"""
-
-from interlace.streaming.adapters.base import (
-    AdapterConfig,
-    Message,
-    MessageAdapter,
-)
-from interlace.streaming.adapters.memory import InMemoryAdapter
-from interlace.streaming.adapters.webhook import WebhookAdapter
-from interlace.streaming.bridge import StreamBridge
-from interlace.streaming.router import StreamRouter
-
-__all__ = [
-    "MessageAdapter",
-    "Message",
-    "AdapterConfig",
-    "WebhookAdapter",
-    "InMemoryAdapter",
-    "StreamBridge",
-    "StreamRouter",
-]
+__all__ = ["AppendResult", "Event", "Lease", "StoredEvent", "StreamLog"]

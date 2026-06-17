@@ -1,9 +1,0 @@
-[project]
-name = "interlace-benchmarks"
-version = "0.1.0"
-description = "Interlace benchmark suites (TPC-H, TPC-DS)"
-requires-python = ">=3.12"
-dependencies = ["interlace"]
-
-[tool.uv.sources]
-interlace = { workspace = true }

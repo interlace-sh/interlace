@@ -4,92 +4,72 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interlace"
-version = "0.2.1"
-description = "A modern, Python/SQL-first data orchestration & pipeline framework"
+version = "2.0.0.dev0"
+description = "Python/SQL-first data platform: transformation, built-in orchestration, and durable streaming ingestion"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
-    {name = "Mark", email="mark@interlace.sh"}
+    {name = "Mark", email = "mark@interlace.sh"}
 ]
-keywords = ["data", "pipeline", "orchestration", "transformation", "etl", "reverse-etl", "dbt", "data-engineering"]
+keywords = ["data", "pipeline", "orchestration", "transformation", "etl", "streaming", "dbt", "sqlmesh", "duckdb"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Build Tools",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: SQL"
+    "Programming Language :: SQL",
 ]
 
+# Core: the IR + engine + state + plan spine (Phase 1). Everything is Arrow- and
+# sqlglot-native. See docs/architecture/v2-design.md.
 dependencies = [
-    "typer>=0.9.0,<1.0",
-    "rich>=13.0.0,<15.0",
-    "pyyaml>=6.0,<7.0",
-    "duckdb>=0.10.3,!=1.3.0,<2.0",
-    "ibis-framework[duckdb]>=12.0.0,<13.0",
-    "psycopg>=3.1.0,<4.0",  # ibis 10+ postgres backend uses psycopg v3
-    "sqlglot>=24.0.0,<29.0",
-    "aiohttp>=3.9.0,<4.0",
-    "asyncpg>=0.29.0,<1.0",
-    "cachetools>=5.3.0,<8.0",
-    "aiofiles>=23.2.0,<26.0",
-    "psutil>=5.9.0,<8.0",
+    "sqlglot>=25.0,<31.0",        # canonical IR, transpilation, semantic diff, column lineage
+    "duckdb>=1.1,<2.0",           # default engine + federation hub (DuckLake/Iceberg used later)
+    "pyarrow>=17.0",              # the wire format: RecordBatchReader everywhere
+    "msgspec>=0.18,<1.0",         # ingest validation + fast (de)serialisation
+    "pydantic>=2.5,<3.0",         # config + manifest validation (cold paths only)
+    "typer>=0.12,<1.0",           # CLI
+    "rich>=13.0,<15.0",           # display, strictly an event subscriber
+    "cronsim>=2.5,<3.0",          # cron parsing for the trigger engine
+    "tenacity>=8.2,<10.0",        # retries (tasks, DuckLake commit conflicts, transfers)
+    "structlog>=24.0,<26.0",      # structured logging
 ]
 
 [project.optional-dependencies]
+# Service + orchestration daemon (Phase 2).
+service = [
+    "litestar>=2.12,<3.0",
+    "uvicorn>=0.30,<1.0",
+    "httpx>=0.27,<1.0",
+    "argon2-cffi>=23.1,<26.0",
+    "joserfc>=1.0,<2.0",
+    "watchfiles>=0.22,<2.0",
+]
+# Remote engines via Arrow-native transfer (Phase 4).
+adbc = [
+    "adbc-driver-manager>=1.2,<2.0",
+    "adbc-driver-postgresql>=1.2,<2.0",
+]
+postgres = ["psycopg[binary]>=3.1,<4.0"]
+# Optional authoring frontend for Python models; compiles to sqlglot.
+ibis = ["ibis-framework[duckdb]>=12.0,<13.0"]
+polars = ["polars>=1.0,<2.0"]
+pandas = ["pandas>=2.0,<4.0"]
+all = ["interlace[service,adbc,postgres,ibis,polars]"]
 dev = [
-    "pytest>=7.0,<10.0",
-    "pytest-asyncio>=1.0.0,<2.0",
-    "aioresponses>=0.7.6,<1.0",
-    "black>=23.0,<27.0",
-    "ruff>=0.1.0,<1.0",
-    "mypy>=1.5.0,<2.0",
+    "pytest>=8.0,<10.0",
+    "pytest-asyncio>=1.0,<2.0",
+    "ruff>=0.6,<1.0",
+    "black>=24.0,<27.0",
+    "mypy>=1.11,<2.0",
 ]
-sftp = [
-    "paramiko>=3.4.0,<5.0",
-]
-s3 = [
-    "boto3>=1.28.0,<2.0",
-]
-pgp = [
-    "pgpy>=0.6.0,<1.0",
-]
-pandas = [
-    "pandas>=2.0.0,<4.0",
-]
-stream = [
-    "aio-pika>=9.0.0,<10.0",
-]
-metrics = [
-    "prometheus_client>=0.19.0,<1.0",
-]
-tracing = [
-    "opentelemetry-api>=1.20.0,<3.0",
-    "opentelemetry-sdk>=1.20.0,<3.0",
-    "opentelemetry-exporter-otlp>=1.20.0,<3.0",
-]
-all = [
-    "interlace[sftp,s3,pgp,pandas,stream,metrics,tracing]",
-]
-
-[project.scripts]
-interlace = "interlace.cli.main:main"
-
-[project.entry-points."pytest11"]
-interlace = "interlace.testing"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 interlace = ["py.typed"]
-"interlace.service" = [
-    "static/**/*",
-    "static/*",
-]
-"interlace.service.api" = [
-    "openapi.yaml",
-]
 
 [tool.black]
 line-length = 120
@@ -131,24 +111,8 @@ warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = [
-    "ibis.*",
     "sqlglot.*",
-    "boto3.*",
-    "paramiko.*",
-    "pgpy.*",
-    "aiohttp.*",
-    "aiofiles.*",
-    "psutil.*",
-    "cachetools.*",
-    "yaml",
-    "yaml.*",
-    "pandas",
-    "pyarrow",
     "pyarrow.*",
-    "prometheus_client",
-    "opentelemetry",
-    "opentelemetry.*",
-    "aio_pika",
 ]
 ignore_missing_imports = true
 
@@ -186,19 +150,6 @@ markers = [
     "unit: Unit tests (fast, isolated)",
     "integration: Integration tests (slower, require database)",
     "slow: Slow tests (may take a long time)",
-    "performance: Performance benchmarks",
-    "requires_db: Tests that require database connection",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-
-[tool.uv.workspace]
-members = ["examples/*"]
-
-[dependency-groups]
-dev = [
-    "types-aiofiles>=25.1.0.20251011",
-    "types-cachetools>=6.2.0.20251022",
-    "types-paramiko>=4.0.0.20250822",
-    "types-pyyaml>=6.0.12.20250915",
-]

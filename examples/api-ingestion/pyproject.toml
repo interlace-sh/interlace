@@ -1,9 +1,0 @@
-[project]
-name = "interlace-api-ingestion"
-version = "0.1.0"
-description = "Interlace api-ingestion — REST API patterns with retry, cache, schedule, and cursor"
-requires-python = ">=3.12"
-dependencies = ["interlace"]
-
-[tool.uv.sources]
-interlace = { workspace = true }

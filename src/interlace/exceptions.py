@@ -30,6 +30,10 @@ class CompilationError(InterlaceError):
     """SQL could not be parsed, qualified, or transpiled."""
 
 
+class DependencyError(InterlaceError):
+    """The dependency graph is invalid (e.g. a cycle)."""
+
+
 class EngineError(InterlaceError):
     """An engine adapter failed to execute, fetch, or load."""
 

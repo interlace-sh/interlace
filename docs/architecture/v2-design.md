@@ -300,6 +300,58 @@ Changed expression → BREAKING, but **column-impact-narrowed** (§7): only down
 actually consume the changed columns are invalidated. This is the concrete improvement over
 sqlmesh, whose invalidation is model-granular.
 
+### Reverse ETL & external sinks (where the snapshot+view layer stops)
+
+The fingerprinted-snapshot-plus-view layer only works because **interlace owns those tables** —
+it can freely create `model__<fp>` shadow copies and atomically repoint a view. Reverse ETL
+breaks every one of those assumptions, so it does **not** go through that machinery:
+
+- the target is **owned by an external system** (a CRM object, a SaaS API, a live OLTP table an
+  app reads/writes) — you can't shadow-and-swap a hardcoded table, and an API endpoint isn't a
+  table at all;
+- writes are **side-effecting and non-recreatable** — you can't roll back a Salesforce upsert by
+  repointing a view;
+- the natural semantics are **upsert/merge or append**, not create-and-replace.
+
+So delivery is separated from transformation. A reverse-ETL output is a distinct category — a
+**`sink`** (`@sink` / `@export`) that reads an already-built, already-checked **managed** model
+and pushes deltas to a live destination. The transformation stays declarative, versioned,
+lineage-tracked, and rollback-able; only the *delivery* is side-effecting. (This mirrors how
+Census/Hightouch split "model in the warehouse" from "sync to destination," and generalises
+v0.x's `promote`/connector exports.)
+
+```python
+@sink(source="silver.account_summary",  # a managed model = the source of truth
+      destination="salesforce", target="Account",
+      mode="upsert", key="account_id")   # mirror | upsert | append
+```
+
+- **No fingerprinted shadow table.** A sink writes to the *literal* destination, never
+  `target__<fp>`; `compile_models`/`_physical_table` assign physical snapshot tables only to
+  managed materialisations (`table`/`view`/`incremental`/`ephemeral`). The materialisation
+  taxonomy gains a `sink`/`external` category that bypasses the physical layer.
+- **Idempotency from the key, not recreation.** `upsert`/`merge_by_key` makes re-runs safe; for
+  append-only destinations reuse the stream log's idempotency-key/dedup mechanism (§9).
+- **Reuses control-plane state, not the physical layer.** The model's fingerprint detects "logic
+  changed → full resync"; a per-sink **delivery ledger** (cursor / last-synced hash per key)
+  pushes only changed rows — the point of reverse-ETL efficiency.
+- **Connectors.** SQL destinations reuse `EngineAdapter.load` with a new `merge` mode; SaaS/API
+  destinations go through a separate `SinkConnector` (batch HTTP), not `EngineAdapter`.
+
+**Spectrum of output kinds and their rollback story:**
+
+| Output kind | Physical model | Rollback |
+|---|---|---|
+| managed `table`/`view`/`incremental` | snapshot table + env view | instant view-swap, zero-copy dev envs |
+| external SQL table interlace solely owns | fixed-name table, transactional replace/merge in place (stage → `BEGIN; swap; COMMIT`) | atomic within that DB, no cross-env views |
+| reverse-ETL `sink` (live/shared table or API) | keyed upsert / append via connector + delivery ledger | **forward-correction only** — replay a window + keyed upsert converges; *not* view-swap rollback |
+
+**Safety — the property that matters most:** virtual environments must never silently fan
+side-effecting writes out to production. Sinks are environment-gated: by default a sink runs only
+in environments that explicitly map it to a destination, `plan` renders sinks as a dry-run diff
+("would upsert N rows to Account"), and dev environments skip them or target a sandbox. This is
+the reverse-ETL analogue of the dev-environment isolation the snapshot layer gives for free.
+
 ---
 
 ## 7. Dependency graph, lineage, selective execution

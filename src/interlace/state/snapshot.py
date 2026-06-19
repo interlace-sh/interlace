@@ -38,6 +38,8 @@ class Snapshot:
     physical_table: TableRef
     change_category: ChangeCategory
     intervals: IntervalSet = field(default_factory=IntervalSet)
+    local_fingerprint: str = ""  # SQL + config only; lets the differ separate direct vs indirect changes
+    definition_sql: str | None = None  # canonical SQL of the version, for change classification
 
     @property
     def key(self) -> str:

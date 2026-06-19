@@ -9,10 +9,20 @@ Apply executes it; nothing here runs SQL.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 
 from interlace.ir.relation import EngineRef, TableRef
 from interlace.state.interval import Interval
 from interlace.state.snapshot import ChangeCategory, Snapshot
+
+
+class ChangeType(Enum):
+    """A model's status relative to the target environment."""
+
+    ADDED = "added"
+    MODIFIED = "modified"
+    REMOVED = "removed"
+    UNCHANGED = "unchanged"
 
 
 @dataclass(frozen=True)
@@ -20,7 +30,8 @@ class ModelChange:
     """A model added, modified, or removed relative to the target environment."""
 
     name: str
-    category: ChangeCategory
+    change_type: ChangeType
+    category: ChangeCategory | None  # severity of a MODIFIED change; None for added/removed
     previous_fingerprint: str | None
     new_fingerprint: str | None
     impacted_columns: tuple[str, ...] = ()  # columns whose lineage changed (drives narrowing)
@@ -28,10 +39,10 @@ class ModelChange:
 
 @dataclass(frozen=True)
 class BackfillTask:
-    """One unit of physical work: fill ``interval`` for ``snapshot``."""
+    """One unit of physical work: build ``snapshot`` (optionally for one ``interval``)."""
 
     snapshot: Snapshot
-    interval: Interval
+    interval: Interval | None = None  # None = full refresh (non-incremental models)
 
 
 @dataclass(frozen=True)

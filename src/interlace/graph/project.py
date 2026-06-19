@@ -21,7 +21,7 @@ from interlace.dsl.decorators import ModelDef
 from interlace.exceptions import DefinitionError
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import parse, table_references
-from interlace.ir.fingerprint import data_fingerprint, metadata_fingerprint
+from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint
 from interlace.ir.relation import TableRef
 
 _PHYSICAL_PREFIX = "interlace__"
@@ -34,8 +34,10 @@ class CompiledModel:
     name: str
     dialect: str
     dependencies: tuple[str, ...]
-    fingerprint: str
+    fingerprint: str  # full: SQL + config + upstream fingerprints
+    local_fingerprint: str  # SQL + config only — separates direct from indirect changes
     metadata_hash: str
+    definition_sql: str | None  # canonical SQL, for change classification (None for Python models)
     physical_table: TableRef
     materialise: str
     strategy: str
@@ -126,8 +128,10 @@ def compile_models(
             "interval": definition.interval,
             "dialect": dialect,
         }
+        query = _fingerprint_query(definition, ast)
+        local_fingerprint = data_fingerprint(query=query, strategy_config=strategy_config, upstream_fingerprints=[])
         fingerprint = data_fingerprint(
-            query=_fingerprint_query(definition, ast),
+            query=query,
             strategy_config=strategy_config,
             upstream_fingerprints=[compiled[dep].fingerprint for dep in deps],
         )
@@ -139,7 +143,9 @@ def compile_models(
             dialect=dialect,
             dependencies=deps,
             fingerprint=fingerprint,
+            local_fingerprint=local_fingerprint,
             metadata_hash=metadata_hash,
+            definition_sql=canonical_sql(ast) if ast is not None else None,
             physical_table=_physical_table(name, fingerprint, catalog),
             materialise=definition.materialise,
             strategy=definition.strategy,

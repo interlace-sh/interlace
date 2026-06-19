@@ -29,14 +29,16 @@ _MIGRATIONS: list[str] = [
     # 0001 — snapshots, interval ledger, environment pointers
     """
     CREATE TABLE snapshots (
-        name              TEXT NOT NULL,
-        fingerprint       TEXT NOT NULL,
-        metadata_hash     TEXT NOT NULL,
-        physical_catalog  TEXT,
-        physical_schema   TEXT NOT NULL,
-        physical_name     TEXT NOT NULL,
-        change_category   TEXT NOT NULL,
-        created_at        TEXT NOT NULL,
+        name               TEXT NOT NULL,
+        fingerprint        TEXT NOT NULL,
+        local_fingerprint  TEXT NOT NULL,
+        metadata_hash      TEXT NOT NULL,
+        definition_sql     TEXT,
+        physical_catalog   TEXT,
+        physical_schema    TEXT NOT NULL,
+        physical_name      TEXT NOT NULL,
+        change_category    TEXT NOT NULL,
+        created_at         TEXT NOT NULL,
         PRIMARY KEY (name, fingerprint)
     );
 
@@ -63,12 +65,14 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _snapshot_to_row(snapshot: Snapshot) -> tuple[str, str, str, str | None, str, str, str, str]:
+def _snapshot_to_row(snapshot: Snapshot) -> tuple[str, str, str, str, str | None, str | None, str, str, str, str]:
     t = snapshot.physical_table
     return (
         snapshot.name,
         snapshot.fingerprint,
+        snapshot.local_fingerprint,
         snapshot.metadata_hash,
+        snapshot.definition_sql,
         t.catalog,
         t.schema,
         t.name,
@@ -87,6 +91,8 @@ def _snapshot_from_row(row: sqlite3.Row, intervals: IntervalSet) -> Snapshot:
         ),
         change_category=ChangeCategory(row["change_category"]),
         intervals=intervals,
+        local_fingerprint=row["local_fingerprint"],
+        definition_sql=row["definition_sql"],
     )
 
 
@@ -143,8 +149,9 @@ class SqliteStateStore:
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO snapshots "
-                "(name, fingerprint, metadata_hash, physical_catalog, physical_schema, physical_name, "
-                " change_category, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(name, fingerprint, local_fingerprint, metadata_hash, definition_sql, physical_catalog, "
+                " physical_schema, physical_name, change_category, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _snapshot_to_row(snapshot),
             )
             self._conn.execute(

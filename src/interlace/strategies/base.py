@@ -19,6 +19,11 @@ from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
 
 
+def table_expr(target: TableRef) -> exp.Table:
+    """A sqlglot Table node for a target, for building DDL statements."""
+    return exp.to_table(target.qualified())
+
+
 class Strategy(ABC):
     """Builds the statements that write a relation into its target table."""
 

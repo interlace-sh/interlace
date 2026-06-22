@@ -55,6 +55,10 @@ class EngineAdapter(ABC):
     async def create_view(self, name: TableRef, target: TableRef) -> None:
         """Point a virtual-environment view at a physical snapshot table."""
 
+    @abstractmethod
+    async def create_schema(self, name: str) -> None:
+        """Create a schema/namespace if it does not already exist."""
+
     def transpile(self, ast: exp.Expression) -> str:
         """Canonical AST -> this engine's SQL. The one place dialect leaks back in."""
         return ast.sql(dialect=self.dialect)

@@ -12,6 +12,7 @@ import sqlglot
 from sqlglot import exp
 
 from interlace.exceptions import CompilationError
+from interlace.ir.relation import TableRef
 
 
 def parse(sql: str, dialect: str = "duckdb") -> exp.Expression:
@@ -43,3 +44,26 @@ def table_references(ast: exp.Expression) -> list[str]:
             seen.add(key)
             refs.append(key)
     return refs
+
+
+def resolve_references(ast: exp.Expression, mapping: dict[str, TableRef]) -> exp.Expression:
+    """Rewrite model-name table references to their physical tables (returns a new AST).
+
+    ``mapping`` is keyed by dependency model name; a reference matches by its
+    ``db.name`` key or, failing that, its bare name (so ``main.orders`` resolves
+    to model ``orders``). Aliases are preserved; the input AST is not mutated.
+    """
+    if not mapping:
+        return ast
+
+    def rewrite(node: exp.Expression) -> exp.Expression:
+        if isinstance(node, exp.Table):
+            key = f"{node.db}.{node.name}" if node.db else node.name
+            target = mapping.get(key) or mapping.get(node.name)
+            if target is not None:
+                node.set("this", exp.to_identifier(target.name))
+                node.set("db", exp.to_identifier(target.schema) if target.schema else None)
+                node.set("catalog", exp.to_identifier(target.catalog) if target.catalog else None)
+        return node
+
+    return ast.transform(rewrite)

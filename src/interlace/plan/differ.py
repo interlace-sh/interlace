@@ -22,8 +22,7 @@ from sqlglot import exp
 
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.canonicalize import parse
-from interlace.ir.relation import TableRef
-from interlace.plan.plan import BackfillTask, ChangeType, ModelChange, Plan, ViewSwap
+from interlace.plan.plan import BackfillTask, ChangeType, ModelChange, Plan, ViewSwap, env_view
 from interlace.state.snapshot import ChangeCategory, Snapshot
 from interlace.state.store import StateStore
 
@@ -39,11 +38,6 @@ def snapshot_of(model: CompiledModel, category: ChangeCategory) -> Snapshot:
         local_fingerprint=model.local_fingerprint,
         definition_sql=model.definition_sql,
     )
-
-
-def _env_view(environment: str, model_name: str) -> TableRef:
-    schema, _, base = model_name.rpartition(".")
-    return TableRef(schema=f"{environment}__{schema or 'main'}", name=base)
 
 
 def _projection_map(ast: exp.Expression | None) -> dict[str, str] | None:
@@ -85,7 +79,7 @@ async def diff(compiled: CompiledProject, environment: str, state: StateStore) -
             categories[model.name] = ChangeCategory.BREAKING
             plan.changes.append(ModelChange(model.name, ChangeType.ADDED, None, None, model.fingerprint))
             plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, ChangeCategory.BREAKING)))
-            plan.virtual_updates.append(ViewSwap(_env_view(environment, model.name), model.physical_table))
+            plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
             continue
 
         if previous_fingerprint == model.fingerprint:
@@ -103,7 +97,7 @@ async def diff(compiled: CompiledProject, environment: str, state: StateStore) -
             ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint)
         )
         plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, category)))
-        plan.virtual_updates.append(ViewSwap(_env_view(environment, model.name), model.physical_table))
+        plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
 
     for removed in sorted(set(current) - set(compiled.models)):
         plan.changes.append(ModelChange(removed, ChangeType.REMOVED, None, current[removed], None))

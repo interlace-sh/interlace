@@ -63,6 +63,12 @@ class ViewSwap:
     target: TableRef
 
 
+def env_view(environment: str, model_name: str) -> TableRef:
+    """The virtual-environment view name for a model: ``<env>__<schema>.<model>``."""
+    schema, _, base = model_name.rpartition(".")
+    return TableRef(schema=f"{environment}__{schema or 'main'}", name=base)
+
+
 @dataclass
 class Plan:
     """The full preview of an apply against one environment."""

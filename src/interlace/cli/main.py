@@ -13,6 +13,7 @@ from interlace.exceptions import ConfigurationError
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.plan import Plan
+from interlace.plan.run import forced_plan
 from interlace.project import Project
 from interlace.scaffold import scaffold_project
 
@@ -74,6 +75,28 @@ async def _apply(environment: str, path: Path) -> None:
         result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state)
         console.print(
             f"[green]Built {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
+        )
+    finally:
+        await state.close()
+        engine.close()
+
+
+@app.command()
+def run(environment: str = _ENV, path: Path = _PATH) -> None:
+    """Force-build all models and promote, ignoring change detection."""
+    asyncio.run(_run(environment, path))
+
+
+async def _run(environment: str, path: Path) -> None:
+    project = Project.load(path)
+    compiled = project.compile()
+    engine = project.open_engine()
+    state = await project.open_state()
+    try:
+        plan_result = forced_plan(compiled, environment)
+        result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state)
+        console.print(
+            f"[green]Ran {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
     finally:
         await state.close()

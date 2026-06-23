@@ -9,16 +9,35 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from interlace.exceptions import ConfigurationError
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.plan import Plan
 from interlace.project import Project
+from interlace.scaffold import scaffold_project
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Python/SQL-first data platform.")
 console = Console()
 
 _ENV = typer.Option("dev", "--env", "-e", help="Target data environment.")
 _PATH = typer.Option(Path("."), "--path", "-p", help="Project root.")
+
+
+@app.command()
+def init(
+    path: Path = typer.Argument(Path("."), help="Directory to initialise."),
+    name: str = typer.Option("", "--name", "-n", help="Project name (defaults to the directory name)."),
+) -> None:
+    """Scaffold a new interlace project."""
+    try:
+        written = scaffold_project(path, name or None)
+    except ConfigurationError as exc:
+        console.print(f"[red]{exc.message}[/red] ({exc.details.get('path', '')})")
+        raise typer.Exit(1) from exc
+    console.print(f"[green]Initialised interlace project in {path}[/green]")
+    for written_path in written:
+        console.print(f"  + {written_path}")
+    console.print("\nNext: [bold]interlace apply --env dev[/bold]")
 
 
 @app.command()

@@ -43,6 +43,7 @@ htmlcov/
 *.duckdb.wal
 *.db
 *.sqlite
+.interlace/
 
 # Logs
 logs/

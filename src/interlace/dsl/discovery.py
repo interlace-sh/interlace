@@ -12,8 +12,10 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Any
 
-from interlace.dsl.decorators import REGISTRY, ModelDef
+from interlace.dsl.decorators import _KINDS, _MATERIALISATIONS, REGISTRY, ModelDef, _as_tuple
+from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError
 
 
@@ -24,13 +26,36 @@ def discover_models(root: Path, model_paths: list[str], default_dialect: str) ->
         if not base.is_dir():
             continue
         for sql_file in sorted(base.rglob("*.sql")):
-            name = _model_name(base, sql_file)
-            REGISTRY.register_model(ModelDef(name=name, sql=sql_file.read_text(), dialect=default_dialect))
+            config, sql = extract_sql_config(sql_file.read_text())
+            REGISTRY.register_model(_sql_model(_model_name(base, sql_file), sql, config, default_dialect))
         for py_file in sorted(base.rglob("*.py")):
             if py_file.name.startswith("_"):
                 continue
             _import_module(base, py_file)
     return list(REGISTRY.models.values())
+
+
+def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dialect: str) -> ModelDef:
+    materialise = config.get("materialise", "table")
+    if materialise not in _MATERIALISATIONS:
+        raise DefinitionError(f"unknown materialise {materialise!r}", details={"model": default_name})
+    kind = config.get("kind", "batch")
+    if kind not in _KINDS:
+        raise DefinitionError(f"unknown kind {kind!r}", details={"model": default_name})
+    return ModelDef(
+        name=config.get("name", default_name),
+        sql=sql,
+        materialise=materialise,
+        strategy=config.get("strategy", "full"),
+        key=_as_tuple(config.get("key") or ()),
+        dialect=config.get("dialect") or default_dialect,
+        depends_on=_as_tuple(config.get("depends_on") or ()),
+        kind=kind,
+        interval=config.get("interval"),
+        tags=_as_tuple(config.get("tags") or ()),
+        owner=config.get("owner"),
+        description=config.get("description"),
+    )
 
 
 def _model_name(base: Path, file: Path) -> str:

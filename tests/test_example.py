@@ -25,15 +25,19 @@ async def test_getting_started_applies_end_to_end(tmp_path: Path) -> None:
     project = Project.load(project_dir)
     compiled = project.compile()
     assert compiled.models["top_kind"].dependencies == ("event_totals",)
+    assert compiled.models["recent_clicks"].materialise == "view"  # per-model SQL config
 
     engine = project.open_engine()
     state = await project.open_state()
     try:
         result = await apply(await diff(compiled, "dev", state), compiled=compiled, engine=engine, state=state)
-        assert set(result.built) == {"raw_events", "event_totals", "top_kind"}
+        assert set(result.built) == {"raw_events", "event_totals", "top_kind", "recent_clicks"}
 
         reader = await engine.fetch(sqlglot.parse_one("SELECT kind FROM dev__main.top_kind"))
         assert reader.read_all().to_pylist() == [{"kind": "purchase"}]  # highest total_amount
+
+        clicks = await engine.fetch(sqlglot.parse_one("SELECT count(*) AS n FROM dev__main.recent_clicks"))
+        assert clicks.read_all().to_pylist() == [{"n": 2}]  # two 'click' events in the seed
 
         # re-plan is clean
         assert (await diff(project.compile(), "dev", state)).is_empty

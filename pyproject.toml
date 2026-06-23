@@ -34,7 +34,11 @@ dependencies = [
     "cronsim>=2.5,<3.0",          # cron parsing for the trigger engine
     "tenacity>=8.2,<10.0",        # retries (tasks, DuckLake commit conflicts, transfers)
     "structlog>=24.0,<26.0",      # structured logging
+    "pyyaml>=6.0,<7.0",           # project config (config + env overlays)
 ]
+
+[project.scripts]
+interlace = "interlace.cli.main:main"
 
 [project.optional-dependencies]
 # Service + orchestration daemon (Phase 2).
@@ -113,6 +117,7 @@ warn_unused_ignores = true
 module = [
     "sqlglot.*",
     "pyarrow.*",
+    "yaml",
 ]
 ignore_missing_imports = true
 

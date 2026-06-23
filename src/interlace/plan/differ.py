@@ -78,8 +78,9 @@ async def diff(compiled: CompiledProject, environment: str, state: StateStore) -
         if previous_fingerprint is None:
             categories[model.name] = ChangeCategory.BREAKING
             plan.changes.append(ModelChange(model.name, ChangeType.ADDED, None, None, model.fingerprint))
-            plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, ChangeCategory.BREAKING)))
-            plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
+            if model.materialise != "ephemeral":  # ephemeral models are inlined, never built
+                plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, ChangeCategory.BREAKING)))
+                plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
             continue
 
         if previous_fingerprint == model.fingerprint:
@@ -96,8 +97,9 @@ async def diff(compiled: CompiledProject, environment: str, state: StateStore) -
         plan.changes.append(
             ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint)
         )
-        plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, category)))
-        plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
+        if model.materialise != "ephemeral":  # ephemeral models are inlined, never built
+            plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, category)))
+            plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
 
     for removed in sorted(set(current) - set(compiled.models)):
         plan.changes.append(ModelChange(removed, ChangeType.REMOVED, None, current[removed], None))

@@ -21,6 +21,7 @@ def forced_plan(compiled: CompiledProject, environment: str) -> Plan:
     plan = Plan(environment=environment)
     for model in compiled.ordered():
         plan.changes.append(ModelChange(model.name, ChangeType.MODIFIED, None, None, model.fingerprint))
-        plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, ChangeCategory.BREAKING)))
-        plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
+        if model.materialise != "ephemeral":  # ephemeral models are inlined, never built
+            plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, ChangeCategory.BREAKING)))
+            plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
     return plan

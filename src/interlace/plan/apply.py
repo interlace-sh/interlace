@@ -16,10 +16,10 @@ from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.exceptions import PlanError
 from interlace.graph.project import CompiledProject
-from interlace.ir.canonicalize import resolve_references
 from interlace.ir.relation import EngineRef, SqlRelation
 from interlace.ir.schema import empty_schema
 from interlace.plan.plan import Plan
+from interlace.plan.resolve import resolve_model_query
 from interlace.state.store import StateStore
 from interlace.strategies import resolve_strategy
 
@@ -40,8 +40,7 @@ async def apply(plan: Plan, *, compiled: CompiledProject, engine: EngineAdapter,
         if model.ast is None:
             raise PlanError(f"executing Python model {snapshot.name!r} is not yet supported")
 
-        physical = {dep: compiled.models[dep].physical_table for dep in model.dependencies}
-        resolved = resolve_references(model.ast, physical)
+        resolved = resolve_model_query(model, compiled)
         relation = SqlRelation(
             ast=resolved, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema()
         )

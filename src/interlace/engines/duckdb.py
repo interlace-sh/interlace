@@ -89,6 +89,9 @@ class DuckDBAdapter(EngineAdapter):
     async def table_exists(self, table: TableRef) -> bool:
         return await asyncio.to_thread(self._table_exists_sync, table)
 
+    async def describe(self, table: TableRef) -> dict[str, str]:
+        return await asyncio.to_thread(self._describe_sync, table)
+
     # --- sync workers (run in a thread) -------------------------------------
 
     def _execute_sync(self, sql: str) -> None:
@@ -141,3 +144,15 @@ class DuckDBAdapter(EngineAdapter):
         finally:
             cur.close()
         return bool(row and row[0])
+
+    def _describe_sync(self, table: TableRef) -> dict[str, str]:
+        cur = self._conn.cursor()
+        try:
+            rows = cur.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
+                [table.schema, table.name],
+            ).fetchall()
+        finally:
+            cur.close()
+        return dict(rows)

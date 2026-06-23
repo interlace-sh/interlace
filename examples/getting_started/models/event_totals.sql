@@ -1,5 +1,10 @@
+/*
+interlace:
+  columns: [kind, events, total_amount]
+*/
 -- Level 2: aggregate raw_events by kind. interlace resolves the `raw_events`
--- reference to its physical table automatically.
+-- reference to its physical table automatically. The `columns` contract is
+-- validated against the built table at apply time.
 SELECT
     kind,
     count(*) AS events,

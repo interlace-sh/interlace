@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.exceptions import PlanError
 from interlace.graph.project import CompiledProject
@@ -49,6 +50,8 @@ async def apply(plan: Plan, *, compiled: CompiledProject, engine: EngineAdapter,
         await engine.create_schema(snapshot.physical_table.schema)
         statements = strategy.plan_statements(relation, snapshot.physical_table, engine.caps, task.interval)
         await engine.execute_all(statements)
+        if model.columns:  # validate the built schema against the contract before recording it
+            validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
 

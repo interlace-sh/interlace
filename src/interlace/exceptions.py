@@ -46,6 +46,10 @@ class PlanError(InterlaceError):
     """A plan could not be computed or applied."""
 
 
+class SchemaError(InterlaceError):
+    """A model's built schema violates its declared column contract."""
+
+
 class StreamError(InterlaceError):
     """Stream ingestion, the durable log, or a consumer failed."""
 

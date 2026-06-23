@@ -67,6 +67,14 @@ async def test_create_schema_and_qualified_load(adapter: DuckDBAdapter) -> None:
     assert await adapter.table_exists(target)
 
 
+async def test_describe_returns_columns_and_types(adapter: DuckDBAdapter) -> None:
+    await adapter.load(TableRef(schema="main", name="t"), _reader(pa.table({"id": [1], "name": ["a"]})), mode="create")
+    described = await adapter.describe(TableRef(schema="main", name="t"))
+    assert list(described) == ["id", "name"]  # ordered
+    assert described["id"] == "BIGINT"
+    assert described["name"] == "VARCHAR"
+
+
 def test_caps_are_honest_for_duckdb(adapter: DuckDBAdapter) -> None:
     assert adapter.dialect == "duckdb"
     assert adapter.caps.supports_merge

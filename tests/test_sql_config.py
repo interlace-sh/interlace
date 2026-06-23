@@ -49,11 +49,15 @@ def _write(path: Path, content: str) -> None:
 
 
 def test_discovery_applies_sql_config(tmp_path: Path) -> None:
-    _write(tmp_path / "models" / "v.sql", "/*\ninterlace:\n  materialise: view\n  tags: [a, b]\n*/\nSELECT 1 AS x")
+    _write(
+        tmp_path / "models" / "v.sql",
+        "/*\ninterlace:\n  materialise: view\n  tags: [a, b]\n  columns: [x]\n*/\nSELECT 1 AS x",
+    )
     models = {m.name: m for m in discover_models(tmp_path, ["models"], "duckdb")}
 
     assert models["v"].materialise == "view"
     assert models["v"].tags == ("a", "b")
+    assert models["v"].columns == {"x": None}
 
 
 def test_discovery_rejects_unknown_materialise(tmp_path: Path) -> None:

@@ -60,6 +60,10 @@ class EngineAdapter(ABC):
     async def create_schema(self, name: str) -> None:
         """Create a schema/namespace if it does not already exist."""
 
+    @abstractmethod
+    async def describe(self, table: TableRef) -> dict[str, str]:
+        """Return a table or view's columns as an ordered ``{name: type}`` mapping."""
+
     async def execute_all(self, statements: Sequence[exp.Expression]) -> None:
         """Run statements in order. Override to make the batch atomic (one transaction)."""
         for statement in statements:

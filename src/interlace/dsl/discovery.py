@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from interlace.dsl.decorators import _KINDS, _MATERIALISATIONS, REGISTRY, ModelDef, _as_tuple
+from interlace.dsl.decorators import _KINDS, _MATERIALISATIONS, REGISTRY, ModelDef, _as_columns, _as_tuple
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError
 
@@ -55,6 +55,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         tags=_as_tuple(config.get("tags") or ()),
         owner=config.get("owner"),
         description=config.get("description"),
+        columns=_as_columns(config.get("columns")),
     )
 
 

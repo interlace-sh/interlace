@@ -112,6 +112,26 @@ async def test_apply_merge_model_first_build(env: tuple[DuckDBAdapter, SqliteSta
     assert await _rows(engine, "SELECT id, name FROM prod__main.dim") == [{"id": 1, "name": "a"}]
 
 
+async def test_apply_passes_a_satisfied_contract(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    project = compile_models([sql_model("c", "SELECT 1 AS id, 'x' AS name", columns={"id": None, "name": None})])
+    result = await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
+    assert result.built == ["c"]
+
+
+async def test_apply_blocks_on_contract_drift(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    from interlace.exceptions import SchemaError
+
+    engine, store = env
+    # contract demands a column the query does not produce
+    project = compile_models([sql_model("c", "SELECT 1 AS id", columns={"id": None, "missing": None})])
+    with pytest.raises(SchemaError):
+        await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
+
+    # promotion did not happen: the model is still pending in a fresh plan
+    assert not (await diff(project, "prod", store)).is_empty
+
+
 async def test_modify_then_reapply_rebuilds_and_repoints(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     v1 = compile_models([sql_model("a", "SELECT 1 AS x")])

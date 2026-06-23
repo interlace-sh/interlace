@@ -42,6 +42,7 @@ class CompiledModel:
     materialise: str
     strategy: str
     key: tuple[str, ...]  # business key for keyed strategies (merge_by_key)
+    columns: dict[str, str | None] | None  # output contract validated at apply time
     ast: exp.Expression | None  # parsed SQL, or None for Python models
 
 
@@ -151,6 +152,7 @@ def compile_models(
             materialise=definition.materialise,
             strategy=definition.strategy,
             key=definition.key,
+            columns=definition.columns,
             ast=ast,
         )
 

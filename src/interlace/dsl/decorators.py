@@ -25,6 +25,15 @@ def _as_tuple(value: str | Sequence[str]) -> tuple[str, ...]:
     return (value,) if isinstance(value, str) else tuple(value)
 
 
+def _as_columns(value: dict[str, str | None] | Sequence[str] | None) -> dict[str, str | None] | None:
+    """Normalise a column contract: a list of names -> {name: None}; a mapping kept as name->type."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {str(name): (str(dtype) if dtype is not None else None) for name, dtype in value.items()}
+    return {str(name): None for name in value}
+
+
 @dataclass
 class ModelDef:
     """Declared metadata for one model (Python or SQL)."""
@@ -42,6 +51,7 @@ class ModelDef:
     tags: tuple[str, ...] = ()
     owner: str | None = None
     description: str | None = None
+    columns: dict[str, str | None] | None = None  # output contract: column -> type (None = any)
 
 
 @dataclass
@@ -109,6 +119,7 @@ def model(
     tags: str | Sequence[str] = (),
     owner: str | None = None,
     description: str | None = None,
+    columns: dict[str, str | None] | Sequence[str] | None = None,
 ) -> Callable[[ModelFn], ModelFn]:
     """Declare a Python model. The function returns a ``Relation`` (or composes one)."""
     if materialise not in _MATERIALISATIONS:
@@ -131,6 +142,7 @@ def model(
                 tags=_as_tuple(tags),
                 owner=owner,
                 description=description,
+                columns=_as_columns(columns),
             )
         )
         return fn

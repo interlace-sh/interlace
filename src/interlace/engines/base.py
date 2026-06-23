@@ -10,6 +10,7 @@ a dialect reappears. :class:`EngineCaps` lets strategies degrade gracefully
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -58,6 +59,11 @@ class EngineAdapter(ABC):
     @abstractmethod
     async def create_schema(self, name: str) -> None:
         """Create a schema/namespace if it does not already exist."""
+
+    async def execute_all(self, statements: Sequence[exp.Expression]) -> None:
+        """Run statements in order. Override to make the batch atomic (one transaction)."""
+        for statement in statements:
+            await self.execute(statement)
 
     def transpile(self, ast: exp.Expression) -> str:
         """Canonical AST -> this engine's SQL. The one place dialect leaks back in."""

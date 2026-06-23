@@ -41,6 +41,7 @@ class CompiledModel:
     physical_table: TableRef
     materialise: str
     strategy: str
+    key: tuple[str, ...]  # business key for keyed strategies (merge_by_key)
     ast: exp.Expression | None  # parsed SQL, or None for Python models
 
 
@@ -149,6 +150,7 @@ def compile_models(
             physical_table=_physical_table(name, fingerprint, catalog),
             materialise=definition.materialise,
             strategy=definition.strategy,
+            key=definition.key,
             ast=ast,
         )
 

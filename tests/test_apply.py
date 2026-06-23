@@ -69,6 +69,49 @@ async def test_view_materialisation(env: tuple[DuckDBAdapter, SqliteStateStore])
     assert await _rows(engine, "SELECT n FROM prod__main.answer") == [{"n": 42}]
 
 
+async def test_merge_by_key_upserts_across_runs(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    # Drives the strategy + atomic execute_all directly (as a scheduled re-run would),
+    # since the differ only re-runs a model when its definition changes.
+    from interlace.engines.base import EngineCaps
+    from interlace.ir.relation import EngineRef, SqlRelation, TableRef
+    from interlace.ir.schema import empty_schema
+    from interlace.strategies import MergeByKey
+
+    engine, _ = env
+    target = TableRef(schema="main", name="dim")
+    strategy = MergeByKey(("id",))
+    caps = EngineCaps(supports_create_or_replace=True)
+
+    def relation(sql: str) -> SqlRelation:
+        return SqlRelation(ast=sqlglot.parse_one(sql), engine=EngineRef("duckdb", "duckdb"), schema=empty_schema())
+
+    await engine.execute_all(
+        strategy.plan_statements(relation("SELECT * FROM (VALUES (1, 'a'), (2, 'b')) v(id, name)"), target, caps)
+    )
+    assert sorted(await _rows(engine, "SELECT id, name FROM main.dim"), key=lambda r: r["id"]) == [
+        {"id": 1, "name": "a"},
+        {"id": 2, "name": "b"},
+    ]
+
+    await engine.execute_all(
+        strategy.plan_statements(relation("SELECT * FROM (VALUES (2, 'B'), (3, 'c')) v(id, name)"), target, caps)
+    )
+    assert sorted(await _rows(engine, "SELECT id, name FROM main.dim"), key=lambda r: r["id"]) == [
+        {"id": 1, "name": "a"},  # untouched
+        {"id": 2, "name": "B"},  # updated
+        {"id": 3, "name": "c"},  # inserted
+    ]
+
+
+async def test_apply_merge_model_first_build(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    project = compile_models(
+        [sql_model("dim", "SELECT * FROM (VALUES (1, 'a')) v(id, name)", strategy="merge_by_key", key=("id",))]
+    )
+    await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
+    assert await _rows(engine, "SELECT id, name FROM prod__main.dim") == [{"id": 1, "name": "a"}]
+
+
 async def test_modify_then_reapply_rebuilds_and_repoints(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     v1 = compile_models([sql_model("a", "SELECT 1 AS x")])

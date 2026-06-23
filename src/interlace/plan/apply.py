@@ -44,11 +44,11 @@ async def apply(plan: Plan, *, compiled: CompiledProject, engine: EngineAdapter,
         relation = SqlRelation(
             ast=resolved, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema()
         )
-        strategy = resolve_strategy(model.materialise, model.strategy)
+        strategy = resolve_strategy(model.materialise, model.strategy, model.key)
 
         await engine.create_schema(snapshot.physical_table.schema)
-        for statement in strategy.plan_statements(relation, snapshot.physical_table, engine.caps, task.interval):
-            await engine.execute(statement)
+        statements = strategy.plan_statements(relation, snapshot.physical_table, engine.caps, task.interval)
+        await engine.execute_all(statements)
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
 

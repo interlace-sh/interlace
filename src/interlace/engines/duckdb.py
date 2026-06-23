@@ -11,6 +11,7 @@ the same table at once.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from uuid import uuid4
 
 import duckdb
@@ -60,6 +61,9 @@ class DuckDBAdapter(EngineAdapter):
     async def execute(self, ast: exp.Expression) -> None:
         await self.execute_sql(self.transpile(ast))
 
+    async def execute_all(self, statements: Sequence[exp.Expression]) -> None:
+        await asyncio.to_thread(self._execute_all_sync, [self.transpile(s) for s in statements])
+
     async def fetch(self, ast: exp.Expression) -> pa.RecordBatchReader:
         return await self.fetch_sql(self.transpile(ast))
 
@@ -91,6 +95,19 @@ class DuckDBAdapter(EngineAdapter):
         cur = self._conn.cursor()
         try:
             cur.execute(sql)
+        finally:
+            cur.close()
+
+    def _execute_all_sync(self, sqls: list[str]) -> None:
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            for sql in sqls:
+                cur.execute(sql)
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
         finally:
             cur.close()
 

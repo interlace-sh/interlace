@@ -52,6 +52,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         depends_on=_as_tuple(config.get("depends_on") or ()),
         kind=kind,
         interval=config.get("interval"),
+        time_column=config.get("time_column"),
         tags=_as_tuple(config.get("tags") or ()),
         owner=config.get("owner"),
         description=config.get("description"),

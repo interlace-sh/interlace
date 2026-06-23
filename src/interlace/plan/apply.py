@@ -10,7 +10,7 @@ upstream physical tables exist before downstream models build against them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
@@ -45,13 +45,17 @@ async def apply(plan: Plan, *, compiled: CompiledProject, engine: EngineAdapter,
         relation = SqlRelation(
             ast=resolved, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema()
         )
-        strategy = resolve_strategy(model.materialise, model.strategy, model.key)
+        strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
 
         await engine.create_schema(snapshot.physical_table.schema)
         statements = strategy.plan_statements(relation, snapshot.physical_table, engine.caps, task.interval)
         await engine.execute_all(statements)
         if model.columns:  # validate the built schema against the contract before recording it
             validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
+
+        if task.interval is not None:  # incremental: accumulate the filled window in the ledger
+            filled = (await state.get_intervals(snapshot.name, snapshot.fingerprint)).add(task.interval)
+            snapshot = replace(snapshot, intervals=filled)
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
 

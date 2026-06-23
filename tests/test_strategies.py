@@ -8,7 +8,7 @@ import sqlglot
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
-from interlace.strategies import FullRefresh, MergeByKey, View, resolve_strategy
+from interlace.strategies import FullRefresh, IncrementalByTime, MergeByKey, View, resolve_strategy
 
 pytestmark = pytest.mark.unit
 
@@ -58,10 +58,39 @@ def test_merge_by_key_multi_key_predicate() -> None:
     assert "(a, b) IN (SELECT a, b FROM" in _sql(statements)[1]
 
 
+def test_incremental_by_time_builds_windowed_statements() -> None:
+    from datetime import datetime
+
+    from interlace.state.interval import Interval
+
+    window = Interval(datetime(2026, 1, 1), datetime(2026, 1, 2))
+    rendered = _sql(IncrementalByTime("ts").plan_statements(_relation(), _TARGET, _CAPS, window))
+    assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS")
+    assert rendered[1] == (
+        "DELETE FROM interlace__main.orders__abc " "WHERE ts >= '2026-01-01T00:00:00' AND ts < '2026-01-02T00:00:00'"
+    )
+    assert "WHERE ts >= '2026-01-01T00:00:00' AND ts < '2026-01-02T00:00:00'" in rendered[2]
+
+
+def test_incremental_by_time_requires_an_interval() -> None:
+    from interlace.exceptions import PlanError
+
+    with pytest.raises(PlanError):
+        IncrementalByTime("ts").plan_statements(_relation(), _TARGET, _CAPS, None)
+
+
 def test_resolve_strategy_picks_implementations() -> None:
     assert isinstance(resolve_strategy("table", "full"), FullRefresh)
     assert isinstance(resolve_strategy("view", "full"), View)
     assert isinstance(resolve_strategy("table", "merge_by_key", ("id",)), MergeByKey)
+    assert isinstance(resolve_strategy("table", "incremental_by_time", time_column="ts"), IncrementalByTime)
+
+
+def test_resolve_strategy_incremental_requires_time_column() -> None:
+    from interlace.exceptions import PlanError
+
+    with pytest.raises(PlanError):
+        resolve_strategy("table", "incremental_by_time")
 
 
 def test_resolve_strategy_merge_requires_key() -> None:

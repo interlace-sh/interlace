@@ -47,7 +47,8 @@ class ModelDef:
     dialect: str | None = None
     depends_on: tuple[str, ...] = ()
     kind: str = "batch"
-    interval: str | None = None
+    interval: str | None = None  # grain for incremental_by_time (e.g. "1d")
+    time_column: str | None = None  # partition column for incremental_by_time
     tags: tuple[str, ...] = ()
     owner: str | None = None
     description: str | None = None
@@ -116,6 +117,7 @@ def model(
     depends_on: str | Sequence[str] = (),
     kind: str = "batch",
     interval: str | None = None,
+    time_column: str | None = None,
     tags: str | Sequence[str] = (),
     owner: str | None = None,
     description: str | None = None,
@@ -139,6 +141,7 @@ def model(
                 depends_on=_as_tuple(depends_on),
                 kind=kind,
                 interval=interval,
+                time_column=time_column,
                 tags=_as_tuple(tags),
                 owner=owner,
                 description=description,

@@ -42,6 +42,7 @@ class CompiledModel:
     materialise: str
     strategy: str
     key: tuple[str, ...]  # business key for keyed strategies (merge_by_key)
+    time_column: str | None  # partition column for incremental_by_time
     columns: dict[str, str | None] | None  # output contract validated at apply time
     ast: exp.Expression | None  # parsed SQL, or None for Python models
 
@@ -128,6 +129,7 @@ def compile_models(
             "key": list(definition.key),
             "kind": definition.kind,
             "interval": definition.interval,
+            "time_column": definition.time_column,
             "dialect": dialect,
         }
         query = _fingerprint_query(definition, ast)
@@ -152,6 +154,7 @@ def compile_models(
             materialise=definition.materialise,
             strategy=definition.strategy,
             key=definition.key,
+            time_column=definition.time_column,
             columns=definition.columns,
             ast=ast,
         )

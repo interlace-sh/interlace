@@ -10,7 +10,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from interlace.exceptions import ConfigurationError
+from interlace.exceptions import ConfigurationError, SelectionError
+from interlace.graph.project import CompiledProject
+from interlace.graph.selectors import select_models
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.plan import Plan
@@ -23,6 +25,19 @@ console = Console()
 
 _ENV = typer.Option("dev", "--env", "-e", help="Target data environment.")
 _PATH = typer.Option(Path("."), "--path", "-p", help="Project root.")
+_SELECT = typer.Option([], "--select", "-s", help="Model selectors: name, +name, name+, tag:x.")
+_START = typer.Option("", "--start", help="Window start (ISO), for incremental models.")
+_END = typer.Option("", "--end", help="Window end (ISO), for incremental models.")
+
+
+def _selection(compiled: CompiledProject, selectors: list[str]) -> set[str] | None:
+    if not selectors:
+        return None
+    try:
+        return select_models(selectors, compiled)
+    except SelectionError as exc:
+        console.print(f"[red]{exc.message}[/red]")
+        raise typer.Exit(1) from exc
 
 
 @app.command()
@@ -43,33 +58,34 @@ def init(
 
 
 @app.command()
-def plan(environment: str = _ENV, path: Path = _PATH) -> None:
+def plan(environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT) -> None:
     """Show what apply would change in an environment."""
-    asyncio.run(_plan(environment, path))
+    asyncio.run(_plan(environment, path, select))
 
 
 @app.command()
-def apply(environment: str = _ENV, path: Path = _PATH) -> None:
+def apply(environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT) -> None:
     """Build changed models and promote the environment."""
-    asyncio.run(_apply(environment, path))
+    asyncio.run(_apply(environment, path, select))
 
 
-async def _plan(environment: str, path: Path) -> None:
+async def _plan(environment: str, path: Path, select: list[str]) -> None:
     project = Project.load(path)
+    compiled = project.compile()
     state = await project.open_state()
     try:
-        _render(await diff(project.compile(), environment, state), environment)
+        _render(await diff(compiled, environment, state, select=_selection(compiled, select)), environment)
     finally:
         await state.close()
 
 
-async def _apply(environment: str, path: Path) -> None:
+async def _apply(environment: str, path: Path, select: list[str]) -> None:
     project = Project.load(path)
     compiled = project.compile()
     engine = project.open_engine()
     state = await project.open_state()
     try:
-        plan_result = await diff(compiled, environment, state)
+        plan_result = await diff(compiled, environment, state, select=_selection(compiled, select))
         _render(plan_result, environment)
         if plan_result.is_empty:
             return
@@ -84,20 +100,25 @@ async def _apply(environment: str, path: Path) -> None:
 
 @app.command()
 def run(
-    environment: str = _ENV,
-    path: Path = _PATH,
-    start: str = typer.Option("", "--start", help="Backfill window start (ISO), for incremental models."),
-    end: str = typer.Option("", "--end", help="Backfill window end (ISO), for incremental models."),
+    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, start: str = _START, end: str = _END
 ) -> None:
-    """Force-build all models and promote, ignoring change detection.
+    """Force-build models and promote, ignoring change detection.
 
     For incremental_by_time models, --start/--end set the catchup window
     (default: the latest grain interval).
     """
-    asyncio.run(_run(environment, path, start, end))
+    asyncio.run(_execute(environment, path, select, start, end, restate=False))
 
 
-async def _run(environment: str, path: Path, start: str, end: str) -> None:
+@app.command()
+def restate(
+    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, start: str = _START, end: str = _END
+) -> None:
+    """Reprocess incremental models over a window, ignoring the ledger (vs run, which skips filled)."""
+    asyncio.run(_execute(environment, path, select, start, end, restate=True))
+
+
+async def _execute(environment: str, path: Path, select: list[str], start: str, end: str, *, restate: bool) -> None:
     window_start = datetime.fromisoformat(start) if start else None
     window_end = datetime.fromisoformat(end) if end else None
     project = Project.load(path)
@@ -105,10 +126,19 @@ async def _run(environment: str, path: Path, start: str, end: str) -> None:
     engine = project.open_engine()
     state = await project.open_state()
     try:
-        plan_result = await run_plan(compiled, environment, state, start=window_start, end=window_end)
+        plan_result = await run_plan(
+            compiled,
+            environment,
+            state,
+            start=window_start,
+            end=window_end,
+            select=_selection(compiled, select),
+            restate=restate,
+        )
         result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root)
+        verb = "Restated" if restate else "Ran"
         console.print(
-            f"[green]Ran {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
+            f"[green]{verb} {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
     finally:
         await state.close()

@@ -9,6 +9,7 @@ this is ~40 lines of stdlib.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 
 from interlace.exceptions import DependencyError
 
@@ -37,6 +38,24 @@ class DependencyGraph:
 
     def downstreams(self, node: str) -> set[str]:
         return {n for n, ups in self._upstreams.items() if node in ups}
+
+    def ancestors(self, node: str) -> set[str]:
+        """All transitive upstreams of ``node``."""
+        return self._reach(node, self.upstreams)
+
+    def descendants(self, node: str) -> set[str]:
+        """All transitive downstreams of ``node``."""
+        return self._reach(node, self.downstreams)
+
+    def _reach(self, node: str, step: Callable[[str], set[str]]) -> set[str]:
+        result: set[str] = set()
+        stack = list(step(node))
+        while stack:
+            current = stack.pop()
+            if current not in result:
+                result.add(current)
+                stack.extend(step(current))
+        return result
 
     def topological_sort(self) -> list[str]:
         """Return nodes ordered upstreams-first. Raises ``DependencyError`` on a cycle."""

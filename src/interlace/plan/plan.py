@@ -92,6 +92,7 @@ class Plan:
     backfills: list[BackfillTask] = field(default_factory=list)
     transfers: list[TransferEdge] = field(default_factory=list)
     virtual_updates: list[ViewSwap] = field(default_factory=list)
+    promote: list[str] = field(default_factory=list)  # model names whose fingerprints to promote
 
     @property
     def is_empty(self) -> bool:

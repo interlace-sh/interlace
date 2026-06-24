@@ -90,7 +90,7 @@ async def apply(
         await engine.create_schema(swap.view.schema)
         await engine.create_view(swap.view, swap.target)
 
-    mapping = {name: model.fingerprint for name, model in compiled.models.items()}
+    mapping = {name: compiled.models[name].fingerprint for name in plan.promote}
     await state.promote(plan.environment, mapping)
     result.promoted = len(mapping)
     return result

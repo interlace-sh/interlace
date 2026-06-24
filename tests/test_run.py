@@ -82,6 +82,14 @@ async def test_run_merge_picks_up_new_source_data(env: tuple[DuckDBAdapter, Sqli
     ]
 
 
+async def test_run_with_selection(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    project = compile_models([sql_model("a", "SELECT 1 AS x"), sql_model("b", "SELECT x FROM a")])
+    plan = await run_plan(project, "prod", store, select={"a"})
+    assert {task.snapshot.name for task in plan.backfills} == {"a"}
+    assert plan.promote == ["a"]
+
+
 def test_run_command_on_example(tmp_path: Path) -> None:
     project_dir = tmp_path / "getting_started"
     shutil.copytree(EXAMPLE, project_dir)
@@ -95,3 +103,16 @@ def test_run_command_on_example(tmp_path: Path) -> None:
         assert con.execute("SELECT count(*) FROM dev__main.event_totals").fetchone()[0] == 3
     finally:
         con.close()
+
+
+def test_select_and_restate_commands_on_example(tmp_path: Path) -> None:
+    project_dir = tmp_path / "getting_started"
+    shutil.copytree(EXAMPLE, project_dir)
+
+    # build the ancestors of event_totals, then restate just that one model
+    built = runner.invoke(app, ["run", "--env", "dev", "--path", str(project_dir), "--select", "+event_totals"])
+    assert built.exit_code == 0, built.output
+
+    restated = runner.invoke(app, ["restate", "--env", "dev", "--path", str(project_dir), "--select", "event_totals"])
+    assert restated.exit_code == 0, restated.output
+    assert "Restated" in restated.output

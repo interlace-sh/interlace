@@ -34,6 +34,10 @@ class DependencyError(InterlaceError):
     """The dependency graph is invalid (e.g. a cycle)."""
 
 
+class SelectionError(InterlaceError):
+    """A model selector could not be resolved."""
+
+
 class EngineError(InterlaceError):
     """An engine adapter failed to execute, fetch, or load."""
 

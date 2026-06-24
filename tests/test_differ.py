@@ -94,6 +94,15 @@ async def test_indirect_change_inherits_breaking(store: SqliteStateStore) -> Non
     assert by_name["down"].category is ChangeCategory.BREAKING
 
 
+async def test_selection_limits_scheduled_and_promoted_models(store: SqliteStateStore) -> None:
+    project = compile_models([sql_model("a", "SELECT 1 AS x"), sql_model("b", "SELECT x FROM a")])
+    plan = await diff(project, "prod", store, select={"a"})
+
+    assert {task.snapshot.name for task in plan.backfills} == {"a"}
+    assert {change.name for change in plan.changes} == {"a"}
+    assert plan.promote == ["a"]
+
+
 async def test_removed_model_detected(store: SqliteStateStore) -> None:
     await promote(store, "prod", compile_models([sql_model("a", "SELECT 1 AS x"), sql_model("b", "SELECT 2 AS y")]))
     plan = await diff(compile_models([sql_model("a", "SELECT 1 AS x")]), "prod", store)

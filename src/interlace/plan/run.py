@@ -34,10 +34,19 @@ async def run_plan(
     *,
     start: datetime | None = None,
     end: datetime | None = None,
+    select: set[str] | None = None,
+    restate: bool = False,
 ) -> Plan:
-    """Build a forced plan; incremental models are expanded over ``[start, end)``."""
+    """Build a forced plan; incremental models are expanded over ``[start, end)``.
+
+    ``select`` limits which models run (None = all). ``restate`` reprocesses every
+    interval in the window instead of skipping the ones already filled (catchup).
+    """
+    selected = set(compiled.models) if select is None else select
     plan = Plan(environment=environment)
     for model in compiled.ordered():
+        if model.name not in selected:
+            continue
         plan.changes.append(ModelChange(model.name, ChangeType.MODIFIED, None, None, model.fingerprint))
 
         is_incremental = (
@@ -48,9 +57,11 @@ async def run_plan(
             filled = await state.get_intervals(model.name, model.fingerprint)
             snapshot = snapshot_of(model, ChangeCategory.BREAKING)
             for window in slice_interval(_window(start, end, grain), grain):
-                if not filled.covers(window):  # catchup: skip intervals already filled
+                if restate or not filled.covers(window):  # restate reprocesses; otherwise catch up
                     plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window))
             plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
         else:
             schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
+
+    plan.promote = sorted(selected)
     return plan

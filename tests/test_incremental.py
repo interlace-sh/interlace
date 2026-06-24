@@ -110,6 +110,36 @@ async def test_run_plan_expands_window_and_catches_up(env: tuple[DuckDBAdapter, 
     assert caught_up.backfills == []
 
 
+async def test_restate_reprocesses_filled_intervals(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
+    await engine.execute_sql(
+        "CREATE TABLE main.events AS SELECT * FROM (VALUES "
+        "(TIMESTAMP '2026-01-01 10:00', 1), (TIMESTAMP '2026-01-02 10:00', 2)) v(ts, val)"
+    )
+    project = compile_models(
+        [
+            ModelDef(
+                name="agg",
+                sql="SELECT ts, val FROM main.events",
+                strategy="incremental_by_time",
+                time_column="ts",
+                interval="1d",
+            )
+        ]
+    )
+
+    # fill the ledger for the window
+    await apply(
+        await run_plan(project, "dev", store, start=d(1), end=d(3)), compiled=project, engine=engine, state=store
+    )
+    assert (await run_plan(project, "dev", store, start=d(1), end=d(3))).backfills == []  # caught up
+
+    # restate reprocesses every interval despite being filled
+    restated = await run_plan(project, "dev", store, start=d(1), end=d(3), restate=True)
+    assert len([task for task in restated.backfills if task.interval is not None]) == 2
+
+
 async def test_reprocessing_a_window_is_idempotent(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")

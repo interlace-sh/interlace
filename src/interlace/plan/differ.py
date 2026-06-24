@@ -66,8 +66,15 @@ def _classify_direct(previous_sql: str | None, new_ast: exp.Expression | None) -
     return ChangeCategory.BREAKING
 
 
-async def diff(compiled: CompiledProject, environment: str, state: StateStore) -> Plan:
-    """Diff the compiled project against ``environment`` and return the plan."""
+async def diff(
+    compiled: CompiledProject, environment: str, state: StateStore, *, select: set[str] | None = None
+) -> Plan:
+    """Diff the compiled project against ``environment`` and return the plan.
+
+    ``select`` limits which models are scheduled and promoted (None = all). Change
+    classification still runs over the whole graph so downstream categories are correct.
+    """
+    selected = set(compiled.models) if select is None else select
     current = await state.get_environment(environment)
     plan = Plan(environment=environment)
     categories: dict[str, ChangeCategory] = {}
@@ -77,8 +84,9 @@ async def diff(compiled: CompiledProject, environment: str, state: StateStore) -
 
         if previous_fingerprint is None:
             categories[model.name] = ChangeCategory.BREAKING
-            plan.changes.append(ModelChange(model.name, ChangeType.ADDED, None, None, model.fingerprint))
-            schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
+            if model.name in selected:
+                plan.changes.append(ModelChange(model.name, ChangeType.ADDED, None, None, model.fingerprint))
+                schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
             continue
 
         if previous_fingerprint == model.fingerprint:
@@ -92,12 +100,15 @@ async def diff(compiled: CompiledProject, environment: str, state: StateStore) -
             category = ChangeCategory.BREAKING if upstream_breaking else ChangeCategory.NON_BREAKING
 
         categories[model.name] = category
-        plan.changes.append(
-            ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint)
-        )
-        schedule_build(plan, model, snapshot_of(model, category), environment)
+        if model.name in selected:
+            plan.changes.append(
+                ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint)
+            )
+            schedule_build(plan, model, snapshot_of(model, category), environment)
 
-    for removed in sorted(set(current) - set(compiled.models)):
-        plan.changes.append(ModelChange(removed, ChangeType.REMOVED, None, current[removed], None))
+    if select is None:
+        for removed in sorted(set(current) - set(compiled.models)):
+            plan.changes.append(ModelChange(removed, ChangeType.REMOVED, None, current[removed], None))
 
+    plan.promote = sorted(selected)
     return plan

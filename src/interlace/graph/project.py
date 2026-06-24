@@ -45,6 +45,7 @@ class CompiledModel:
     key: tuple[str, ...]  # business key for keyed strategies (merge_by_key)
     time_column: str | None  # partition column for incremental_by_time
     interval: str | None  # grain for incremental_by_time (e.g. "1d")
+    tags: tuple[str, ...]  # for tag: selection
     columns: dict[str, str | None] | None  # output contract validated at apply time
     export: ExportConfig | None  # presence makes this a sink (no physical table/view)
     ast: exp.Expression | None  # parsed SQL, or None for Python models
@@ -160,6 +161,7 @@ def compile_models(
             key=definition.key,
             time_column=definition.time_column,
             interval=definition.interval,
+            tags=definition.tags,
             columns=definition.columns,
             export=definition.export,
             ast=ast,

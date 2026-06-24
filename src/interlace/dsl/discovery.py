@@ -58,6 +58,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         description=config.get("description"),
         columns=_as_columns(config.get("columns")),
         export=_as_export(config.get("export")),
+        schedule=config.get("schedule"),
     )
 
 

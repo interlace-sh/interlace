@@ -20,6 +20,8 @@ from interlace.plan.plan import Plan
 from interlace.plan.run import run_plan
 from interlace.project import Project
 from interlace.scaffold import scaffold_project
+from interlace.scheduler.engine import TriggerEngine, build_triggers
+from interlace.scheduler.worker import drain
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Python/SQL-first data platform.")
 console = Console()
@@ -141,6 +143,37 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
         console.print(
             f"[green]{verb} {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
+    finally:
+        await state.close()
+        engine.close()
+
+
+@app.command()
+def serve(
+    environment: str = _ENV,
+    path: Path = _PATH,
+    interval: float = typer.Option(60.0, "--interval", help="Seconds between scheduler ticks."),
+    once: bool = typer.Option(False, "--once", help="Run a single tick + drain, then exit."),
+) -> None:
+    """Run the scheduler: tick triggers, enqueue due runs, and execute them."""
+    asyncio.run(_serve(environment, path, interval, once))
+
+
+async def _serve(environment: str, path: Path, interval: float, once: bool) -> None:
+    project = Project.load(path)
+    compiled = project.compile()
+    engine = project.open_engine()
+    state = await project.open_state()
+    trigger_engine = TriggerEngine(build_triggers(compiled), state)
+    try:
+        while True:
+            await trigger_engine.tick(datetime.now())
+            ran = await drain(state, compiled, engine, environment, base_path=project.root)
+            if ran:
+                console.print(f"[green]ran {ran} scheduled run(s) in '{environment}'[/green]")
+            if once:
+                break
+            await asyncio.sleep(interval)
     finally:
         await state.close()
         engine.close()

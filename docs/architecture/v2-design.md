@@ -568,6 +568,16 @@ dependency — Postgres covers every multi-node need. We match Dagster on asset-
 scheduling + partitions, beat Airflow/Dagster/Prefect on built-in durable ingestion (none have
 it), and concede their executor ecosystems.
 
+**Implementation status.** The scheduling core is in: a `TriggerEngine` ticks `Trigger`s
+(`CronTrigger` via `cronsim`, `IntervalTrigger`) against durable per-trigger state in the state
+DB; due runs enqueue (idempotency-keyed) onto a **durable run queue** (`work_queue` table); a
+`worker.drain` claims and executes them as forced runs (so they pick up new data). `interlace
+serve` ties tick → enqueue → drain in one process (`--once` for a single pass). No APScheduler —
+we own the loop; `cronsim` only parses. Models declare `schedule: {cron: …}` or `{every: …}`.
+Still to come: per-task (not per-run) queueing with leases/heartbeat/cancellation (the
+`scheduler/queue.py` protocol sketch), leader election for multi-node, SLA monitors + alerting,
+and event/sensor triggers (stream-arrival, freshness, upstream-completion).
+
 ---
 
 ## 11. Service layer

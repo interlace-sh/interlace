@@ -14,9 +14,11 @@ versioning uses ``PRAGMA user_version`` with an ordered migration list.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import threading
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -58,7 +60,39 @@ _MIGRATIONS: list[str] = [
         PRIMARY KEY (environment, model_name)
     );
     """,
+    # 0002 — orchestration: durable run queue + per-trigger state
+    """
+    CREATE TABLE work_queue (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        idempotency_key  TEXT UNIQUE,
+        flow_selector    TEXT NOT NULL,
+        partition_start  TEXT,
+        partition_end    TEXT,
+        priority         INTEGER NOT NULL DEFAULT 0,
+        state            TEXT NOT NULL DEFAULT 'queued',
+        attempts         INTEGER NOT NULL DEFAULT 0,
+        error            TEXT,
+        enqueued_at      TEXT NOT NULL
+    );
+
+    CREATE TABLE trigger_state (
+        trigger_id     TEXT PRIMARY KEY,
+        last_fired_at  TEXT
+    );
+    """,
 ]
+
+
+@dataclass
+class QueuedRun:
+    """A claimed run from the work queue."""
+
+    id: int
+    flow_selector: list[str]
+    partition_start: str | None
+    partition_end: str | None
+    priority: int
+    attempts: int
 
 
 def _now_iso() -> str:
@@ -244,6 +278,104 @@ class SqliteStateStore:
                 "SELECT model_name, fingerprint FROM environments WHERE environment = ?", (environment,)
             ).fetchall()
         return {row["model_name"]: row["fingerprint"] for row in rows}
+
+    # --- work queue ---------------------------------------------------------
+
+    async def enqueue_run(
+        self, idempotency_key: str, flow_selector: list[str], partition: tuple[str, str] | None, priority: int = 0
+    ) -> bool:
+        """Enqueue a run; returns False if an identical idempotency key is already queued."""
+        return await asyncio.to_thread(self._enqueue_run_sync, idempotency_key, flow_selector, partition, priority)
+
+    def _enqueue_run_sync(
+        self, idempotency_key: str, flow_selector: list[str], partition: tuple[str, str] | None, priority: int
+    ) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT OR IGNORE INTO work_queue "
+                "(idempotency_key, flow_selector, partition_start, partition_end, priority, enqueued_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    idempotency_key or None,
+                    json.dumps(flow_selector),
+                    partition[0] if partition else None,
+                    partition[1] if partition else None,
+                    priority,
+                    _now_iso(),
+                ),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    async def claim_runs(self, limit: int = 10) -> list[QueuedRun]:
+        return await asyncio.to_thread(self._claim_runs_sync, limit)
+
+    def _claim_runs_sync(self, limit: int) -> list[QueuedRun]:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            rows = self._conn.execute(
+                "SELECT id, flow_selector, partition_start, partition_end, priority, attempts "
+                "FROM work_queue WHERE state = 'queued' ORDER BY priority DESC, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+            for row in rows:
+                self._conn.execute(
+                    "UPDATE work_queue SET state = 'running', attempts = attempts + 1 WHERE id = ?", (row["id"],)
+                )
+            self._conn.commit()
+        return [
+            QueuedRun(
+                id=row["id"],
+                flow_selector=json.loads(row["flow_selector"]),
+                partition_start=row["partition_start"],
+                partition_end=row["partition_end"],
+                priority=row["priority"],
+                attempts=row["attempts"] + 1,
+            )
+            for row in rows
+        ]
+
+    async def finish_run(self, run_id: int, *, success: bool, error: str | None = None) -> None:
+        await asyncio.to_thread(self._finish_run_sync, run_id, success, error)
+
+    def _finish_run_sync(self, run_id: int, success: bool, error: str | None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE work_queue SET state = ?, error = ? WHERE id = ?",
+                ("succeeded" if success else "failed", error, run_id),
+            )
+            self._conn.commit()
+
+    async def count_pending_runs(self) -> int:
+        return await asyncio.to_thread(self._count_pending_runs_sync)
+
+    def _count_pending_runs_sync(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT count(*) FROM work_queue WHERE state IN ('queued', 'running')").fetchone()
+        return int(row[0])
+
+    # --- trigger state ------------------------------------------------------
+
+    async def get_trigger_last_fired(self, trigger_id: str) -> datetime | None:
+        return await asyncio.to_thread(self._get_trigger_last_fired_sync, trigger_id)
+
+    def _get_trigger_last_fired_sync(self, trigger_id: str) -> datetime | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT last_fired_at FROM trigger_state WHERE trigger_id = ?", (trigger_id,)
+            ).fetchone()
+        return datetime.fromisoformat(row["last_fired_at"]) if row and row["last_fired_at"] else None
+
+    async def set_trigger_last_fired(self, trigger_id: str, when: datetime) -> None:
+        await asyncio.to_thread(self._set_trigger_last_fired_sync, trigger_id, when)
+
+    def _set_trigger_last_fired_sync(self, trigger_id: str, when: datetime) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO trigger_state (trigger_id, last_fired_at) VALUES (?, ?)",
+                (trigger_id, when.isoformat()),
+            )
+            self._conn.commit()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

@@ -46,6 +46,7 @@ class CompiledModel:
     time_column: str | None  # partition column for incremental_by_time
     interval: str | None  # grain for incremental_by_time (e.g. "1d")
     tags: tuple[str, ...]  # for tag: selection
+    schedule: dict[str, str] | None  # cron/interval schedule for the trigger engine
     columns: dict[str, str | None] | None  # output contract validated at apply time
     export: ExportConfig | None  # presence makes this a sink (no physical table/view)
     ast: exp.Expression | None  # parsed SQL, or None for Python models
@@ -162,6 +163,7 @@ def compile_models(
             time_column=definition.time_column,
             interval=definition.interval,
             tags=definition.tags,
+            schedule=definition.schedule,
             columns=definition.columns,
             export=definition.export,
             ast=ast,

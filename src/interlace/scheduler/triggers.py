@@ -1,17 +1,20 @@
-"""The unified trigger abstraction.
+"""Triggers — when a model should run.
 
-Cron, interval, stream-append, table-freshness, upstream-completion, and webhook
-are all :class:`Trigger` implementations that, given the current time and their
-persisted state, emit zero or more :class:`RunRequest`s. This replaces v0.x's
-cron-only scheduler loop and makes event-driven pipelines first-class.
+One abstraction (``Trigger.due``) for all kinds; v1 ships cron and interval.
+Cron expressions are parsed by ``cronsim`` (we own the loop — see TriggerEngine —
+rather than delegating scheduling to APScheduler). A trigger is pure: given the
+current time and when it last fired, it returns the runs that are now due.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
+from cronsim import CronSim
+
+from interlace.exceptions import DefinitionError
 from interlace.state.interval import Interval
 
 
@@ -19,25 +22,55 @@ from interlace.state.interval import Interval
 class RunRequest:
     """A request to run a selection of models, optionally for one data interval."""
 
-    flow_selector: list[str]  # model names / tags / selector syntax
+    flow_selector: list[str]
     partition: Interval | None = None
-    priority: int = 0  # backfills enqueue negative so live work wins
-    idempotency_key: str = ""  # dedupes refires, e.g. "cron:daily_sales:2026-06-12"
-
-
-@dataclass
-class TriggerState:
-    """Durable per-trigger bookkeeping (last fire, cursor) owned by the state store."""
-
-    trigger_id: str
-    last_fired_at: datetime | None = None
-    cursor: str | None = None  # e.g. last consumed event seq / log offset
-    extra: dict[str, str] = field(default_factory=dict)
+    priority: int = 0
+    idempotency_key: str = ""  # dedupes refires, e.g. "cron:daily_sales:2026-06-24T00:00:00"
 
 
 class Trigger(Protocol):
-    """Evaluates whether work is due. Pure given (now, state) — side effects live elsewhere."""
+    """Returns the runs due at ``now`` given when it last fired."""
 
     id: str
 
-    def due(self, now: datetime, state: TriggerState) -> list[RunRequest]: ...
+    def due(self, now: datetime, last_fired: datetime | None) -> list[RunRequest]: ...
+
+
+@dataclass
+class CronTrigger:
+    """Fires when a cron-scheduled time has passed since the last fire."""
+
+    model: str
+    expression: str
+    id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.id = f"cron:{self.model}"
+        try:
+            CronSim(self.expression, datetime(2000, 1, 1))  # validate the expression
+        except Exception as exc:
+            raise DefinitionError(f"invalid cron {self.expression!r} for model {self.model!r}") from exc
+
+    def due(self, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
+        base = last_fired if last_fired is not None else now - timedelta(seconds=1)
+        fire = next(CronSim(self.expression, base))
+        if fire <= now:
+            return [RunRequest([self.model], idempotency_key=f"cron:{self.model}:{fire.isoformat()}")]
+        return []
+
+
+@dataclass
+class IntervalTrigger:
+    """Fires once per ``every`` elapsed (and immediately on first sight)."""
+
+    model: str
+    every: timedelta
+    id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.id = f"interval:{self.model}"
+
+    def due(self, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
+        if last_fired is None or now - last_fired >= self.every:
+            return [RunRequest([self.model], idempotency_key=f"interval:{self.model}:{now.isoformat()}")]
+        return []

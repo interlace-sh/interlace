@@ -61,6 +61,7 @@ class ModelDef:
     description: str | None = None
     columns: dict[str, str | None] | None = None  # output contract: column -> type (None = any)
     export: ExportConfig | None = None  # presence makes this model a sink (no table/view)
+    schedule: dict[str, str] | None = None  # {"cron": "0 * * * *"} or {"every": "5m"} for `interlace serve`
 
 
 @dataclass
@@ -131,6 +132,7 @@ def model(
     description: str | None = None,
     columns: dict[str, str | None] | Sequence[str] | None = None,
     export: ExportConfig | dict[str, Any] | None = None,
+    schedule: dict[str, str] | None = None,
 ) -> Callable[[ModelFn], ModelFn]:
     """Declare a Python model. The function returns a ``Relation`` (or composes one)."""
     if materialise not in _MATERIALISATIONS:
@@ -158,6 +160,7 @@ def model(
                 description=description,
                 columns=_as_columns(columns),
                 export=_as_export(export),
+                schedule=schedule,
             )
         )
         return fn

@@ -145,6 +145,41 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
         engine.close()
 
 
+@app.command("list")
+def list_models(path: Path = _PATH, select: list[str] = _SELECT) -> None:
+    """List models with their materialisation, strategy, and dependencies."""
+    project = Project.load(path)
+    compiled = project.compile()
+    chosen = _selection(compiled, select)
+    table = Table(title="Models")
+    table.add_column("Model")
+    table.add_column("Output")
+    table.add_column("Strategy")
+    table.add_column("Depends on")
+    for name in compiled.graph.topological_sort():
+        if chosen is not None and name not in chosen:
+            continue
+        model = compiled.models[name]
+        output = "sink" if model.export is not None else model.materialise
+        table.add_row(name, output, model.strategy, ", ".join(model.dependencies) or "—")
+    console.print(table)
+
+
+@app.command()
+def lineage(model: str = typer.Argument(..., help="Model name."), path: Path = _PATH) -> None:
+    """Show a model's upstream and downstream lineage."""
+    project = Project.load(path)
+    compiled = project.compile()
+    if model not in compiled.models:
+        console.print(f"[red]unknown model: {model}[/red]")
+        raise typer.Exit(1)
+    upstream = sorted(compiled.graph.ancestors(model))
+    downstream = sorted(compiled.graph.descendants(model))
+    console.print(f"[bold]{model}[/bold]")
+    console.print(f"  upstream:   {', '.join(upstream) or '—'}")
+    console.print(f"  downstream: {', '.join(downstream) or '—'}")
+
+
 def _render(plan: Plan, environment: str) -> None:
     if plan.is_empty:
         console.print(f"No changes for [bold]{environment}[/bold].")

@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from interlace.exceptions import ConfigurationError, SelectionError
+from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models
 from interlace.plan.apply import apply as apply_plan
@@ -166,13 +167,28 @@ def list_models(path: Path = _PATH, select: list[str] = _SELECT) -> None:
 
 
 @app.command()
-def lineage(model: str = typer.Argument(..., help="Model name."), path: Path = _PATH) -> None:
-    """Show a model's upstream and downstream lineage."""
+def lineage(
+    model: str = typer.Argument(..., help="Model name."),
+    path: Path = _PATH,
+    columns: bool = typer.Option(False, "--columns", "-c", help="Show column-level lineage."),
+) -> None:
+    """Show a model's lineage — table-level, or column-level with --columns."""
     project = Project.load(path)
     compiled = project.compile()
     if model not in compiled.models:
         console.print(f"[red]unknown model: {model}[/red]")
         raise typer.Exit(1)
+
+    if columns:
+        sources = column_lineage(compiled).get(model, {})
+        console.print(f"[bold]{model}[/bold] columns")
+        if not sources:
+            console.print("  (column lineage unavailable)")
+        for output, refs in sources.items():
+            rendered = ", ".join(f"{table}.{column}" for table, column in refs) or "—"
+            console.print(f"  {output} ← {rendered}")
+        return
+
     upstream = sorted(compiled.graph.ancestors(model))
     downstream = sorted(compiled.graph.descendants(model))
     console.print(f"[bold]{model}[/bold]")

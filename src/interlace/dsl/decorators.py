@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from interlace.exceptions import DefinitionError
+from interlace.exports import ExportConfig
 
 ModelFn = Callable[..., Any]
 
@@ -34,6 +35,12 @@ def _as_columns(value: dict[str, str | None] | Sequence[str] | None) -> dict[str
     return {str(name): None for name in value}
 
 
+def _as_export(value: ExportConfig | dict[str, Any] | None) -> ExportConfig | None:
+    if value is None or isinstance(value, ExportConfig):
+        return value
+    return ExportConfig.from_dict(value)
+
+
 @dataclass
 class ModelDef:
     """Declared metadata for one model (Python or SQL)."""
@@ -53,6 +60,7 @@ class ModelDef:
     owner: str | None = None
     description: str | None = None
     columns: dict[str, str | None] | None = None  # output contract: column -> type (None = any)
+    export: ExportConfig | None = None  # presence makes this model a sink (no table/view)
 
 
 @dataclass
@@ -122,6 +130,7 @@ def model(
     owner: str | None = None,
     description: str | None = None,
     columns: dict[str, str | None] | Sequence[str] | None = None,
+    export: ExportConfig | dict[str, Any] | None = None,
 ) -> Callable[[ModelFn], ModelFn]:
     """Declare a Python model. The function returns a ``Relation`` (or composes one)."""
     if materialise not in _MATERIALISATIONS:
@@ -146,6 +155,7 @@ def model(
                 owner=owner,
                 description=description,
                 columns=_as_columns(columns),
+                export=_as_export(export),
             )
         )
         return fn

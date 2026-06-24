@@ -72,7 +72,7 @@ async def _apply(environment: str, path: Path) -> None:
         _render(plan_result, environment)
         if plan_result.is_empty:
             return
-        result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state)
+        result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root)
         console.print(
             f"[green]Built {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
@@ -94,7 +94,7 @@ async def _run(environment: str, path: Path) -> None:
     state = await project.open_state()
     try:
         plan_result = forced_plan(compiled, environment)
-        result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state)
+        result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root)
         console.print(
             f"[green]Ran {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )

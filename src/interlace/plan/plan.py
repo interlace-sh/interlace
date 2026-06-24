@@ -10,10 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from interlace.ir.relation import EngineRef, TableRef
 from interlace.state.interval import Interval
 from interlace.state.snapshot import ChangeCategory, Snapshot
+
+if TYPE_CHECKING:
+    from interlace.graph.project import CompiledModel
 
 
 class ChangeType(Enum):
@@ -67,6 +71,16 @@ def env_view(environment: str, model_name: str) -> TableRef:
     """The virtual-environment view name for a model: ``<env>__<schema>.<model>``."""
     schema, _, base = model_name.rpartition(".")
     return TableRef(schema=f"{environment}__{schema or 'main'}", name=base)
+
+
+def schedule_build(plan: Plan, model: CompiledModel, snapshot: Snapshot, environment: str) -> None:
+    """Add the right tasks for a model: ephemeral builds nothing; a sink builds but
+    gets no view; a table/view builds and is repointed by an environment view."""
+    if model.materialise == "ephemeral":  # inlined into consumers, never built
+        return
+    plan.backfills.append(BackfillTask(snapshot=snapshot))
+    if model.export is None and model.materialise in ("table", "view"):  # sinks have no view
+        plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
 
 
 @dataclass

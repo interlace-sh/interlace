@@ -352,6 +352,19 @@ in environments that explicitly map it to a destination, `plan` renders sinks as
 ("would upsert N rows to Account"), and dev environments skip them or target a sandbox. This is
 the reverse-ETL analogue of the dev-environment isolation the snapshot layer gives for free.
 
+**Implementation status.** v1 represents a sink as a **model with an `export` block** (the
+uniform approach — a sink is a DAG node that runs a query and does I/O; the `@sink(source=…)`
+form above is future sugar over it). `export` presence makes a model a sink: no snapshot table,
+no environment view, but it is still fingerprinted (change-tracking) and built (so `interlace run`
+re-exports). File destinations (`parquet`/`csv`/`json`) are implemented via DuckDB `COPY`
+(`exports.py`). Still to come: DB-table and SaaS-API destinations via `SinkConnector`,
+upsert/append `mode`, the delivery ledger, and the environment allow-list gating.
+
+```sql
+/* interlace: { export: { to: parquet, path: exports/orders.parquet } } */
+SELECT * FROM orders
+```
+
 ---
 
 ## 7. Dependency graph, lineage, selective execution

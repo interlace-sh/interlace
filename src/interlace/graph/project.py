@@ -19,6 +19,7 @@ from sqlglot import exp
 
 from interlace.dsl.decorators import ModelDef
 from interlace.exceptions import DefinitionError
+from interlace.exports import ExportConfig
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import parse, table_references
 from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint
@@ -44,6 +45,7 @@ class CompiledModel:
     key: tuple[str, ...]  # business key for keyed strategies (merge_by_key)
     time_column: str | None  # partition column for incremental_by_time
     columns: dict[str, str | None] | None  # output contract validated at apply time
+    export: ExportConfig | None  # presence makes this a sink (no physical table/view)
     ast: exp.Expression | None  # parsed SQL, or None for Python models
 
 
@@ -130,6 +132,7 @@ def compile_models(
             "kind": definition.kind,
             "interval": definition.interval,
             "time_column": definition.time_column,
+            "export": {"to": definition.export.to, "path": definition.export.path} if definition.export else None,
             "dialect": dialect,
         }
         query = _fingerprint_query(definition, ast)
@@ -156,6 +159,7 @@ def compile_models(
             key=definition.key,
             time_column=definition.time_column,
             columns=definition.columns,
+            export=definition.export,
             ast=ast,
         )
 

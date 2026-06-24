@@ -11,10 +11,12 @@ upstream physical tables exist before downstream models build against them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.exceptions import PlanError
+from interlace.exports import export_statements
 from interlace.graph.project import CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation
 from interlace.ir.schema import empty_schema
@@ -30,8 +32,25 @@ class ApplyResult:
     promoted: int = 0
 
 
-async def apply(plan: Plan, *, compiled: CompiledProject, engine: EngineAdapter, state: StateStore) -> ApplyResult:
-    """Execute a plan against ``engine`` and record the result in ``state``."""
+def _resolve_export_path(base_path: Path | None, path: str) -> str:
+    target = Path(path)
+    if target.is_absolute():
+        return str(target)
+    return str((base_path or Path.cwd()) / target)
+
+
+async def apply(
+    plan: Plan,
+    *,
+    compiled: CompiledProject,
+    engine: EngineAdapter,
+    state: StateStore,
+    base_path: Path | None = None,
+) -> ApplyResult:
+    """Execute a plan against ``engine`` and record the result in ``state``.
+
+    ``base_path`` is the project root used to resolve relative export paths.
+    """
     result = ApplyResult()
 
     for task in plan.backfills:
@@ -41,6 +60,15 @@ async def apply(plan: Plan, *, compiled: CompiledProject, engine: EngineAdapter,
             raise PlanError(f"executing Python model {snapshot.name!r} is not yet supported")
 
         resolved = resolve_model_query(model, compiled)
+
+        if model.export is not None:  # sink: push the result to a destination, no table/view
+            export_path = _resolve_export_path(base_path, model.export.path)
+            Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+            await engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
+            await state.add_snapshot(snapshot)
+            result.built.append(snapshot.name)
+            continue
+
         relation = SqlRelation(
             ast=resolved, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema()
         )

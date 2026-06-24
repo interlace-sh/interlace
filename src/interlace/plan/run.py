@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from interlace.graph.project import CompiledProject
 from interlace.plan.differ import snapshot_of
-from interlace.plan.plan import BackfillTask, ChangeType, ModelChange, Plan, ViewSwap, env_view
+from interlace.plan.plan import ChangeType, ModelChange, Plan, schedule_build
 from interlace.state.snapshot import ChangeCategory
 
 
@@ -21,7 +21,5 @@ def forced_plan(compiled: CompiledProject, environment: str) -> Plan:
     plan = Plan(environment=environment)
     for model in compiled.ordered():
         plan.changes.append(ModelChange(model.name, ChangeType.MODIFIED, None, None, model.fingerprint))
-        if model.materialise != "ephemeral":  # ephemeral models are inlined, never built
-            plan.backfills.append(BackfillTask(snapshot=snapshot_of(model, ChangeCategory.BREAKING)))
-            plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
+        schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
     return plan

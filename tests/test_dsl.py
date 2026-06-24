@@ -53,6 +53,13 @@ def test_invalid_materialise_raises() -> None:
         def _bad() -> None: ...
 
 
+def test_python_model_cannot_be_ephemeral() -> None:
+    with pytest.raises(DefinitionError):
+
+        @model(materialise="ephemeral")
+        def _eph() -> None: ...
+
+
 def test_stream_and_check_register() -> None:
     @stream("orders_raw", schema={"order_id": "string"}, idempotency_key="order_id")
     def _orders_raw() -> None: ...

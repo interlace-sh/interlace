@@ -135,6 +135,8 @@ def model(
     """Declare a Python model. The function returns a ``Relation`` (or composes one)."""
     if materialise not in _MATERIALISATIONS:
         raise DefinitionError(f"unknown materialise {materialise!r}; expected one of {sorted(_MATERIALISATIONS)}")
+    if materialise == "ephemeral":
+        raise DefinitionError("Python models cannot be ephemeral; ephemeral requires SQL (it is inlined as a CTE)")
     if kind not in _KINDS:
         raise DefinitionError(f"unknown kind {kind!r}; expected one of {sorted(_KINDS)}")
 

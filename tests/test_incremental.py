@@ -15,6 +15,7 @@ from interlace.graph.project import compile_models
 from interlace.plan.apply import apply
 from interlace.plan.differ import snapshot_of
 from interlace.plan.plan import BackfillTask, Plan, ViewSwap, env_view
+from interlace.plan.run import run_plan
 from interlace.state.interval import Interval
 from interlace.state.snapshot import ChangeCategory
 from interlace.state.store import SqliteStateStore
@@ -75,6 +76,38 @@ async def test_incremental_processes_windows_and_fills_the_ledger(env: tuple[Duc
     # the ledger records the contiguous filled range [d1, d3)
     intervals = list(await store.get_intervals("agg", model.fingerprint))
     assert intervals == [Interval(d(1), d(3))]
+
+
+async def test_run_plan_expands_window_and_catches_up(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
+    await engine.execute_sql(
+        "CREATE TABLE main.events AS SELECT * FROM (VALUES "
+        "(TIMESTAMP '2026-01-01 10:00', 1), (TIMESTAMP '2026-01-02 10:00', 2), (TIMESTAMP '2026-01-03 10:00', 3)"
+        ") v(ts, val)"
+    )
+    project = compile_models(
+        [
+            ModelDef(
+                name="agg",
+                sql="SELECT ts, val FROM main.events",
+                strategy="incremental_by_time",
+                time_column="ts",
+                interval="1d",
+            )
+        ]
+    )
+
+    # window of three days -> three missing intervals
+    plan = await run_plan(project, "dev", store, start=d(1), end=d(4))
+    assert len([task for task in plan.backfills if task.interval is not None]) == 3
+
+    await apply(plan, compiled=project, engine=engine, state=store)
+    assert (await _fetch(engine, "SELECT count(*) AS n FROM dev__main.agg")) == [{"n": 3}]
+
+    # re-running the same window is a no-op: every interval is already filled
+    caught_up = await run_plan(project, "dev", store, start=d(1), end=d(4))
+    assert caught_up.backfills == []
 
 
 async def test_reprocessing_a_window_is_idempotent(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

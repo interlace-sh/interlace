@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -13,7 +14,7 @@ from interlace.exceptions import ConfigurationError
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.plan import Plan
-from interlace.plan.run import forced_plan
+from interlace.plan.run import run_plan
 from interlace.project import Project
 from interlace.scaffold import scaffold_project
 
@@ -82,18 +83,29 @@ async def _apply(environment: str, path: Path) -> None:
 
 
 @app.command()
-def run(environment: str = _ENV, path: Path = _PATH) -> None:
-    """Force-build all models and promote, ignoring change detection."""
-    asyncio.run(_run(environment, path))
+def run(
+    environment: str = _ENV,
+    path: Path = _PATH,
+    start: str = typer.Option("", "--start", help="Backfill window start (ISO), for incremental models."),
+    end: str = typer.Option("", "--end", help="Backfill window end (ISO), for incremental models."),
+) -> None:
+    """Force-build all models and promote, ignoring change detection.
+
+    For incremental_by_time models, --start/--end set the catchup window
+    (default: the latest grain interval).
+    """
+    asyncio.run(_run(environment, path, start, end))
 
 
-async def _run(environment: str, path: Path) -> None:
+async def _run(environment: str, path: Path, start: str, end: str) -> None:
+    window_start = datetime.fromisoformat(start) if start else None
+    window_end = datetime.fromisoformat(end) if end else None
     project = Project.load(path)
     compiled = project.compile()
     engine = project.open_engine()
     state = await project.open_state()
     try:
-        plan_result = forced_plan(compiled, environment)
+        plan_result = await run_plan(compiled, environment, state, start=window_start, end=window_end)
         result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root)
         console.print(
             f"[green]Ran {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"

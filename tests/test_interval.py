@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
-from interlace.state.interval import Interval, IntervalSet
+from interlace.state.interval import Interval, IntervalSet, parse_grain, slice_interval
 
 pytestmark = pytest.mark.unit
 
@@ -53,3 +53,22 @@ def test_union_and_emptiness() -> None:
     assert len(a.union(b)) == 2
     assert IntervalSet().is_empty
     assert not a.is_empty
+
+
+def test_parse_grain() -> None:
+    assert parse_grain("1d") == timedelta(days=1)
+    assert parse_grain("6h") == timedelta(hours=6)
+    assert parse_grain("15m") == timedelta(minutes=15)
+    with pytest.raises(ValueError):
+        parse_grain("nonsense")
+
+
+def test_slice_interval_into_grain_buckets() -> None:
+    buckets = slice_interval(Interval(d(1), d(4)), parse_grain("1d"))
+    assert buckets == [Interval(d(1), d(2)), Interval(d(2), d(3)), Interval(d(3), d(4))]
+
+
+def test_slice_interval_clamps_partial_last_bucket() -> None:
+    buckets = slice_interval(Interval(d(1), d(2)), timedelta(hours=10))
+    assert len(buckets) == 3  # 10h, 10h, 4h
+    assert buckets[-1].end == d(2)

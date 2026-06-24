@@ -9,9 +9,13 @@ offset-shaped intervals.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+
+_GRAIN_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+_GRAIN_RE = re.compile(r"(\d+)([smhdw])")
 
 
 @dataclass(frozen=True, order=True)
@@ -109,3 +113,22 @@ class IntervalSet:
     def covers(self, target: Interval) -> bool:
         """True if ``target`` is fully contained in this set."""
         return self.missing(target).is_empty
+
+
+def parse_grain(grain: str) -> timedelta:
+    """Parse a grain like ``1d``, ``6h``, ``15m`` into a timedelta. (``m`` = minutes.)"""
+    match = _GRAIN_RE.fullmatch(grain.strip())
+    if match is None:
+        raise ValueError(f"invalid grain {grain!r}; expected like '1d', '6h', '15m'")
+    return timedelta(**{_GRAIN_UNITS[match.group(2)]: int(match.group(1))})
+
+
+def slice_interval(interval: Interval, grain: timedelta) -> list[Interval]:
+    """Split ``interval`` into consecutive grain-sized buckets (last may be partial)."""
+    buckets: list[Interval] = []
+    start = interval.start
+    while start < interval.end:
+        end = min(start + grain, interval.end)
+        buckets.append(Interval(start, end))
+        start = end
+    return buckets

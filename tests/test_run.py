@@ -17,7 +17,7 @@ from interlace.engines.duckdb import DuckDBAdapter
 from interlace.graph.project import compile_models
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
-from interlace.plan.run import forced_plan
+from interlace.plan.run import run_plan
 from interlace.state.store import SqliteStateStore
 
 pytestmark = pytest.mark.unit
@@ -53,7 +53,7 @@ async def test_run_rebuilds_all_even_when_unchanged(env: tuple[DuckDBAdapter, Sq
     assert (await diff(project, "prod", store)).is_empty
 
     # run rebuilds everything regardless
-    result = await apply(forced_plan(project, "prod"), compiled=project, engine=engine, state=store)
+    result = await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
     assert set(result.built) == {"a", "b"}
 
 
@@ -65,7 +65,7 @@ async def test_run_merge_picks_up_new_source_data(env: tuple[DuckDBAdapter, Sqli
     # dim is a merge model reading an external (non-model) source table
     project = compile_models([sql_model("dim", "SELECT id, name FROM main.src", strategy="merge_by_key", key=("id",))])
 
-    await apply(forced_plan(project, "prod"), compiled=project, engine=engine, state=store)
+    await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
     assert sorted(await _fetch(engine, "SELECT id, name FROM prod__main.dim"), key=lambda r: r["id"]) == [
         {"id": 1, "name": "a"}
     ]
@@ -75,7 +75,7 @@ async def test_run_merge_picks_up_new_source_data(env: tuple[DuckDBAdapter, Sqli
     await engine.execute_sql("INSERT INTO main.src VALUES (2, 'b')")
 
     # a second run upserts the new data into the same physical table
-    await apply(forced_plan(project, "prod"), compiled=project, engine=engine, state=store)
+    await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
     assert sorted(await _fetch(engine, "SELECT id, name FROM prod__main.dim"), key=lambda r: r["id"]) == [
         {"id": 1, "name": "A"},
         {"id": 2, "name": "b"},

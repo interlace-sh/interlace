@@ -354,6 +354,25 @@ class SqliteStateStore:
             row = self._conn.execute("SELECT count(*) FROM work_queue WHERE state IN ('queued', 'running')").fetchone()
         return int(row[0])
 
+    async def list_runs(self, limit: int = 50) -> list[dict[str, object]]:
+        return await asyncio.to_thread(self._list_runs_sync, limit)
+
+    def _list_runs_sync(self, limit: int) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, flow_selector, state, attempts, error FROM work_queue ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "flow_selector": json.loads(row["flow_selector"]),
+                "state": row["state"],
+                "attempts": row["attempts"],
+                "error": row["error"],
+            }
+            for row in rows
+        ]
+
     # --- trigger state ------------------------------------------------------
 
     async def get_trigger_last_fired(self, trigger_id: str) -> datetime | None:

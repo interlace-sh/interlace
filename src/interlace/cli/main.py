@@ -149,17 +149,17 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
 
 
 @app.command()
-def serve(
+def scheduler(
     environment: str = _ENV,
     path: Path = _PATH,
     interval: float = typer.Option(60.0, "--interval", help="Seconds between scheduler ticks."),
     once: bool = typer.Option(False, "--once", help="Run a single tick + drain, then exit."),
 ) -> None:
     """Run the scheduler: tick triggers, enqueue due runs, and execute them."""
-    asyncio.run(_serve(environment, path, interval, once))
+    asyncio.run(_scheduler(environment, path, interval, once))
 
 
-async def _serve(environment: str, path: Path, interval: float, once: bool) -> None:
+async def _scheduler(environment: str, path: Path, interval: float, once: bool) -> None:
     project = Project.load(path)
     compiled = project.compile()
     engine = project.open_engine()
@@ -177,6 +177,24 @@ async def _serve(environment: str, path: Path, interval: float, once: bool) -> N
     finally:
         await state.close()
         engine.close()
+
+
+@app.command()
+def serve(
+    environment: str = _ENV,
+    path: Path = _PATH,
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
+    port: int = typer.Option(8000, "--port", help="Bind port."),
+) -> None:
+    """Run the HTTP API (requires the `service` extra). Run `interlace scheduler` to execute queued runs."""
+    try:
+        import uvicorn
+
+        from interlace.service.app import create_app
+    except ImportError as exc:
+        console.print("[red]The HTTP API needs the 'service' extra: pip install 'interlace[service]'[/red]")
+        raise typer.Exit(1) from exc
+    uvicorn.run(create_app(path, environment), host=host, port=port)
 
 
 @app.command("list")

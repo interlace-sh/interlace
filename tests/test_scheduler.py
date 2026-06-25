@@ -80,13 +80,13 @@ async def test_enqueue_is_idempotent(env: tuple[DuckDBAdapter, SqliteStateStore]
     assert await store.count_pending_runs() == 1
 
 
-def test_serve_once_builds_a_scheduled_model(tmp_path: Path) -> None:
+def test_scheduler_once_builds_a_scheduled_model(tmp_path: Path) -> None:
     project_dir = tmp_path / "proj"
     (project_dir / "models").mkdir(parents=True)
     (project_dir / "interlace.yaml").write_text("name: sched\n")
     (project_dir / "models" / "m.sql").write_text("/*\ninterlace:\n  schedule:\n    every: 1s\n*/\nSELECT 5 AS x")
 
-    result = runner.invoke(app, ["serve", "--env", "dev", "--path", str(project_dir), "--once"])
+    result = runner.invoke(app, ["scheduler", "--env", "dev", "--path", str(project_dir), "--once"])
     assert result.exit_code == 0, result.output
 
     con = duckdb.connect(str(project_dir / ".interlace" / "warehouse.duckdb"))

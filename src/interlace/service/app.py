@@ -5,7 +5,8 @@ list runs, and enqueue runs onto the durable queue (a running ``interlace
 scheduler`` drains them). The project is loaded and compiled once at startup and
 held on app state; the warehouse engine and control-plane store are opened for
 the app's lifetime. msgspec structs are the wire types (Litestar serializes them
-natively). Auth is not yet wired — bind to localhost for now.
+natively). Scoped API-key auth is enforced once a key exists (see auth.py), and
+OpenAPI docs render via Scalar at ``/schema/scalar``.
 """
 
 from __future__ import annotations
@@ -21,15 +22,19 @@ import msgspec
 from litestar import Litestar, Request, get, post
 from litestar.datastructures import State
 from litestar.exceptions import ClientException, NotFoundException
+from litestar.openapi import OpenAPIConfig
+from litestar.openapi.plugins import ScalarRenderPlugin
 from litestar.params import FromPath, FromQuery
 from litestar.response import ServerSentEvent, ServerSentEventMessage
 
+from interlace import __version__
 from interlace.exceptions import SelectionError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models
 from interlace.plan.differ import diff
 from interlace.project import Project
+from interlace.service.auth import auth_guard
 
 
 class ModelInfo(msgspec.Struct):
@@ -138,7 +143,7 @@ async def get_runs(state: State) -> list[RunInfo]:
     return [RunInfo(**run) for run in await state.store.list_runs()]
 
 
-@post("/runs")
+@post("/runs", opt={"scope": "write"})
 async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
@@ -195,4 +200,11 @@ def create_app(root: Path | str, environment: str = "dev") -> Litestar:
     return Litestar(
         route_handlers=[health, get_models, get_model, get_plan, get_runs, create_run, get_events, stream_events],
         lifespan=[lifespan],
+        guards=[auth_guard],
+        openapi_config=OpenAPIConfig(
+            title="interlace",
+            version=__version__,
+            description="Python/SQL-first data platform: transformation, orchestration, and streaming.",
+            render_plugins=[ScalarRenderPlugin()],
+        ),
     )

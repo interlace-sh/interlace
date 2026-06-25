@@ -247,6 +247,52 @@ def lineage(
     console.print(f"  downstream: {', '.join(downstream) or '—'}")
 
 
+apikey_app = typer.Typer(no_args_is_help=True, help="Manage HTTP API keys.")
+app.add_typer(apikey_app, name="apikey")
+
+
+@apikey_app.command("create")
+def apikey_create(
+    name: str = typer.Argument(..., help="A label for the key."),
+    path: Path = _PATH,
+    scope: list[str] = typer.Option(["read"], "--scope", help="Scopes: read, write, admin."),
+) -> None:
+    """Create an API key and print it once."""
+    asyncio.run(_apikey_create(name, path, scope))
+
+
+async def _apikey_create(name: str, path: Path, scopes: list[str]) -> None:
+    state = await Project.load(path).open_state()
+    try:
+        token = await state.create_api_key(name, scopes)
+    finally:
+        await state.close()
+    console.print(f"[green]created API key '{name}' ({', '.join(scopes)})[/green]")
+    console.print(f"  {token}")
+    console.print("[yellow]store it now — it will not be shown again[/yellow]")
+
+
+@apikey_app.command("list")
+def apikey_list(path: Path = _PATH) -> None:
+    """List API keys (names and scopes, not the secrets)."""
+    asyncio.run(_apikey_list(path))
+
+
+async def _apikey_list(path: Path) -> None:
+    state = await Project.load(path).open_state()
+    try:
+        keys = await state.list_api_keys()
+    finally:
+        await state.close()
+    table = Table(title="API keys")
+    table.add_column("Name")
+    table.add_column("Scopes")
+    table.add_column("Created")
+    for key in keys:
+        table.add_row(str(key["name"]), ", ".join(key["scopes"]), str(key["created_at"]))  # type: ignore[arg-type]
+    console.print(table)
+
+
 def _render(plan: Plan, environment: str) -> None:
     if plan.is_empty:
         console.print(f"No changes for [bold]{environment}[/bold].")

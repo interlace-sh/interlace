@@ -14,7 +14,9 @@ versioning uses ``PRAGMA user_version`` with an ordered migration list.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import secrets
 import sqlite3
 import threading
 from collections.abc import Iterable
@@ -88,6 +90,16 @@ _MIGRATIONS: list[str] = [
         type     TEXT NOT NULL,
         entity   TEXT,
         payload  TEXT
+    );
+    """,
+    # 0004 — API keys (scoped) for the HTTP service
+    """
+    CREATE TABLE api_keys (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL,
+        key_hash    TEXT NOT NULL UNIQUE,
+        scopes      TEXT NOT NULL,
+        created_at  TEXT NOT NULL
     );
     """,
 ]
@@ -416,6 +428,48 @@ class SqliteStateStore:
             }
             for row in rows
         ]
+
+    # --- API keys -----------------------------------------------------------
+
+    async def create_api_key(self, name: str, scopes: list[str]) -> str:
+        """Create a key; returns the plaintext token (shown once — only the hash is stored)."""
+        return await asyncio.to_thread(self._create_api_key_sync, name, scopes)
+
+    def _create_api_key_sync(self, name: str, scopes: list[str]) -> str:
+        token = "ilk_" + secrets.token_hex(16)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO api_keys (name, key_hash, scopes, created_at) VALUES (?, ?, ?, ?)",
+                (name, hashlib.sha256(token.encode()).hexdigest(), json.dumps(scopes), _now_iso()),
+            )
+            self._conn.commit()
+        return token
+
+    async def verify_api_key(self, token: str) -> list[str] | None:
+        """Return the key's scopes, or None if the token is unknown."""
+        return await asyncio.to_thread(self._verify_api_key_sync, token)
+
+    def _verify_api_key_sync(self, token: str) -> list[str] | None:
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self._lock:
+            row = self._conn.execute("SELECT scopes FROM api_keys WHERE key_hash = ?", (digest,)).fetchone()
+        return json.loads(row["scopes"]) if row else None
+
+    async def count_api_keys(self) -> int:
+        return await asyncio.to_thread(self._count_api_keys_sync)
+
+    def _count_api_keys_sync(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT count(*) FROM api_keys").fetchone()
+        return int(row[0])
+
+    async def list_api_keys(self) -> list[dict[str, object]]:
+        return await asyncio.to_thread(self._list_api_keys_sync)
+
+    def _list_api_keys_sync(self) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT name, scopes, created_at FROM api_keys ORDER BY id").fetchall()
+        return [{"name": r["name"], "scopes": json.loads(r["scopes"]), "created_at": r["created_at"]} for r in rows]
 
     # --- trigger state ------------------------------------------------------
 

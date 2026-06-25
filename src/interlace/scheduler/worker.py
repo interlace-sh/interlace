@@ -29,12 +29,15 @@ async def drain(
     """Execute up to ``limit`` queued runs; returns how many were processed."""
     runs = await store.claim_runs(limit)
     for run in runs:
+        await store.append_event("run.started", entity=str(run.id), payload={"models": run.flow_selector})
         try:
             start = datetime.fromisoformat(run.partition_start) if run.partition_start else None
             end = datetime.fromisoformat(run.partition_end) if run.partition_end else None
             plan = await run_plan(project, environment, store, start=start, end=end, select=set(run.flow_selector))
-            await apply(plan, compiled=project, engine=engine, state=store, base_path=base_path)
+            result = await apply(plan, compiled=project, engine=engine, state=store, base_path=base_path)
             await store.finish_run(run.id, success=True)
+            await store.append_event("run.succeeded", entity=str(run.id), payload={"built": result.built})
         except Exception as exc:  # a bad run must not kill the worker loop
             await store.finish_run(run.id, success=False, error=str(exc))
+            await store.append_event("run.failed", entity=str(run.id), payload={"error": str(exc)})
     return len(runs)

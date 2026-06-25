@@ -80,6 +80,16 @@ _MIGRATIONS: list[str] = [
         last_fired_at  TEXT
     );
     """,
+    # 0003 — durable event log (run/stream lifecycle; SSE replay spine)
+    """
+    CREATE TABLE event_log (
+        seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts       TEXT NOT NULL,
+        type     TEXT NOT NULL,
+        entity   TEXT,
+        payload  TEXT
+    );
+    """,
 ]
 
 
@@ -369,6 +379,40 @@ class SqliteStateStore:
                 "state": row["state"],
                 "attempts": row["attempts"],
                 "error": row["error"],
+            }
+            for row in rows
+        ]
+
+    # --- event log ----------------------------------------------------------
+
+    async def append_event(self, type: str, entity: str | None = None, payload: dict[str, object] | None = None) -> int:
+        return await asyncio.to_thread(self._append_event_sync, type, entity, payload)
+
+    def _append_event_sync(self, type: str, entity: str | None, payload: dict[str, object] | None) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT INTO event_log (ts, type, entity, payload) VALUES (?, ?, ?, ?)",
+                (_now_iso(), type, entity, json.dumps(payload) if payload is not None else None),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid or 0)
+
+    async def read_events(self, after_seq: int = 0, limit: int = 200) -> list[dict[str, object]]:
+        return await asyncio.to_thread(self._read_events_sync, after_seq, limit)
+
+    def _read_events_sync(self, after_seq: int, limit: int) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, ts, type, entity, payload FROM event_log WHERE seq > ? ORDER BY seq LIMIT ?",
+                (after_seq, limit),
+            ).fetchall()
+        return [
+            {
+                "seq": row["seq"],
+                "ts": row["ts"],
+                "type": row["type"],
+                "entity": row["entity"],
+                "payload": json.loads(row["payload"]) if row["payload"] else None,
             }
             for row in rows
         ]

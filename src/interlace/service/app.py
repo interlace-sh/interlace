@@ -10,16 +10,19 @@ natively). Auth is not yet wired — bind to localhost for now.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
 import msgspec
-from litestar import Litestar, get, post
+from litestar import Litestar, Request, get, post
 from litestar.datastructures import State
 from litestar.exceptions import ClientException, NotFoundException
 from litestar.params import FromPath, FromQuery
+from litestar.response import ServerSentEvent, ServerSentEventMessage
 
 from interlace.exceptions import SelectionError
 from interlace.graph.column_lineage import column_lineage
@@ -73,6 +76,14 @@ class CreateRun(msgspec.Struct):
 class CreateRunResult(msgspec.Struct):
     enqueued: int
     models: list[str]
+
+
+class EventInfo(msgspec.Struct):
+    seq: int
+    ts: str
+    type: str
+    entity: str | None
+    payload: dict | None
 
 
 def _output(model: CompiledModel) -> str:
@@ -138,7 +149,29 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     models = sorted(selected)
     key = f"api:{env}:{uuid4().hex}"
     enqueued = await state.store.enqueue_run(key, models, None, 0)
+    if enqueued:
+        await state.store.append_event("run.enqueued", entity=key, payload={"models": models})
     return CreateRunResult(enqueued=1 if enqueued else 0, models=models)
+
+
+@get("/events")
+async def get_events(state: State, after: FromQuery[int] = 0) -> list[EventInfo]:
+    return [EventInfo(**event) for event in await state.store.read_events(after)]
+
+
+@get("/events/stream")
+async def stream_events(state: State, request: Request) -> ServerSentEvent:
+    after = int(request.headers.get("Last-Event-ID") or 0)
+
+    async def tail() -> AsyncIterator[ServerSentEventMessage]:
+        cursor = after
+        while True:
+            for event in await state.store.read_events(cursor):
+                cursor = int(event["seq"])
+                yield ServerSentEventMessage(data=json.dumps(event), event=str(event["type"]), id=str(cursor))
+            await asyncio.sleep(0.5)
+
+    return ServerSentEvent(tail())
 
 
 def create_app(root: Path | str, environment: str = "dev") -> Litestar:
@@ -160,6 +193,6 @@ def create_app(root: Path | str, environment: str = "dev") -> Litestar:
             engine.close()
 
     return Litestar(
-        route_handlers=[health, get_models, get_model, get_plan, get_runs, create_run],
+        route_handlers=[health, get_models, get_model, get_plan, get_runs, create_run, get_events, stream_events],
         lifespan=[lifespan],
     )

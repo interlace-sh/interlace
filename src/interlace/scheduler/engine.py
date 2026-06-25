@@ -58,6 +58,9 @@ class TriggerEngine:
                     request.idempotency_key, request.flow_selector, partition, request.priority
                 ):
                     enqueued += 1
+                    await self.store.append_event(
+                        "run.enqueued", entity=request.idempotency_key, payload={"models": request.flow_selector}
+                    )
             if requests:
                 await self.store.set_trigger_last_fired(trigger.id, now)
         return enqueued

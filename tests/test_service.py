@@ -66,3 +66,15 @@ def test_create_and_list_runs(client: TestClient) -> None:
 
 def test_create_run_rejects_bad_selector(client: TestClient) -> None:
     assert client.post("/runs", json={"selectors": ["nope"]}).status_code == 400
+
+
+def test_events_endpoint_records_enqueue(client: TestClient) -> None:
+    assert client.get("/events").json() == []  # empty to start
+    client.post("/runs", json={"selectors": ["raw_events"], "environment": "prod"})
+
+    events = client.get("/events").json()
+    assert [e["type"] for e in events] == ["run.enqueued"]
+    assert events[0]["payload"] == {"models": ["raw_events"]}
+    assert events[0]["seq"] == 1
+    # replay from a cursor returns nothing new
+    assert client.get("/events", params={"after": events[0]["seq"]}).json() == []

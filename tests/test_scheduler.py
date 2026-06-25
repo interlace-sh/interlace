@@ -73,6 +73,29 @@ async def test_worker_drains_and_executes_a_run(env: tuple[DuckDBAdapter, Sqlite
     assert reader.read_all().to_pylist() == [{"x": 7}]
 
 
+async def test_event_log_append_and_read(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    _, store = env
+    s1 = await store.append_event("run.enqueued", entity="k", payload={"models": ["m"]})
+    s2 = await store.append_event("run.started", entity="1")
+    assert s2 > s1
+
+    events = await store.read_events(after_seq=0)
+    assert [e["type"] for e in events] == ["run.enqueued", "run.started"]
+    assert events[0]["payload"] == {"models": ["m"]}
+    assert [e["type"] for e in await store.read_events(after_seq=s1)] == ["run.started"]  # replay from a cursor
+
+
+async def test_worker_emits_run_lifecycle_events(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    project = compile_models([ModelDef(name="m", sql="SELECT 1 AS x")])
+    await store.enqueue_run("k1", ["m"], None, 0)
+    await drain(store, project, engine, "prod")
+
+    types = [e["type"] for e in await store.read_events()]
+    assert "run.started" in types
+    assert "run.succeeded" in types
+
+
 async def test_enqueue_is_idempotent(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     _, store = env
     assert await store.enqueue_run("dup", ["m"], None, 0) is True

@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from interlace.ir.relation import TableRef
 from interlace.state.interval import Interval, IntervalSet
@@ -103,6 +103,21 @@ _MIGRATIONS: list[str] = [
     );
     """,
 ]
+
+
+class RunRecord(TypedDict):
+    """A work-queue row as returned by ``list_runs`` / ``get_run``."""
+
+    id: int
+    idempotency_key: str | None
+    flow_selector: list[str]
+    partition_start: str | None
+    partition_end: str | None
+    priority: int
+    state: str
+    attempts: int
+    error: str | None
+    enqueued_at: str | None
 
 
 @dataclass
@@ -301,6 +316,14 @@ class SqliteStateStore:
             ).fetchall()
         return {row["model_name"]: row["fingerprint"] for row in rows}
 
+    async def list_environments(self) -> list[str]:
+        return await asyncio.to_thread(self._list_environments_sync)
+
+    def _list_environments_sync(self) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute("SELECT DISTINCT environment FROM environments ORDER BY environment").fetchall()
+        return [row["environment"] for row in rows]
+
     # --- work queue ---------------------------------------------------------
 
     async def enqueue_run(
@@ -376,21 +399,59 @@ class SqliteStateStore:
             row = self._conn.execute("SELECT count(*) FROM work_queue WHERE state IN ('queued', 'running')").fetchone()
         return int(row[0])
 
-    async def list_runs(self, limit: int = 50) -> list[dict[str, object]]:
+    _RUN_COLUMNS = (
+        "id, idempotency_key, flow_selector, partition_start, partition_end, "
+        "priority, state, attempts, error, enqueued_at"
+    )
+
+    @staticmethod
+    def _run_dict(row: sqlite3.Row) -> RunRecord:
+        return RunRecord(
+            id=row["id"],
+            idempotency_key=row["idempotency_key"],
+            flow_selector=json.loads(row["flow_selector"]),
+            partition_start=row["partition_start"],
+            partition_end=row["partition_end"],
+            priority=row["priority"],
+            state=row["state"],
+            attempts=row["attempts"],
+            error=row["error"],
+            enqueued_at=row["enqueued_at"],
+        )
+
+    async def list_runs(self, limit: int = 50) -> list[RunRecord]:
         return await asyncio.to_thread(self._list_runs_sync, limit)
 
-    def _list_runs_sync(self, limit: int) -> list[dict[str, object]]:
+    def _list_runs_sync(self, limit: int) -> list[RunRecord]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, flow_selector, state, attempts, error FROM work_queue ORDER BY id DESC LIMIT ?", (limit,)
+                f"SELECT {self._RUN_COLUMNS} FROM work_queue ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._run_dict(row) for row in rows]
+
+    async def get_run(self, run_id: int) -> RunRecord | None:
+        return await asyncio.to_thread(self._get_run_sync, run_id)
+
+    def _get_run_sync(self, run_id: int) -> RunRecord | None:
+        with self._lock:
+            row = self._conn.execute(f"SELECT {self._RUN_COLUMNS} FROM work_queue WHERE id = ?", (run_id,)).fetchone()
+        return self._run_dict(row) if row else None
+
+    async def events_for_entity(self, entity: str) -> list[dict[str, object]]:
+        return await asyncio.to_thread(self._events_for_entity_sync, entity)
+
+    def _events_for_entity_sync(self, entity: str) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, ts, type, entity, payload FROM event_log WHERE entity = ? ORDER BY seq", (entity,)
             ).fetchall()
         return [
             {
-                "id": row["id"],
-                "flow_selector": json.loads(row["flow_selector"]),
-                "state": row["state"],
-                "attempts": row["attempts"],
-                "error": row["error"],
+                "seq": row["seq"],
+                "ts": row["ts"],
+                "type": row["type"],
+                "entity": row["entity"],
+                "payload": json.loads(row["payload"]) if row["payload"] else None,
             }
             for row in rows
         ]

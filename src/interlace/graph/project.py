@@ -50,6 +50,8 @@ class CompiledModel:
     columns: dict[str, str | None] | None  # output contract validated at apply time
     export: ExportConfig | None  # presence makes this a sink (no physical table/view)
     ast: exp.Expression | None  # parsed SQL, or None for Python models
+    owner: str | None = None  # surfaced in the catalog/API (metadata, not fingerprinted into data)
+    description: str | None = None
 
 
 @dataclass
@@ -167,6 +169,8 @@ def compile_models(
             columns=definition.columns,
             export=definition.export,
             ast=ast,
+            owner=definition.owner,
+            description=definition.description,
         )
 
     return CompiledProject(models=compiled, graph=graph)

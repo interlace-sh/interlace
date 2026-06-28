@@ -85,10 +85,61 @@ def test_events_endpoint_records_enqueue(client: TestClient) -> None:
     assert client.get("/events", params={"after": events[0]["seq"]}).json() == []
 
 
+def test_models_enriched(client: TestClient) -> None:
+    body = client.get("/models").json()
+    recent = next(m for m in body if m["name"] == "recent_clicks")
+    assert recent["materialise"] == "view"
+    assert recent["is_sink"] is False
+    assert recent["fingerprint"]  # compiled fingerprint surfaced for the catalog
+    assert {"owner", "schedule", "tags"} <= recent.keys()
+
+
+def test_plan_carries_sql_and_fingerprints(client: TestClient) -> None:
+    body = client.get("/plan", params={"environment": "prod"}).json()
+    change = next(c for c in body["changes"] if c["name"] == "event_totals")
+    assert change["change_type"] == "added"  # nothing promoted yet
+    assert change["previous_fingerprint"] is None
+    assert change["new_fingerprint"]
+    assert change["new_sql"]  # SQL model carries its canonical definition for diffing
+
+
+def test_apply_builds_promotes_and_clears_plan(client: TestClient) -> None:
+    assert client.get("/environments").json() == []  # nothing promoted yet
+
+    applied = client.post("/apply", json={"environment": "prod"}).json()
+    assert applied["environment"] == "prod"
+    assert applied["built"]  # built at least one model
+    assert applied["promoted"] > 0
+
+    assert client.get("/plan", params={"environment": "prod"}).json()["changes"] == []  # now up to date
+
+    envs = {e["name"]: e for e in client.get("/environments").json()}
+    assert envs["prod"]["models"] > 0
+    assert envs["prod"]["changed"] == 0  # no drift after apply
+
+    again = client.post("/apply", json={"environment": "prod"}).json()  # re-applying is a no-op
+    assert again["built"] == [] and again["promoted"] == 0
+
+
+def test_run_detail_includes_lifecycle_events(client: TestClient) -> None:
+    client.post("/runs", json={"selectors": ["raw_events"], "environment": "prod"})
+    run = client.get("/runs").json()[0]
+    assert run["enqueued_at"]
+
+    detail = client.get(f"/runs/{run['id']}").json()
+    assert detail["id"] == run["id"]
+    assert detail["flow_selector"] == ["raw_events"]
+    assert any(e["type"] == "run.enqueued" for e in detail["events"])
+
+
+def test_unknown_run_is_404(client: TestClient) -> None:
+    assert client.get("/runs/99999").status_code == 404
+
+
 def test_openapi_and_scalar_docs(client: TestClient) -> None:
     schema = client.get("/schema/openapi.json").json()
-    assert "/models" in schema["paths"]
-    assert "/runs" in schema["paths"]
+    assert {"/models", "/runs", "/apply", "/environments"} <= schema["paths"].keys()
+    assert "/runs/{run_id}" in schema["paths"]
     assert client.get("/schema/scalar").status_code == 200  # Scalar UI
 
 

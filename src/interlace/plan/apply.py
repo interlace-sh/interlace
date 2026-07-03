@@ -22,6 +22,7 @@ from interlace.ir.relation import EngineRef, SqlRelation
 from interlace.ir.schema import empty_schema
 from interlace.plan.plan import Plan
 from interlace.plan.resolve import resolve_model_query
+from interlace.runtime.python_model import build_python_model
 from interlace.state.store import StateStore
 from interlace.strategies import resolve_strategy
 
@@ -56,8 +57,19 @@ async def apply(
     for task in plan.backfills:
         snapshot = task.snapshot
         model = compiled.models[snapshot.name]
-        if model.ast is None:
-            raise PlanError(f"executing Python model {snapshot.name!r} is not yet supported")
+
+        if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
+            if model.export is not None:
+                raise PlanError(f"Python model {snapshot.name!r} cannot be a sink yet; write SQL over its output")
+            if model.materialise != "table" or model.strategy != "full":
+                raise PlanError(f"Python model {snapshot.name!r} supports materialise='table' strategy='full' for now")
+            await engine.create_schema(snapshot.physical_table.schema)
+            await build_python_model(model, compiled, engine, snapshot.physical_table)
+            if model.columns:
+                validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
+            await state.add_snapshot(snapshot)
+            result.built.append(snapshot.name)
+            continue
 
         resolved = resolve_model_query(model, compiled)
 

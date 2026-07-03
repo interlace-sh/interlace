@@ -139,6 +139,8 @@ def model(
         raise DefinitionError(f"unknown materialise {materialise!r}; expected one of {sorted(_MATERIALISATIONS)}")
     if materialise == "ephemeral":
         raise DefinitionError("Python models cannot be ephemeral; ephemeral requires SQL (it is inlined as a CTE)")
+    if materialise == "view":
+        raise DefinitionError("Python models cannot be views; a view requires SQL the engine can evaluate")
     if kind not in _KINDS:
         raise DefinitionError(f"unknown kind {kind!r}; expected one of {sorted(_KINDS)}")
 

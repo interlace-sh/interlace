@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from sqlglot import exp
 
-from interlace.dsl.decorators import ModelDef
+from interlace.dsl.decorators import ModelDef, ModelFn
 from interlace.exceptions import DefinitionError
 from interlace.exports import ExportConfig
 from interlace.graph.dag import DependencyGraph
@@ -52,6 +52,7 @@ class CompiledModel:
     ast: exp.Expression | None  # parsed SQL, or None for Python models
     owner: str | None = None  # surfaced in the catalog/API (metadata, not fingerprinted into data)
     description: str | None = None
+    fn: ModelFn | None = None  # the Python model function (source is fingerprinted; None for SQL)
 
 
 @dataclass
@@ -171,6 +172,7 @@ def compile_models(
             ast=ast,
             owner=definition.owner,
             description=definition.description,
+            fn=definition.fn,
         )
 
     return CompiledProject(models=compiled, graph=graph)

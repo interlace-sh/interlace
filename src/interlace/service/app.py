@@ -23,7 +23,7 @@ from uuid import uuid4
 import msgspec
 from litestar import Litestar, Request, get, post
 from litestar.datastructures import State
-from litestar.exceptions import ClientException, NotFoundException
+from litestar.exceptions import ClientException, ImproperlyConfiguredException, NotFoundException
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
 from litestar.params import FromPath, FromQuery
@@ -339,14 +339,28 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
     return ServerSentEvent(tail())
 
 
-def create_app(root: Path | str, environment: str = "dev") -> Litestar:
-    """Build the Litestar app for the project at ``root``."""
+def create_app(
+    root: Path | str, environment: str = "dev", quack: str | None = None, quack_token: str | None = None
+) -> Litestar:
+    """Build the Litestar app for the project at ``root``.
+
+    ``quack`` (a ``quack:<host>:<port>`` URI) additionally serves the warehouse
+    over the quack protocol so other processes — CLI runs, schedulers, ad-hoc
+    DuckDB clients — share this process's warehouse concurrently.
+    """
 
     @asynccontextmanager
     async def lifespan(app: Litestar) -> AsyncIterator[None]:
         project = Project.load(root)
         store = await project.open_state()
         engine = project.open_engine()
+        if quack:
+            from interlace.engines.quack import QuackAdapter, sql_literal
+
+            if isinstance(engine, QuackAdapter):
+                raise ImproperlyConfiguredException(detail="cannot re-serve a quack-connected warehouse")
+            token_sql = f", token := {sql_literal(quack_token)}" if quack_token else ""
+            await engine.execute_sql(f"CALL quack_serve({sql_literal(quack)}{token_sql})")
         app.state.compiled = project.compile()
         app.state.store = store
         app.state.engine = engine

@@ -185,6 +185,12 @@ def serve(
     path: Path = _PATH,
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
     port: int = typer.Option(8000, "--port", help="Bind port."),
+    quack: str = typer.Option(
+        "", "--quack", help="Also serve the warehouse over the quack protocol, e.g. quack:localhost:4213."
+    ),
+    quack_token: str = typer.Option(
+        "", "--quack-token", help="Auth token for --quack (default: generated and printed)."
+    ),
 ) -> None:
     """Run the HTTP API (requires the `service` extra). Run `interlace scheduler` to execute queued runs."""
     try:
@@ -194,7 +200,14 @@ def serve(
     except ImportError as exc:
         console.print("[red]The HTTP API needs the 'service' extra: pip install 'interlace[service]'[/red]")
         raise typer.Exit(1) from exc
-    uvicorn.run(create_app(path, environment), host=host, port=port)
+    token = quack_token
+    if quack and not token:
+        import secrets
+
+        token = secrets.token_hex(8)
+        console.print(f"[bold]quack[/bold] warehouse at [cyan]{quack}[/cyan] · token [yellow]{token}[/yellow]")
+        console.print("Clients: set [bold]database: quack:...[/bold] and INTERLACE_QUACK_TOKEN in the environment.")
+    uvicorn.run(create_app(path, environment, quack=quack or None, quack_token=token or None), host=host, port=port)
 
 
 @app.command("list")

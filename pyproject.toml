@@ -25,7 +25,7 @@ classifiers = [
 # sqlglot-native. See docs/architecture/v2-design.md.
 dependencies = [
     "sqlglot>=25.0,<31.0",        # canonical IR, transpilation, semantic diff, column lineage
-    "duckdb>=1.1,<2.0",           # default engine + federation hub (DuckLake/Iceberg used later)
+    "duckdb>=1.5.3",              # default engine + federation hub; DuckLake storage + quack serving
     "pyarrow>=17.0",              # the wire format: RecordBatchReader everywhere
     "msgspec>=0.18,<1.0",         # ingest validation + fast (de)serialisation
     "pydantic>=2.5,<3.0",         # config + manifest validation (cold paths only)

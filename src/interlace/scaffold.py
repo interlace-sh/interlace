@@ -14,6 +14,10 @@ from interlace.exceptions import ConfigurationError
 _CONFIG = """\
 name: {name}
 default_dialect: duckdb
+# The warehouse: DuckLake (Parquet + SQL catalog) by default. Also accepted:
+# a plain .duckdb path, ":memory:", or quack:<host>:<port> for a warehouse
+# served by `interlace serve --quack`.
+database: ducklake:.interlace/warehouse.ducklake
 """
 
 _RAW_EVENTS = """\

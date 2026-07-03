@@ -205,6 +205,27 @@ SQL catalog) rather than a monolithic `.duckdb` file:
 
 A plain `.duckdb` file remains a config option for zero-dependency toy projects.
 
+**Status (implemented, July 2026).** `database: ducklake:.interlace/warehouse.ducklake` is the
+config default (catalog file + `<catalog>.files/` Parquet directory; DuckDB opens the DuckLake
+as its primary database). The full strategy surface — schemas, views, transactional
+DDL+DML (merge), `DESCRIBE`, Arrow ingest — runs on DuckLake unchanged; the whole test suite
+executes against it. Requires `duckdb>=1.5.3`.
+
+**Serving the warehouse: the quack protocol.** DuckDB 1.5.3 ships **quack** (core extension,
+beta): `CALL quack_serve('quack:host:port', token := ...)` turns the process holding the
+warehouse into a server; clients speak the same SQL over HTTP. This is how interlace solves
+**single-node multi-process access** *before* the Postgres-catalog tier: the daemon
+(`interlace serve --quack quack:localhost:4213`) owns the DuckLake and serves it; CLI runs,
+schedulers, and ad-hoc DuckDB clients set `database: quack:localhost:4213` (token via
+`quack_token` config or `INTERLACE_QUACK_TOKEN`) and share it concurrently. The
+`QuackAdapter` ships each statement through the `quack_query` table function (full SQL
+pass-through with Arrow results — quack's catalog `ATTACH` only resolves the server's main
+schema while in beta), sends multi-statement plans as one `BEGIN…COMMIT` payload so they stay
+atomic server-side, and routes Arrow loads through the attached remote catalog. Verified
+end-to-end: a second OS process ran `interlace apply` through quack while the daemon held the
+DuckLake catalog lock. When quack's catalog mapping matures (stable targeted for DuckDB 2.0),
+the adapter can switch to native `ATTACH` without touching callers.
+
 **Role 2 — the federation/transport hub.** When a model's inputs span engines, the planner
 inserts an explicit **transfer edge**, visible in `interlace plan` output — no silent data
 movement. Transfer execution picks the cheapest mechanism:

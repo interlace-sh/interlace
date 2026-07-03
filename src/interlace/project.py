@@ -7,6 +7,7 @@ control-plane state store at the configured (root-relative) paths.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,8 +36,21 @@ class Project:
         return compile_models(self.models, default_dialect=self.config.default_dialect)
 
     def open_engine(self) -> DuckDBAdapter:
+        """Open the warehouse: DuckLake (default), a plain DuckDB file, ":memory:",
+        or a remote warehouse served over the quack protocol."""
         database = self.config.database
-        if database != ":memory:":
+        if database.startswith("quack:"):
+            from interlace.engines.quack import QuackAdapter  # lazy: only quack clients need it
+
+            token = self.config.quack_token or os.environ.get("INTERLACE_QUACK_TOKEN")
+            return QuackAdapter.connect(database, token=token)
+        if database.startswith("ducklake:"):
+            catalog = database.removeprefix("ducklake:")
+            if not Path(catalog).is_absolute():
+                resolved = self.root / catalog
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                database = f"ducklake:{resolved}"
+        elif database != ":memory:":
             path = self.root / database
             path.parent.mkdir(parents=True, exist_ok=True)
             database = str(path)

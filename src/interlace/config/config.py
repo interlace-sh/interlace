@@ -22,7 +22,11 @@ class ProjectConfig(BaseModel):
     name: str = "interlace"
     default_dialect: str = "duckdb"
     state_path: str = ".interlace/state.db"  # SQLite control-plane database
-    database: str = ".interlace/warehouse.duckdb"  # DuckDB warehouse (or ":memory:")
+    # The warehouse. Default is DuckLake (Parquet data + SQL catalog) via DuckDB.
+    # Also accepted: a plain DuckDB file path, ":memory:", or "quack:<host>:<port>"
+    # to connect to a warehouse served by `interlace serve --quack`.
+    database: str = "ducklake:.interlace/warehouse.ducklake"
+    quack_token: str | None = None  # token for quack: databases (or INTERLACE_QUACK_TOKEN)
     model_paths: list[str] = Field(default_factory=lambda: ["models"])
 
 

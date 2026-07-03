@@ -38,7 +38,7 @@ def test_apply_builds_then_replan_is_clean(tmp_path: Path) -> None:
     assert "Built 2 model(s)" in applied.output
 
     # the warehouse file now holds the env view with the computed value
-    con = duckdb.connect(str(tmp_path / ".interlace" / "warehouse.duckdb"))
+    con = duckdb.connect(f"ducklake:{tmp_path / '.interlace' / 'warehouse.ducklake'}")
     try:
         rows = con.execute("SELECT id, v2 FROM prod__main.b").fetchall()
     finally:

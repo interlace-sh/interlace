@@ -112,7 +112,7 @@ def test_scheduler_once_builds_a_scheduled_model(tmp_path: Path) -> None:
     result = runner.invoke(app, ["scheduler", "--env", "dev", "--path", str(project_dir), "--once"])
     assert result.exit_code == 0, result.output
 
-    con = duckdb.connect(str(project_dir / ".interlace" / "warehouse.duckdb"))
+    con = duckdb.connect(f"ducklake:{project_dir / '.interlace' / 'warehouse.ducklake'}")
     try:
         assert con.execute("SELECT x FROM dev__main.m").fetchone() == (5,)
     finally:

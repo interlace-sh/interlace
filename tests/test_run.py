@@ -98,7 +98,7 @@ def test_run_command_on_example(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Ran" in result.output
 
-    con = duckdb.connect(str(project_dir / ".interlace" / "warehouse.duckdb"))
+    con = duckdb.connect(f"ducklake:{project_dir / '.interlace' / 'warehouse.ducklake'}")
     try:
         assert con.execute("SELECT count(*) FROM dev__main.event_totals").fetchone()[0] == 3
     finally:

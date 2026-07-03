@@ -118,7 +118,7 @@ class DuckDBAdapter(EngineAdapter):
         # The reader keeps the underlying result alive after the cursor is dropped.
         cur = self._conn.cursor()
         cur.execute(sql)
-        return cur.fetch_record_batch()
+        return cur.to_arrow_reader()
 
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
         cur = self._conn.cursor()

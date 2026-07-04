@@ -56,11 +56,9 @@ adbc = [
     "adbc-driver-postgresql>=1.2,<2.0",
 ]
 postgres = ["psycopg[binary]>=3.1,<4.0"]
-# Optional authoring frontend for Python models; compiles to sqlglot.
-ibis = ["ibis-framework[duckdb]>=12.0,<13.0"]
 polars = ["polars>=1.0,<2.0"]
 pandas = ["pandas>=2.0,<4.0"]
-all = ["interlace[service,adbc,postgres,ibis,polars]"]
+all = ["interlace[service,adbc,postgres,polars]"]
 dev = [
     "pytest>=8.0,<10.0",
     "pytest-asyncio>=1.0,<2.0",

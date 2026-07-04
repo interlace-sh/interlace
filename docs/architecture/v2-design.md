@@ -56,10 +56,13 @@ any dataframe library:
 - **sqlglot** is the most load-bearing dependency: parsing, qualification, type annotation,
   transpilation (31 dialects), semantic diff, and column lineage.
 - **Arrow** is the only interchange format. pandas never appears in core (optional extra only).
-- **ibis** survives as an *optional authoring frontend* for Python models — it compiles to
-  sqlglot anyway, so ibis expressions fold into our IR. This hedges a real governance risk
-  (ibis is healthy as of its Feb 2026 release, but 4 of 5 steering members are Voltron Data
-  employees, and Voltron laid off ~50% of staff in late 2024) without giving up its DX.
+- **ibis** is dropped entirely (decision July 2026; earlier drafts kept it as an optional
+  authoring frontend). Its two possible roles are both covered without it: as a data plane it
+  sits on Arrow anyway, and as an expression builder it compiles to sqlglot — which *is* our
+  IR, so a Python-authored logical model can simply return a sqlglot expression. Dropping it
+  removes a heavyweight dependency and its governance risk (4 of 5 steering members are
+  Voltron Data employees; Voltron laid off ~50% of staff in late 2024) for zero lost
+  capability. Remote engines connect via ADBC, not ibis backends.
 
 SQL models never leave the logical plane: a model selecting from three upstreams in the same
 engine compiles to *one* `CREATE TABLE AS` / `MERGE INTO` executed inside that engine. Zero rows
@@ -172,8 +175,8 @@ Functions receive lazy `RelationHandle`s and may return anything Arrow-coercible
 ```python
 @model(materialise="table", strategy="merge_by_key", key="order_id")
 def enriched_orders(ctx, raw_orders, fx_rates):
-    # Path A (stays logical — preferred): compose ibis or sqlglot; runs in-engine.
-    return raw_orders.ibis().join(fx_rates.ibis(), "currency").mutate(...)
+    # Path A (stays logical — preferred): compose/return a sqlglot expression; runs in-engine.
+    return sqlglot.select("o.*", "fx.rate").from_("raw_orders o").join("fx_rates fx", on="...")
 
     # Path B (physical, streaming): bounded-memory single-pass Arrow batches.
     for batch in raw_orders.reader():
@@ -183,8 +186,9 @@ def enriched_orders(ctx, raw_orders, fx_rates):
     df = raw_orders.polars()   # or .pandas() if the extra is installed
 ```
 
-- Path A returns an ibis expression; we compile it back to sqlglot AST and the model **stays on
-  the logical plane** — laziness is preserved through Python models that only compose.
+- Path A returns a sqlglot expression — already the IR — so the model **stays on the logical
+  plane**: laziness is preserved through Python models that only compose. (Earlier drafts
+  offered ibis here; dropped — see §1.)
 - Path B yields a `StreamRelation`; the sink consumes the reader directly via `adapter.load()`
   (DuckDB registers it zero-copy; remote engines bulk-ingest via ADBC).
 - Path C is the only place data is eagerly pulled into Python, and the user asked for it.
@@ -687,16 +691,17 @@ src/interlace/
 | `argon2-cffi`, `joserfc` | API key hashing; OIDC/JWKS. |
 | `watchfiles` | Dev-server hot reload. |
 
-**Extras:** `adbc-driver-{postgresql,snowflake,bigquery}`, `ibis-framework` (authoring
-frontend), `polars` (preferred eager frame), `psycopg` 3 (Postgres state/log backends),
-`aiokafka` / `nats-py` (optional brokers), `pandas` (compat only).
+**Extras:** `adbc-driver-{postgresql,snowflake,bigquery}`, `polars` (preferred eager frame),
+`psycopg` 3 (Postgres state/log backends), `aiokafka` / `nats-py` (optional brokers),
+`pandas` (compat only). (`ibis-framework` was dropped — see §1.)
 
 **Build vs buy:** the StreamLog + WorkQueue (~2–3 kLOC over `sqlite3`/`psycopg`) are built —
 they *are* the product; no off-the-shelf embeddable Python option exists (NATS isn't
 embeddable in-process; litequeue-class libraries lack consumer groups/offsets/replay).
 
 **Rejected outright:** pandas in core, Jinja2, SQLAlchemy, networkx (toposort is 30 lines),
-APScheduler 4, Celery, Redis, Airflow-anything.
+APScheduler 4, Celery, Redis, Airflow-anything, ibis (even as an extra — sqlglot is already
+the expression IR and Arrow already the data plane; see §1).
 
 ---
 

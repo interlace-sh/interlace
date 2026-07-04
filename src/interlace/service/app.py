@@ -14,6 +14,7 @@ OpenAPI docs render via Scalar at ``/schema/scalar``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -263,8 +264,10 @@ async def get_run(run_id: FromPath[int], state: State) -> RunDetail:
     run = await state.store.get_run(run_id)
     if run is None:
         raise NotFoundException(detail=f"unknown run: {run_id}")
-    key = run["idempotency_key"]
-    events = await state.store.events_for_entity(key) if key else []
+    # lifecycle events are keyed by run id (worker) and idempotency key (enqueue)
+    events = await state.store.events_for_entity(str(run_id))
+    if run["idempotency_key"]:
+        events = sorted(events + await state.store.events_for_entity(run["idempotency_key"]), key=lambda e: e["seq"])
     partition = [str(run["partition_start"]), str(run["partition_end"])] if run["partition_start"] else None
     return RunDetail(
         id=run["id"],
@@ -340,17 +343,30 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
 
 
 def create_app(
-    root: Path | str, environment: str = "dev", quack: str | None = None, quack_token: str | None = None
+    root: Path | str,
+    environment: str = "dev",
+    quack: str | None = None,
+    quack_token: str | None = None,
+    scheduler: bool = False,
+    scheduler_interval: float = 60.0,
 ) -> Litestar:
     """Build the Litestar app for the project at ``root``.
 
-    ``quack`` (a ``quack:<host>:<port>`` URI) additionally serves the warehouse
-    over the quack protocol so other processes — CLI runs, schedulers, ad-hoc
-    DuckDB clients — share this process's warehouse concurrently.
+    ``scheduler=True`` makes this the combined daemon: the HTTP API plus a
+    background scheduler loop (tick triggers, drain the run queue) in one
+    process — the default for ``interlace serve``. ``quack`` (a
+    ``quack:<host>:<port>`` URI) additionally serves the warehouse over the
+    quack protocol so other processes — CLI runs, ad-hoc DuckDB clients —
+    share this process's warehouse concurrently.
     """
 
     @asynccontextmanager
     async def lifespan(app: Litestar) -> AsyncIterator[None]:
+        from datetime import datetime
+
+        from interlace.scheduler.engine import TriggerEngine, build_triggers
+        from interlace.scheduler.worker import drain
+
         project = Project.load(root)
         store = await project.open_state()
         engine = project.open_engine()
@@ -361,15 +377,29 @@ def create_app(
                 raise ImproperlyConfiguredException(detail="cannot re-serve a quack-connected warehouse")
             token_sql = f", token := {sql_literal(quack_token)}" if quack_token else ""
             await engine.execute_sql(f"CALL quack_serve({sql_literal(quack)}{token_sql})")
-        app.state.compiled = project.compile()
+        compiled = project.compile()
+        app.state.compiled = compiled
         app.state.store = store
         app.state.engine = engine
         app.state.environment = environment
         app.state.root = project.root
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
+
+        async def scheduler_loop() -> None:
+            trigger_engine = TriggerEngine(build_triggers(compiled), store)
+            while True:
+                await trigger_engine.tick(datetime.now())
+                await drain(store, compiled, engine, environment, base_path=project.root)
+                await asyncio.sleep(scheduler_interval)
+
+        loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None
         try:
             yield
         finally:
+            if loop_task is not None:
+                loop_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await loop_task
             await store.close()
             engine.close()
 

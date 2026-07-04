@@ -191,8 +191,15 @@ def serve(
     quack_token: str = typer.Option(
         "", "--quack-token", help="Auth token for --quack (default: generated and printed)."
     ),
+    scheduler: bool = typer.Option(
+        True, "--scheduler/--no-scheduler", help="Run the scheduler loop in this process (combined daemon)."
+    ),
+    interval: float = typer.Option(60.0, "--interval", help="Seconds between scheduler ticks."),
 ) -> None:
-    """Run the HTTP API (requires the `service` extra). Run `interlace scheduler` to execute queued runs."""
+    """Run the interlace daemon: HTTP API + scheduler in one process (requires the `service` extra).
+
+    Use --no-scheduler for an API-only process (run `interlace scheduler` separately).
+    """
     try:
         import uvicorn
 
@@ -207,7 +214,18 @@ def serve(
         token = secrets.token_hex(8)
         console.print(f"[bold]quack[/bold] warehouse at [cyan]{quack}[/cyan] · token [yellow]{token}[/yellow]")
         console.print("Clients: set [bold]database: quack:...[/bold] and INTERLACE_QUACK_TOKEN in the environment.")
-    uvicorn.run(create_app(path, environment, quack=quack or None, quack_token=token or None), host=host, port=port)
+    uvicorn.run(
+        create_app(
+            path,
+            environment,
+            quack=quack or None,
+            quack_token=token or None,
+            scheduler=scheduler,
+            scheduler_interval=interval,
+        ),
+        host=host,
+        port=port,
+    )
 
 
 @app.command("list")

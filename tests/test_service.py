@@ -143,6 +143,29 @@ def test_openapi_and_scalar_docs(client: TestClient) -> None:
     assert client.get("/schema/scalar").status_code == 200  # Scalar UI
 
 
+def test_combined_daemon_executes_enqueued_runs(tmp_path: Path) -> None:
+    import time
+
+    app = create_app(_make_project(tmp_path), "dev", scheduler=True, scheduler_interval=0.05)
+    with TestClient(app=app) as client:
+        created = client.post("/runs", json={"selectors": ["+event_totals"]}).json()  # incl. ancestors
+        assert created["enqueued"] == 1
+
+        deadline = time.monotonic() + 10
+        state = None
+        while time.monotonic() < deadline:
+            run = client.get("/runs").json()[0]
+            state = run["state"]
+            if state == "succeeded":
+                break
+            time.sleep(0.05)
+        assert state == "succeeded"
+
+        detail = client.get(f"/runs/{run['id']}").json()
+        types = [e["type"] for e in detail["events"]]
+        assert "run.started" in types and "run.succeeded" in types
+
+
 async def test_auth_enforced_once_a_key_exists(tmp_path: Path) -> None:
     project_dir = _make_project(tmp_path)
     # create a read-only key out of band (same state DB the app will open)

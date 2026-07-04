@@ -32,6 +32,12 @@ FROM (
 """
 
 _EVENT_TOTALS = """\
+/*
+interlace:
+  checks:            # data-quality gates: an error-severity failure blocks promotion
+    - not_null: kind
+    - row_count: {min: 1}
+*/
 -- Aggregates raw_events. Reference upstreams by model name; interlace resolves
 -- the dependency and rewrites it to the physical table at apply time.
 SELECT

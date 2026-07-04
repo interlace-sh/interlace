@@ -143,6 +143,19 @@ def test_openapi_and_scalar_docs(client: TestClient) -> None:
     assert client.get("/schema/scalar").status_code == 200  # Scalar UI
 
 
+def test_checks_endpoint_returns_recorded_results(tmp_path: Path) -> None:
+    project_dir = _make_project(tmp_path)
+    model = project_dir / "models" / "checked.sql"
+    model.write_text("/* interlace: {checks: [{not_null: kind}]} */\nSELECT kind FROM event_totals")
+
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        assert client.get("/checks").json() == []
+        client.post("/apply", json={})
+        results = client.get("/checks").json()
+        assert [(r["model"], r["check_name"], r["status"]) for r in results] == [("checked", "not_null_kind", "passed")]
+        assert client.get("/checks", params={"model": "nope"}).json() == []
+
+
 def test_combined_daemon_executes_enqueued_runs(tmp_path: Path) -> None:
     import time
 

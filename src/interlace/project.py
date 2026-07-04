@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from interlace.config.config import CONFIG_FILE, ProjectConfig, load_config
-from interlace.dsl.decorators import ModelDef
+from interlace.dsl.decorators import REGISTRY, CheckDef, ModelDef
 from interlace.dsl.discovery import discover_models
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.graph.project import CompiledProject, compile_models
@@ -24,16 +24,17 @@ class Project:
     root: Path
     config: ProjectConfig
     models: list[ModelDef]
+    checks: list[CheckDef]
 
     @classmethod
     def load(cls, root: Path | str) -> Project:
         root = Path(root)
         config = load_config(root / CONFIG_FILE)
         models = discover_models(root, config.model_paths, config.default_dialect)
-        return cls(root=root, config=config, models=models)
+        return cls(root=root, config=config, models=models, checks=list(REGISTRY.checks))
 
     def compile(self) -> CompiledProject:
-        return compile_models(self.models, default_dialect=self.config.default_dialect)
+        return compile_models(self.models, default_dialect=self.config.default_dialect, checks=self.checks)
 
     def open_engine(self) -> DuckDBAdapter:
         """Open the warehouse: DuckLake (default), a plain DuckDB file, ":memory:",

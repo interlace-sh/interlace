@@ -31,7 +31,7 @@ from litestar.params import FromPath, FromQuery
 from litestar.response import ServerSentEvent, ServerSentEventMessage
 
 from interlace import __version__
-from interlace.exceptions import SelectionError
+from interlace.exceptions import CheckError, SelectionError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models
@@ -145,6 +145,20 @@ class ApplyResponse(msgspec.Struct):
     built: list[str]
     promoted: int
     breaking: bool
+
+
+class CheckResultInfo(msgspec.Struct):
+    id: int
+    environment: str
+    model: str
+    fingerprint: str
+    check_name: str
+    check_type: str
+    severity: str
+    status: str
+    failures: int
+    message: str | None
+    executed_at: str
 
 
 def _output(model: CompiledModel) -> str:
@@ -315,11 +329,22 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         if plan.is_empty:
             return ApplyResponse(environment=env, built=[], promoted=0, breaking=False)
         await state.store.append_event("apply.started", entity=env, payload={"models": plan.promote})
-        result = await apply_plan(plan, compiled=compiled, engine=state.engine, state=state.store, base_path=state.root)
+        try:
+            result = await apply_plan(
+                plan, compiled=compiled, engine=state.engine, state=state.store, base_path=state.root
+            )
+        except CheckError as exc:
+            await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
+            raise ClientException(detail=exc.message) from exc
         await state.store.append_event(
             "apply.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
         )
     return ApplyResponse(environment=env, built=result.built, promoted=result.promoted, breaking=breaking)
+
+
+@get("/checks")
+async def get_checks(state: State, model: FromQuery[str | None] = None) -> list[CheckResultInfo]:
+    return [CheckResultInfo(**row) for row in await state.store.list_check_results(model)]
 
 
 @get("/events")
@@ -414,6 +439,7 @@ def create_app(
             get_run,
             create_run,
             post_apply,
+            get_checks,
             get_events,
             stream_events,
         ],

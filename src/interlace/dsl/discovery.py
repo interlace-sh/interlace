@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from interlace.checks.spec import parse_checks
 from interlace.dsl.decorators import _KINDS, _MATERIALISATIONS, REGISTRY, ModelDef, _as_columns, _as_export, _as_tuple
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError
@@ -59,6 +60,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         columns=_as_columns(config.get("columns")),
         export=_as_export(config.get("export")),
         schedule=config.get("schedule"),
+        checks=parse_checks(config.get("checks"), default_name),
     )
 
 

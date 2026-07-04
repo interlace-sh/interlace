@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, TypedDict
+from typing import Any, Protocol, TypedDict
 
 from interlace.ir.relation import TableRef
 from interlace.state.interval import Interval, IntervalSet
@@ -101,6 +101,23 @@ _MIGRATIONS: list[str] = [
         scopes      TEXT NOT NULL,
         created_at  TEXT NOT NULL
     );
+    """,
+    # 0005 — data-quality check results (gate promotion; surfaced via API/UI)
+    """
+    CREATE TABLE check_results (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        environment  TEXT NOT NULL,
+        model        TEXT NOT NULL,
+        fingerprint  TEXT NOT NULL,
+        check_name   TEXT NOT NULL,
+        check_type   TEXT NOT NULL,
+        severity     TEXT NOT NULL,
+        status       TEXT NOT NULL,
+        failures     INTEGER NOT NULL DEFAULT 0,
+        message      TEXT,
+        executed_at  TEXT NOT NULL
+    );
+    CREATE INDEX idx_check_results_model ON check_results (model, id DESC);
     """,
 ]
 
@@ -183,6 +200,7 @@ class StateStore(Protocol):
     async def get_intervals(self, name: str, fingerprint: str) -> IntervalSet: ...
     async def promote(self, environment: str, mapping: dict[str, str]) -> None: ...
     async def get_environment(self, environment: str) -> dict[str, str]: ...
+    async def record_check_results(self, environment: str, fingerprint: str, outcomes: Iterable[Any]) -> None: ...
     async def close(self) -> None: ...
 
 
@@ -531,6 +549,54 @@ class SqliteStateStore:
         with self._lock:
             rows = self._conn.execute("SELECT name, scopes, created_at FROM api_keys ORDER BY id").fetchall()
         return [{"name": r["name"], "scopes": json.loads(r["scopes"]), "created_at": r["created_at"]} for r in rows]
+
+    # --- check results ------------------------------------------------------
+
+    async def record_check_results(self, environment: str, fingerprint: str, outcomes: Iterable[Any]) -> None:
+        """Persist one model's check outcomes (objects with name/type/severity/status/failures/message)."""
+        await asyncio.to_thread(self._record_check_results_sync, environment, fingerprint, list(outcomes))
+
+    def _record_check_results_sync(self, environment: str, fingerprint: str, outcomes: list[Any]) -> None:
+        now = _now_iso()
+        with self._lock:
+            self._conn.executemany(
+                "INSERT INTO check_results (environment, model, fingerprint, check_name, check_type, severity, "
+                "status, failures, message, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        environment,
+                        o.model,
+                        fingerprint,
+                        o.name,
+                        o.type,
+                        o.severity,
+                        o.status,
+                        o.failures,
+                        o.message,
+                        now,
+                    )
+                    for o in outcomes
+                ],
+            )
+            self._conn.commit()
+
+    async def list_check_results(self, model: str | None = None, limit: int = 200) -> list[dict[str, object]]:
+        return await asyncio.to_thread(self._list_check_results_sync, model, limit)
+
+    def _list_check_results_sync(self, model: str | None, limit: int) -> list[dict[str, object]]:
+        sql = (
+            "SELECT id, environment, model, fingerprint, check_name, check_type, severity, status, failures, "
+            "message, executed_at FROM check_results"
+        )
+        params: list[object] = []
+        if model is not None:
+            sql += " WHERE model = ?"
+            params.append(model)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
 
     # --- trigger state ------------------------------------------------------
 

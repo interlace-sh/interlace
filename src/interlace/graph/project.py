@@ -13,11 +13,12 @@ from __future__ import annotations
 import inspect
 import textwrap
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlglot import exp
 
-from interlace.dsl.decorators import ModelDef, ModelFn
+from interlace.checks.spec import CheckSpec
+from interlace.dsl.decorators import CheckDef, ModelDef, ModelFn
 from interlace.exceptions import DefinitionError
 from interlace.exports import ExportConfig
 from interlace.graph.dag import DependencyGraph
@@ -53,6 +54,7 @@ class CompiledModel:
     owner: str | None = None  # surfaced in the catalog/API (metadata, not fingerprinted into data)
     description: str | None = None
     fn: ModelFn | None = None  # the Python model function (source is fingerprinted; None for SQL)
+    checks: tuple[CheckSpec, ...] = ()  # metadata-fingerprinted: changing a check never rebuilds data
 
 
 @dataclass
@@ -61,6 +63,7 @@ class CompiledProject:
 
     models: dict[str, CompiledModel]
     graph: DependencyGraph
+    python_checks: dict[str, tuple[CheckDef, ...]] = field(default_factory=dict)  # @check fns by model
 
     def ordered(self) -> list[CompiledModel]:
         return [self.models[name] for name in self.graph.topological_sort()]
@@ -112,9 +115,16 @@ def _fingerprint_query(model: ModelDef, ast: exp.Expression | None) -> str | exp
 
 
 def compile_models(
-    models: Iterable[ModelDef], *, default_dialect: str = "duckdb", catalog: str | None = None
+    models: Iterable[ModelDef],
+    *,
+    default_dialect: str = "duckdb",
+    catalog: str | None = None,
+    checks: Iterable[CheckDef] = (),
 ) -> CompiledProject:
-    """Compile models into a fingerprinted, topologically-ordered project."""
+    """Compile models into a fingerprinted, topologically-ordered project.
+
+    ``checks`` are ``@check``-decorated Python functions, attached by model name.
+    """
     definitions = {m.name: m for m in models}
     names = set(definitions)
 
@@ -149,7 +159,15 @@ def compile_models(
             upstream_fingerprints=[compiled[dep].fingerprint for dep in deps],
         )
         metadata_hash = metadata_fingerprint(
-            {"owner": definition.owner, "tags": list(definition.tags), "description": definition.description}
+            {
+                "owner": definition.owner,
+                "tags": list(definition.tags),
+                "description": definition.description,
+                "checks": [
+                    {"type": c.type, "columns": list(c.columns), "severity": c.severity, "params": c.params}
+                    for c in definition.checks
+                ],
+            }
         )
         compiled[name] = CompiledModel(
             name=name,
@@ -173,6 +191,13 @@ def compile_models(
             owner=definition.owner,
             description=definition.description,
             fn=definition.fn,
+            checks=definition.checks,
         )
 
-    return CompiledProject(models=compiled, graph=graph)
+    python_checks: dict[str, tuple[CheckDef, ...]] = {}
+    for check in checks:
+        if check.model not in compiled:
+            raise DefinitionError(f"@check {check.name!r} references unknown model {check.model!r}")
+        python_checks[check.model] = (*python_checks.get(check.model, ()), check)
+
+    return CompiledProject(models=compiled, graph=graph, python_checks=python_checks)

@@ -10,10 +10,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from interlace.exceptions import ConfigurationError, SelectionError
+from interlace.exceptions import CheckError, ConfigurationError, SelectionError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models
+from interlace.plan.apply import ApplyResult
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.plan import Plan
@@ -31,6 +32,17 @@ _PATH = typer.Option(Path("."), "--path", "-p", help="Project root.")
 _SELECT = typer.Option([], "--select", "-s", help="Model selectors: name, +name, name+, tag:x.")
 _START = typer.Option("", "--start", help="Window start (ISO), for incremental models.")
 _END = typer.Option("", "--end", help="Window end (ISO), for incremental models.")
+
+
+def _render_checks(result: ApplyResult) -> None:
+    if not result.checks:
+        return
+    passed = sum(1 for c in result.checks if c.status == "passed")
+    warned = [c for c in result.checks if c.status != "passed"]
+    line = f"Checks: {passed}/{len(result.checks)} passed"
+    if warned:
+        line += "; " + ", ".join(f"[yellow]{c.model}.{c.name} {c.status} ({c.severity})[/yellow]" for c in warned)
+    console.print(line)
 
 
 def _selection(compiled: CompiledProject, selectors: list[str]) -> set[str] | None:
@@ -92,7 +104,14 @@ async def _apply(environment: str, path: Path, select: list[str]) -> None:
         _render(plan_result, environment)
         if plan_result.is_empty:
             return
-        result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root)
+        try:
+            result = await apply_plan(
+                plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root
+            )
+        except CheckError as exc:
+            console.print(f"[red]{exc.message}[/red]")
+            raise typer.Exit(1) from exc
+        _render_checks(result)
         console.print(
             f"[green]Built {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
@@ -138,7 +157,14 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
             select=_selection(compiled, select),
             restate=restate,
         )
-        result = await apply_plan(plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root)
+        try:
+            result = await apply_plan(
+                plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root
+            )
+        except CheckError as exc:
+            console.print(f"[red]{exc.message}[/red]")
+            raise typer.Exit(1) from exc
+        _render_checks(result)
         verb = "Restated" if restate else "Ran"
         console.print(
             f"[green]{verb} {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"

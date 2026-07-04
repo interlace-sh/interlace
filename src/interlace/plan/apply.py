@@ -13,11 +13,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from interlace.checks.runner import CheckOutcome, run_checks
 from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
-from interlace.exceptions import PlanError
+from interlace.exceptions import CheckError, PlanError
 from interlace.exports import export_statements
-from interlace.graph.project import CompiledProject
+from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation
 from interlace.ir.schema import empty_schema
 from interlace.plan.plan import Plan
@@ -31,6 +32,7 @@ from interlace.strategies import resolve_strategy
 class ApplyResult:
     built: list[str] = field(default_factory=list)
     promoted: int = 0
+    checks: list[CheckOutcome] = field(default_factory=list)
 
 
 def _resolve_export_path(base_path: Path | None, path: str) -> str:
@@ -38,6 +40,32 @@ def _resolve_export_path(base_path: Path | None, path: str) -> str:
     if target.is_absolute():
         return str(target)
     return str((base_path or Path.cwd()) / target)
+
+
+async def _gate_checks(
+    model: CompiledModel,
+    compiled: CompiledProject,
+    engine: EngineAdapter,
+    state: StateStore,
+    environment: str,
+    result: ApplyResult,
+) -> None:
+    """Run the model's checks against its built snapshot table; an error-severity
+    failure raises before the environment is promoted."""
+    outcomes = await run_checks(
+        model, compiled, engine, model.physical_table, compiled.python_checks.get(model.name, ())
+    )
+    if not outcomes:
+        return
+    result.checks.extend(outcomes)
+    await state.record_check_results(environment, model.fingerprint, outcomes)
+    blocking = [o for o in outcomes if o.blocking]
+    if blocking:
+        details = "; ".join(
+            f"{o.model}.{o.name}: {o.message}" if o.status == "error" else f"{o.model}.{o.name} ({o.failures} failing)"
+            for o in blocking
+        )
+        raise CheckError(f"checks failed — promotion blocked: {details}")
 
 
 async def apply(
@@ -69,6 +97,7 @@ async def apply(
                 validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
+            await _gate_checks(model, compiled, engine, state, plan.environment, result)
             continue
 
         resolved = resolve_model_query(model, compiled)
@@ -97,6 +126,7 @@ async def apply(
             snapshot = replace(snapshot, intervals=filled)
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
+        await _gate_checks(model, compiled, engine, state, plan.environment, result)
 
     for swap in plan.virtual_updates:
         await engine.create_schema(swap.view.schema)

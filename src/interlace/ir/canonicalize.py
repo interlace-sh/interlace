@@ -61,6 +61,8 @@ def resolve_references(ast: exp.Expression, mapping: dict[str, TableRef]) -> exp
             key = f"{node.db}.{node.name}" if node.db else node.name
             target = mapping.get(key) or mapping.get(node.name)
             if target is not None:
+                if not node.alias:  # keep qualified column refs (b.x) resolving after the rename
+                    node.set("alias", exp.TableAlias(this=exp.to_identifier(node.name)))
                 node.set("this", exp.to_identifier(target.name))
                 node.set("db", exp.to_identifier(target.schema) if target.schema else None)
                 node.set("catalog", exp.to_identifier(target.catalog) if target.catalog else None)

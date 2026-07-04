@@ -17,7 +17,7 @@ from interlace.graph.selectors import select_models
 from interlace.plan.apply import ApplyResult
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
-from interlace.plan.plan import Plan
+from interlace.plan.plan import ChangeType, Plan
 from interlace.plan.run import run_plan
 from interlace.project import Project
 from interlace.scaffold import scaffold_project
@@ -354,13 +354,18 @@ def _render(plan: Plan, environment: str) -> None:
     if plan.is_empty:
         console.print(f"No changes for [bold]{environment}[/bold].")
         return
+    reused = {snapshot.name for snapshot in plan.reuses}
     table = Table(title=f"Plan · {environment}")
     table.add_column("Model")
     table.add_column("Change")
     table.add_column("Category")
+    table.add_column("Build")
     for change in plan.changes:
-        table.add_row(change.name, change.change_type.value, change.category.value if change.category else "—")
+        build = "reuse" if change.name in reused else ("—" if change.change_type is ChangeType.REMOVED else "rebuild")
+        table.add_row(change.name, change.change_type.value, change.category.value if change.category else "—", build)
     console.print(table)
+    if reused:
+        console.print(f"[dim]{len(reused)} model(s) have provably identical output — reusing existing tables.[/dim]")
 
 
 def main() -> None:

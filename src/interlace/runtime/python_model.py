@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 import pyarrow as pa
@@ -28,13 +28,16 @@ from interlace.runtime.handles import RelationHandle
 
 
 async def _upstream_reader(
-    upstream: CompiledModel, compiled: CompiledProject, engine: EngineAdapter
+    upstream: CompiledModel,
+    compiled: CompiledProject,
+    engine: EngineAdapter,
+    physical: Mapping[str, TableRef] | None,
 ) -> pa.RecordBatchReader:
     if upstream.export is not None:
         raise PlanError(f"model {upstream.name!r} is a sink; it has no readable output")
     if upstream.materialise == "ephemeral":  # no physical table: run its (inlined) query
-        return await engine.fetch(resolve_model_query(upstream, compiled))
-    table = upstream.physical_table
+        return await engine.fetch(resolve_model_query(upstream, compiled, physical))
+    table = (physical or {}).get(upstream.name, upstream.physical_table)
     return await engine.fetch(exp.select("*").from_(exp.table_(table.name, db=table.schema, catalog=table.catalog)))
 
 
@@ -68,7 +71,11 @@ def _to_reader(model_name: str, result: Any) -> pa.RecordBatchReader:
 
 
 async def build_python_model(
-    model: CompiledModel, compiled: CompiledProject, engine: EngineAdapter, target: TableRef
+    model: CompiledModel,
+    compiled: CompiledProject,
+    engine: EngineAdapter,
+    target: TableRef,
+    physical: Mapping[str, TableRef] | None = None,
 ) -> None:
     """Run ``model``'s function over its upstreams and load the result into ``target``."""
     if model.fn is None:
@@ -82,7 +89,7 @@ async def build_python_model(
             f"declare them with depends_on or name them after upstream models"
         )
     handles = {
-        name: RelationHandle(name, await _upstream_reader(compiled.models[name], compiled, engine))
+        name: RelationHandle(name, await _upstream_reader(compiled.models[name], compiled, engine, physical))
         for name in parameters
     }
 

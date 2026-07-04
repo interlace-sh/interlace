@@ -325,6 +325,20 @@ Changed expression → BREAKING, but **column-impact-narrowed** (§7): only down
 actually consume the changed columns are invalidated. This is the concrete improvement over
 sqlmesh, whose invalidation is model-granular.
 
+**Status (implemented, July 2026) — the indirect non-breaking rebuild-skip.** The differ
+assigns every changed model an impact: *semantic* (pre-existing column data may differ — changed
+expressions/filters/strategy/Python source, or any semantic upstream), *additive* (existing
+columns provably identical, new ones appeared — strictly additive projections with everything
+else canonically equal, so a WHERE change is never additive), or *clean* (output provably
+identical). Clean models are **not rebuilt**: their new snapshot is recorded pointing at the
+previous physical table and the environment view repoints there. The implementation needs no
+column lineage — an indirectly-changed model's SQL is unchanged and was previously valid, so it
+cannot reference newly-added upstream columns; the only leaks are a projection ``*`` (inherits
+new columns → rebuild) and Python models (see whole upstream tables → always rebuild).
+Correctness hinge: reference resolution consults recorded snapshots (a reused fingerprint lives
+at an *older* physical table than its name implies), threaded through apply/resolve/runtime/
+checks as a physical-table map.
+
 ### Reverse ETL & external sinks (where the snapshot+view layer stops)
 
 The fingerprinted-snapshot-plus-view layer only works because **interlace owns those tables** —

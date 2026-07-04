@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import pyarrow as pa
@@ -44,13 +45,18 @@ class CheckOutcome:
 
 
 async def _run_declared(
-    spec: CheckSpec, model: CompiledModel, compiled: CompiledProject, engine: EngineAdapter, table: TableRef
+    spec: CheckSpec,
+    model: CompiledModel,
+    compiled: CompiledProject,
+    engine: EngineAdapter,
+    table: TableRef,
+    physical: Mapping[str, TableRef] | None,
 ) -> CheckOutcome:
     def resolve(name: str) -> TableRef:
         upstream = compiled.models.get(name)
         if upstream is None:
             raise DefinitionError(f"check on {model.name!r} references unknown model {name!r}")
-        return upstream.physical_table
+        return (physical or {}).get(name, upstream.physical_table)
 
     try:
         query = build_check_query(spec, table, model.name, model.dialect, resolve)
@@ -89,8 +95,9 @@ async def run_checks(
     engine: EngineAdapter,
     table: TableRef,
     python_checks: tuple[CheckDef, ...] = (),
+    physical: Mapping[str, TableRef] | None = None,
 ) -> list[CheckOutcome]:
     """Run all of ``model``'s checks against ``table``; returns every outcome."""
-    outcomes = [await _run_declared(spec, model, compiled, engine, table) for spec in model.checks]
+    outcomes = [await _run_declared(spec, model, compiled, engine, table, physical) for spec in model.checks]
     outcomes += [await _run_python(check, engine, table, model.name) for check in python_checks]
     return outcomes

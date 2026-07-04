@@ -93,6 +93,9 @@ class Plan:
     transfers: list[TransferEdge] = field(default_factory=list)
     virtual_updates: list[ViewSwap] = field(default_factory=list)
     promote: list[str] = field(default_factory=list)  # model names whose fingerprints to promote
+    # Indirectly-changed models whose output is provably identical: their new
+    # snapshot points at the previous physical table — recorded, never rebuilt.
+    reuses: list[Snapshot] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:

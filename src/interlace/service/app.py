@@ -80,6 +80,7 @@ class Change(msgspec.Struct):
     impacted_columns: list[str] = msgspec.field(default_factory=list)
     new_sql: str | None = None
     previous_sql: str | None = None
+    reused: bool = False  # output provably identical: recorded without a rebuild
 
 
 class PlanResponse(msgspec.Struct):
@@ -145,6 +146,7 @@ class ApplyResponse(msgspec.Struct):
     built: list[str]
     promoted: int
     breaking: bool
+    reused: list[str] = msgspec.field(default_factory=list)
 
 
 class CheckResultInfo(msgspec.Struct):
@@ -220,6 +222,7 @@ async def get_plan(state: State, environment: FromQuery[str | None] = None) -> P
     env = environment or state.environment
     compiled: CompiledProject = state.compiled
     plan = await diff(compiled, env, state.store)
+    reused = {snapshot.name for snapshot in plan.reuses}
     changes: list[Change] = []
     for change in plan.changes:
         previous_sql: str | None = None
@@ -237,6 +240,7 @@ async def get_plan(state: State, environment: FromQuery[str | None] = None) -> P
                 impacted_columns=list(change.impacted_columns),
                 new_sql=model.definition_sql if model else None,
                 previous_sql=previous_sql,
+                reused=change.name in reused,
             )
         )
     return PlanResponse(environment=env, changes=changes)
@@ -339,7 +343,9 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         await state.store.append_event(
             "apply.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
         )
-    return ApplyResponse(environment=env, built=result.built, promoted=result.promoted, breaking=breaking)
+    return ApplyResponse(
+        environment=env, built=result.built, promoted=result.promoted, breaking=breaking, reused=result.reused
+    )
 
 
 @get("/checks")

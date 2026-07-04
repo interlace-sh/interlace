@@ -10,6 +10,7 @@ upstream physical tables exist before downstream models build against them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from interlace.engines.base import EngineAdapter
 from interlace.exceptions import CheckError, PlanError
 from interlace.exports import export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.ir.relation import EngineRef, SqlRelation
+from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
 from interlace.plan.plan import Plan
 from interlace.plan.resolve import resolve_model_query
@@ -31,6 +32,7 @@ from interlace.strategies import resolve_strategy
 @dataclass
 class ApplyResult:
     built: list[str] = field(default_factory=list)
+    reused: list[str] = field(default_factory=list)  # recorded over their previous physical table
     promoted: int = 0
     checks: list[CheckOutcome] = field(default_factory=list)
 
@@ -49,11 +51,12 @@ async def _gate_checks(
     state: StateStore,
     environment: str,
     result: ApplyResult,
+    physical: Mapping[str, TableRef] | None = None,
 ) -> None:
     """Run the model's checks against its built snapshot table; an error-severity
     failure raises before the environment is promoted."""
     outcomes = await run_checks(
-        model, compiled, engine, model.physical_table, compiled.python_checks.get(model.name, ())
+        model, compiled, engine, model.physical_table, compiled.python_checks.get(model.name, ()), physical
     )
     if not outcomes:
         return
@@ -82,6 +85,19 @@ async def apply(
     """
     result = ApplyResult()
 
+    # Where each model's data actually lives: recorded snapshots win over the
+    # fingerprint-derived name (a reused snapshot sits on an older table), and
+    # models building in this apply resolve to where they are being built now.
+    physical: dict[str, TableRef] = {}
+    for name, compiled_model in compiled.models.items():
+        recorded = await state.get_snapshot(name, compiled_model.fingerprint)
+        if recorded is not None:
+            physical[name] = recorded.physical_table
+    for task in plan.backfills:
+        physical[task.snapshot.name] = task.snapshot.physical_table
+    for reuse in plan.reuses:
+        physical[reuse.name] = reuse.physical_table
+
     for task in plan.backfills:
         snapshot = task.snapshot
         model = compiled.models[snapshot.name]
@@ -92,15 +108,15 @@ async def apply(
             if model.materialise != "table" or model.strategy != "full":
                 raise PlanError(f"Python model {snapshot.name!r} supports materialise='table' strategy='full' for now")
             await engine.create_schema(snapshot.physical_table.schema)
-            await build_python_model(model, compiled, engine, snapshot.physical_table)
+            await build_python_model(model, compiled, engine, snapshot.physical_table, physical=physical)
             if model.columns:
                 validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
-            await _gate_checks(model, compiled, engine, state, plan.environment, result)
+            await _gate_checks(model, compiled, engine, state, plan.environment, result, physical)
             continue
 
-        resolved = resolve_model_query(model, compiled)
+        resolved = resolve_model_query(model, compiled, physical)
 
         if model.export is not None:  # sink: push the result to a destination, no table/view
             export_path = _resolve_export_path(base_path, model.export.path)
@@ -126,7 +142,11 @@ async def apply(
             snapshot = replace(snapshot, intervals=filled)
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
-        await _gate_checks(model, compiled, engine, state, plan.environment, result)
+        await _gate_checks(model, compiled, engine, state, plan.environment, result, physical)
+
+    for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing
+        await state.add_snapshot(reuse)
+        result.reused.append(reuse.name)
 
     for swap in plan.virtual_updates:
         await engine.create_schema(swap.view.schema)

@@ -175,6 +175,37 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
 
 
 @app.command()
+def gc(
+    path: Path = _PATH,
+    grace: str = typer.Option("7d", "--grace", help="Keep unreferenced snapshots younger than this (e.g. 7d, 12h)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be removed without touching anything."),
+) -> None:
+    """Garbage-collect snapshots no environment references, and their physical tables."""
+    asyncio.run(_gc(path, grace, dry_run))
+
+
+async def _gc(path: Path, grace: str, dry_run: bool) -> None:
+    from interlace.state.interval import parse_grain
+    from interlace.state.janitor import gc as run_gc
+
+    project = Project.load(path)
+    engine = project.open_engine()
+    state = await project.open_state()
+    try:
+        result = await run_gc(state, engine, grace=parse_grain(grace), dry_run=dry_run)
+        verb = "Would remove" if dry_run else "Removed"
+        console.print(
+            f"{verb} {len(result.removed_snapshots)} snapshot(s), dropped {len(result.dropped_tables)} table(s); "
+            f"{result.kept_snapshots} snapshot(s) kept."
+        )
+        for table in result.dropped_tables:
+            console.print(f"  - {table}")
+    finally:
+        await state.close()
+        engine.close()
+
+
+@app.command()
 def scheduler(
     environment: str = _ENV,
     path: Path = _PATH,

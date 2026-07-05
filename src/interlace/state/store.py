@@ -286,6 +286,38 @@ class SqliteStateStore:
                 result.append(_snapshot_from_row(row, _intervals_from_rows(interval_rows)))
         return result
 
+    # --- garbage collection ---------------------------------------------------
+
+    async def referenced_snapshots(self) -> set[tuple[str, str]]:
+        """Every ``(model, fingerprint)`` some environment currently points at."""
+        return await asyncio.to_thread(self._referenced_snapshots_sync)
+
+    def _referenced_snapshots_sync(self) -> set[tuple[str, str]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT DISTINCT model_name, fingerprint FROM environments").fetchall()
+        return {(row["model_name"], row["fingerprint"]) for row in rows}
+
+    async def list_snapshot_rows(self) -> list[dict[str, str]]:
+        """Every snapshot row (no intervals): name, fingerprint, physical table, created_at."""
+        return await asyncio.to_thread(self._list_snapshot_rows_sync)
+
+    def _list_snapshot_rows_sync(self) -> list[dict[str, str]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT name, fingerprint, physical_schema, physical_name, created_at FROM snapshots"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def delete_snapshots(self, pairs: Iterable[tuple[str, str]]) -> None:
+        """Remove snapshot rows and their interval-ledger entries."""
+        await asyncio.to_thread(self._delete_snapshots_sync, list(pairs))
+
+    def _delete_snapshots_sync(self, pairs: list[tuple[str, str]]) -> None:
+        with self._lock:
+            self._conn.executemany("DELETE FROM snapshots WHERE name = ? AND fingerprint = ?", pairs)
+            self._conn.executemany("DELETE FROM intervals WHERE name = ? AND fingerprint = ?", pairs)
+            self._conn.commit()
+
     # --- interval ledger ----------------------------------------------------
 
     async def record_interval(self, name: str, fingerprint: str, interval: Interval) -> None:

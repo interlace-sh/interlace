@@ -192,6 +192,18 @@ class PublishResult(msgspec.Struct):
     materialized: int  # rows flushed to the warehouse in this request
 
 
+class GcRequest(msgspec.Struct):
+    grace: str = "7d"  # keep unreferenced snapshots younger than this
+    dry_run: bool = False
+
+
+class GcResponse(msgspec.Struct):
+    removed_snapshots: int
+    dropped_tables: list[str]
+    kept_snapshots: int
+    dry_run: bool
+
+
 def _output(model: CompiledModel) -> str:
     return "sink" if model.export is not None else model.materialise
 
@@ -448,6 +460,32 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
     )
 
 
+@post("/gc", opt={"scope": "admin"})
+async def post_gc(state: State, data: GcRequest | None = None) -> GcResponse:
+    """Garbage-collect unreferenced snapshots and their physical tables."""
+    from interlace.state.interval import parse_grain
+    from interlace.state.janitor import gc as run_gc
+
+    request = data or GcRequest()
+    try:
+        grace = parse_grain(request.grace)
+    except ValueError as exc:
+        raise ClientException(detail=str(exc)) from exc
+    async with state.apply_lock:
+        result = await run_gc(state.store, state.engine, grace=grace, dry_run=request.dry_run)
+    if result.removed_snapshots and not request.dry_run:
+        await state.store.append_event(
+            "gc.finished",
+            payload={"snapshots": len(result.removed_snapshots), "tables": result.dropped_tables},
+        )
+    return GcResponse(
+        removed_snapshots=len(result.removed_snapshots),
+        dropped_tables=result.dropped_tables,
+        kept_snapshots=result.kept_snapshots,
+        dry_run=request.dry_run,
+    )
+
+
 @get("/events")
 async def get_events(state: State, after: FromQuery[int] = 0) -> list[EventInfo]:
     return [EventInfo(**event) for event in await state.store.read_events(after)]
@@ -554,6 +592,7 @@ def create_app(
             get_streams,
             get_stream,
             publish,
+            post_gc,
             get_events,
             stream_events,
         ],

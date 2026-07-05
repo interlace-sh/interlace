@@ -31,7 +31,8 @@ from litestar.params import FromPath, FromQuery
 from litestar.response import ServerSentEvent, ServerSentEventMessage
 
 from interlace import __version__
-from interlace.exceptions import CheckError, SelectionError
+from interlace.dsl.decorators import StreamDef
+from interlace.exceptions import CheckError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models
@@ -40,6 +41,9 @@ from interlace.plan.differ import diff
 from interlace.project import Project
 from interlace.service.auth import auth_guard
 from interlace.state.snapshot import ChangeCategory
+from interlace.streaming.log import Event
+from interlace.streaming.materializer import ensure_stream_tables, flush_stream, flush_streams, stream_watermark
+from interlace.streaming.schema import validate_rows
 
 
 class ModelInfo(msgspec.Struct):
@@ -161,6 +165,31 @@ class CheckResultInfo(msgspec.Struct):
     failures: int
     message: str | None
     executed_at: str
+
+
+class StreamInfo(msgspec.Struct):
+    name: str
+    schema: dict[str, str]
+    table: str
+    head: int  # highest offset accepted into the log
+    watermark: int  # highest offset materialized into the warehouse
+
+
+class StreamDetail(msgspec.Struct):
+    name: str
+    schema: dict[str, str]
+    table: str
+    head: int
+    watermark: int
+    idempotency_key: str | None
+    recent: list[dict]  # latest payloads, newest last
+
+
+class PublishResult(msgspec.Struct):
+    accepted: int
+    deduplicated: int
+    last_offset: int | None
+    materialized: int  # rows flushed to the warehouse in this request
 
 
 def _output(model: CompiledModel) -> str:
@@ -353,6 +382,72 @@ async def get_checks(state: State, model: FromQuery[str | None] = None) -> list[
     return [CheckResultInfo(**row) for row in await state.store.list_check_results(model)]
 
 
+def _stream_or_404(state: State, name: str) -> StreamDef:
+    stream: StreamDef | None = state.streams.get(name)
+    if stream is None:
+        raise NotFoundException(detail=f"unknown stream: {name}")
+    return stream
+
+
+@get("/streams")
+async def get_streams(state: State) -> list[StreamInfo]:
+    out = []
+    for stream in state.streams.values():
+        out.append(
+            StreamInfo(
+                name=stream.name,
+                schema=stream.schema,
+                table=f"streams.{stream.name}",
+                head=await state.stream_log.head(stream.name),
+                watermark=await stream_watermark(stream, state.engine),
+            )
+        )
+    return out
+
+
+@get("/streams/{name:str}")
+async def get_stream(name: FromPath[str], state: State) -> StreamDetail:
+    stream = _stream_or_404(state, name)
+    head = await state.stream_log.head(name)
+    events = await state.stream_log.read(name, max(0, head - 20), 20)
+    return StreamDetail(
+        name=stream.name,
+        schema=stream.schema,
+        table=f"streams.{stream.name}",
+        head=head,
+        watermark=await stream_watermark(stream, state.engine),
+        idempotency_key=stream.idempotency_key,
+        recent=[dict(event.payload, _offset=event.offset) for event in events],
+    )
+
+
+@post("/streams/{name:str}", opt={"scope": "write"})
+async def publish(name: FromPath[str], data: dict | list, state: State) -> PublishResult:
+    """Publish one event (object) or a batch (array). Durable before this returns."""
+    stream = _stream_or_404(state, name)
+    rows = data if isinstance(data, list) else [data]
+    try:
+        validate_rows(stream, rows)
+    except StreamError as exc:
+        raise ClientException(detail=exc.message) from exc
+    events = [
+        Event(payload=row, idempotency_key=str(row[stream.idempotency_key]) if stream.idempotency_key else None)
+        for row in rows
+    ]
+    result = await state.stream_log.append(name, events)
+    accepted = result.deduped.count(False)
+    async with state.apply_lock:  # micro-batch straight through: POST -> queryable
+        materialized = await flush_stream(stream, state.stream_log, state.engine)
+    if materialized:
+        await state.store.append_event("stream.flushed", entity=name, payload={"rows": materialized})
+    return PublishResult(
+        accepted=accepted,
+        deduplicated=result.deduped.count(True),
+        last_offset=max(result.offsets) if result.offsets else None,
+        materialized=materialized,
+    )
+
+
 @get("/events")
 async def get_events(state: State, after: FromQuery[int] = 0) -> list[EventInfo]:
     return [EventInfo(**event) for event in await state.store.read_events(after)]
@@ -409,18 +504,27 @@ def create_app(
             token_sql = f", token := {sql_literal(quack_token)}" if quack_token else ""
             await engine.execute_sql(f"CALL quack_serve({sql_literal(quack)}{token_sql})")
         compiled = project.compile()
+        stream_log = await project.open_stream_log()
+        streams = {stream.name: stream for stream in project.streams}
+        if streams:
+            await ensure_stream_tables(streams.values(), engine)
         app.state.compiled = compiled
         app.state.store = store
         app.state.engine = engine
         app.state.environment = environment
         app.state.root = project.root
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
+        app.state.streams = streams
+        app.state.stream_log = stream_log
 
         async def scheduler_loop() -> None:
             trigger_engine = TriggerEngine(build_triggers(compiled), store)
             while True:
                 await trigger_engine.tick(datetime.now())
                 await drain(store, compiled, engine, environment, base_path=project.root)
+                if streams:  # catch up anything the publish path didn't flush
+                    async with app.state.apply_lock:
+                        await flush_streams(streams.values(), stream_log, engine)
                 await asyncio.sleep(scheduler_interval)
 
         loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None
@@ -431,6 +535,7 @@ def create_app(
                 loop_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await loop_task
+            await stream_log.close()
             await store.close()
             engine.close()
 
@@ -446,6 +551,9 @@ def create_app(
             create_run,
             post_apply,
             get_checks,
+            get_streams,
+            get_stream,
+            publish,
             get_events,
             stream_events,
         ],

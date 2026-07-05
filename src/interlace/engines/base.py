@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import pyarrow as pa
+import sqlglot
 from sqlglot import exp
 
 from interlace.ir.relation import TableRef
@@ -68,6 +69,14 @@ class EngineAdapter(ABC):
         """Run statements in order. Override to make the batch atomic (one transaction)."""
         for statement in statements:
             await self.execute(statement)
+
+    async def execute_sql(self, sql: str) -> None:
+        """Run one raw SQL statement written in this engine's dialect."""
+        await self.execute(sqlglot.parse_one(sql, read=self.dialect))
+
+    async def fetch_sql(self, sql: str) -> pa.RecordBatchReader:
+        """Evaluate one raw SQL query written in this engine's dialect."""
+        return await self.fetch(sqlglot.parse_one(sql, read=self.dialect))
 
     def transpile(self, ast: exp.Expression) -> str:
         """Canonical AST -> this engine's SQL. The one place dialect leaks back in."""

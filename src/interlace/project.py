@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from interlace.config.config import CONFIG_FILE, ProjectConfig, load_config
-from interlace.dsl.decorators import REGISTRY, CheckDef, ModelDef
+from interlace.dsl.decorators import REGISTRY, CheckDef, ModelDef, StreamDef
 from interlace.dsl.discovery import discover_models
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.graph.project import CompiledProject, compile_models
 from interlace.state.store import SqliteStateStore
+from interlace.streaming.log import SqliteStreamLog
 
 
 @dataclass
@@ -25,13 +26,20 @@ class Project:
     config: ProjectConfig
     models: list[ModelDef]
     checks: list[CheckDef]
+    streams: list[StreamDef]
 
     @classmethod
     def load(cls, root: Path | str) -> Project:
         root = Path(root)
         config = load_config(root / CONFIG_FILE)
         models = discover_models(root, config.model_paths, config.default_dialect)
-        return cls(root=root, config=config, models=models, checks=list(REGISTRY.checks))
+        return cls(
+            root=root,
+            config=config,
+            models=models,
+            checks=list(REGISTRY.checks),
+            streams=list(REGISTRY.streams.values()),
+        )
 
     def compile(self) -> CompiledProject:
         return compile_models(self.models, default_dialect=self.config.default_dialect, checks=self.checks)
@@ -61,3 +69,8 @@ class Project:
         path = self.root / self.config.state_path
         path.parent.mkdir(parents=True, exist_ok=True)
         return await SqliteStateStore.open(path)
+
+    async def open_stream_log(self) -> SqliteStreamLog:
+        path = self.root / self.config.stream_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return await SqliteStreamLog.open(path)

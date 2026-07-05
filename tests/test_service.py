@@ -156,6 +156,37 @@ def test_checks_endpoint_returns_recorded_results(tmp_path: Path) -> None:
         assert client.get("/checks", params={"model": "nope"}).json() == []
 
 
+def test_stream_publish_and_inspect(tmp_path: Path) -> None:
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "clicks_stream.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream("clicks", schema={"event_id": "string", "amount": "double"}, idempotency_key="event_id")\n'
+        "def clicks(event):\n    return event\n"
+    )
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        streams = client.get("/streams").json()
+        assert [(s["name"], s["head"], s["watermark"]) for s in streams] == [("clicks", 0, 0)]
+
+        one = client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0}).json()
+        assert one == {"accepted": 1, "deduplicated": 0, "last_offset": 1, "materialized": 1}
+
+        batch = client.post(
+            "/streams/clicks",
+            json=[{"event_id": "e1", "amount": 5.0}, {"event_id": "e2", "amount": 7.5}],  # e1 = retry
+        ).json()
+        assert batch["accepted"] == 1 and batch["deduplicated"] == 1
+        assert batch["materialized"] == 1  # only the new event reaches the warehouse
+
+        detail = client.get("/streams/clicks").json()
+        assert detail["head"] == 2 and detail["watermark"] == 2  # durable and materialized
+        assert detail["table"] == "streams.clicks"
+        assert [e["event_id"] for e in detail["recent"]] == ["e1", "e2"]
+
+        assert client.post("/streams/clicks", json={"event_id": "e3", "nope": 1}).status_code == 400
+        assert client.post("/streams/ghost", json={}).status_code == 404
+        assert any(e["type"] == "stream.flushed" for e in client.get("/events").json())
+
+
 def test_combined_daemon_executes_enqueued_runs(tmp_path: Path) -> None:
     import time
 

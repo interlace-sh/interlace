@@ -457,6 +457,17 @@ dissolved structurally.
 Vocabulary deliberately mirrors Cloudflare's **Streams → Pipelines → Sinks** model; the pitch is
 "self-hosted Cloudflare Pipelines that lands in DuckDB/DuckLake/Iceberg."
 
+**Status (Phase 3 MVP implemented, July 2026).** `SqliteStreamLog` (WAL; offsets from 1,
+idempotency-key dedup via partial unique index, consumer-group lease/commit with fencing
+tokens, trim, long-poll read). `@stream` declarations publish at ``POST /streams/{name}`` —
+schema-validated (``on_schema_drift: reject``; extra fields/wrong types → 400, missing → NULL),
+durable before the 200, deduplicated on retry. The materializer flushes micro-batches into
+``streams.<name>`` (declared fields + ``_offset``/``_ingested_at``) with the watermark committed
+**in the same warehouse transaction** as the data — exactly-once without coordinating with the
+log; SQL models just ``FROM streams.<name>``. Publish flushes inline (POST → queryable in one
+request); the combined daemon's loop catches up any residue. Deferred: broker backends,
+evolve/quarantine drift modes, rate limits, retention sweeps, stream-append triggers.
+
 ### 9.1 `StreamLog` — the durable ingestion log
 
 ```python

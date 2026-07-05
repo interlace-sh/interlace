@@ -27,6 +27,7 @@ class ProjectConfig(BaseModel):
     # to connect to a warehouse served by `interlace serve --quack`.
     database: str = "ducklake:.interlace/warehouse.ducklake"
     quack_token: str | None = None  # token for quack: databases (or INTERLACE_QUACK_TOKEN)
+    stream_path: str = ".interlace/streams.db"  # durable stream log (SQLite WAL)
     model_paths: list[str] = Field(default_factory=lambda: ["models"])
 
 

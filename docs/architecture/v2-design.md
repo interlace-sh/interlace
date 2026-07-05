@@ -465,8 +465,10 @@ durable before the 200, deduplicated on retry. The materializer flushes micro-ba
 ``streams.<name>`` (declared fields + ``_offset``/``_ingested_at``) with the watermark committed
 **in the same warehouse transaction** as the data — exactly-once without coordinating with the
 log; SQL models just ``FROM streams.<name>``. Publish flushes inline (POST → queryable in one
-request); the combined daemon's loop catches up any residue. Deferred: broker backends,
-evolve/quarantine drift modes, rate limits, retention sweeps, stream-append triggers.
+request); the combined daemon's loop catches up any residue. A flush **triggers the models
+that read the stream** (plus their downstream closure) through the durable run queue, with the
+watermark as the idempotency key — repeated flushes debounce, new data re-enqueues. Deferred:
+broker backends, evolve/quarantine drift modes, rate limits, retention sweeps.
 
 ### 9.1 `StreamLog` — the durable ingestion log
 

@@ -23,6 +23,7 @@ from sqlglot import exp, parse_one
 
 from interlace.dsl.decorators import StreamDef
 from interlace.engines.base import EngineAdapter
+from interlace.graph.project import CompiledProject
 from interlace.ir.relation import TableRef
 from interlace.streaming.log import StreamLog
 from interlace.streaming.schema import arrow_schema, coerce_value, sql_columns
@@ -100,3 +101,18 @@ async def flush_streams(
         if count:
             flushed[stream.name] = count
     return flushed
+
+
+def stream_consumers(compiled: CompiledProject, stream_name: str) -> set[str]:
+    """Models whose SQL reads ``streams.<stream_name>`` — plus everything downstream
+    of them, so a stream-triggered run refreshes the whole affected subgraph."""
+    direct = {
+        model.name
+        for model in compiled.models.values()
+        if model.ast is not None
+        and any(t.db == _SCHEMA and t.name == stream_name for t in model.ast.find_all(exp.Table))
+    }
+    downstream: set[str] = set()
+    for name in direct:
+        downstream |= compiled.graph.descendants(name)
+    return direct | downstream

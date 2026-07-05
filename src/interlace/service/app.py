@@ -42,7 +42,13 @@ from interlace.project import Project
 from interlace.service.auth import auth_guard
 from interlace.state.snapshot import ChangeCategory
 from interlace.streaming.log import Event
-from interlace.streaming.materializer import ensure_stream_tables, flush_stream, flush_streams, stream_watermark
+from interlace.streaming.materializer import (
+    ensure_stream_tables,
+    flush_stream,
+    flush_streams,
+    stream_consumers,
+    stream_watermark,
+)
 from interlace.streaming.schema import validate_rows
 
 
@@ -394,6 +400,21 @@ async def get_checks(state: State, model: FromQuery[str | None] = None) -> list[
     return [CheckResultInfo(**row) for row in await state.store.list_check_results(model)]
 
 
+async def _enqueue_stream_consumers(state: State, stream: StreamDef) -> None:
+    """A flush advanced the stream table: enqueue the models that read it.
+
+    The idempotency key carries the watermark, so repeated flushes at the same
+    position debounce into one run while new data keeps enqueuing new runs.
+    """
+    consumers = stream_consumers(state.compiled, stream.name)
+    if not consumers:
+        return
+    watermark = await stream_watermark(stream, state.engine)
+    key = f"stream:{stream.name}:{watermark}"
+    if await state.store.enqueue_run(key, sorted(consumers), None, 0):
+        await state.store.append_event("run.enqueued", entity=key, payload={"models": sorted(consumers)})
+
+
 def _stream_or_404(state: State, name: str) -> StreamDef:
     stream: StreamDef | None = state.streams.get(name)
     if stream is None:
@@ -452,6 +473,7 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
         materialized = await flush_stream(stream, state.stream_log, state.engine)
     if materialized:
         await state.store.append_event("stream.flushed", entity=name, payload={"rows": materialized})
+        await _enqueue_stream_consumers(state, stream)
     return PublishResult(
         accepted=accepted,
         deduplicated=result.deduped.count(True),
@@ -562,7 +584,9 @@ def create_app(
                 await drain(store, compiled, engine, environment, base_path=project.root)
                 if streams:  # catch up anything the publish path didn't flush
                     async with app.state.apply_lock:
-                        await flush_streams(streams.values(), stream_log, engine)
+                        flushed = await flush_streams(streams.values(), stream_log, engine)
+                    for stream_name in flushed:
+                        await _enqueue_stream_consumers(app.state, streams[stream_name])
                 await asyncio.sleep(scheduler_interval)
 
         loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None

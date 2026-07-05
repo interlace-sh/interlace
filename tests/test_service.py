@@ -187,6 +187,29 @@ def test_stream_publish_and_inspect(tmp_path: Path) -> None:
         assert any(e["type"] == "stream.flushed" for e in client.get("/events").json())
 
 
+def test_stream_flush_enqueues_consumer_models(tmp_path: Path) -> None:
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "clicks_stream.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream("clicks", schema={"event_id": "string", "amount": "double"}, idempotency_key="event_id")\n'
+        "def clicks(event):\n    return event\n"
+    )
+    (project_dir / "models" / "click_totals.sql").write_text("SELECT sum(amount) AS total FROM streams.clicks")
+    (project_dir / "models" / "click_report.sql").write_text("SELECT total FROM click_totals")  # downstream too
+
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0})
+        runs = client.get("/runs").json()
+        assert len(runs) == 1
+        assert runs[0]["flow_selector"] == ["click_report", "click_totals"]  # reader + its downstream
+
+        client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0})  # dupe: no flush
+        assert len(client.get("/runs").json()) == 1  # nothing new enqueued
+
+        client.post("/streams/clicks", json={"event_id": "e2", "amount": 1.0})  # new data: new run
+        assert len(client.get("/runs").json()) == 2
+
+
 def test_combined_daemon_executes_enqueued_runs(tmp_path: Path) -> None:
     import time
 

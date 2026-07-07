@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import duckdb
@@ -13,6 +14,13 @@ from interlace.cli.main import app
 pytestmark = pytest.mark.unit
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(output: str) -> str:
+    """Rich emits colour codes when the environment forces them; assert on text."""
+    return _ANSI.sub("", output)
 
 
 def _project(root: Path) -> None:
@@ -35,7 +43,7 @@ def test_apply_builds_then_replan_is_clean(tmp_path: Path) -> None:
 
     applied = runner.invoke(app, ["apply", "--env", "prod", "--path", str(tmp_path)])
     assert applied.exit_code == 0, applied.output
-    assert "Built 2 model(s)" in applied.output
+    assert "Built 2 model(s)" in _plain(applied.output)
 
     # the warehouse file now holds the env view with the computed value
     con = duckdb.connect(f"ducklake:{tmp_path / '.interlace' / 'warehouse.ducklake'}")

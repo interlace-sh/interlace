@@ -19,7 +19,7 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
 @pytest.fixture()
 def project(tmp_path: Path) -> Path:
     target = tmp_path / "getting_started"
-    shutil.copytree(EXAMPLE, target)
+    shutil.copytree(EXAMPLE, target, ignore=shutil.ignore_patterns(".interlace"))
     return target
 
 

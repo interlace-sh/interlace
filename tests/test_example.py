@@ -20,7 +20,7 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
 async def test_getting_started_applies_end_to_end(tmp_path: Path) -> None:
     # Copy into a temp dir so running the example never dirties the source tree.
     project_dir = tmp_path / "getting_started"
-    shutil.copytree(EXAMPLE, project_dir)
+    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
 
     project = Project.load(project_dir)
     compiled = project.compile()

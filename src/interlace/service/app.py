@@ -46,10 +46,11 @@ from interlace.streaming.materializer import (
     ensure_stream_tables,
     flush_stream,
     flush_streams,
+    quarantine_stream,
     stream_consumers,
     stream_watermark,
 )
-from interlace.streaming.schema import validate_rows
+from interlace.streaming.schema import partition_rows, validate_rows, validate_rows_evolve
 
 
 class ModelInfo(msgspec.Struct):
@@ -179,6 +180,7 @@ class StreamInfo(msgspec.Struct):
     table: str
     head: int  # highest offset accepted into the log
     watermark: int  # highest offset materialized into the warehouse
+    on_schema_drift: str = "reject"
 
 
 class StreamDetail(msgspec.Struct):
@@ -196,6 +198,7 @@ class PublishResult(msgspec.Struct):
     deduplicated: int
     last_offset: int | None
     materialized: int  # rows flushed to the warehouse in this request
+    quarantined: int = 0  # events diverted to <stream>__quarantine (quarantine mode)
 
 
 class GcRequest(msgspec.Struct):
@@ -433,6 +436,7 @@ async def get_streams(state: State) -> list[StreamInfo]:
                 table=f"streams.{stream.name}",
                 head=await state.stream_log.head(stream.name),
                 watermark=await stream_watermark(stream, state.engine),
+                on_schema_drift=stream.on_schema_drift,
             )
         )
     return out
@@ -459,16 +463,30 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
     """Publish one event (object) or a batch (array). Durable before this returns."""
     stream = _stream_or_404(state, name)
     rows = data if isinstance(data, list) else [data]
+    quarantined: list[tuple[object, str]] = []
     try:
-        validate_rows(stream, rows)
+        if stream.on_schema_drift == "evolve":
+            validate_rows_evolve(stream, rows)  # unknown fields welcome; incompatible types still reject
+        elif stream.on_schema_drift == "quarantine":
+            rows, quarantined = partition_rows(stream, rows)
+        else:
+            validate_rows(stream, rows)
     except StreamError as exc:
         raise ClientException(detail=exc.message) from exc
-    events = [
-        Event(payload=row, idempotency_key=str(row[stream.idempotency_key]) if stream.idempotency_key else None)
-        for row in rows
-    ]
-    result = await state.stream_log.append(name, events)
-    accepted = result.deduped.count(False)
+
+    def _event(row: dict) -> Event:
+        key = str(row[stream.idempotency_key]) if stream.idempotency_key and stream.idempotency_key in row else None
+        return Event(payload=row, idempotency_key=key)
+
+    result = await state.stream_log.append(name, [_event(row) for row in rows]) if rows else None
+    if quarantined:  # failures are durable too: the shadow stream keeps error + raw payload
+        shadow = quarantine_stream(stream)
+        await state.stream_log.append(
+            shadow.name, [Event(payload={"error": error, "payload": json.dumps(row)}) for row, error in quarantined]
+        )
+        async with state.apply_lock:
+            await flush_stream(shadow, state.stream_log, state.engine)
+    accepted = result.deduped.count(False) if result else 0
     async with state.apply_lock:  # micro-batch straight through: POST -> queryable
         materialized = await flush_stream(stream, state.stream_log, state.engine)
     if materialized:
@@ -476,9 +494,10 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
         await _enqueue_stream_consumers(state, stream)
     return PublishResult(
         accepted=accepted,
-        deduplicated=result.deduped.count(True),
-        last_offset=max(result.offsets) if result.offsets else None,
+        deduplicated=result.deduped.count(True) if result else 0,
+        last_offset=max(result.offsets) if result and result.offsets else None,
         materialized=materialized,
+        quarantined=len(quarantined),
     )
 
 
@@ -567,7 +586,8 @@ def create_app(
         stream_log = await project.open_stream_log()
         streams = {stream.name: stream for stream in project.streams}
         if streams:
-            await ensure_stream_tables(streams.values(), engine)
+            shadows = [quarantine_stream(s) for s in streams.values() if s.on_schema_drift == "quarantine"]
+            await ensure_stream_tables([*streams.values(), *shadows], engine)
         app.state.compiled = compiled
         app.state.store = store
         app.state.engine = engine

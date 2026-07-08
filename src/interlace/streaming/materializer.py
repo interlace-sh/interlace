@@ -26,7 +26,7 @@ from interlace.engines.base import EngineAdapter
 from interlace.graph.project import CompiledProject
 from interlace.ir.relation import TableRef
 from interlace.streaming.log import StreamLog
-from interlace.streaming.schema import arrow_schema, coerce_value, sql_columns
+from interlace.streaming.schema import arrow_schema, coerce_row, evolved_columns, sql_columns
 
 _SCHEMA = "streams"
 _WATERMARKS = TableRef(schema=_SCHEMA, name="_watermarks")
@@ -60,6 +60,14 @@ async def stream_watermark(stream: StreamDef, engine: EngineAdapter) -> int:
     return int(rows[0]["offset"] or 0) if rows else 0
 
 
+_ARROW_BY_SQL = {"BIGINT": pa.int64(), "DOUBLE": pa.float64(), "BOOLEAN": pa.bool_(), "TEXT": pa.string()}
+
+
+def quarantine_stream(stream: StreamDef) -> StreamDef:
+    """The shadow stream that receives a quarantine-mode stream's failing events."""
+    return StreamDef(name=f"{stream.name}__quarantine", schema={"error": "text", "payload": "json"})
+
+
 async def flush_stream(stream: StreamDef, log: StreamLog, engine: EngineAdapter, *, batch_rows: int = 5000) -> int:
     """Flush one micro-batch for ``stream``; returns rows materialized."""
     watermark = await stream_watermark(stream, engine)
@@ -67,22 +75,35 @@ async def flush_stream(stream: StreamDef, log: StreamLog, engine: EngineAdapter,
     if not events:
         return 0
 
+    evolve = stream.on_schema_drift == "evolve"
+    extras = evolved_columns(stream, [event.payload for event in events]) if evolve else {}
+
     schema = arrow_schema(stream)
+    fields = list(schema)[:-2] + [pa.field(n, _ARROW_BY_SQL[t]) for n, t in extras.items()] + list(schema)[-2:]
+    schema = pa.schema(fields)
     columns: dict[str, list[object]] = {field.name: [] for field in schema}
     for event in events:
-        for name, type_name in stream.schema.items():
-            columns[name].append(coerce_value(type_name, event.payload.get(name)))
+        row = coerce_row(stream, event.payload, extras)
+        for name in list(stream.schema) + list(extras):
+            columns[name].append(row.get(name))
         columns["_offset"].append(event.offset)
         columns["_ingested_at"].append(event.ts.replace(tzinfo=None))
     batch = pa.table(columns, schema=schema)
 
+    target = _sql(target_table(stream))
+    for name, sql_type in extras.items():  # schema evolution: new fields become real columns
+        column = exp.column(name).sql(dialect="duckdb", identify=True)
+        await engine.execute_sql(f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS {column} {sql_type}")
+
     stage = TableRef(schema=_SCHEMA, name=f"_stage_{stream.name}")
     await engine.load(stage, batch.to_reader(), "create")
     last = events[-1].offset
+    # BY NAME: an evolved batch has more columns than older target rows had
+    insert = f"INSERT INTO {target} {'BY NAME ' if evolve else ''}SELECT * FROM {_sql(stage)}"
     # data + watermark move together: crash-safe exactly-once into the warehouse
     await engine.execute_all(
         [
-            parse_one(f"INSERT INTO {_sql(target_table(stream))} SELECT * FROM {_sql(stage)}"),
+            parse_one(insert, read="duckdb"),
             parse_one(f"DELETE FROM {_sql(_WATERMARKS)} WHERE stream = '{stream.name}'"),
             parse_one(f"INSERT INTO {_sql(_WATERMARKS)} VALUES ('{stream.name}', {last})"),
             parse_one(f"DROP TABLE {_sql(stage)}"),

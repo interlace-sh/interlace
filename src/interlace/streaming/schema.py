@@ -103,27 +103,116 @@ def sql_columns(stream: StreamDef) -> list[tuple[str, str]]:
     return [*columns, ("_offset", "BIGINT"), ("_ingested_at", "TIMESTAMP")]
 
 
-def validate_rows(stream: StreamDef, rows: list[dict[str, Any]]) -> None:
-    """Reject payloads that drift from the declared schema (extra fields, wrong
-    types). Missing fields are allowed and load as NULL."""
+def _row_error(stream: StreamDef, row: Any, *, allow_unknown: bool) -> str | None:
+    """The first validation problem in ``row``, or None if it conforms."""
     declared = stream.schema
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            raise StreamError(f"stream {stream.name!r} event {index} must be an object")
+    if not isinstance(row, dict):
+        return "event must be an object"
+    if not allow_unknown:
         unknown = set(row) - set(declared)
         if unknown:
-            raise StreamError(
-                f"stream {stream.name!r} event {index} has undeclared fields {sorted(unknown)} "
-                f"(on_schema_drift: reject)"
-            )
+            return f"undeclared fields {sorted(unknown)}"
+    for name, value in row.items():
+        if value is None or name not in declared:
+            continue
+        type_name = declared[name].lower()
+        if allow_unknown and _coerce_declared(type_name, value) is not _UNCOERCIBLE:
+            continue  # evolve: safe coercion satisfies the declared type
+        expected = _PY_TYPES[type_name]
+        if isinstance(value, bool) and bool not in expected:  # bool is an int subtype; keep them apart
+            return f"field {name!r} must be {declared[name]}"
+        if not isinstance(value, expected):
+            return f"field {name!r} must be {declared[name]}, got {type(value).__name__}"
+    return None
+
+
+def validate_rows(stream: StreamDef, rows: list[dict[str, Any]]) -> None:
+    """``on_schema_drift: reject`` — raise on the first drifting payload.
+    Missing fields are allowed and load as NULL."""
+    for index, row in enumerate(rows):
+        error = _row_error(stream, row, allow_unknown=False)
+        if error:
+            raise StreamError(f"stream {stream.name!r} event {index} has {error} (on_schema_drift: reject)")
+
+
+def validate_rows_evolve(stream: StreamDef, rows: list[dict[str, Any]]) -> None:
+    """``on_schema_drift: evolve`` — unknown fields are welcome (they become
+    columns at flush time); declared fields accept safe coercions; an
+    *incompatible* type change still rejects — evolution never hides breakage."""
+    for index, row in enumerate(rows):
+        error = _row_error(stream, row, allow_unknown=True)
+        if error:
+            raise StreamError(f"stream {stream.name!r} event {index} has {error} (on_schema_drift: evolve)")
+
+
+def partition_rows(stream: StreamDef, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[tuple[Any, str]]]:
+    """``on_schema_drift: quarantine`` — split into (conforming, [(row, error), ...])."""
+    valid: list[dict[str, Any]] = []
+    failed: list[tuple[Any, str]] = []
+    for row in rows:
+        error = _row_error(stream, row, allow_unknown=False)
+        if error:
+            failed.append((row, error))
+        else:
+            valid.append(row)
+    return valid, failed
+
+
+_UNCOERCIBLE = object()
+
+
+def _coerce_declared(type_name: str, value: Any) -> Any:
+    """Coerce ``value`` toward a declared type, or ``_UNCOERCIBLE``. Widening only:
+    int fits a double; scalars stringify into text/json; nothing narrows."""
+    expected = _PY_TYPES[type_name]
+    if isinstance(value, bool):
+        return value if bool in expected else _UNCOERCIBLE
+    if isinstance(value, expected):
+        return value
+    if type_name in ("double", "float", "decimal") and isinstance(value, int):
+        return float(value)
+    if type_name in ("text", "string", "varchar", "json") and isinstance(value, (int, float, bool, dict, list)):
+        return json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+    return _UNCOERCIBLE
+
+
+def infer_sql_type(value: Any) -> str:
+    """SQL type for a field first seen in the data (evolve mode)."""
+    if isinstance(value, bool):
+        return "BOOLEAN"
+    if isinstance(value, int):
+        return "BIGINT"
+    if isinstance(value, float):
+        return "DOUBLE"
+    return "TEXT"  # strings, and dict/list stored as JSON text
+
+
+def evolved_columns(stream: StreamDef, rows: list[dict[str, Any]]) -> dict[str, str]:
+    """Undeclared fields present in ``rows`` -> inferred SQL type. Conflicting
+    inferences across a batch widen to TEXT."""
+    extras: dict[str, str] = {}
+    for row in rows:
         for name, value in row.items():
-            if value is None:
+            if name in stream.schema or value is None:
                 continue
-            expected = _PY_TYPES[declared[name].lower()]
-            if isinstance(value, bool) and bool not in expected:  # bool is an int subtype; keep them apart
-                raise StreamError(f"stream {stream.name!r} event {index} field {name!r} must be {declared[name]}")
-            if not isinstance(value, expected):
-                raise StreamError(
-                    f"stream {stream.name!r} event {index} field {name!r} must be {declared[name]}, "
-                    f"got {type(value).__name__}"
-                )
+            inferred = infer_sql_type(value)
+            if name in extras and extras[name] != inferred:
+                extras[name] = "TEXT"
+            else:
+                extras.setdefault(name, inferred)
+    return extras
+
+
+def coerce_row(stream: StreamDef, row: dict[str, Any], extras: dict[str, str]) -> dict[str, Any]:
+    """A row ready for the Arrow builder: declared fields coerced, extras stringified as needed."""
+    out: dict[str, Any] = {}
+    for name, type_name in stream.schema.items():
+        value = row.get(name)
+        coerced = _coerce_declared(type_name.lower(), value) if value is not None else None
+        out[name] = coerce_value(type_name, coerced if coerced is not _UNCOERCIBLE else None)
+    for name, sql_type in extras.items():
+        value = row.get(name)
+        if value is not None and sql_type == "TEXT" and not isinstance(value, str):
+            value = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+        out[name] = value
+    return out

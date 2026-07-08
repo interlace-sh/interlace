@@ -92,7 +92,7 @@ async def test_run_with_selection(env: tuple[DuckDBAdapter, SqliteStateStore]) -
 
 def test_run_command_on_example(tmp_path: Path) -> None:
     project_dir = tmp_path / "getting_started"
-    shutil.copytree(EXAMPLE, project_dir)
+    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
 
     result = runner.invoke(app, ["run", "--env", "dev", "--path", str(project_dir)])
     assert result.exit_code == 0, result.output
@@ -107,7 +107,7 @@ def test_run_command_on_example(tmp_path: Path) -> None:
 
 def test_select_and_restate_commands_on_example(tmp_path: Path) -> None:
     project_dir = tmp_path / "getting_started"
-    shutil.copytree(EXAMPLE, project_dir)
+    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
 
     # build the ancestors of event_totals, then restate just that one model
     built = runner.invoke(app, ["run", "--env", "dev", "--path", str(project_dir), "--select", "+event_totals"])

@@ -467,8 +467,21 @@ durable before the 200, deduplicated on retry. The materializer flushes micro-ba
 log; SQL models just ``FROM streams.<name>``. Publish flushes inline (POST → queryable in one
 request); the combined daemon's loop catches up any residue. A flush **triggers the models
 that read the stream** (plus their downstream closure) through the durable run queue, with the
-watermark as the idempotency key — repeated flushes debounce, new data re-enqueues. Deferred:
-broker backends, evolve/quarantine drift modes, rate limits, retention sweeps.
+watermark as the idempotency key — repeated flushes debounce, new data re-enqueues.
+
+All three ``on_schema_drift`` modes are implemented:
+- **reject** (default): unknown fields / wrong types → 400 before durability; missing → NULL.
+- **evolve**: unknown fields become real columns at flush time (type inferred from data;
+  conflicting inferences widen to TEXT; ALTER ADD COLUMN IF NOT EXISTS + INSERT BY NAME —
+  verified on DuckLake). Declared fields accept *widening* coercions (int→double,
+  scalar→text/json); an incompatible type change still rejects — evolution never hides
+  breakage. The log stores raw payloads; evolution happens at flush, so daemon catch-up
+  evolves identically.
+- **quarantine**: failing events divert durably to a shadow stream
+  ``<name>__quarantine`` (error + raw payload JSON, materialized to its own table);
+  valid events flow; the publish response reports the quarantined count.
+
+Deferred: broker backends, rate limits, retention sweeps.
 
 ### 9.1 `StreamLog` — the durable ingestion log
 

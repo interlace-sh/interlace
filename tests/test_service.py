@@ -19,7 +19,8 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
 
 def _make_project(tmp_path: Path) -> Path:
     project_dir = tmp_path / "getting_started"
-    shutil.copytree(EXAMPLE, project_dir)
+    # never copy runtime state: a locally-exercised example must not poison tests
+    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
     return project_dir
 
 
@@ -168,7 +169,7 @@ def test_stream_publish_and_inspect(tmp_path: Path) -> None:
         assert [(s["name"], s["head"], s["watermark"]) for s in streams] == [("clicks", 0, 0)]
 
         one = client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0}).json()
-        assert one == {"accepted": 1, "deduplicated": 0, "last_offset": 1, "materialized": 1}
+        assert one == {"accepted": 1, "deduplicated": 0, "last_offset": 1, "materialized": 1, "quarantined": 0}
 
         batch = client.post(
             "/streams/clicks",
@@ -185,6 +186,48 @@ def test_stream_publish_and_inspect(tmp_path: Path) -> None:
         assert client.post("/streams/clicks", json={"event_id": "e3", "nope": 1}).status_code == 400
         assert client.post("/streams/ghost", json={}).status_code == 404
         assert any(e["type"] == "stream.flushed" for e in client.get("/events").json())
+
+
+def test_stream_evolve_mode_over_http(tmp_path: Path) -> None:
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "signals_stream.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream("signals", schema={"id": "string"}, on_schema_drift="evolve")\n'
+        "def signals(event):\n    return event\n"
+    )
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        assert client.get("/streams").json()[0]["on_schema_drift"] == "evolve"
+        first = client.post("/streams/signals", json={"id": "a"}).json()
+        assert first["materialized"] == 1
+
+        drifted = client.post("/streams/signals", json={"id": "b", "region": "eu", "score": 9}).json()
+        assert drifted["materialized"] == 1  # new fields became columns, not errors
+
+        detail = client.get("/streams/signals").json()
+        assert detail["recent"][-1]["region"] == "eu"
+
+
+def test_stream_quarantine_mode_over_http(tmp_path: Path) -> None:
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "orders_stream.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream("orders", schema={"id": "string", "total": "double"}, on_schema_drift="quarantine")\n'
+        "def orders(event):\n    return event\n"
+    )
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        result = client.post(
+            "/streams/orders",
+            json=[
+                {"id": "o1", "total": 5.0},
+                {"id": "o2", "total": "not-a-number"},  # would 400 under reject
+                {"id": "o3", "rogue_field": 1},
+            ],
+        ).json()
+        assert result["accepted"] == 1 and result["quarantined"] == 2
+        assert result["materialized"] == 1
+
+        detail = client.get("/streams/orders").json()
+        assert detail["head"] == 1 and detail["watermark"] == 1  # only the good event flowed
 
 
 def test_stream_flush_enqueues_consumer_models(tmp_path: Path) -> None:

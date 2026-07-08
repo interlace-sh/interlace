@@ -47,7 +47,7 @@ async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
 
 async def test_default_config_applies_onto_ducklake(tmp_path: Path) -> None:
     project_dir = tmp_path / "getting_started"
-    shutil.copytree(EXAMPLE, project_dir)
+    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
     project = Project.load(project_dir)
     assert project.config.database.startswith("ducklake:")
 

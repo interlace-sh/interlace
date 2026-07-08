@@ -92,6 +92,64 @@ def test_validate_rejects_drift_and_wrong_types() -> None:
         validate_rows(CLICKS_PLAIN, [{"user": True}])
 
 
+def test_evolve_validation_welcomes_new_fields_but_not_broken_types() -> None:
+    from interlace.streaming.schema import validate_rows_evolve
+
+    validate_rows_evolve(CLICKS_PLAIN, [{"event_id": "e1", "brand_new": 42, "nested": {"a": 1}}])
+    validate_rows_evolve(CLICKS_PLAIN, [{"amount": 3}])  # int fits a declared double
+    validate_rows_evolve(CLICKS_PLAIN, [{"event_id": 123}])  # number stringifies into declared text
+    with pytest.raises(StreamError, match="must be double"):
+        validate_rows_evolve(CLICKS_PLAIN, [{"amount": "NaN-ish"}])  # narrowing never coerces
+
+
+def test_evolved_columns_inference() -> None:
+    from interlace.streaming.schema import evolved_columns
+
+    extras = evolved_columns(
+        CLICKS_PLAIN,
+        [
+            {"event_id": "e1", "clicks": 3, "ratio": 0.5, "vip": True, "meta": {"a": 1}},
+            {"event_id": "e2", "clicks": "many"},  # conflicting inference widens to TEXT
+        ],
+    )
+    assert extras == {"clicks": "TEXT", "ratio": "DOUBLE", "vip": "BOOLEAN", "meta": "TEXT"}
+
+
+def test_partition_rows_for_quarantine() -> None:
+    from interlace.streaming.schema import partition_rows
+
+    valid, failed = partition_rows(
+        CLICKS_PLAIN,
+        [{"event_id": "ok", "amount": 1.0}, {"event_id": "bad", "rogue": 1}, {"amount": "nope"}],
+    )
+    assert [r["event_id"] for r in valid] == ["ok"]
+    assert [error for _, error in failed] == ["undeclared fields ['rogue']", "field 'amount' must be double, got str"]
+
+
+async def test_flush_evolves_new_columns(log: SqliteStreamLog) -> None:
+    evolving = StreamDef(name="clicks", schema={"event_id": "string"}, on_schema_drift="evolve")
+    engine = DuckDBAdapter.in_memory()
+    await ensure_stream_tables([evolving], engine)
+
+    await log.append("clicks", [Event({"event_id": "e1"})])
+    await flush_stream(evolving, log, engine)  # first batch: declared shape only
+
+    await log.append("clicks", [Event({"event_id": "e2", "country": "nz", "score": 7})])
+    await flush_stream(evolving, log, engine)  # drifted batch: columns appear
+
+    rows = await _rows(engine, "SELECT event_id, country, score FROM streams.clicks ORDER BY _offset")
+    assert rows == [
+        {"event_id": "e1", "country": None, "score": None},  # pre-drift rows read as NULL
+        {"event_id": "e2", "country": "nz", "score": 7},
+    ]
+
+    await log.append("clicks", [Event({"event_id": "e3"})])  # field absent again: still fine
+    await flush_stream(evolving, log, engine)
+    rows = await _rows(engine, "SELECT count(*) AS n FROM streams.clicks")
+    assert rows == [{"n": 3}]
+    engine.close()
+
+
 def test_arrow_schema_appends_ingestion_metadata() -> None:
     schema = arrow_schema(CLICKS_PLAIN)
     assert schema.names == ["event_id", "user", "amount", "at", "_offset", "_ingested_at"]

@@ -17,6 +17,7 @@ declared fields plus ``_offset`` and ``_ingested_at``, so SQL models simply
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 import pyarrow as pa
 from sqlglot import exp, parse_one
@@ -25,6 +26,7 @@ from interlace.dsl.decorators import StreamDef
 from interlace.engines.base import EngineAdapter
 from interlace.graph.project import CompiledProject
 from interlace.ir.relation import TableRef
+from interlace.state.interval import parse_grain
 from interlace.streaming.log import StreamLog
 from interlace.streaming.schema import arrow_schema, coerce_row, evolved_columns, sql_columns
 
@@ -65,7 +67,9 @@ _ARROW_BY_SQL = {"BIGINT": pa.int64(), "DOUBLE": pa.float64(), "BOOLEAN": pa.boo
 
 def quarantine_stream(stream: StreamDef) -> StreamDef:
     """The shadow stream that receives a quarantine-mode stream's failing events."""
-    return StreamDef(name=f"{stream.name}__quarantine", schema={"error": "text", "payload": "json"})
+    return StreamDef(
+        name=f"{stream.name}__quarantine", schema={"error": "text", "payload": "json"}, retention=stream.retention
+    )
 
 
 async def flush_stream(stream: StreamDef, log: StreamLog, engine: EngineAdapter, *, batch_rows: int = 5000) -> int:
@@ -122,6 +126,29 @@ async def flush_streams(
         if count:
             flushed[stream.name] = count
     return flushed
+
+
+async def sweep_streams(streams: Iterable[StreamDef], log: StreamLog, engine: EngineAdapter) -> dict[str, int]:
+    """Apply retention: trim events that are both **materialized** (at or below the
+    watermark) and **older** than the stream's declared retention. Unflushed events
+    survive regardless of age; streams without a retention are never trimmed."""
+    removed: dict[str, int] = {}
+    expanded: list[StreamDef] = []
+    for stream in streams:
+        expanded.append(stream)
+        if stream.on_schema_drift == "quarantine":
+            expanded.append(quarantine_stream(stream))
+    for stream in expanded:
+        if stream.retention is None:
+            continue
+        window = parse_grain(stream.retention)
+        watermark = await stream_watermark(stream, engine)
+        if watermark == 0:
+            continue
+        count = await log.trim(stream.name, before_offset=watermark + 1, before_ts=datetime.now(UTC) - window)
+        if count:
+            removed[stream.name] = count
+    return removed
 
 
 def stream_consumers(compiled: CompiledProject, stream_name: str) -> set[str]:

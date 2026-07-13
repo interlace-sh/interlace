@@ -49,6 +49,7 @@ from interlace.streaming.materializer import (
     quarantine_stream,
     stream_consumers,
     stream_watermark,
+    sweep_streams,
 )
 from interlace.streaming.schema import partition_rows, validate_rows, validate_rows_evolve
 
@@ -607,6 +608,7 @@ def create_app(
                         flushed = await flush_streams(streams.values(), stream_log, engine)
                     for stream_name in flushed:
                         await _enqueue_stream_consumers(app.state, streams[stream_name])
+                    await sweep_streams(streams.values(), stream_log, engine)  # apply retention
                 await asyncio.sleep(scheduler_interval)
 
         loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None

@@ -481,7 +481,7 @@ All three ``on_schema_drift`` modes are implemented:
   ``<name>__quarantine`` (error + raw payload JSON, materialized to its own table);
   valid events flow; the publish response reports the quarantined count.
 
-Deferred: broker backends, rate limits, retention sweeps.
+Deferred: broker backends, rate limits.
 
 ### 9.1 `StreamLog` — the durable ingestion log
 

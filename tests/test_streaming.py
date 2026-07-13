@@ -205,3 +205,30 @@ async def test_sql_model_reads_stream_table(log: SqliteStreamLog, tmp_path: Path
     assert await _rows(engine, "SELECT total FROM dev__main.click_totals") == [{"total": 3.0}]
     await store.close()
     engine.close()
+
+
+async def test_sweep_respects_watermark_and_retention(log: SqliteStreamLog) -> None:
+    from interlace.streaming.materializer import quarantine_stream, sweep_streams
+
+    kept = StreamDef(name="kept", schema={"event_id": "string"}, retention="7d")
+    expired = StreamDef(name="expired", schema={"event_id": "string"}, retention="0s")
+    forever = StreamDef(name="forever", schema={"event_id": "string"})  # no retention: never trimmed
+    engine = DuckDBAdapter.in_memory()
+    await ensure_stream_tables([kept, expired, forever], engine)
+
+    for stream in (kept, expired, forever):
+        await log.append(stream.name, [Event({"event_id": "e1"}), Event({"event_id": "e2"})])
+    await flush_stream(kept, log, engine)
+    await flush_stream(expired, log, engine, batch_rows=1)  # watermark 1: e2 stays unmaterialized
+    await flush_stream(forever, log, engine)
+
+    removed = await sweep_streams([kept, expired, forever], log, engine)
+
+    assert removed == {"expired": 1}  # only materialized + expired events go
+    assert [e.offset for e in await log.read("expired", 0, 10)] == [2]  # unflushed survives 0s retention
+    assert len(await log.read("kept", 0, 10)) == 2  # young events survive 7d retention
+    assert len(await log.read("forever", 0, 10)) == 2
+
+    quarantined = quarantine_stream(expired)
+    assert quarantined.retention == "0s"  # shadow stream inherits the parent's retention
+    engine.close()

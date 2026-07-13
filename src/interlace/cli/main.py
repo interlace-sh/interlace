@@ -187,6 +187,7 @@ def gc(
 async def _gc(path: Path, grace: str, dry_run: bool) -> None:
     from interlace.state.interval import parse_grain
     from interlace.state.janitor import gc as run_gc
+    from interlace.streaming.materializer import sweep_streams
 
     project = Project.load(path)
     engine = project.open_engine()
@@ -200,6 +201,14 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
         )
         for table in result.dropped_tables:
             console.print(f"  - {table}")
+        if project.streams and not dry_run:
+            log = await project.open_stream_log()
+            try:
+                swept = await sweep_streams(project.streams, log, engine)
+            finally:
+                await log.close()
+            if swept:
+                console.print("Stream retention: " + ", ".join(f"{k} -{v}" for k, v in swept.items()))
     finally:
         await state.close()
         engine.close()

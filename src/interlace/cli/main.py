@@ -27,6 +27,23 @@ from interlace.scheduler.worker import drain
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Python/SQL-first data platform.")
 console = Console()
 
+
+def _version_callback(value: bool) -> None:
+    if value:
+        from interlace import __version__
+
+        console.print(f"interlace {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False, "--version", "-v", callback=_version_callback, is_eager=True, help="Show the version and exit."
+    ),
+) -> None:
+    pass
+
 _ENV = typer.Option("dev", "--env", "-e", help="Target data environment.")
 _PATH = typer.Option(Path("."), "--path", "-p", help="Project root.")
 _SELECT = typer.Option([], "--select", "-s", help="Model selectors: name, +name, name+, tag:x.")

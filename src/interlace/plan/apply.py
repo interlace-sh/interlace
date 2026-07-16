@@ -14,6 +14,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import pyarrow as pa
+from sqlglot import exp
+
 from interlace.checks.runner import CheckOutcome, run_checks
 from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
@@ -24,7 +27,7 @@ from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
 from interlace.plan.plan import Plan
 from interlace.plan.resolve import resolve_model_query
-from interlace.runtime.python_model import build_python_model
+from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.state.store import StateStore
 from interlace.strategies import resolve_strategy
 
@@ -42,6 +45,59 @@ def _resolve_export_path(base_path: Path | None, path: str) -> str:
     if target.is_absolute():
         return str(target)
     return str((base_path or Path.cwd()) / target)
+
+
+async def _merge_python_output(
+    model: CompiledModel,
+    engine: EngineAdapter,
+    target: TableRef,
+    reader: pa.RecordBatchReader,
+    *,
+    exists: bool,
+) -> None:
+    """Stage a Python model's Arrow output and apply its keyed strategy in SQL.
+
+    The output lands in a stage table (CREATE OR REPLACE, so a crashed run's
+    leftover is harmless), the target is evolved additively when the output grew
+    new columns, and the strategy's statements run atomically against a source
+    select aligned to the target's column set. The stage is dropped in the same
+    batch.
+    """
+    stage = replace(target, name=f"{target.name}__stage")
+    await engine.load(stage, reader, "create")
+    stage_table = exp.table_(stage.name, db=stage.schema, catalog=stage.catalog)
+
+    source: exp.Query = exp.select("*").from_(stage_table.copy())
+    pre_statements: list[exp.Expression] = []
+    if exists:  # align the stage to the target: add new columns, NULL-fill vanished ones
+        target_columns = await engine.describe(target)
+        stage_columns = await engine.describe(stage)
+        target_expr = exp.table_(target.name, db=target.schema, catalog=target.catalog)
+        for column, dtype in stage_columns.items():
+            if column not in target_columns:
+                pre_statements.append(
+                    exp.Alter(
+                        this=target_expr.copy(),
+                        kind="TABLE",
+                        actions=[
+                            exp.ColumnDef(this=exp.to_identifier(column), kind=exp.DataType.build(dtype)),
+                        ],
+                    )
+                )
+                target_columns[column] = dtype
+        projection = [
+            exp.column(column)
+            if column in stage_columns
+            else exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column)
+            for column, dtype in target_columns.items()
+        ]
+        source = exp.select(*projection).from_(stage_table.copy())
+
+    relation = SqlRelation(ast=source, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema())
+    strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
+    statements = strategy.plan_statements(relation, target, engine.caps, None)
+    drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
+    await engine.execute_all([*pre_statements, *statements, drop_stage])
 
 
 async def _gate_checks(
@@ -105,10 +161,23 @@ async def apply(
         if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
             if model.export is not None:
                 raise PlanError(f"Python model {snapshot.name!r} cannot be a sink yet; write SQL over its output")
-            if model.materialise != "table" or model.strategy != "full":
-                raise PlanError(f"Python model {snapshot.name!r} supports materialise='table' strategy='full' for now")
+            if model.materialise != "table":
+                raise PlanError(f"Python model {snapshot.name!r} must materialise as a table")
+            if model.strategy == "incremental_by_time":
+                raise PlanError(
+                    f"Python model {snapshot.name!r} cannot use incremental_by_time; "
+                    f"use cursor= with merge_by_key instead"
+                )
+            recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
+            previous = recorded_self.physical_table if recorded_self is not None else None
             await engine.create_schema(snapshot.physical_table.schema)
-            await build_python_model(model, compiled, engine, snapshot.physical_table, physical=physical)
+            if model.strategy == "full":
+                await build_python_model(
+                    model, compiled, engine, snapshot.physical_table, physical=physical, previous=previous
+                )
+            else:  # keyed strategy: stage the Arrow output, then merge it in SQL
+                reader = await run_python_model(model, compiled, engine, physical, previous)
+                await _merge_python_output(model, engine, snapshot.physical_table, reader, exists=previous is not None)
             if model.columns:
                 validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
             await state.add_snapshot(snapshot)

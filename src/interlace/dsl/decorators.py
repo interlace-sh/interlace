@@ -57,6 +57,7 @@ class ModelDef:
     kind: str = "batch"
     interval: str | None = None  # grain for incremental_by_time (e.g. "1d")
     time_column: str | None = None  # partition column for incremental_by_time
+    cursor: str | None = None  # column whose max is injected into the fn's `cursor` param
     tags: tuple[str, ...] = ()
     owner: str | None = None
     description: str | None = None
@@ -129,6 +130,7 @@ def model(
     kind: str = "batch",
     interval: str | None = None,
     time_column: str | None = None,
+    cursor: str | None = None,
     tags: str | Sequence[str] = (),
     owner: str | None = None,
     description: str | None = None,
@@ -137,7 +139,13 @@ def model(
     schedule: dict[str, str] | None = None,
     checks: Sequence[dict[str, Any] | CheckSpec] | None = None,
 ) -> Callable[[ModelFn], ModelFn]:
-    """Declare a Python model. The function returns a ``Relation`` (or composes one)."""
+    """Declare a Python model. The function returns a ``Relation`` (or composes one).
+
+    ``cursor`` names a column of this model's own output; at run time the max of
+    that column in the previous materialisation is injected into the function's
+    ``cursor`` parameter (``None`` on first build), so incremental extractors can
+    resume from where the warehouse actually is instead of tracking side state.
+    """
     if materialise not in _MATERIALISATIONS:
         raise DefinitionError(f"unknown materialise {materialise!r}; expected one of {sorted(_MATERIALISATIONS)}")
     if materialise == "ephemeral":
@@ -160,6 +168,7 @@ def model(
                 kind=kind,
                 interval=interval,
                 time_column=time_column,
+                cursor=cursor,
                 tags=_as_tuple(tags),
                 owner=owner,
                 description=description,

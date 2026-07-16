@@ -45,6 +45,7 @@ class CompiledModel:
     strategy: str
     key: tuple[str, ...]  # business key for keyed strategies (merge_by_key)
     time_column: str | None  # partition column for incremental_by_time
+    cursor: str | None  # column whose max is injected into a Python model's `cursor` param
     interval: str | None  # grain for incremental_by_time (e.g. "1d")
     tags: tuple[str, ...]  # for tag: selection
     schedule: dict[str, str] | None  # cron/interval schedule for the trigger engine
@@ -148,6 +149,7 @@ def compile_models(
             "kind": definition.kind,
             "interval": definition.interval,
             "time_column": definition.time_column,
+            "cursor": definition.cursor,
             "export": {"to": definition.export.to, "path": definition.export.path} if definition.export else None,
             "dialect": dialect,
         }
@@ -182,6 +184,7 @@ def compile_models(
             strategy=definition.strategy,
             key=definition.key,
             time_column=definition.time_column,
+            cursor=definition.cursor,
             interval=definition.interval,
             tags=definition.tags,
             schedule=definition.schedule,

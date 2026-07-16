@@ -119,13 +119,25 @@ async def test_unknown_parameter_is_rejected(env: tuple[DuckDBAdapter, SqliteSta
         await _build(env, [RAW, ModelDef(name="broken", fn=broken, depends_on=("raw",))])
 
 
-async def test_python_model_requires_full_table(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+async def test_python_model_supports_keyed_strategies(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     def keyed(raw: RelationHandle) -> pa.Table:
         return raw.table()
 
     keyed_model = ModelDef(name="keyed", fn=keyed, depends_on=("raw",), strategy="merge_by_key", key=("id",))
-    with pytest.raises(PlanError, match="strategy='full'"):
-        await _build(env, [RAW, keyed_model])
+    await _build(env, [RAW, keyed_model])
+    rows = await _rows(env[0], "SELECT id FROM dev__main.keyed ORDER BY id")
+    assert [row["id"] for row in rows] == [1, 2, 3]
+
+
+async def test_python_model_rejects_incremental_by_time(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    def windowed(raw: RelationHandle) -> pa.Table:
+        return raw.table()
+
+    windowed_model = ModelDef(
+        name="windowed", fn=windowed, depends_on=("raw",), strategy="incremental_by_time", time_column="ts"
+    )
+    with pytest.raises(PlanError, match="incremental_by_time"):
+        await _build(env, [RAW, windowed_model])
 
 
 async def test_handle_is_single_pass(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

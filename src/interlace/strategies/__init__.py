@@ -7,12 +7,14 @@ from collections.abc import Sequence
 from interlace.exceptions import PlanError
 from interlace.strategies.base import Strategy, table_expr
 from interlace.strategies.full import FullRefresh
+from interlace.strategies.full_merge import FullMerge
 from interlace.strategies.incremental_by_time import IncrementalByTime
 from interlace.strategies.merge_by_key import MergeByKey
 from interlace.strategies.scd_type_2 import ScdType2
 from interlace.strategies.view import View
 
 __all__ = [
+    "FullMerge",
     "FullRefresh",
     "IncrementalByTime",
     "MergeByKey",
@@ -32,7 +34,7 @@ def resolve_strategy(
 ) -> Strategy:
     """Pick the strategy for a model's ``materialise``/``strategy`` config.
 
-    Supports ``view``; ``table`` + ``full`` / ``merge_by_key`` /
+    Supports ``view``; ``table`` + ``full`` / ``merge_by_key`` / ``full_merge`` /
     ``incremental_by_time`` / ``scd_type_2`` (alias ``scd2``).
     """
     if materialise == "view":
@@ -44,6 +46,10 @@ def resolve_strategy(
             if not key:
                 raise PlanError("merge_by_key requires a key", details={"materialise": materialise})
             return MergeByKey(tuple(key))
+        if strategy == "full_merge":
+            if not key:
+                raise PlanError("full_merge requires a key", details={"materialise": materialise})
+            return FullMerge(tuple(key))
         if strategy == "incremental_by_time":
             if not time_column:
                 raise PlanError("incremental_by_time requires a time_column", details={"materialise": materialise})

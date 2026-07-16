@@ -150,7 +150,17 @@ def compile_models(
             "interval": definition.interval,
             "time_column": definition.time_column,
             "cursor": definition.cursor,
-            "export": {"to": definition.export.to, "path": definition.export.path} if definition.export else None,
+            "export": (
+                {
+                    "to": definition.export.to,
+                    "path": definition.export.path,
+                    "target": definition.export.target,
+                    "mode": definition.export.mode,
+                    "key": list(definition.export.key),
+                }
+                if definition.export
+                else None
+            ),
             "dialect": dialect,
         }
         query = _fingerprint_query(definition, ast)

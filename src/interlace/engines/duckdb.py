@@ -51,6 +51,11 @@ class DuckDBAdapter(EngineAdapter):
     def close(self) -> None:
         self._conn.close()
 
+    def attach(self, alias: str, uri: str) -> None:
+        """ATTACH another database (duckdb/sqlite/postgres/... URI) under ``alias``."""
+        escaped = uri.replace("'", "''")
+        self._conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {exp.to_identifier(alias).sql('duckdb')}")
+
     # --- identifier helpers -------------------------------------------------
 
     def _table_sql(self, table: TableRef) -> str:

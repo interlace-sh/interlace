@@ -28,6 +28,10 @@ class ProjectConfig(BaseModel):
     database: str = "ducklake:.interlace/warehouse.ducklake"
     quack_token: str | None = None  # token for quack: databases (or INTERLACE_QUACK_TOKEN)
     stream_path: str = ".interlace/streams.db"  # durable stream log (SQLite WAL)
+    # Databases to ATTACH to the warehouse engine at open: alias -> DuckDB attach
+    # URI/path (a .duckdb file, "postgres:...", "sqlite:...", ...). Models can read
+    # them and table exports can write to them as <alias>.<schema>.<table>.
+    attach: dict[str, str] = Field(default_factory=dict)
     model_paths: list[str] = Field(default_factory=lambda: ["models"])
 
 

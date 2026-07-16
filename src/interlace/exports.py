@@ -2,10 +2,18 @@
 
 A model with an ``export`` block is a *sink*: it produces no managed table and no
 environment view; instead its (resolved) query result is written to a
-destination. v1 supports file formats via DuckDB ``COPY``; database tables and
-SaaS APIs will arrive through a ``SinkConnector`` (Arrow read -> push) with
-upsert/append modes and a delivery ledger. Exports are side-effecting — no
-view-swap rollback (see docs/architecture/v2-design.md §6).
+destination. Two families:
+
+- **files** — ``to: parquet|csv|json`` + ``path``, via DuckDB ``COPY``.
+- **tables** (reverse ETL) — ``to: table`` + ``target: <alias>.<schema>.<table>``
+  where ``alias`` is a database attached via the project's ``attach:`` config
+  (Postgres, SQLite, another DuckDB, ...). ``mode`` picks the delivery:
+  ``replace`` (DELETE all + INSERT — the live table is never dropped, so grants
+  and readers survive), ``append``, or the keyed ``merge_by_key`` /
+  ``full_merge`` — which reuse the *same strategy AST builders* as managed
+  models, pointed at the external catalog.
+
+Exports are side-effecting — no view-swap rollback (see v2-design §6).
 """
 
 from __future__ import annotations
@@ -16,29 +24,88 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
+from interlace.engines.base import EngineCaps
 from interlace.exceptions import ConfigurationError, PlanError
+from interlace.ir.relation import EngineRef, SqlRelation, TableRef
+from interlace.ir.schema import empty_schema
 
 _FILE_FORMATS = frozenset({"parquet", "csv", "json"})
+_TABLE_MODES = frozenset({"replace", "append", "merge_by_key", "full_merge"})
 
 
 @dataclass(frozen=True)
 class ExportConfig:
-    """Where a sink writes. ``to`` is the destination type; ``path`` the target."""
+    """Where a sink writes. ``to`` is the destination type; ``path`` (files) or
+    ``target`` + ``mode`` (+ ``key`` for keyed modes) for tables."""
 
     to: str
-    path: str
+    path: str = ""
+    target: str = ""
+    mode: str = "replace"
+    key: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> ExportConfig:
-        if not isinstance(data, dict) or "to" not in data or "path" not in data:
-            raise ConfigurationError("export requires 'to' and 'path'", details={"got": data})
-        return cls(to=str(data["to"]), path=str(data["path"]))
+        if not isinstance(data, dict) or "to" not in data:
+            raise ConfigurationError("export requires 'to'", details={"got": data})
+        to = str(data["to"])
+        key = data.get("key") or ()
+        config = cls(
+            to=to,
+            path=str(data.get("path", "")),
+            target=str(data.get("target", "")),
+            mode=str(data.get("mode", "replace")),
+            key=(key,) if isinstance(key, str) else tuple(key),
+        )
+        if to in _FILE_FORMATS and not config.path:
+            raise ConfigurationError(f"export to {to!r} requires 'path'", details={"got": data})
+        if to == "table":
+            if not config.target:
+                raise ConfigurationError("export to table requires 'target'", details={"got": data})
+            if config.mode not in _TABLE_MODES:
+                raise ConfigurationError(f"unknown export mode {config.mode!r}; expected one of {sorted(_TABLE_MODES)}")
+            if config.mode in ("merge_by_key", "full_merge") and not config.key:
+                raise ConfigurationError(f"export mode {config.mode!r} requires 'key'", details={"got": data})
+        return config
+
+
+def _target_ref(target: str) -> TableRef:
+    parts = target.split(".")
+    if len(parts) == 3:
+        return TableRef(catalog=parts[0], schema=parts[1], name=parts[2])
+    if len(parts) == 2:
+        return TableRef(catalog=parts[0], schema="main", name=parts[1])
+    raise PlanError(
+        f"export target {target!r} must be <alias>.<schema>.<table> (or <alias>.<table> for the main schema)"
+    )
+
+
+def table_export_statements(export: ExportConfig, query: exp.Expression, dialect: str) -> list[exp.Expression]:
+    """Deliver ``query`` into the external table — never DROP it (grants/readers survive)."""
+    from interlace.strategies import FullMerge, MergeByKey  # runtime import: strategies build on ir like this module
+
+    target = _target_ref(export.target)
+    table = exp.table_(target.name, db=target.schema, catalog=target.catalog)
+    relation = SqlRelation(ast=query, engine=EngineRef(name="default", dialect=dialect), schema=empty_schema())
+
+    if export.mode == "merge_by_key":
+        return MergeByKey(export.key).plan_statements(relation, target, EngineCaps())
+    if export.mode == "full_merge":
+        return FullMerge(export.key).plan_statements(relation, target, EngineCaps())
+
+    derived = exp.select("*").from_(exp.Subquery(this=query.copy(), alias=exp.TableAlias(this="_s")))
+    ensure = exp.Create(this=table.copy(), kind="TABLE", exists=True, expression=derived.copy().limit(0))
+    insert = exp.Insert(this=table.copy(), expression=query.copy())
+    if export.mode == "append":
+        return [ensure, insert]
+    wipe = exp.Delete(this=table.copy())  # replace: empty in place, never drop
+    return [ensure, wipe, insert]
 
 
 def export_statements(
     export: ExportConfig, query: exp.Expression, resolved_path: str, dialect: str
 ) -> list[exp.Expression]:
-    """Build the statements that write ``query`` to the export destination."""
+    """Build the statements that write ``query`` to a file export destination."""
     if export.to not in _FILE_FORMATS:
         raise PlanError(f"unsupported export destination: {export.to!r}", details={"to": export.to})
     options = "FORMAT csv, HEADER" if export.to == "csv" else f"FORMAT {export.to}"

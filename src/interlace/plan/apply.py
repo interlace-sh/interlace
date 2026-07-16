@@ -21,7 +21,7 @@ from interlace.checks.runner import CheckOutcome, run_checks
 from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.exceptions import CheckError, PlanError
-from interlace.exports import export_statements
+from interlace.exports import export_statements, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
@@ -86,9 +86,11 @@ async def _merge_python_output(
                 )
                 target_columns[column] = dtype
         projection = [
-            exp.column(column)
-            if column in stage_columns
-            else exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column)
+            (
+                exp.column(column)
+                if column in stage_columns
+                else exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column)
+            )
             for column, dtype in target_columns.items()
         ]
         source = exp.select(*projection).from_(stage_table.copy())
@@ -188,9 +190,12 @@ async def apply(
         resolved = resolve_model_query(model, compiled, physical)
 
         if model.export is not None:  # sink: push the result to a destination, no table/view
-            export_path = _resolve_export_path(base_path, model.export.path)
-            Path(export_path).parent.mkdir(parents=True, exist_ok=True)
-            await engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
+            if model.export.to == "table":  # reverse ETL into an attached database
+                await engine.execute_all(table_export_statements(model.export, resolved, model.dialect))
+            else:
+                export_path = _resolve_export_path(base_path, model.export.path)
+                Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+                await engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
             continue

@@ -63,7 +63,13 @@ class Project:
             path = self.root / database
             path.parent.mkdir(parents=True, exist_ok=True)
             database = str(path)
-        return DuckDBAdapter.connect(database)
+        engine = DuckDBAdapter.connect(database)
+        for alias, uri in self.config.attach.items():  # reads + table exports reach these
+            target = uri
+            if "://" not in uri and ":" not in uri.split("/")[0] and not Path(uri).is_absolute():
+                target = str(self.root / uri)  # bare relative path: resolve against the project
+            engine.attach(alias, target)
+        return engine
 
     async def open_state(self) -> SqliteStateStore:
         path = self.root / self.config.state_path

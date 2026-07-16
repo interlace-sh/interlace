@@ -341,6 +341,14 @@ checks as a physical-table map.
 
 ### Reverse ETL & external sinks (where the snapshot+view layer stops)
 
+**Status (implemented, July 2026).** ``attach: {alias: uri}`` config wires external databases
+(Postgres/SQLite/DuckDB/...) into the warehouse engine at open; sink models declare
+``export: {to: table, target: <alias>.<schema>.<table>, mode: ...}``. Modes: ``replace``
+(DELETE + INSERT in place — the live table is never dropped, so grants and readers survive),
+``append``, and keyed ``merge_by_key`` / ``full_merge``, which reuse the managed-model strategy
+AST builders pointed at the external catalog. Deferred: delivery ledger, environment gating
+allow-list, SaaS/API connectors.
+
 The fingerprinted-snapshot-plus-view layer only works because **interlace owns those tables** —
 it can freely create `model__<fp>` shadow copies and atomically repoint a view. Reverse ETL
 breaks every one of those assumptions, so it does **not** go through that machinery:

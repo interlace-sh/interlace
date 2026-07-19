@@ -37,8 +37,18 @@ class DuckDBAdapter(EngineAdapter):
     dialect = "duckdb"
     caps = _DUCKDB_CAPS
 
-    def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
+    def __init__(self, connection: duckdb.DuckDBPyConnection, session_init: Sequence[str] = ()) -> None:
         self._conn = connection
+        # Statements re-applied on every cursor: cursors are NEW DuckDB sessions, so
+        # per-session state (LOAD, temporary secrets, USE) set on the main connection
+        # does not carry over. Empty for plain databases.
+        self._session_init = list(session_init)
+
+    def _cursor(self) -> duckdb.DuckDBPyConnection:
+        cur = self._conn.cursor()
+        for statement in self._session_init:
+            cur.execute(statement)
+        return cur
 
     @classmethod
     def in_memory(cls) -> DuckDBAdapter:
@@ -47,6 +57,42 @@ class DuckDBAdapter(EngineAdapter):
     @classmethod
     def connect(cls, path: str) -> DuckDBAdapter:
         return cls(duckdb.connect(path))
+
+    @classmethod
+    def connect_ducklake(
+        cls,
+        catalog: str,
+        *,
+        alias: str = "warehouse",
+        data_path: str | None = None,
+        metadata_schema: str | None = None,
+        secrets: Sequence[str] = (),
+        extensions: Sequence[str] = (),
+    ) -> DuckDBAdapter:
+        """Open a DuckLake warehouse that needs attach options and/or credentials —
+        remote catalogs (``postgres:…``) and object-store ``data_path``s can't ride the
+        plain ``duckdb.connect("ducklake:…")`` shortcut. Opens ``:memory:``, installs
+        the extensions, issues the ``CREATE SECRET`` statements, ATTACHes the DuckLake
+        with the options, and makes it the default catalog."""
+        conn = duckdb.connect(":memory:")
+        for extension in extensions:
+            conn.execute(f"INSTALL {extension}; LOAD {extension};")
+        for statement in secrets:
+            conn.execute(statement)
+        options: list[str] = []
+        if data_path:
+            options.append(f"DATA_PATH '{data_path.replace(chr(39), chr(39) * 2)}'")
+        if metadata_schema:
+            options.append(f"METADATA_SCHEMA '{metadata_schema.replace(chr(39), chr(39) * 2)}'")
+        options_sql = f" ({', '.join(options)})" if options else ""
+        escaped = catalog.replace("'", "''")
+        alias_sql = exp.to_identifier(alias).sql("duckdb")
+        conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {alias_sql}{options_sql}")
+        conn.execute(f"USE {alias_sql}")
+        # Cursors are fresh sessions: re-apply the per-session state on each one
+        # (LOAD, temporary secrets, default catalog). INSTALL/ATTACH are shared.
+        session_init = [f"LOAD {e}" for e in extensions] + list(secrets) + [f"USE {alias_sql}"]
+        return cls(conn, session_init=session_init)
 
     def close(self) -> None:
         self._conn.close()
@@ -100,14 +146,14 @@ class DuckDBAdapter(EngineAdapter):
     # --- sync workers (run in a thread) -------------------------------------
 
     def _execute_sync(self, sql: str) -> None:
-        cur = self._conn.cursor()
+        cur = self._cursor()
         try:
             cur.execute(sql)
         finally:
             cur.close()
 
     def _execute_all_sync(self, sqls: list[str]) -> None:
-        cur = self._conn.cursor()
+        cur = self._cursor()
         try:
             cur.execute("BEGIN")
             for sql in sqls:
@@ -121,12 +167,12 @@ class DuckDBAdapter(EngineAdapter):
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
         # The reader keeps the underlying result alive after the cursor is dropped.
-        cur = self._conn.cursor()
+        cur = self._cursor()
         cur.execute(sql)
         return cur.to_arrow_reader()
 
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
-        cur = self._conn.cursor()
+        cur = self._cursor()
         src = f"__interlace_src_{uuid4().hex}"
         cur.register(src, reader)
         try:
@@ -140,7 +186,7 @@ class DuckDBAdapter(EngineAdapter):
             cur.close()
 
     def _table_exists_sync(self, table: TableRef) -> bool:
-        cur = self._conn.cursor()
+        cur = self._cursor()
         try:
             row = cur.execute(
                 "SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
@@ -151,7 +197,7 @@ class DuckDBAdapter(EngineAdapter):
         return bool(row and row[0])
 
     def _describe_sync(self, table: TableRef) -> dict[str, str]:
-        cur = self._conn.cursor()
+        cur = self._cursor()
         try:
             rows = cur.execute(
                 "SELECT column_name, data_type FROM information_schema.columns "

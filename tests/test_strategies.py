@@ -67,7 +67,7 @@ def test_incremental_by_time_builds_windowed_statements() -> None:
     rendered = _sql(IncrementalByTime("ts").plan_statements(_relation(), _TARGET, _CAPS, window))
     assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS")
     assert rendered[1] == (
-        "DELETE FROM interlace__main.orders__abc " "WHERE ts >= '2026-01-01T00:00:00' AND ts < '2026-01-02T00:00:00'"
+        "DELETE FROM interlace__main.orders__abc WHERE ts >= '2026-01-01T00:00:00' AND ts < '2026-01-02T00:00:00'"
     )
     assert "WHERE ts >= '2026-01-01T00:00:00' AND ts < '2026-01-02T00:00:00'" in rendered[2]
 

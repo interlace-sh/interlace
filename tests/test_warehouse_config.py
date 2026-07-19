@@ -1,0 +1,135 @@
+"""Warehouse configuration: env interpolation, secret rendering, and the DuckLake
+attach-options path (remote catalogs, data_path, metadata_schema).
+
+The Postgres-catalog case is exercised at the parsing/wiring level (no Postgres in the
+test environment); the options path itself runs for real against a local file catalog
+with a custom data_path.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+import sqlglot
+
+from interlace.config.config import SecretConfig, load_config
+from interlace.engines.duckdb import DuckDBAdapter
+from interlace.project import Project, _secret_sql
+
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
+
+
+# --- config: ${VAR} interpolation ---------------------------------------------
+
+
+def test_env_interpolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WH_DSN", "dbname=lakes host=db user=writer")
+    monkeypatch.setenv("WH_KEY", "key123")
+    (tmp_path / "interlace.yaml").write_text(
+        "name: t\n"
+        'database: "ducklake:postgres:${WH_DSN}"\n'
+        "data_path: s3://core/staged/t/\n"
+        "metadata_schema: t\n"
+        "secrets:\n"
+        "  lake_s3:\n"
+        "    key_id: ${WH_KEY}\n"
+        "    secret: ${WH_MISSING}\n"
+    )
+    config = load_config(tmp_path / "interlace.yaml")
+    assert config.database == "ducklake:postgres:dbname=lakes host=db user=writer"
+    assert config.secrets["lake_s3"].key_id == "key123"
+    # Unset vars stay literal — loud, never a silent empty string.
+    assert config.secrets["lake_s3"].secret == "${WH_MISSING}"
+
+
+# --- secret rendering -----------------------------------------------------------
+
+
+def test_secret_sql_rendering() -> None:
+    sql = _secret_sql(
+        "lake_s3",
+        SecretConfig(
+            key_id="ak", secret="s'k", endpoint="localhost:9000", url_style="path", use_ssl=False, scope="s3://core"
+        ),
+    )
+    assert sql.startswith("CREATE OR REPLACE SECRET lake_s3 (TYPE s3, ")
+    assert "KEY_ID 'ak'" in sql
+    assert "SECRET 's''k'" in sql  # quoting survives
+    assert "ENDPOINT 'localhost:9000'" in sql
+    assert "URL_STYLE 'path'" in sql
+    assert "USE_SSL false" in sql
+    assert "SCOPE 's3://core'" in sql
+
+
+# --- open_engine wiring ----------------------------------------------------------
+
+
+def test_remote_catalog_is_not_path_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A postgres: catalog DSN must reach ATTACH verbatim (the old code mangled it into
+    a filesystem path), with the options and extensions wired through."""
+    (tmp_path / "interlace.yaml").write_text(
+        "name: ml\n"
+        'database: "ducklake:postgres:dbname=lakes host=db"\n'
+        "data_path: s3://core/staged/ml/\n"
+        "metadata_schema: ml\n"
+        "secrets:\n"
+        "  lake_s3: {key_id: k, secret: s, endpoint: 'localhost:9000', url_style: path, use_ssl: false}\n"
+    )
+    captured: dict = {}
+
+    def fake_connect_ducklake(catalog: str, **kwargs: object) -> str:
+        captured["catalog"] = catalog
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(DuckDBAdapter, "connect_ducklake", staticmethod(fake_connect_ducklake))
+    project = Project.load(tmp_path)
+    engine = project.open_engine()
+    assert engine == "engine"
+    assert captured["catalog"] == "ducklake:postgres:dbname=lakes host=db"
+    assert captured["alias"] == "ml"
+    assert captured["data_path"] == "s3://core/staged/ml/"
+    assert captured["metadata_schema"] == "ml"
+    assert list(captured["extensions"]) == ["ducklake", "postgres", "httpfs"]
+    [secret] = captured["secrets"]
+    assert secret.startswith("CREATE OR REPLACE SECRET lake_s3 ")
+    # And no junk directory was created from the DSN.
+    assert not any("postgres:" in p.name for p in tmp_path.iterdir())
+
+
+def test_plain_file_ducklake_unchanged(tmp_path: Path) -> None:
+    """No options => the original duckdb.connect('ducklake:<path>') fast path."""
+    (tmp_path / "interlace.yaml").write_text("name: plain\n")
+    project = Project.load(tmp_path)
+    engine = project.open_engine()
+    try:
+        assert (tmp_path / ".interlace").exists()
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+async def test_file_catalog_with_custom_data_path(tmp_path: Path) -> None:
+    """The options path end-to-end (offline): file catalog + custom local data_path via
+    explicit ATTACH — plan/apply lands Parquet under the configured directory."""
+    project_dir = tmp_path / "getting_started"
+    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
+    data_dir = tmp_path / "lake-data"
+    config = (project_dir / "interlace.yaml").read_text()
+    (project_dir / "interlace.yaml").write_text(
+        config + f"\ndatabase: ducklake:{tmp_path}/catalog.ducklake\ndata_path: {data_dir}\n"
+    )
+    project = Project.load(project_dir)
+    engine = project.open_engine()
+    try:
+        await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS raw")
+        # Enough rows that DuckLake writes Parquet rather than inlining in the catalog.
+        await engine.execute_sql("CREATE TABLE raw.t AS SELECT range AS n FROM range(1000)")
+        reader = await engine.fetch(sqlglot.parse_one("SELECT count(*) AS n FROM raw.t"))
+        assert reader.read_all().to_pylist() == [{"n": 1000}]
+    finally:
+        engine.close()
+    assert (tmp_path / "catalog.ducklake").exists()
+    assert any(data_dir.rglob("*.parquet"))  # data landed under the custom data_path

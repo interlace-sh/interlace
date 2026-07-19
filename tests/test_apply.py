@@ -46,6 +46,9 @@ async def test_apply_builds_dependency_chain_and_env_views(env: tuple[DuckDBAdap
     result = await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
 
     assert set(result.built) == {"a", "b"}
+    # every built model carries its wall-clock build time
+    assert set(result.timings) == {"a", "b"}
+    assert all(seconds >= 0 for seconds in result.timings.values())
     # the downstream model read through to the upstream's physical table and the env view resolves
     assert await _rows(engine, "SELECT id, v2 FROM prod__main.b") == [{"id": 1, "v2": 20}]
 

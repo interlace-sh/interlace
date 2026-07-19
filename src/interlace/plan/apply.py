@@ -10,6 +10,7 @@ upstream physical tables exist before downstream models build against them.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -38,6 +39,8 @@ class ApplyResult:
     reused: list[str] = field(default_factory=list)  # recorded over their previous physical table
     promoted: int = 0
     checks: list[CheckOutcome] = field(default_factory=list)
+    # Wall-clock build seconds per built model (extraction + strategy + checks).
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 def _resolve_export_path(base_path: Path | None, path: str) -> str:
@@ -157,6 +160,7 @@ async def apply(
         physical[reuse.name] = reuse.physical_table
 
     for task in plan.backfills:
+        task_started = time.perf_counter()
         snapshot = task.snapshot
         model = compiled.models[snapshot.name]
 
@@ -185,6 +189,7 @@ async def apply(
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
             await _gate_checks(model, compiled, engine, state, plan.environment, result, physical)
+            result.timings[snapshot.name] = time.perf_counter() - task_started
             continue
 
         resolved = resolve_model_query(model, compiled, physical)
@@ -198,6 +203,7 @@ async def apply(
                 await engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
+            result.timings[snapshot.name] = time.perf_counter() - task_started
             continue
 
         relation = SqlRelation(
@@ -217,6 +223,7 @@ async def apply(
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
         await _gate_checks(model, compiled, engine, state, plan.environment, result, physical)
+        result.timings[snapshot.name] = time.perf_counter() - task_started
 
     for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing
         await state.add_snapshot(reuse)

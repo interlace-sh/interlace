@@ -81,6 +81,7 @@ class ModelDetail(msgspec.Struct):
     tags: list[str]
     owner: str | None
     schedule: dict[str, str] | None
+    sql: str | None = None  # canonical SQL; None for Python models
 
 
 class Change(msgspec.Struct):
@@ -109,6 +110,9 @@ class RunInfo(msgspec.Struct):
     enqueued_at: str | None = None
     priority: int = 0
     partition: list[str] | None = None
+    # how the run came to be — the enqueue key's prefix names the trigger
+    # (cron: / interval: / api: / stream:)
+    idempotency_key: str | None = None
 
 
 class CreateRun(msgspec.Struct):
@@ -139,6 +143,7 @@ class RunDetail(msgspec.Struct):
     priority: int
     partition: list[str] | None
     events: list[EventInfo]
+    idempotency_key: str | None = None
 
 
 class EnvironmentInfo(msgspec.Struct):
@@ -265,6 +270,7 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
         tags=list(model.tags),
         owner=model.owner,
         schedule=model.schedule,
+        sql=model.definition_sql,
     )
 
 
@@ -323,6 +329,7 @@ async def get_runs(state: State) -> list[RunInfo]:
                 enqueued_at=run["enqueued_at"],
                 priority=run["priority"],
                 partition=partition,
+                idempotency_key=run["idempotency_key"],
             )
         )
     return runs
@@ -348,6 +355,7 @@ async def get_run(run_id: FromPath[int], state: State) -> RunDetail:
         priority=run["priority"],
         partition=partition,
         events=[EventInfo(**event) for event in events],
+        idempotency_key=run["idempotency_key"],
     )
 
 

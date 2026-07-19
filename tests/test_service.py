@@ -49,6 +49,7 @@ def test_model_detail_with_lineage(client: TestClient) -> None:
     assert body["upstream"] == ["raw_events"]
     assert "top_kind" in body["downstream"]
     assert body["columns"]["total_amount"] == ["raw_events.amount"]
+    assert "from raw_events" in body["sql"].lower()
 
 
 def test_unknown_model_is_404(client: TestClient) -> None:
@@ -67,7 +68,9 @@ def test_create_and_list_runs(client: TestClient) -> None:
     assert created["models"] == ["event_totals"]
 
     runs = client.get("/runs").json()
-    assert any(r["flow_selector"] == ["event_totals"] for r in runs)
+    run = next(r for r in runs if r["flow_selector"] == ["event_totals"])
+    # the enqueue key's prefix names the trigger (api: for POST /runs)
+    assert run["idempotency_key"].startswith("api:prod:")
 
 
 def test_create_run_rejects_bad_selector(client: TestClient) -> None:

@@ -21,6 +21,7 @@ from interlace.plan.plan import ChangeType, Plan
 from interlace.plan.run import run_plan
 from interlace.project import Project
 from interlace.scaffold import scaffold_project
+from interlace.streaming import ensure_stream_tables
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
 
@@ -118,6 +119,10 @@ async def _apply(environment: str, path: Path, select: list[str]) -> None:
     engine = project.open_engine()
     state = await project.open_state()
     try:
+        # Stream-fed projects must build without the daemon ever having run:
+        # declared stream tables are ensured (empty) so models reading them work.
+        if project.streams:
+            await ensure_stream_tables(project.streams, engine)
         plan_result = await diff(compiled, environment, state, select=_selection(compiled, select))
         _render(plan_result, environment)
         if plan_result.is_empty:
@@ -166,6 +171,8 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
     engine = project.open_engine()
     state = await project.open_state()
     try:
+        if project.streams:  # as in _apply: stream tables must exist daemon or not
+            await ensure_stream_tables(project.streams, engine)
         plan_result = await run_plan(
             compiled,
             environment,

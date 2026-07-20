@@ -58,6 +58,27 @@ def test_apply_builds_then_replan_is_clean(tmp_path: Path) -> None:
     assert "No changes" in replan.output
 
 
+def test_apply_ensures_stream_tables_without_daemon(tmp_path: Path) -> None:
+    """A stream-fed project must build without `interlace serve` ever running —
+    declared stream tables are ensured (empty) so models reading them work."""
+    (tmp_path / "models").mkdir(parents=True)
+    (tmp_path / "models" / "streams.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream(name="clicks", schema={"id": "text"})\n'
+        "def clicks() -> None: ...\n"
+    )
+    (tmp_path / "models" / "latest_clicks.sql").write_text("SELECT id FROM streams.clicks")
+
+    applied = runner.invoke(app, ["apply", "--env", "prod", "--path", str(tmp_path)])
+    assert applied.exit_code == 0, applied.output
+
+    con = duckdb.connect(f"ducklake:{tmp_path / '.interlace' / 'warehouse.ducklake'}")
+    try:
+        assert con.execute("SELECT count(*) FROM prod__main.latest_clicks").fetchone() == (0,)
+    finally:
+        con.close()
+
+
 def test_plan_on_empty_project_is_clean(tmp_path: Path) -> None:
     (tmp_path / "models").mkdir()
     result = runner.invoke(app, ["plan", "--env", "dev", "--path", str(tmp_path)])

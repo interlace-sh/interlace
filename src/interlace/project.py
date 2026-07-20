@@ -71,6 +71,7 @@ class Project:
         """Open the warehouse: DuckLake (default; local file catalog, or a catalog hosted
         in a SQL database with the data on a filesystem/object store), a plain DuckDB
         file, ":memory:", or a remote warehouse served over the quack protocol."""
+        self._reject_unresolved_env()
         database = self.config.database
         if database.startswith("quack:"):
             from interlace.engines.quack import QuackAdapter  # lazy: only quack clients need it
@@ -102,6 +103,26 @@ class Project:
                 target = str(self.root / uri)  # bare relative path: resolve against the project
             engine.attach(alias, target)
         return engine
+
+    def _reject_unresolved_env(self) -> None:
+        """Fail fast when ``${VAR}`` survived config interpolation (the variable is
+        unset). Left alone, DuckDB treats the literal ``${VAR}`` as a PATH — creating
+        a directory of that name — before failing somewhere far less obvious."""
+        import re
+
+        from interlace.exceptions import ConfigurationError
+
+        refs: set[str] = set()
+        candidates = [self.config.database, self.config.data_path or ""]
+        for secret in self.config.secrets.values():
+            candidates += [secret.key_id, secret.secret, secret.endpoint or ""]
+        for value in candidates:
+            refs.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value))
+        if refs:
+            raise ConfigurationError(
+                "unresolved ${VAR} in warehouse config — set the environment variable(s)",
+                details={"variables": sorted(refs)},
+            )
 
     def _open_ducklake_with_options(self, database: str, *, remote_catalog: bool) -> DuckDBAdapter:
         """DuckLake with attach options/credentials: explicit ATTACH (DATA_PATH /

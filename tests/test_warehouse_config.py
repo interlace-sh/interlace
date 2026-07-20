@@ -44,6 +44,24 @@ def test_env_interpolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert config.secrets["lake_s3"].secret == "${WH_MISSING}"
 
 
+def test_open_engine_rejects_unresolved_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unset ${VAR} must fail at engine open — left literal, DuckDB would create
+    a directory actually named '${VAR}' before erroring somewhere less obvious."""
+    from interlace.exceptions import ConfigurationError
+
+    monkeypatch.delenv("WH_DATA", raising=False)
+    (tmp_path / "interlace.yaml").write_text(
+        'name: t\ndatabase: ".interlace/warehouse.ducklake"\ndata_path: "${WH_DATA}"\n'
+    )
+    project = Project.load(tmp_path)
+    with pytest.raises(ConfigurationError) as excinfo:
+        project.open_engine()
+    assert excinfo.value.details["variables"] == ["WH_DATA"]
+    assert not (tmp_path / "${WH_DATA}").exists()
+
+
 # --- secret rendering -----------------------------------------------------------
 
 

@@ -80,7 +80,9 @@ def schedule_build(plan: Plan, model: CompiledModel, snapshot: Snapshot, environ
         return
     plan.backfills.append(BackfillTask(snapshot=snapshot))
     if model.export is None and model.materialise in ("table", "view"):  # sinks have no view
-        plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
+        # the snapshot's table, not the fingerprint-derived one: a forward-only
+        # snapshot builds into (and the view must point at) its inherited table
+        plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), snapshot.physical_table))
 
 
 @dataclass

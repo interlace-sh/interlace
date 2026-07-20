@@ -21,9 +21,9 @@ from interlace.plan.plan import ChangeType, Plan
 from interlace.plan.run import run_plan
 from interlace.project import Project
 from interlace.scaffold import scaffold_project
-from interlace.streaming import ensure_stream_tables
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
+from interlace.streaming import ensure_stream_tables
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Python/SQL-first data platform.")
 console = Console()
@@ -51,6 +51,12 @@ _PATH = typer.Option(Path("."), "--path", "-p", help="Project root.")
 _SELECT = typer.Option([], "--select", "-s", help="Model selectors: name, +name, name+, tag:x.")
 _START = typer.Option("", "--start", help="Window start (ISO), for incremental models.")
 _END = typer.Option("", "--end", help="Window end (ISO), for incremental models.")
+_FORWARD_ONLY = typer.Option(
+    False,
+    "--forward-only",
+    help="Modified history-keeping models (merge/full_merge/scd2/incremental) keep their existing "
+    "table and history; the new logic applies going forward. Requires a shape-compatible change.",
+)
 
 
 def _render_checks(result: ApplyResult) -> None:

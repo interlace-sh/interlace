@@ -14,10 +14,10 @@ Requires star-exclude support to project the open rows without the validity
 columns (DuckDB/Snowflake/BigQuery); apply runs the statements atomically.
 
 History lives in the fingerprint's physical table: data changes under a stable
-definition accumulate history across ``interlace run``, but a *definition*
-change mints a new fingerprint and starts a fresh table (snapshot semantics).
-Carrying history across definition changes is the FORWARD_ONLY change category
-(v2-design §2.3) — not yet implemented.
+definition accumulate history across ``interlace run``; a *definition* change
+mints a new fingerprint and starts a fresh table (snapshot semantics) — unless
+applied with ``--forward-only``, which inherits the previous table so history
+survives and the new logic applies going forward.
 """
 
 from __future__ import annotations

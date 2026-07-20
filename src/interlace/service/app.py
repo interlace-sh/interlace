@@ -156,6 +156,7 @@ class ApplyRequest(msgspec.Struct):
     selectors: list[str] = msgspec.field(default_factory=list)
     environment: str | None = None
     force: bool = False  # required to proceed when the plan has breaking changes
+    forward_only: bool = False  # history-keeping models inherit their table; new logic applies ahead
 
 
 class ApplyResponse(msgspec.Struct):
@@ -384,7 +385,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
     async with state.apply_lock:
-        plan = await diff(compiled, env, state.store, select=selected)
+        plan = await diff(compiled, env, state.store, select=selected, forward_only=data.forward_only)
         breaking = plan.has_breaking_changes
         if breaking and not data.force:
             names = ", ".join(c.name for c in plan.changes if c.category is ChangeCategory.BREAKING)

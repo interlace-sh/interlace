@@ -290,6 +290,8 @@ class SqliteStreamLog:
         if len(clauses) == 1:
             return 0  # refuse to trim everything by accident
         with self._lock:
-            cursor = self._conn.execute(f"DELETE FROM stream_events WHERE {' AND '.join(clauses)}", params)  # noqa: S608
+            cursor = self._conn.execute(
+                f"DELETE FROM stream_events WHERE {' AND '.join(clauses)}", params
+            )  # noqa: S608
             self._conn.commit()
         return int(cursor.rowcount)

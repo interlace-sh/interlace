@@ -111,13 +111,28 @@ def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, enviro
         plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), previous.physical_table))
 
 
+_HISTORY_STRATEGIES = frozenset({"merge_by_key", "full_merge", "scd_type_2", "scd2", "incremental_by_time"})
+"""Strategies whose targets accumulate state a rebuild would destroy."""
+
+
 async def diff(
-    compiled: CompiledProject, environment: str, state: StateStore, *, select: set[str] | None = None
+    compiled: CompiledProject,
+    environment: str,
+    state: StateStore,
+    *,
+    select: set[str] | None = None,
+    forward_only: bool = False,
 ) -> Plan:
     """Diff the compiled project against ``environment`` and return the plan.
 
     ``select`` limits which models are scheduled and promoted (None = all). Impact
     classification still runs over the whole graph so downstream categories are correct.
+
+    ``forward_only``: modified models whose strategy accumulates history
+    (merge_by_key / full_merge / scd_type_2 / incremental_by_time) inherit their
+    previous physical table and interval ledger instead of starting fresh — the
+    new logic applies going forward, history survives. Requires the new query to
+    stay shape-compatible with the existing table.
     """
     selected = set(compiled.models) if select is None else select
     current = await state.get_environment(environment)
@@ -161,10 +176,20 @@ async def diff(
 
         if model.name not in selected:
             continue
+        inherit = forward_only and rebuild and model.strategy in _HISTORY_STRATEGIES and previous is not None
+        if inherit:
+            category = ChangeCategory.FORWARD_ONLY
         plan.changes.append(
             ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint, added)
         )
-        if rebuild:
+        if inherit:  # keep history: new fingerprint over the previous physical table
+            snapshot = replace(
+                snapshot_of(model, ChangeCategory.FORWARD_ONLY),
+                physical_table=previous.physical_table,  # type: ignore[union-attr]
+                intervals=previous.intervals,  # type: ignore[union-attr]
+            )
+            schedule_build(plan, model, snapshot, environment)
+        elif rebuild:
             schedule_build(plan, model, snapshot_of(model, category), environment)
         else:
             _schedule_reuse(plan, model, previous, environment)  # type: ignore[arg-type]  # previous is not None here

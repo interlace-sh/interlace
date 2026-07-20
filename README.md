@@ -1,193 +1,162 @@
-# Interlace
+# interlace
 
-A modern, Python/SQL-first data orchestration and pipeline framework.
+**Python/SQL-first data platform: transformation, orchestration, and durable streaming — one process.**
 
-Interlace is an alternative to dbt and traditional DAG-based frameworks, designed for teams that want to write data pipelines as Python functions or SQL files with automatic dependency resolution, parallel execution, and built-in quality checks.
+interlace is an independent, MIT-licensed alternative to dbt/SQLMesh that also replaces the
+orchestrator (no Airflow) and the ingestion layer (Cloudflare-Pipelines-style durable streams).
+Models are `.sql` files or Python functions; state is versioned snapshots with virtual
+environments and a terraform-style plan/apply; everything runs in a single daemon on
+DuckDB + DuckLake by default.
 
-```bash
-pip install interlace
-```
-
-**Requires Python 3.12+**
-
-## Quick Start
-
-### 1. Create a project
+> **Status: v2 pre-release.** This branch is a ground-up rebuild (the `interlace` package on
+> PyPI is the older 0.x line). APIs may still move. Requires Python 3.12+.
 
 ```bash
-interlace init my-project
-cd my-project
+uv pip install "interlace[service] @ git+https://github.com/interlace-sh/interlace@v2"
 ```
 
-This creates:
-```
-my-project/
-├── config.yaml          # Connection and project configuration
-├── models/              # Your model files live here
-│   └── example.py
-├── tests/
-└── .gitignore
+## Sixty seconds
+
+```bash
+interlace init my-project && cd my-project
+interlace plan            # terraform-style preview: added / breaking / non-breaking / reuse
+interlace apply           # build changed models, run checks, promote the environment
+interlace serve           # the daemon: HTTP API + scheduler + stream ingestion, one process
 ```
 
-### 2. Define models
+Every model builds into a fingerprinted physical table (`interlace__main.orders__a1b2c3`);
+environments (`dev`, `prod`, …) are views over those tables, so promotion and rollback are
+atomic view swaps and a dev environment reuses prod's tables for free.
 
-**Python model** (`models/users.py`):
+## Models
+
+**SQL** — a file per model; upstreams referenced by model name, dependencies inferred by parsing
+(sqlglot), config in a leading comment block:
+
+```sql
+/* interlace:
+  strategy: scd_type_2
+  key: customer_id
+  schedule: {cron: "0 * * * *"}
+  checks:
+    - not_null: customer_id
+    - unique: customer_id
+*/
+SELECT customer_id, name, tier FROM raw_customers
+```
+
+**Python** — functions whose parameters name their upstreams; data crosses as Arrow
+(never pandas), streamed with bounded memory:
+
 ```python
 from interlace import model
 
-@model(name="users", materialize="table", strategy="replace")
-def users():
-    return [
-        {"id": 1, "name": "Alice", "email": "alice@example.com"},
-        {"id": 2, "name": "Bob", "email": "bob@example.com"},
-    ]
+@model(strategy="merge_by_key", key="order_id", cursor="updated_at")
+def orders(cursor, this):
+    """Incremental API extract: `cursor` is max(updated_at) already in the
+    warehouse (None on first run); `this` is the previous materialisation."""
+    rows = fetch_orders(since=cursor)          # your code
+    return pyarrow.Table.from_pylist(rows)     # or RecordBatchReader / generator of batches
 ```
 
-**SQL model** (`models/active_users.sql`):
-```sql
--- @model(name="active_users", materialize="table", dependencies=["users"])
-SELECT * FROM users WHERE active = true
+**Strategies:** `full`, `view`, `ephemeral` (CTE-inlined), `merge_by_key` (upsert),
+`full_merge` (full-state source applied as a minimal diff), `incremental_by_time`
+(windowed, interval-ledger backfill/catchup), `scd_type_2` (history with validity windows).
+
+## Plan / apply
+
+```
+$ interlace plan
+ Model         Change    Category      Build
+ orders        modified  non_breaking  rebuild
+ order_stats   modified  non_breaking  reuse      <- output provably identical: not rebuilt
 ```
 
-### 3. Configure connections
+- Changes classify **breaking / non-breaking / forward-only**; downstream models whose output
+  is provably identical **reuse their existing tables** instead of rebuilding (an improvement
+  over model-granular invalidation).
+- `apply --forward-only` lets history-keeping models (scd2/merge/incremental) survive a
+  definition change: the new logic inherits the existing table and applies going forward.
+- **Checks gate promotion**: 10 built-in types (not_null, unique, accepted_values, row_count,
+  freshness, expression, relationships, pattern, range, sql) plus `@check` Python functions —
+  an error-severity failure blocks before the environment view moves.
+- `interlace gc` removes snapshots no environment references (reference-aware: tables shared
+  through reuse survive).
 
-**`config.yaml`**:
-```yaml
-name: my-project
+## Streaming
 
-connections:
-  default:
-    type: duckdb
-    path: data/{env}/main.duckdb
+Declare a stream; POST to it; rows are durable before the 200, deduplicated by idempotency
+key, and materialized exactly-once into `streams.<name>` — where SQL models just read them.
+A flush triggers the models that consume the stream.
 
-state:
-  connection: default
-  schema: interlace
+```python
+from interlace import stream
 
-models:
-  default_schema: public
-  default_materialize: table
+@stream("orders", schema={"order_id": "string", "total": "double"},
+        idempotency_key="order_id", retention="7d", on_schema_drift="evolve")
+def orders(event): ...
 ```
-
-### 4. Run
 
 ```bash
-interlace run                    # Run all models
-interlace run users active_users # Run specific models (+ their deps)
-interlace run --force            # Bypass change detection
-interlace run --since 2024-01-01 # Backfill from date
+curl -X POST localhost:8000/streams/orders -d '{"order_id": "o1", "total": 49.5}'
 ```
 
-## Features
+Schema drift is yours to choose: `reject` (400), `evolve` (new columns appear), or
+`quarantine` (bad events divert to `<stream>__quarantine`).
 
-### Core
-- **`@model` decorator** -- define Python or SQL models with rich configuration
-- **`@stream` decorator** -- append-only event ingestion tables with webhooks
-- **Automatic dependency resolution** -- SQL dependencies parsed via sqlglot
-- **Dynamic parallel execution** -- asyncio + thread pool, per-task connections
-- **Change detection** -- skip unchanged models via file-hash tracking
+## Reverse ETL
 
-### Materialization & Strategies
-- **Materializations**: `table`, `view`, `ephemeral`, `none`
-- **Strategies**: `replace`, `append`, `merge_by_key`, `scd_type_2`, `none`
-- **Schema evolution**: 5 modes (`strict`, `safe`, `flexible`, `lenient`, `ignore`)
+Attach external databases and deliver model results into them — the live table is never
+dropped, keyed modes reuse the same merge strategies:
 
-### Connections
-- **DuckDB** (default, in-memory or file-based)
-- **PostgreSQL** (asyncpg with connection pooling)
-- **Generic ibis backends** (Snowflake, BigQuery, MySQL, ClickHouse, etc.)
-- **Storage**: S3, Filesystem, SFTP
-
-### Reliability
-- **Retry framework** with exponential backoff, jitter, and configurable policies
-- **Circuit breaker** for fail-fast on cascading failures
-- **Dead letter queue** for inspecting failed executions
-- **Cursor-based incremental** processing with automatic watermarking
-
-### Quality
-- Built-in checks: `not_null`, `unique`, `accepted_values`, `row_count`, `freshness`, `expression`
-- Configurable severity: `warn` or `error`
-
-### Observability
-- **Prometheus metrics** -- execution time, row counts, error rates
-- **OpenTelemetry tracing** -- model execution spans
-- **Structured logging** -- JSON logs with correlation IDs
-- **Column-level lineage** -- automatic provenance tracking
-
-### Service Mode
-- `interlace serve` -- long-running service with REST API, scheduler, and SFTP sync
-- **Web UI** (SvelteKit) -- model browser, flow history, lineage graph
-- **SSE events** -- real-time execution updates
-
-## Programmatic API
-
-```python
-from interlace import run, run_sync
-
-# Async
-results = await run(project_dir=".", models=["users"])
-
-# Sync
-results = run_sync(project_dir=".", force=True)
+```yaml
+# interlace.yaml
+attach:
+  crm: "postgres:host=... dbname=crm"
 ```
 
-## Testing
-
-```python
-from interlace import test_model, mock_dependency
-
-async def test_my_model():
-    users = mock_dependency([{"id": 1, "name": "Alice"}])
-    result = await test_model(my_model, dependencies={"raw_users": users})
-    assert result.row_count > 0
-    assert "name" in result.columns
+```sql
+/* interlace: {export: {to: table, target: crm.public.accounts, mode: merge_by_key, key: id}} */
+SELECT id, tier, lifetime_value FROM account_summary
 ```
 
-## CLI Commands
+File exports (`to: parquet|csv|json`) work the same way.
 
-| Command | Description |
-|---------|-------------|
-| `interlace run` | Execute models |
-| `interlace serve` | Start service (API + scheduler) |
-| `interlace init` | Create new project |
-| `interlace info` | Show project/model information |
-| `interlace plan` | Preview execution plan |
-| `interlace schema` | Inspect and validate schemas |
-| `interlace lineage` | View data lineage |
-| `interlace config` | Manage configuration |
-| `interlace migrate` | Run SQL migrations |
-| `interlace promote` | Promote between environments |
+## The daemon
 
-## Examples
+`interlace serve` runs the HTTP API (Litestar + msgspec, OpenAPI at `/schema/scalar`), the
+scheduler (cron/interval triggers → durable run queue), stream ingestion, and retention in one
+process. Scoped API keys (`interlace apikey create ci --scope read`) lock it down; a durable
+event log backs `GET /events/stream` (SSE with replay).
 
-See the [`examples/`](examples/) directory for complete working projects:
+Add `--quack quack:localhost:4213` to serve the warehouse itself over DuckDB's quack protocol —
+other processes (CLI runs, ad-hoc DuckDB clients) then share it concurrently by setting
+`database: quack:localhost:4213`.
 
-- **basic/** -- CSV ingestion, strategies, simple joins
-- **comprehensive/** -- all features (materialization types, strategies, migrations)
-- **api/** -- REST API consumption and transformation
-- **tpch/** -- TPC-H benchmark (22 standard queries)
-- **sftp/** -- SFTP sync with PGP decryption
+## Architecture in five lines
+
+- The IR is a **sqlglot AST**; the wire format is an **Arrow RecordBatchReader**; strategies
+  are AST builders and dialect appears only at `transpile()`.
+- Storage defaults to **DuckLake** (Parquet + SQL catalog) opened as DuckDB's primary database.
+- Control plane (snapshots, intervals, queue, events, keys) is **SQLite WAL**; Postgres is the
+  scale-out swap.
+- Streams live in their own durable log; the materializer commits data + watermark in one
+  warehouse transaction — exactly-once without distributed coordination.
+- No Jinja, no pandas in core, no external orchestrator.
+
+The full design rationale lives in `docs/architecture/v2-design.md`.
 
 ## Development
 
+Toolchain is pinned with [proto](https://moonrepo.dev/proto), tasks run via
+[moon](https://moonrepo.dev/moon), `uv` owns the virtualenv:
+
 ```bash
-# Install in development mode
-pip install -e ".[dev]"
-
-# Run tests
-pytest tests/
-
-# Lint & format
-ruff check src/ tests/
-black src/ tests/
-
-# Type check
-mypy src/interlace/
-
-# Build
-python -m build
+proto install
+moon run interlace:sync      # install deps
+moon run interlace:test      # 240+ tests
+moon run interlace:check     # black + ruff (CI equivalent)
+moon run interlace:typecheck # mypy --strict
 ```
 
-## License
-
-MIT
+MIT licensed.

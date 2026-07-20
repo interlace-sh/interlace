@@ -97,29 +97,44 @@ def init(
     console.print("\nNext: [bold]interlace apply --env dev[/bold]")
 
 
+_FORWARD_ONLY = typer.Option(
+    False,
+    "--forward-only",
+    help="Modified history-keeping models (merge/full_merge/scd2/incremental) keep their existing "
+    "table and history; the new logic applies going forward. Requires a shape-compatible change.",
+)
+
+
 @app.command()
-def plan(environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT) -> None:
+def plan(
+    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, forward_only: bool = _FORWARD_ONLY
+) -> None:
     """Show what apply would change in an environment."""
-    asyncio.run(_plan(environment, path, select))
+    asyncio.run(_plan(environment, path, select, forward_only))
 
 
 @app.command()
-def apply(environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT) -> None:
+def apply(
+    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, forward_only: bool = _FORWARD_ONLY
+) -> None:
     """Build changed models and promote the environment."""
-    asyncio.run(_apply(environment, path, select))
+    asyncio.run(_apply(environment, path, select, forward_only))
 
 
-async def _plan(environment: str, path: Path, select: list[str]) -> None:
+async def _plan(environment: str, path: Path, select: list[str], forward_only: bool = False) -> None:
     project = Project.load(path)
     compiled = project.compile()
     state = await project.open_state()
     try:
-        _render(await diff(compiled, environment, state, select=_selection(compiled, select)), environment)
+        _render(
+            await diff(compiled, environment, state, select=_selection(compiled, select), forward_only=forward_only),
+            environment,
+        )
     finally:
         await state.close()
 
 
-async def _apply(environment: str, path: Path, select: list[str]) -> None:
+async def _apply(environment: str, path: Path, select: list[str], forward_only: bool = False) -> None:
     project = Project.load(path)
     compiled = project.compile()
     engine = project.open_engine()
@@ -129,7 +144,9 @@ async def _apply(environment: str, path: Path, select: list[str]) -> None:
         # declared stream tables are ensured (empty) so models reading them work.
         if project.streams:
             await ensure_stream_tables(project.streams, engine)
-        plan_result = await diff(compiled, environment, state, select=_selection(compiled, select))
+        plan_result = await diff(
+            compiled, environment, state, select=_selection(compiled, select), forward_only=forward_only
+        )
         _render(plan_result, environment)
         if plan_result.is_empty:
             return

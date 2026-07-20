@@ -44,9 +44,7 @@ def test_env_interpolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert config.secrets["lake_s3"].secret == "${WH_MISSING}"
 
 
-def test_open_engine_rejects_unresolved_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_open_engine_rejects_unresolved_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An unset ${VAR} must fail at engine open — left literal, DuckDB would create
     a directory actually named '${VAR}' before erroring somewhere less obvious."""
     from interlace.exceptions import ConfigurationError

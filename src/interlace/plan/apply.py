@@ -43,6 +43,19 @@ class ApplyResult:
     timings: dict[str, float] = field(default_factory=dict)
 
 
+# The widening promotions DuckLake's ALTER COLUMN supports, in order.
+_NUMERIC_WIDTH = {"TINYINT": 0, "SMALLINT": 1, "INTEGER": 2, "BIGINT": 3, "FLOAT": 4, "DOUBLE": 5}
+
+
+def _widens(current: str, incoming: str) -> bool:
+    """True when ``incoming`` is a strictly wider numeric type than ``current``."""
+    return (
+        current in _NUMERIC_WIDTH
+        and incoming in _NUMERIC_WIDTH
+        and _NUMERIC_WIDTH[incoming] > _NUMERIC_WIDTH[current]
+    )
+
+
 def _resolve_export_path(base_path: Path | None, path: str) -> str:
     target = Path(path)
     if target.is_absolute():
@@ -72,7 +85,7 @@ async def _merge_python_output(
 
     source: exp.Query = exp.select("*").from_(stage_table.copy())
     pre_statements: list[exp.Expression] = []
-    if exists:  # align the stage to the target: add new columns, NULL-fill vanished ones
+    if exists:  # align the stage to the target: new columns, NULL-fill vanished, type drift
         target_columns = await engine.describe(target)
         stage_columns = await engine.describe(stage)
         target_expr = exp.table_(target.name, db=target.schema, catalog=target.catalog)
@@ -88,14 +101,28 @@ async def _merge_python_output(
                     )
                 )
                 target_columns[column] = dtype
-        projection = [
-            (
-                exp.column(column)
-                if column in stage_columns
-                else exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column)
-            )
-            for column, dtype in target_columns.items()
-        ]
+            elif dtype != target_columns[column] and _widens(target_columns[column], dtype):
+                # Source type drifted wider (int -> bigint -> double): promote the target
+                # in place — DuckLake supports exactly these widening promotions.
+                pre_statements.append(
+                    exp.Alter(
+                        this=target_expr.copy(),
+                        kind="TABLE",
+                        actions=[exp.AlterColumn(this=exp.column(column), dtype=exp.DataType.build(dtype))],
+                    )
+                )
+                target_columns[column] = dtype
+        # Any remaining type mismatch (e.g. a numeric field arriving as VARCHAR) is cast
+        # to the target's type — deterministic, and loudly fails the run on values that
+        # genuinely don't convert rather than silently corrupting the column.
+        projection = []
+        for column, dtype in target_columns.items():
+            if column not in stage_columns:
+                projection.append(exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column))
+            elif stage_columns[column] != dtype:
+                projection.append(exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column))
+            else:
+                projection.append(exp.column(column))
         source = exp.select(*projection).from_(stage_table.copy())
 
     relation = SqlRelation(ast=source, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema())

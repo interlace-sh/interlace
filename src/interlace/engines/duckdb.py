@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import duckdb
 import pyarrow as pa
+import tenacity
 from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode
@@ -29,6 +30,17 @@ _DUCKDB_CAPS = EngineCaps(
     supports_arrow_ingest=True,
     supports_attach=True,
     supports_star_exclude=True,
+)
+
+
+# DuckLake uses optimistic concurrency: a concurrent writer's commit surfaces as
+# a TransactionException. Our write batches are whole-transaction idempotent
+# (CREATE OR REPLACE / DELETE+INSERT run as one unit), so a short retry is safe.
+_commit_retry = tenacity.retry(
+    retry=tenacity.retry_if_exception_type(duckdb.TransactionException),
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential_jitter(initial=0.1, max=1.0),
+    reraise=True,
 )
 
 
@@ -146,6 +158,7 @@ class DuckDBAdapter(EngineAdapter):
 
     # --- sync workers (run in a thread) -------------------------------------
 
+    @_commit_retry
     def _execute_sync(self, sql: str) -> None:
         cur = self._cursor()
         try:
@@ -153,6 +166,7 @@ class DuckDBAdapter(EngineAdapter):
         finally:
             cur.close()
 
+    @_commit_retry
     def _execute_all_sync(self, sqls: list[str]) -> None:
         cur = self._cursor()
         try:
@@ -172,6 +186,7 @@ class DuckDBAdapter(EngineAdapter):
         cur.execute(sql)
         return cur.to_arrow_reader()
 
+    @_commit_retry
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
         cur = self._cursor()
         src = f"__interlace_src_{uuid4().hex}"

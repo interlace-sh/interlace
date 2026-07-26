@@ -80,3 +80,42 @@ def test_caps_are_honest_for_duckdb(adapter: DuckDBAdapter) -> None:
     assert adapter.caps.supports_merge
     assert adapter.caps.supports_create_or_replace
     assert adapter.caps.supports_arrow_ingest
+
+
+async def test_write_paths_retry_transaction_conflicts() -> None:
+    """DuckLake optimistic-concurrency conflicts (TransactionException) retry:
+    the whole idempotent batch re-runs and succeeds once the conflict clears."""
+    import duckdb as _duckdb
+
+    from interlace.engines.duckdb import DuckDBAdapter
+
+    class FlakyCursor:
+        def __init__(self, owner: FlakyConn) -> None:
+            self.owner = owner
+
+        def execute(self, sql: str, *args: object) -> FlakyCursor:
+            if self.owner.failures_left > 0 and not sql.startswith(("BEGIN", "ROLLBACK")):
+                self.owner.failures_left -= 1
+                raise _duckdb.TransactionException("write-write conflict on DuckLake commit")
+            self.owner.executed.append(sql)
+            return self
+
+        def close(self) -> None: ...
+
+    class FlakyConn:
+        def __init__(self, failures: int) -> None:
+            self.failures_left = failures
+            self.executed: list[str] = []
+
+        def cursor(self) -> FlakyCursor:
+            return FlakyCursor(self)
+
+    conn = FlakyConn(failures=2)
+    adapter = DuckDBAdapter(conn)  # type: ignore[arg-type]
+    await adapter.execute_sql("CREATE TABLE t AS SELECT 1")  # two conflicts, third attempt lands
+    assert conn.executed == ["CREATE TABLE t AS SELECT 1"]
+
+    exhausted = FlakyConn(failures=99)
+    exhausted_adapter = DuckDBAdapter(exhausted)  # type: ignore[arg-type]
+    with pytest.raises(_duckdb.TransactionException):  # gives up after 3 attempts, error surfaces
+        await exhausted_adapter.execute_sql("CREATE TABLE t AS SELECT 1")

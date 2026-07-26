@@ -134,12 +134,22 @@ async def test_engine_move_refingerprints_and_gc_drops_old_home(
     assert not await registry.get("second").table_exists(old_physical)  # dropped on the OLD engine
 
 
-def test_cross_engine_dependency_rejected_at_compile() -> None:
-    with pytest.raises(DefinitionError, match="engine"):
+def test_cross_engine_dependency_compiles_and_plans_a_transfer() -> None:
+    compiled = _compile(
+        [
+            _model("up", "SELECT 1 AS x"),
+            _model("down", "SELECT x FROM up", engine="second"),
+        ]
+    )
+    assert compiled.models["down"].dependencies == ("up",)  # allowed: the planner inserts a transfer
+
+
+def test_cross_engine_ephemeral_still_rejected() -> None:
+    with pytest.raises(DefinitionError, match="ephemeral"):
         _compile(
             [
-                _model("up", "SELECT 1 AS x"),
-                _model("down", "SELECT x FROM up", engine="second"),
+                _model("stage", "SELECT 1 AS x", materialise="ephemeral"),
+                _model("down", "SELECT x FROM stage", engine="second"),
             ]
         )
 

@@ -15,7 +15,16 @@ from datetime import datetime, timedelta
 
 from interlace.graph.project import CompiledProject
 from interlace.plan.differ import snapshot_of
-from interlace.plan.plan import BackfillTask, ChangeType, ModelChange, Plan, ViewSwap, env_view, schedule_build
+from interlace.plan.plan import (
+    BackfillTask,
+    ChangeType,
+    ModelChange,
+    Plan,
+    ViewSwap,
+    collect_transfers,
+    env_view,
+    schedule_build,
+)
 from interlace.state.interval import Interval, parse_grain, slice_interval
 from interlace.state.snapshot import ChangeCategory
 from interlace.state.store import StateStore
@@ -66,4 +75,5 @@ async def run_plan(
             schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
 
     plan.promote = sorted(selected)
+    plan.transfers = collect_transfers(compiled, [task.snapshot.name for task in plan.backfills])
     return plan

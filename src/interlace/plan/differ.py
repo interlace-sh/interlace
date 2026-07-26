@@ -31,7 +31,7 @@ from sqlglot import exp
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.canonicalize import parse
 from interlace.ir.fingerprint import canonical_sql
-from interlace.plan.plan import ChangeType, ModelChange, Plan, ViewSwap, env_view, schedule_build
+from interlace.plan.plan import ChangeType, ModelChange, Plan, ViewSwap, collect_transfers, env_view, schedule_build
 from interlace.state.snapshot import ChangeCategory, Snapshot
 from interlace.state.store import StateStore
 
@@ -202,4 +202,5 @@ async def diff(
             plan.changes.append(ModelChange(removed, ChangeType.REMOVED, None, current[removed], None))
 
     plan.promote = sorted(selected)
+    plan.transfers = collect_transfers(compiled, [task.snapshot.name for task in plan.backfills])
     return plan

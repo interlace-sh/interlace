@@ -454,6 +454,11 @@ def _render(plan: Plan, environment: str) -> None:
     console.print(table)
     if reused:
         console.print(f"[dim]{len(reused)} model(s) have provably identical output — reusing existing tables.[/dim]")
+    for transfer in plan.transfers:
+        console.print(
+            f"[cyan]transfer[/cyan] {transfer.model}: {transfer.source.name} → {transfer.target.name} "
+            f"({transfer.via} → {transfer.table.schema}.{transfer.table.name})"
+        )
 
 
 def main() -> None:

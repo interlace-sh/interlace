@@ -8,6 +8,7 @@ Apply executes it; nothing here runs SQL.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -17,7 +18,7 @@ from interlace.state.interval import Interval
 from interlace.state.snapshot import ChangeCategory, Snapshot
 
 if TYPE_CHECKING:
-    from interlace.graph.project import CompiledModel
+    from interlace.graph.project import CompiledModel, CompiledProject
 
 
 class ChangeType(Enum):
@@ -55,8 +56,38 @@ class TransferEdge:
 
     source: EngineRef
     target: EngineRef
-    table: TableRef
-    via: str  # "attach" | "adbc"
+    table: TableRef  # the staging table on the target engine
+    via: str  # "arrow" (generic fetch->load) | "attach" (future optimisation)
+    model: str = ""  # the upstream model being moved
+
+
+XFER_SCHEMA = "interlace__xfer"
+
+
+def staging_table(upstream: str) -> TableRef:
+    """Where a transferred upstream lands on the consumer's engine (replaced on every transfer)."""
+    return TableRef(schema=XFER_SCHEMA, name=upstream.replace(".", "__"))
+
+
+def collect_transfers(compiled: CompiledProject, build_names: Iterable[str]) -> list[TransferEdge]:
+    """One edge per (upstream, target engine) needed by the scheduled builds."""
+    edges: dict[tuple[str, str], TransferEdge] = {}
+    for name in build_names:
+        model = compiled.models[name]
+        for dep in model.dependencies:
+            upstream = compiled.models[dep]
+            if upstream.engine == model.engine or upstream.materialise == "ephemeral":
+                continue
+            key = (dep, model.engine)
+            if key not in edges:
+                edges[key] = TransferEdge(
+                    source=EngineRef(name=upstream.engine, dialect=upstream.dialect),
+                    target=EngineRef(name=model.engine, dialect=model.dialect),
+                    table=staging_table(dep),
+                    via="arrow",
+                    model=dep,
+                )
+    return list(edges.values())
 
 
 @dataclass(frozen=True)

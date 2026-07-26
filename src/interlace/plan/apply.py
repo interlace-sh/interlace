@@ -27,7 +27,7 @@ from interlace.exports import export_statements, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
-from interlace.plan.plan import Plan
+from interlace.plan.plan import Plan, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.state.store import StateStore
@@ -38,6 +38,7 @@ from interlace.strategies import resolve_strategy
 class ApplyResult:
     built: list[str] = field(default_factory=list)
     reused: list[str] = field(default_factory=list)  # recorded over their previous physical table
+    transfers: list[str] = field(default_factory=list)  # executed cross-engine transfers
     promoted: int = 0
     checks: list[CheckOutcome] = field(default_factory=list)
     # Wall-clock build seconds per built model (extraction + strategy + checks).
@@ -133,6 +134,44 @@ async def _merge_python_output(
     await engine.execute_all([*pre_statements, *statements, drop_stage])
 
 
+async def _stage_cross_engine_inputs(
+    model: CompiledModel,
+    compiled: CompiledProject,
+    registry: EngineRegistry,
+    physical: Mapping[str, TableRef],
+    staged: set[tuple[str, str]],
+    result: ApplyResult,
+) -> dict[str, TableRef]:
+    """Move cross-engine upstreams into staging tables on the model's engine.
+
+    Returns the model's *local* resolution map: cross-engine deps point at their
+    staged copies; everything else keeps the global physical map. Each
+    (upstream, target-engine) pair transfers once per apply — always replaced,
+    so a re-run upstream (merge/incremental) is never read stale.
+    """
+    local = dict(physical)
+    for dep in model.dependencies:
+        upstream = compiled.models[dep]
+        if upstream.engine == model.engine or upstream.materialise == "ephemeral":
+            continue
+        stage = staging_table(dep)
+        local[dep] = stage
+        key = (dep, model.engine)
+        if key in staged:
+            continue
+        source_engine = registry.require(upstream.engine, model=dep)
+        target = registry.require(model.engine, model=model.name)
+        origin = physical.get(dep, upstream.physical_table)
+        reader = await source_engine.fetch(
+            exp.select("*").from_(exp.table_(origin.name, db=origin.schema, catalog=origin.catalog))
+        )
+        await target.create_schema(stage.schema)
+        await target.load(stage, reader, "create")
+        staged.add(key)
+        result.transfers.append(f"{dep}: {upstream.engine} -> {model.engine} ({stage.schema}.{stage.name})")
+    return local
+
+
 async def _gate_checks(
     model: CompiledModel,
     compiled: CompiledProject,
@@ -191,11 +230,13 @@ async def apply(
     for reuse in plan.reuses:
         physical[reuse.name] = reuse.physical_table
 
+    staged: set[tuple[str, str]] = set()  # (upstream, target engine) pairs moved this apply
     for task in plan.backfills:
         task_started = time.perf_counter()
         snapshot = task.snapshot
         model = compiled.models[snapshot.name]
         target_engine = registry.require(model.engine, model=model.name)
+        resolution = await _stage_cross_engine_inputs(model, compiled, registry, physical, staged, result)
 
         if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
             if model.export is not None:
@@ -212,10 +253,10 @@ async def apply(
             await target_engine.create_schema(snapshot.physical_table.schema)
             if model.strategy == "full":
                 await build_python_model(
-                    model, compiled, target_engine, snapshot.physical_table, physical=physical, previous=previous
+                    model, compiled, target_engine, snapshot.physical_table, physical=resolution, previous=previous
                 )
             else:  # keyed strategy: stage the Arrow output, then merge it in SQL
-                reader = await run_python_model(model, compiled, target_engine, physical, previous)
+                reader = await run_python_model(model, compiled, target_engine, resolution, previous)
                 await _merge_python_output(
                     model, target_engine, snapshot.physical_table, reader, exists=previous is not None
                 )
@@ -223,11 +264,11 @@ async def apply(
                 validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
-            await _gate_checks(model, compiled, target_engine, state, plan.environment, result, physical)
+            await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
             result.timings[snapshot.name] = time.perf_counter() - task_started
             continue
 
-        resolved = resolve_model_query(model, compiled, physical)
+        resolved = resolve_model_query(model, compiled, resolution)
 
         if model.export is not None:  # sink: push the result to a destination, no table/view
             if model.export.to == "table":  # reverse ETL into an attached database
@@ -259,7 +300,7 @@ async def apply(
             snapshot = replace(snapshot, intervals=filled)
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
-        await _gate_checks(model, compiled, target_engine, state, plan.environment, result, physical)
+        await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
         result.timings[snapshot.name] = time.perf_counter() - task_started
 
     for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing

@@ -93,7 +93,7 @@ async def pg_env(tmp_path: Path) -> AsyncIterator[tuple[EngineRegistry, SqliteSt
     yield registry, store, marker
     # drop everything this test created (schemas are shared in the container)
     pg = adapters["pg"]
-    for schema in ("interlace__main", f"dev_{marker}__main"):
+    for schema in ("interlace__main", "interlace__xfer", f"dev_{marker}__main"):
         await pg.execute_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
     await store.close()
     registry.close()
@@ -174,3 +174,25 @@ async def test_python_model_loads_arrow_into_postgres(
         f'SELECT sum(n)::bigint AS total FROM "dev_{marker}__main".generated'  # sum(bigint) is NUMERIC in PG
     )
     assert reader.read_all().to_pylist() == [{"total": 6}]
+
+
+@requires_pg
+@pytest.mark.requires_db
+async def test_cross_engine_transfer_duckdb_to_postgres(
+    pg_env: tuple[EngineRegistry, SqliteStateStore, str],
+) -> None:
+    """A DuckDB-built upstream feeds a Postgres-native consumer via an Arrow transfer."""
+    registry, store, marker = pg_env
+    compiled = _compile(
+        [
+            ModelDef(name="seed", sql="SELECT * FROM (VALUES (1), (2), (3)) AS t (x)"),  # default: DuckDB
+            ModelDef(name="agg", sql="SELECT count(*) AS n FROM seed", engine="pg"),
+        ]
+    )
+    plan = await diff(compiled, f"dev_{marker}", store)
+    assert [(t.model, t.source.name, t.target.name) for t in plan.transfers] == [("seed", "default", "pg")]
+
+    result = await apply(plan, compiled=compiled, engines=registry, state=store)
+    assert result.transfers == ["seed: default -> pg (interlace__xfer.seed)"]
+    reader = await registry.get("pg").fetch_sql(f'SELECT n FROM "dev_{marker}__main".agg')
+    assert reader.read_all().to_pylist() == [{"n": 3}]

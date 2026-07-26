@@ -10,7 +10,7 @@ This page is the contract; the roadmap tiers at the bottom say what exists today
 |---|---|---|
 | **T0 — federation hub** | Models run on the (DuckDB-family) default engine; external databases are reachable through `attach:` for reads and table exports (reverse ETL) | Shipped |
 | **T1 — native remote engines** | A model's strategy executes *inside* Postgres/Snowflake/… — no DuckDB middleman | Registry + routing shipped; adapters landing per engine |
-| **T2 — cross-engine plans** | The planner inserts explicit `TransferEdge`s when a model's inputs live on another engine | Not yet — cross-engine references are rejected at compile |
+| **T2 — cross-engine plans** | The planner inserts explicit `TransferEdge`s when a model's inputs live on another engine | Shipped (Arrow path) — see Transfers below |
 
 `attach:` and `engines:` are different things: an attachment is a *catalog visible to one
 DuckDB-family engine* (federated reads, sink targets); an engine is a *place interlace executes
@@ -58,10 +58,13 @@ Unset → the project's `default_engine`. The model's dialect defaults from its 
 - **The engine is part of the data fingerprint.** Moving a model between engines is a BREAKING
   change: it rebuilds on the new engine, and `interlace gc` later drops the old physical table on
   the old engine (snapshots record their owning engine — state migration 0006).
-- **Same-engine graphs only (for now).** A model may only depend on models bound to the *same*
-  engine; violations fail at compile with `DefinitionError`. Lifting this is the T2 transfer
-  planner: explicit plan line-items, attach-path or ADBC `fetch → Arrow → load`, staged tables —
-  never silent movement.
+- **Cross-engine dependencies transfer explicitly.** When a model's upstream lives on another
+  engine, the plan carries a `TransferEdge` (rendered by `interlace plan` and the API) and apply
+  moves the upstream as Arrow — `source.fetch → target.load` — into
+  `interlace__xfer.<upstream>` on the consumer's engine, replaced on every apply so re-run
+  upstreams are never read stale. One transfer per (upstream, target engine) per apply; the
+  staged override is scoped to the cross-engine consumer, so same-engine readers keep the
+  original. Ephemeral models still must share their consumers' engine (they inline as CTEs).
 - **Environments span engines; views don't.** `dev__main.report` is created on the engine that
   owns `report`. Promote repoints views per engine; the environment mapping itself lives in the
   control-plane state store as always.
@@ -109,6 +112,6 @@ work natively there.
 
 1. ~~Registry + routing + fingerprinted engine binding~~ (done)
 2. ~~Postgres adapter (ADBC) — first native remote engine~~ (done)
-3. T2 transfer planner (attach + ADBC), staging lifecycle, plan rendering
+3. ~~T2 transfer planner (Arrow fetch→load, staging, plan rendering)~~ (done; attach-path fast lane later)
 4. Second cloud warehouse (Snowflake or BigQuery — driven by a named user)
 5. Author-dialect ≠ run-dialect polish; native MERGE where caps allow

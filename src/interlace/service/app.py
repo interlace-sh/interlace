@@ -99,6 +99,7 @@ class Change(msgspec.Struct):
 class PlanResponse(msgspec.Struct):
     environment: str
     changes: list[Change]
+    transfers: list[str] = msgspec.field(default_factory=list)  # explicit cross-engine movement
 
 
 class RunInfo(msgspec.Struct):
@@ -165,6 +166,7 @@ class ApplyResponse(msgspec.Struct):
     promoted: int
     breaking: bool
     reused: list[str] = msgspec.field(default_factory=list)
+    transfers: list[str] = msgspec.field(default_factory=list)
 
 
 class CheckResultInfo(msgspec.Struct):
@@ -301,7 +303,11 @@ async def get_plan(state: State, environment: FromQuery[str | None] = None) -> P
                 reused=change.name in reused,
             )
         )
-    return PlanResponse(environment=env, changes=changes)
+    return PlanResponse(
+        environment=env,
+        changes=changes,
+        transfers=[f"{t.model}: {t.source.name} -> {t.target.name} ({t.via})" for t in plan.transfers],
+    )
 
 
 @get("/environments")
@@ -409,7 +415,12 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
             "apply.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
         )
     return ApplyResponse(
-        environment=env, built=result.built, promoted=result.promoted, breaking=breaking, reused=result.reused
+        environment=env,
+        built=result.built,
+        promoted=result.promoted,
+        breaking=breaking,
+        reused=result.reused,
+        transfers=result.transfers,
     )
 
 

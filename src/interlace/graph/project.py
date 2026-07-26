@@ -159,10 +159,10 @@ def compile_models(
         definition = definitions[name]
         deps, ast, dialect, engine = resolved[name]
         for dep in deps:  # topo order: deps already compiled
-            if compiled[dep].engine != engine:
+            if compiled[dep].engine != engine and compiled[dep].materialise == "ephemeral":
                 raise DefinitionError(
-                    f"model {name!r} on engine {engine!r} depends on {dep!r} on engine "
-                    f"{compiled[dep].engine!r}; cross-engine transfers are not implemented yet "
+                    f"model {name!r} on engine {engine!r} inlines ephemeral {dep!r} declared on engine "
+                    f"{compiled[dep].engine!r}; an ephemeral model must share its consumers' engine "
                     f"(see docs/architecture/MULTI_ENGINE.md)"
                 )
         strategy_config = {

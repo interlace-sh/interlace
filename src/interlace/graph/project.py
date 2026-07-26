@@ -35,6 +35,7 @@ class CompiledModel:
 
     name: str
     dialect: str
+    engine: str  # named engine that executes and stores this model
     dependencies: tuple[str, ...]
     fingerprint: str  # full: SQL + config + upstream fingerprints
     local_fingerprint: str  # SQL + config only — separates direct from indirect changes
@@ -119,21 +120,36 @@ def compile_models(
     models: Iterable[ModelDef],
     *,
     default_dialect: str = "duckdb",
+    default_engine: str = "default",
+    engine_dialects: dict[str, str] | None = None,
+    known_engines: set[str] | None = None,
     catalog: str | None = None,
     checks: Iterable[CheckDef] = (),
 ) -> CompiledProject:
     """Compile models into a fingerprinted, topologically-ordered project.
 
     ``checks`` are ``@check``-decorated Python functions, attached by model name.
+    ``engine_dialects`` maps engine name → sqlglot dialect (used when a model
+    omits ``dialect``). ``known_engines`` validates model ``engine`` pins.
     """
     definitions = {m.name: m for m in models}
     names = set(definitions)
+    dialects_by_engine = engine_dialects or {}
+    engines = known_engines
 
-    resolved: dict[str, tuple[tuple[str, ...], exp.Expression | None, str]] = {}
+    resolved: dict[str, tuple[tuple[str, ...], exp.Expression | None, str, str]] = {}
     graph = DependencyGraph()
     for name, definition in definitions.items():
-        deps, ast, dialect = _resolve_dependencies(definition, names, default_dialect)
-        resolved[name] = (deps, ast, dialect)
+        engine = definition.engine or default_engine
+        if engines is not None and engine not in engines:
+            raise DefinitionError(
+                f"model {name!r} references unknown engine {engine!r}",
+                details={"engines": sorted(engines)},
+            )
+        # Authoring dialect: explicit model dialect, else the engine's, else project default.
+        model_default_dialect = dialects_by_engine.get(engine, default_dialect)
+        deps, ast, dialect = _resolve_dependencies(definition, names, model_default_dialect)
+        resolved[name] = (deps, ast, dialect, engine)
         graph.add_node(name)
         for dep in deps:
             graph.add_dependency(name, dep)
@@ -141,7 +157,14 @@ def compile_models(
     compiled: dict[str, CompiledModel] = {}
     for name in graph.topological_sort():  # upstreams first; raises on cycle
         definition = definitions[name]
-        deps, ast, dialect = resolved[name]
+        deps, ast, dialect, engine = resolved[name]
+        for dep in deps:  # topo order: deps already compiled
+            if compiled[dep].engine != engine:
+                raise DefinitionError(
+                    f"model {name!r} on engine {engine!r} depends on {dep!r} on engine "
+                    f"{compiled[dep].engine!r}; cross-engine transfers are not implemented yet "
+                    f"(see docs/architecture/MULTI_ENGINE.md)"
+                )
         strategy_config = {
             "materialise": definition.materialise,
             "strategy": definition.strategy,
@@ -150,6 +173,7 @@ def compile_models(
             "interval": definition.interval,
             "time_column": definition.time_column,
             "cursor": definition.cursor,
+            "engine": engine,
             "export": (
                 {
                     "to": definition.export.to,
@@ -184,6 +208,7 @@ def compile_models(
         compiled[name] = CompiledModel(
             name=name,
             dialect=dialect,
+            engine=engine,
             dependencies=deps,
             fingerprint=fingerprint,
             local_fingerprint=local_fingerprint,

@@ -137,13 +137,13 @@ async def _plan(environment: str, path: Path, select: list[str], forward_only: b
 async def _apply(environment: str, path: Path, select: list[str], forward_only: bool = False) -> None:
     project = Project.load(path)
     compiled = project.compile()
-    engine = project.open_engine()
+    engines = project.open_engines()
     state = await project.open_state()
     try:
         # Stream-fed projects must build without the daemon ever having run:
         # declared stream tables are ensured (empty) so models reading them work.
         if project.streams:
-            await ensure_stream_tables(project.streams, engine)
+            await ensure_stream_tables(project.streams, engines.get())
         plan_result = await diff(
             compiled, environment, state, select=_selection(compiled, select), forward_only=forward_only
         )
@@ -152,7 +152,7 @@ async def _apply(environment: str, path: Path, select: list[str], forward_only: 
             return
         try:
             result = await apply_plan(
-                plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root
+                plan_result, compiled=compiled, engines=engines, state=state, base_path=project.root
             )
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")
@@ -163,7 +163,7 @@ async def _apply(environment: str, path: Path, select: list[str], forward_only: 
         )
     finally:
         await state.close()
-        engine.close()
+        engines.close()
 
 
 @app.command()
@@ -191,11 +191,11 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
     window_end = datetime.fromisoformat(end) if end else None
     project = Project.load(path)
     compiled = project.compile()
-    engine = project.open_engine()
+    engines = project.open_engines()
     state = await project.open_state()
     try:
         if project.streams:  # as in _apply: stream tables must exist daemon or not
-            await ensure_stream_tables(project.streams, engine)
+            await ensure_stream_tables(project.streams, engines.get())
         plan_result = await run_plan(
             compiled,
             environment,
@@ -207,7 +207,7 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
         )
         try:
             result = await apply_plan(
-                plan_result, compiled=compiled, engine=engine, state=state, base_path=project.root
+                plan_result, compiled=compiled, engines=engines, state=state, base_path=project.root
             )
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")
@@ -219,7 +219,7 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
         )
     finally:
         await state.close()
-        engine.close()
+        engines.close()
 
 
 @app.command()
@@ -238,10 +238,10 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
     from interlace.streaming.materializer import sweep_streams
 
     project = Project.load(path)
-    engine = project.open_engine()
+    engines = project.open_engines()
     state = await project.open_state()
     try:
-        result = await run_gc(state, engine, grace=parse_grain(grace), dry_run=dry_run)
+        result = await run_gc(state, engines=engines, grace=parse_grain(grace), dry_run=dry_run)
         verb = "Would remove" if dry_run else "Removed"
         console.print(
             f"{verb} {len(result.removed_snapshots)} snapshot(s), dropped {len(result.dropped_tables)} table(s); "
@@ -252,14 +252,14 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
         if project.streams and not dry_run:
             log = await project.open_stream_log()
             try:
-                swept = await sweep_streams(project.streams, log, engine)
+                swept = await sweep_streams(project.streams, log, engines.get())
             finally:
                 await log.close()
             if swept:
                 console.print("Stream retention: " + ", ".join(f"{k} -{v}" for k, v in swept.items()))
     finally:
         await state.close()
-        engine.close()
+        engines.close()
 
 
 @app.command()
@@ -276,13 +276,13 @@ def scheduler(
 async def _scheduler(environment: str, path: Path, interval: float, once: bool) -> None:
     project = Project.load(path)
     compiled = project.compile()
-    engine = project.open_engine()
+    engines = project.open_engines()
     state = await project.open_state()
     trigger_engine = TriggerEngine(build_triggers(compiled), state)
     try:
         while True:
             await trigger_engine.tick(datetime.now())
-            ran = await drain(state, compiled, engine, environment, base_path=project.root)
+            ran = await drain(state, compiled, engines=engines, environment=environment, base_path=project.root)
             if ran:
                 console.print(f"[green]ran {ran} scheduled run(s) in '{environment}'[/green]")
             if once:
@@ -290,7 +290,7 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
             await asyncio.sleep(interval)
     finally:
         await state.close()
-        engine.close()
+        engines.close()
 
 
 @app.command()

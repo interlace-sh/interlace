@@ -119,6 +119,10 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_check_results_model ON check_results (model, id DESC);
     """,
+    # 0006 — multi-engine: which named engine owns each snapshot's physical table
+    """
+    ALTER TABLE snapshots ADD COLUMN engine TEXT NOT NULL DEFAULT 'default';
+    """,
 ]
 
 
@@ -153,7 +157,9 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _snapshot_to_row(snapshot: Snapshot) -> tuple[str, str, str, str, str | None, str | None, str, str, str, str]:
+def _snapshot_to_row(
+    snapshot: Snapshot,
+) -> tuple[str, str, str, str, str | None, str | None, str, str, str, str, str]:
     t = snapshot.physical_table
     return (
         snapshot.name,
@@ -166,10 +172,12 @@ def _snapshot_to_row(snapshot: Snapshot) -> tuple[str, str, str, str, str | None
         t.name,
         snapshot.change_category.value,
         _now_iso(),
+        snapshot.engine,
     )
 
 
 def _snapshot_from_row(row: sqlite3.Row, intervals: IntervalSet) -> Snapshot:
+    keys = row.keys()
     return Snapshot(
         name=row["name"],
         fingerprint=row["fingerprint"],
@@ -181,6 +189,7 @@ def _snapshot_from_row(row: sqlite3.Row, intervals: IntervalSet) -> Snapshot:
         intervals=intervals,
         local_fingerprint=row["local_fingerprint"],
         definition_sql=row["definition_sql"],
+        engine=row["engine"] if "engine" in keys else "default",
     )
 
 
@@ -239,8 +248,8 @@ class SqliteStateStore:
             self._conn.execute(
                 "INSERT OR REPLACE INTO snapshots "
                 "(name, fingerprint, local_fingerprint, metadata_hash, definition_sql, physical_catalog, "
-                " physical_schema, physical_name, change_category, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " physical_schema, physical_name, change_category, created_at, engine) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _snapshot_to_row(snapshot),
             )
             self._conn.execute(
@@ -298,13 +307,13 @@ class SqliteStateStore:
         return {(row["model_name"], row["fingerprint"]) for row in rows}
 
     async def list_snapshot_rows(self) -> list[dict[str, str]]:
-        """Every snapshot row (no intervals): name, fingerprint, physical table, created_at."""
+        """Every snapshot row (no intervals): name, fingerprint, physical table, engine, created_at."""
         return await asyncio.to_thread(self._list_snapshot_rows_sync)
 
     def _list_snapshot_rows_sync(self) -> list[dict[str, str]]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT name, fingerprint, physical_schema, physical_name, created_at FROM snapshots"
+                "SELECT name, fingerprint, physical_schema, physical_name, engine, created_at FROM snapshots"
             ).fetchall()
         return [dict(row) for row in rows]
 

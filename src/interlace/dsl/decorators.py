@@ -53,6 +53,7 @@ class ModelDef:
     strategy: str = "full"
     key: tuple[str, ...] = ()
     dialect: str | None = None
+    engine: str | None = None  # named engine from config (None → project default_engine)
     depends_on: tuple[str, ...] = ()
     kind: str = "batch"
     interval: str | None = None  # grain for incremental_by_time (e.g. "1d")
@@ -126,6 +127,7 @@ def model(
     strategy: str = "full",
     key: str | Sequence[str] = (),
     dialect: str | None = None,
+    engine: str | None = None,
     depends_on: str | Sequence[str] = (),
     kind: str = "batch",
     interval: str | None = None,
@@ -145,6 +147,9 @@ def model(
     that column in the previous materialisation is injected into the function's
     ``cursor`` parameter (``None`` on first build), so incremental extractors can
     resume from where the warehouse actually is instead of tracking side state.
+
+    ``engine`` pins the model to a named engine from ``interlace.yaml`` (defaults
+    to the project's ``default_engine``).
     """
     if materialise not in _MATERIALISATIONS:
         raise DefinitionError(f"unknown materialise {materialise!r}; expected one of {sorted(_MATERIALISATIONS)}")
@@ -164,6 +169,7 @@ def model(
                 strategy=strategy,
                 key=_as_tuple(key),
                 dialect=dialect,
+                engine=engine,
                 depends_on=_as_tuple(depends_on),
                 kind=kind,
                 interval=interval,

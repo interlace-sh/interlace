@@ -1,23 +1,29 @@
 """A loaded project: config + discovered models, with engine/state factories.
 
 This is the entry point the CLI builds on — ``Project.load(dir)`` reads the
-config, discovers models, and can compile them and open the warehouse engine and
-control-plane state store at the configured (root-relative) paths.
+config, discovers models, and can compile them and open the warehouse engine(s)
+and control-plane state store at the configured (root-relative) paths.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from interlace.config.config import CONFIG_FILE, ProjectConfig, SecretConfig, load_config
+from interlace.config.config import CONFIG_FILE, EngineConfig, ProjectConfig, SecretConfig, load_config
 from interlace.dsl.decorators import REGISTRY, CheckDef, ModelDef, StreamDef
 from interlace.dsl.discovery import discover_models
+from interlace.engines.base import EngineAdapter
 from interlace.engines.duckdb import DuckDBAdapter
+from interlace.engines.registry import EngineRegistry
+from interlace.exceptions import ConfigurationError
 from interlace.graph.project import CompiledProject, compile_models
 from interlace.state.store import SqliteStateStore
 from interlace.streaming.log import SqliteStreamLog
+
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def _secret_sql(name: str, secret: SecretConfig) -> str:
@@ -65,70 +71,111 @@ class Project:
         )
 
     def compile(self) -> CompiledProject:
-        return compile_models(self.models, default_dialect=self.config.default_dialect, checks=self.checks)
+        engine_cfgs = self.config.engine_configs()
+        return compile_models(
+            self.models,
+            default_dialect=self.config.default_dialect,
+            default_engine=self.config.default_engine,
+            engine_dialects={name: cfg.resolved_dialect() for name, cfg in engine_cfgs.items()},
+            known_engines=set(engine_cfgs),
+            checks=self.checks,
+        )
 
-    def open_engine(self) -> DuckDBAdapter:
-        """Open the warehouse: DuckLake (default; local file catalog, or a catalog hosted
-        in a SQL database with the data on a filesystem/object store), a plain DuckDB
-        file, ":memory:", or a remote warehouse served over the quack protocol."""
-        self._reject_unresolved_env()
-        database = self.config.database
-        if database.startswith("quack:"):
-            from interlace.engines.quack import QuackAdapter  # lazy: only quack clients need it
+    def open_engine(self, name: str | None = None) -> EngineAdapter:
+        """Open one engine (default: ``config.default_engine``). Prefer
+        :meth:`open_engines` when applying multi-engine projects."""
+        engine_name = name or self.config.default_engine
+        configs = self.config.engine_configs()
+        if engine_name not in configs:
+            raise ConfigurationError(
+                f"unknown engine {engine_name!r}",
+                details={"engines": sorted(configs)},
+            )
+        return self._open_engine_config(engine_name, configs[engine_name])
 
-            token = self.config.quack_token or os.environ.get("INTERLACE_QUACK_TOKEN")
+    def open_engines(self) -> EngineRegistry:
+        """Lazy registry of every configured engine. Call ``close()`` when done."""
+        configs = self.config.engine_configs()
+        if self.config.default_engine not in configs:
+            raise ConfigurationError(
+                f"default_engine {self.config.default_engine!r} is not a configured engine",
+                details={"engines": sorted(configs)},
+            )
+
+        def opener(engine_name: str) -> EngineAdapter:
+            return self._open_engine_config(engine_name, configs[engine_name])
+
+        return EngineRegistry(configs.keys(), opener, default=self.config.default_engine)
+
+    def _open_engine_config(self, name: str, cfg: EngineConfig) -> EngineAdapter:
+        """Open a single engine from its config. DuckDB-family only for now."""
+        self._reject_unresolved_env(cfg)
+        if cfg.type not in ("duckdb", "ducklake", "quack"):
+            raise ConfigurationError(
+                f"engine {name!r}: type {cfg.type!r} is not implemented yet "
+                f"(supported: duckdb, ducklake, quack). See docs/architecture/MULTI_ENGINE.md",
+                details={"engine": name, "type": cfg.type},
+            )
+        database = cfg.database or "ducklake:.interlace/warehouse.ducklake"
+        if cfg.type == "quack" or database.startswith("quack:"):
+            from interlace.engines.quack import QuackAdapter
+
+            token = cfg.quack_token or os.environ.get("INTERLACE_QUACK_TOKEN")
             return QuackAdapter.connect(database, token=token)
-        if database.startswith("ducklake:"):
+
+        if cfg.type == "ducklake" or database.startswith("ducklake:"):
             catalog = database.removeprefix("ducklake:")
-            # Remote catalogs ("postgres:dbname=…", "mysql:…", "sqlite:…") are DSNs,
-            # not paths — never filesystem-resolve them.
             remote_catalog = catalog.startswith(("postgres:", "mysql:", "sqlite:"))
             if not remote_catalog and not Path(catalog).is_absolute():
                 resolved = self.root / catalog
                 resolved.parent.mkdir(parents=True, exist_ok=True)
                 database = f"ducklake:{resolved}"
-            if remote_catalog or self.config.data_path or self.config.metadata_schema or self.config.secrets:
-                engine = self._open_ducklake_with_options(database, remote_catalog=remote_catalog)
+            if remote_catalog or cfg.data_path or cfg.metadata_schema or cfg.secrets:
+                engine = self._open_ducklake_with_options(name, database, cfg, remote_catalog=remote_catalog)
             else:
                 engine = DuckDBAdapter.connect(database)
         else:
             if database != ":memory:":
-                path = self.root / database
+                path = Path(database) if Path(database).is_absolute() else self.root / database
                 path.parent.mkdir(parents=True, exist_ok=True)
                 database = str(path)
             engine = DuckDBAdapter.connect(database)
-        for alias, uri in self.config.attach.items():  # reads + table exports reach these
+
+        for alias, uri in cfg.attach.items():
             target = uri
             if "://" not in uri and ":" not in uri.split("/")[0] and not Path(uri).is_absolute():
-                target = str(self.root / uri)  # bare relative path: resolve against the project
+                target = str(self.root / uri)
             engine.attach(alias, target)
         return engine
 
-    def _reject_unresolved_env(self) -> None:
+    def _reject_unresolved_env(self, cfg: EngineConfig | None = None) -> None:
         """Fail fast when ``${VAR}`` survived config interpolation (the variable is
         unset). Left alone, DuckDB treats the literal ``${VAR}`` as a PATH — creating
         a directory of that name — before failing somewhere far less obvious."""
-        import re
-
-        from interlace.exceptions import ConfigurationError
-
         refs: set[str] = set()
-        candidates = [self.config.database, self.config.data_path or ""]
-        for secret in self.config.secrets.values():
+        if cfg is None:
+            candidates = [self.config.database, self.config.data_path or ""]
+            secrets = self.config.secrets
+        else:
+            candidates = [cfg.database or "", cfg.data_path or ""]
+            secrets = cfg.secrets
+        for secret in secrets.values():
             candidates += [secret.key_id, secret.secret, secret.endpoint or ""]
         for value in candidates:
-            refs.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value))
+            refs.update(_ENV_REF.findall(value))
         if refs:
             raise ConfigurationError(
                 "unresolved ${VAR} in warehouse config — set the environment variable(s)",
                 details={"variables": sorted(refs)},
             )
 
-    def _open_ducklake_with_options(self, database: str, *, remote_catalog: bool) -> DuckDBAdapter:
+    def _open_ducklake_with_options(
+        self, name: str, database: str, cfg: EngineConfig, *, remote_catalog: bool
+    ) -> DuckDBAdapter:
         """DuckLake with attach options/credentials: explicit ATTACH (DATA_PATH /
         METADATA_SCHEMA) after installing the needed extensions and creating the
         configured secrets — e.g. a Postgres-hosted catalog with Parquet on S3."""
-        data_path = self.config.data_path
+        data_path = cfg.data_path
         if data_path and "://" not in data_path and not Path(data_path).is_absolute():
             resolved_data = self.root / data_path
             resolved_data.mkdir(parents=True, exist_ok=True)
@@ -137,15 +184,16 @@ class Project:
         if database.removeprefix("ducklake:").startswith("postgres:"):
             extensions.append("postgres")
         if (data_path or "").startswith(("s3://", "gcs://", "r2://")) or any(
-            s.type == "s3" for s in self.config.secrets.values()
+            s.type == "s3" for s in cfg.secrets.values()
         ):
             extensions.append("httpfs")
-        secrets = [_secret_sql(name, secret) for name, secret in self.config.secrets.items()]
+        secrets = [_secret_sql(secret_name, secret) for secret_name, secret in cfg.secrets.items()]
+        alias = name if name != "default" else (self.config.name or "warehouse")
         return DuckDBAdapter.connect_ducklake(
             database,
-            alias=self.config.name or "warehouse",
+            alias=alias,
             data_path=data_path,
-            metadata_schema=self.config.metadata_schema,
+            metadata_schema=cfg.metadata_schema,
             secrets=secrets,
             extensions=extensions,
         )

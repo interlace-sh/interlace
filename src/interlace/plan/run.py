@@ -59,7 +59,9 @@ async def run_plan(
             for window in slice_interval(_window(start, end, grain), grain):
                 if restate or not filled.covers(window):  # restate reprocesses; otherwise catch up
                     plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window))
-            plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), model.physical_table))
+            plan.virtual_updates.append(
+                ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
+            )
         else:
             schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
 

@@ -107,9 +107,7 @@ async def test_incompatible_type_is_cast_to_target(env: Env) -> None:
 
 async def test_unconvertible_value_fails_loudly(env: Env) -> None:
     engine, store = env
-    compiled = compile_models(
-        [_model([pa.table({"id": ["a"], "v": [1]}), pa.table({"id": ["b"], "v": ["junk"]})])]
-    )
+    compiled = compile_models([_model([pa.table({"id": ["a"], "v": [1]}), pa.table({"id": ["b"], "v": ["junk"]})])])
     await apply(await diff(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
     plan = await run_plan(compiled, "dev", store, select={"events"})
     with pytest.raises(Exception, match="(?i)conver"):

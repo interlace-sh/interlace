@@ -80,13 +80,15 @@ def _target_ref(target: str) -> TableRef:
     )
 
 
-def table_export_statements(export: ExportConfig, query: exp.Expression, dialect: str) -> list[exp.Expression]:
+def table_export_statements(
+    export: ExportConfig, query: exp.Expression, dialect: str, engine: str = "default"
+) -> list[exp.Expression]:
     """Deliver ``query`` into the external table — never DROP it (grants/readers survive)."""
     from interlace.strategies import FullMerge, MergeByKey  # runtime import: strategies build on ir like this module
 
     target = _target_ref(export.target)
     table = exp.table_(target.name, db=target.schema, catalog=target.catalog)
-    relation = SqlRelation(ast=query, engine=EngineRef(name="default", dialect=dialect), schema=empty_schema())
+    relation = SqlRelation(ast=query, engine=EngineRef(name=engine, dialect=dialect), schema=empty_schema())
 
     if export.mode == "merge_by_key":
         return MergeByKey(export.key).plan_statements(relation, target, EngineCaps())

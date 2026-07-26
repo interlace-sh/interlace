@@ -49,7 +49,8 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         materialise=materialise,
         strategy=config.get("strategy", "full"),
         key=_as_tuple(config.get("key") or ()),
-        dialect=config.get("dialect") or default_dialect,
+        dialect=config.get("dialect"),  # None → compile fills from engine dialect
+        engine=config.get("engine"),
         depends_on=_as_tuple(config.get("depends_on") or ()),
         kind=kind,
         interval=config.get("interval"),

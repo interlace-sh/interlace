@@ -46,6 +46,7 @@ def snapshot_of(model: CompiledModel, category: ChangeCategory) -> Snapshot:
         change_category=category,
         local_fingerprint=model.local_fingerprint,
         definition_sql=model.definition_sql,
+        engine=model.engine,
     )
 
 
@@ -108,7 +109,9 @@ def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, enviro
     )
     plan.reuses.append(snapshot)
     if model.export is None and model.materialise in ("table", "view"):
-        plan.virtual_updates.append(ViewSwap(env_view(environment, model.name), previous.physical_table))
+        plan.virtual_updates.append(
+            ViewSwap(env_view(environment, model.name), previous.physical_table, engine=model.engine)
+        )
 
 
 _HISTORY_STRATEGIES = frozenset({"merge_by_key", "full_merge", "scd_type_2", "scd2", "incremental_by_time"})

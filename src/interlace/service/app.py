@@ -395,7 +395,12 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         await state.store.append_event("apply.started", entity=env, payload={"models": plan.promote})
         try:
             result = await apply_plan(
-                plan, compiled=compiled, engine=state.engine, state=state.store, base_path=state.root
+                plan,
+                compiled=compiled,
+                engines=getattr(state, "engines", None) or state.engine,
+                engine=state.engine if not getattr(state, "engines", None) else None,
+                state=state.store,
+                base_path=state.root,
             )
         except CheckError as exc:
             await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
@@ -523,7 +528,14 @@ async def post_gc(state: State, data: GcRequest | None = None) -> GcResponse:
     except ValueError as exc:
         raise ClientException(detail=str(exc)) from exc
     async with state.apply_lock:
-        result = await run_gc(state.store, state.engine, grace=grace, dry_run=request.dry_run)
+        engines = getattr(state, "engines", None)
+        result = await run_gc(
+            state.store,
+            engine=None if engines else state.engine,
+            engines=engines,
+            grace=grace,
+            dry_run=request.dry_run,
+        )
     if result.removed_snapshots and not request.dry_run:
         await state.store.append_event(
             "gc.finished",
@@ -584,7 +596,8 @@ def create_app(
 
         project = Project.load(root)
         store = await project.open_state()
-        engine = project.open_engine()
+        engines = project.open_engines()
+        engine = engines.get()  # default warehouse: streams, quack, legacy single-engine paths
         if quack:
             from interlace.engines.quack import QuackAdapter, sql_literal
 
@@ -601,6 +614,7 @@ def create_app(
         app.state.compiled = compiled
         app.state.store = store
         app.state.engine = engine
+        app.state.engines = engines
         app.state.environment = environment
         app.state.root = project.root
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
@@ -611,7 +625,7 @@ def create_app(
             trigger_engine = TriggerEngine(build_triggers(compiled), store)
             while True:
                 await trigger_engine.tick(datetime.now())
-                await drain(store, compiled, engine, environment, base_path=project.root)
+                await drain(store, compiled, engines=engines, environment=environment, base_path=project.root)
                 if streams:  # catch up anything the publish path didn't flush
                     async with app.state.apply_lock:
                         flushed = await flush_streams(streams.values(), stream_log, engine)
@@ -630,7 +644,7 @@ def create_app(
                     await loop_task
             await stream_log.close()
             await store.close()
-            engine.close()
+            engines.close()
 
     return Litestar(
         route_handlers=[

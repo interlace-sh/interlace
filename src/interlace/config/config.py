@@ -39,17 +39,58 @@ class SecretConfig(BaseModel):
     scope: str | None = None  # e.g. s3://bucket — pin the secret to one prefix
 
 
+_ENGINE_TYPES = frozenset({"duckdb", "ducklake", "quack"})
+_TYPE_DIALECT = {
+    "duckdb": "duckdb",
+    "ducklake": "duckdb",
+    "quack": "duckdb",
+    "postgres": "postgres",
+    "snowflake": "snowflake",
+    "bigquery": "bigquery",
+}
+
+
+class EngineConfig(BaseModel):
+    """One named execution engine (warehouse gateway).
+
+    DuckDB-family types (``duckdb`` / ``ducklake`` / ``quack``) are fully supported.
+    Additional types are reserved for remote adapters (Postgres, Snowflake, …);
+    declaring them fails at open until an adapter ships.
+    """
+
+    type: str = "ducklake"
+    # Path / URI for DuckDB-family engines. Also accepted on the project top level
+    # as ``database:`` (synthesised into the ``default`` engine).
+    database: str | None = None
+    data_path: str | None = None
+    metadata_schema: str | None = None
+    secrets: dict[str, SecretConfig] = Field(default_factory=dict)
+    quack_token: str | None = None
+    attach: dict[str, str] = Field(default_factory=dict)
+    dialect: str | None = None  # defaults from type (duckdb for DuckDB-family)
+
+    def resolved_dialect(self) -> str:
+        if self.dialect:
+            return self.dialect
+        return _TYPE_DIALECT.get(self.type, "duckdb")
+
+
 class ProjectConfig(BaseModel):
     """Top-level project settings."""
 
     name: str = "interlace"
     default_dialect: str = "duckdb"
+    # Named engines (see ``engines``). Single-engine projects leave this as
+    # ``default`` and use the top-level ``database`` / ``attach`` fields.
+    default_engine: str = "default"
+    engines: dict[str, EngineConfig] = Field(default_factory=dict)
     state_path: str = ".interlace/state.db"  # SQLite control-plane database
     # The warehouse. Default is DuckLake (Parquet data + SQL catalog) via DuckDB.
     # Also accepted: a DuckLake catalog hosted in a SQL database
     # ("ducklake:postgres:dbname=... host=..." — pair with data_path/metadata_schema),
     # a plain DuckDB file path, ":memory:", or "quack:<host>:<port>" to connect to a
     # warehouse served by `interlace serve --quack`.
+    # When ``engines.default`` is not set, these top-level fields synthesise it.
     database: str = "ducklake:.interlace/warehouse.ducklake"
     # DuckLake attach options for non-default layouts: where the Parquet data lives
     # (local dir or s3://bucket/prefix/) and which schema of the catalog database
@@ -65,8 +106,38 @@ class ProjectConfig(BaseModel):
     # Databases to ATTACH to the warehouse engine at open: alias -> DuckDB attach
     # URI/path (a .duckdb file, "postgres:...", "sqlite:...", ...). Models can read
     # them and table exports can write to them as <alias>.<schema>.<table>.
+    # This is T0 federation (all SQL still runs in DuckDB) — see docs/architecture/MULTI_ENGINE.md.
     attach: dict[str, str] = Field(default_factory=dict)
     model_paths: list[str] = Field(default_factory=lambda: ["models"])
+
+    def engine_configs(self) -> dict[str, EngineConfig]:
+        """Resolved engine map: explicit ``engines`` plus a synthesised ``default``
+        from the top-level warehouse fields when that name is not already set."""
+        result = dict(self.engines)
+        if "default" not in result:
+            result["default"] = _default_engine_from_top_level(self)
+        return result
+
+
+def _infer_engine_type(database: str) -> str:
+    if database.startswith("quack:"):
+        return "quack"
+    if database.startswith("ducklake:"):
+        return "ducklake"
+    return "duckdb"
+
+
+def _default_engine_from_top_level(config: ProjectConfig) -> EngineConfig:
+    return EngineConfig(
+        type=_infer_engine_type(config.database),
+        database=config.database,
+        data_path=config.data_path,
+        metadata_schema=config.metadata_schema,
+        secrets=config.secrets,
+        quack_token=config.quack_token,
+        attach=config.attach,
+        dialect=config.default_dialect if config.default_dialect != "duckdb" else None,
+    )
 
 
 def _interpolate_env(text: str) -> str:

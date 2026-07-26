@@ -21,6 +21,7 @@ from sqlglot import exp
 from interlace.checks.runner import CheckOutcome, run_checks
 from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
+from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, PlanError
 from interlace.exports import export_statements, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
@@ -50,9 +51,7 @@ _NUMERIC_WIDTH = {"TINYINT": 0, "SMALLINT": 1, "INTEGER": 2, "BIGINT": 3, "FLOAT
 def _widens(current: str, incoming: str) -> bool:
     """True when ``incoming`` is a strictly wider numeric type than ``current``."""
     return (
-        current in _NUMERIC_WIDTH
-        and incoming in _NUMERIC_WIDTH
-        and _NUMERIC_WIDTH[incoming] > _NUMERIC_WIDTH[current]
+        current in _NUMERIC_WIDTH and incoming in _NUMERIC_WIDTH and _NUMERIC_WIDTH[incoming] > _NUMERIC_WIDTH[current]
     )
 
 
@@ -125,7 +124,9 @@ async def _merge_python_output(
                 projection.append(exp.column(column))
         source = exp.select(*projection).from_(stage_table.copy())
 
-    relation = SqlRelation(ast=source, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema())
+    relation = SqlRelation(
+        ast=source, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
+    )
     strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
     statements = strategy.plan_statements(relation, target, engine.caps, None)
     drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
@@ -163,14 +164,18 @@ async def apply(
     plan: Plan,
     *,
     compiled: CompiledProject,
-    engine: EngineAdapter,
+    engine: EngineAdapter | None = None,
+    engines: Mapping[str, EngineAdapter] | EngineRegistry | None = None,
     state: StateStore,
     base_path: Path | None = None,
 ) -> ApplyResult:
-    """Execute a plan against ``engine`` and record the result in ``state``.
+    """Execute a plan and record the result in ``state``.
 
+    Pass either a single ``engine`` (single-engine projects / tests) or an
+    ``engines`` registry / mapping. Each model builds on ``model.engine``.
     ``base_path`` is the project root used to resolve relative export paths.
     """
+    registry = as_registry(engine, engines)
     result = ApplyResult()
 
     # Where each model's data actually lives: recorded snapshots win over the
@@ -190,6 +195,7 @@ async def apply(
         task_started = time.perf_counter()
         snapshot = task.snapshot
         model = compiled.models[snapshot.name]
+        target_engine = registry.require(model.engine, model=model.name)
 
         if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
             if model.export is not None:
@@ -203,19 +209,21 @@ async def apply(
                 )
             recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
             previous = recorded_self.physical_table if recorded_self is not None else None
-            await engine.create_schema(snapshot.physical_table.schema)
+            await target_engine.create_schema(snapshot.physical_table.schema)
             if model.strategy == "full":
                 await build_python_model(
-                    model, compiled, engine, snapshot.physical_table, physical=physical, previous=previous
+                    model, compiled, target_engine, snapshot.physical_table, physical=physical, previous=previous
                 )
             else:  # keyed strategy: stage the Arrow output, then merge it in SQL
-                reader = await run_python_model(model, compiled, engine, physical, previous)
-                await _merge_python_output(model, engine, snapshot.physical_table, reader, exists=previous is not None)
+                reader = await run_python_model(model, compiled, target_engine, physical, previous)
+                await _merge_python_output(
+                    model, target_engine, snapshot.physical_table, reader, exists=previous is not None
+                )
             if model.columns:
-                validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
+                validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
-            await _gate_checks(model, compiled, engine, state, plan.environment, result, physical)
+            await _gate_checks(model, compiled, target_engine, state, plan.environment, result, physical)
             result.timings[snapshot.name] = time.perf_counter() - task_started
             continue
 
@@ -223,33 +231,35 @@ async def apply(
 
         if model.export is not None:  # sink: push the result to a destination, no table/view
             if model.export.to == "table":  # reverse ETL into an attached database
-                await engine.execute_all(table_export_statements(model.export, resolved, model.dialect))
+                await target_engine.execute_all(
+                    table_export_statements(model.export, resolved, model.dialect, model.engine)
+                )
             else:
                 export_path = _resolve_export_path(base_path, model.export.path)
                 Path(export_path).parent.mkdir(parents=True, exist_ok=True)
-                await engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
+                await target_engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
             await state.add_snapshot(snapshot)
             result.built.append(snapshot.name)
             result.timings[snapshot.name] = time.perf_counter() - task_started
             continue
 
         relation = SqlRelation(
-            ast=resolved, engine=EngineRef(name="default", dialect=model.dialect), schema=empty_schema()
+            ast=resolved, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
         )
         strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
 
-        await engine.create_schema(snapshot.physical_table.schema)
-        statements = strategy.plan_statements(relation, snapshot.physical_table, engine.caps, task.interval)
-        await engine.execute_all(statements)
+        await target_engine.create_schema(snapshot.physical_table.schema)
+        statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, task.interval)
+        await target_engine.execute_all(statements)
         if model.columns:  # validate the built schema against the contract before recording it
-            validate_contract(model.name, await engine.describe(snapshot.physical_table), model.columns)
+            validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
 
         if task.interval is not None:  # incremental: accumulate the filled window in the ledger
             filled = (await state.get_intervals(snapshot.name, snapshot.fingerprint)).add(task.interval)
             snapshot = replace(snapshot, intervals=filled)
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
-        await _gate_checks(model, compiled, engine, state, plan.environment, result, physical)
+        await _gate_checks(model, compiled, target_engine, state, plan.environment, result, physical)
         result.timings[snapshot.name] = time.perf_counter() - task_started
 
     for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing
@@ -257,8 +267,9 @@ async def apply(
         result.reused.append(reuse.name)
 
     for swap in plan.virtual_updates:
-        await engine.create_schema(swap.view.schema)
-        await engine.create_view(swap.view, swap.target)
+        view_engine = registry.require(swap.engine)
+        await view_engine.create_schema(swap.view.schema)
+        await view_engine.create_view(swap.view, swap.target)
 
     mapping = {name: compiled.models[name].fingerprint for name in plan.promote}
     await state.promote(plan.environment, mapping)

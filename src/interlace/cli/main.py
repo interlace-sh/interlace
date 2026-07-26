@@ -457,6 +457,25 @@ async def _runs(path: Path, limit: int) -> None:
 
 
 @app.command()
+def cancel(run_id: int = typer.Argument(..., help="Run id (see `interlace runs`)."), path: Path = _PATH) -> None:
+    """Cancel a run: queued cancels now; running cancels at the worker's next heartbeat."""
+    asyncio.run(_cancel(run_id, path))
+
+
+async def _cancel(run_id: int, path: Path) -> None:
+    project = Project.load(path)
+    state = await project.open_state()
+    try:
+        outcome = await state.request_cancel(run_id)
+        if outcome is None:
+            console.print(f"[red]run {run_id} is unknown or already finished[/red]")
+            raise typer.Exit(1)
+        console.print(f"run {run_id}: [bold]{outcome}[/bold]")
+    finally:
+        await state.close()
+
+
+@app.command()
 def checks(
     path: Path = _PATH,
     model: str = typer.Option("", "--model", "-m", help="Filter to one model."),

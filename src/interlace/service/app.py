@@ -398,6 +398,17 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     return CreateRunResult(enqueued=1 if enqueued else 0, models=models)
 
 
+@post("/runs/{run_id:int}/cancel", opt={"scope": "write"}, status_code=200)
+async def cancel_run(run_id: FromPath[int], state: State) -> dict:
+    """Cancel a run: queued cancels immediately; running cancels cooperatively
+    at the worker's next heartbeat."""
+    outcome = await state.store.request_cancel(run_id)
+    if outcome is None:
+        raise NotFoundException(detail=f"run {run_id} is unknown or already finished")
+    await state.store.append_event("run.cancel_requested", entity=str(run_id), payload={"state": outcome})
+    return {"id": run_id, "state": outcome}
+
+
 @post("/apply", opt={"scope": "write"})
 async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
     compiled: CompiledProject = state.compiled
@@ -684,6 +695,7 @@ def create_app(
             get_runs,
             get_run,
             create_run,
+            cancel_run,
             post_apply,
             get_checks,
             get_streams,

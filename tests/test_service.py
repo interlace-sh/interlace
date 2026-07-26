@@ -140,6 +140,14 @@ def test_unknown_run_is_404(client: TestClient) -> None:
     assert client.get("/runs/99999").status_code == 404
 
 
+def test_cancel_run_endpoint(client: TestClient) -> None:
+    client.post("/runs", json={"selectors": ["raw_events"], "environment": "prod"})
+    run = client.get("/runs").json()[0]
+    cancelled = client.post(f"/runs/{run['id']}/cancel").json()
+    assert cancelled == {"id": run["id"], "state": "cancelled"}  # queued: immediate
+    assert client.post(f"/runs/{run['id']}/cancel").status_code == 404  # already finished
+
+
 def test_openapi_and_scalar_docs(client: TestClient) -> None:
     schema = client.get("/schema/openapi.json").json()
     assert {"/models", "/runs", "/apply", "/environments"} <= schema["paths"].keys()

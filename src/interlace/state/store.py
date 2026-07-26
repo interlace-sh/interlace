@@ -21,7 +21,7 @@ import sqlite3
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
@@ -122,6 +122,12 @@ _MIGRATIONS: list[str] = [
     # 0006 — multi-engine: which named engine owns each snapshot's physical table
     """
     ALTER TABLE snapshots ADD COLUMN engine TEXT NOT NULL DEFAULT 'default';
+    """,
+    # 0007 — per-task worker: leases (crash reclaim), cooperative cancellation
+    """
+    ALTER TABLE work_queue ADD COLUMN lease_owner TEXT;
+    ALTER TABLE work_queue ADD COLUMN lease_expires_at TEXT;
+    ALTER TABLE work_queue ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
     """,
 ]
 
@@ -421,21 +427,40 @@ class SqliteStateStore:
             self._conn.commit()
             return cursor.rowcount > 0
 
-    async def claim_runs(self, limit: int = 10) -> list[QueuedRun]:
-        return await asyncio.to_thread(self._claim_runs_sync, limit)
+    async def claim_runs(
+        self, limit: int = 10, *, owner: str = "worker", lease_seconds: float = 60.0, max_attempts: int = 3
+    ) -> list[QueuedRun]:
+        """Atomically claim queued runs — plus 'running' runs whose lease expired
+        (their worker died). A reclaimed run past ``max_attempts`` is marked failed
+        instead of being handed out again."""
+        return await asyncio.to_thread(self._claim_runs_sync, limit, owner, lease_seconds, max_attempts)
 
-    def _claim_runs_sync(self, limit: int) -> list[QueuedRun]:
+    def _claim_runs_sync(self, limit: int, owner: str, lease_seconds: float, max_attempts: int) -> list[QueuedRun]:
+        now = datetime.now(UTC)
+        expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        claimed: list[sqlite3.Row] = []
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             rows = self._conn.execute(
                 "SELECT id, flow_selector, partition_start, partition_end, priority, attempts "
-                "FROM work_queue WHERE state = 'queued' ORDER BY priority DESC, id LIMIT ?",
-                (limit,),
+                "FROM work_queue WHERE state = 'queued' "
+                "   OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
+                "ORDER BY priority DESC, id LIMIT ?",
+                (now.isoformat(), limit),
             ).fetchall()
             for row in rows:
+                if row["attempts"] >= max_attempts:  # a dead worker's run out of retries
+                    self._conn.execute(
+                        "UPDATE work_queue SET state = 'failed', error = ?, lease_owner = NULL WHERE id = ?",
+                        (f"lease expired after {row['attempts']} attempt(s); retries exhausted", row["id"]),
+                    )
+                    continue
                 self._conn.execute(
-                    "UPDATE work_queue SET state = 'running', attempts = attempts + 1 WHERE id = ?", (row["id"],)
+                    "UPDATE work_queue SET state = 'running', attempts = attempts + 1, "
+                    "lease_owner = ?, lease_expires_at = ?, cancel_requested = 0 WHERE id = ?",
+                    (owner, expires, row["id"]),
                 )
+                claimed.append(row)
             self._conn.commit()
         return [
             QueuedRun(
@@ -446,17 +471,72 @@ class SqliteStateStore:
                 priority=row["priority"],
                 attempts=row["attempts"] + 1,
             )
-            for row in rows
+            for row in claimed
         ]
 
-    async def finish_run(self, run_id: int, *, success: bool, error: str | None = None) -> None:
-        await asyncio.to_thread(self._finish_run_sync, run_id, success, error)
+    async def renew_lease(self, run_id: int, *, owner: str, lease_seconds: float = 60.0) -> str:
+        """Heartbeat: extend the lease. Returns "ok", "cancel" (cancellation was
+        requested — stop cooperatively), or "lost" (another worker holds the run)."""
+        return await asyncio.to_thread(self._renew_lease_sync, run_id, owner, lease_seconds)
 
-    def _finish_run_sync(self, run_id: int, success: bool, error: str | None) -> None:
+    def _renew_lease_sync(self, run_id: int, owner: str, lease_seconds: float) -> str:
+        expires = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT lease_owner, cancel_requested FROM work_queue WHERE id = ? AND state = 'running'", (run_id,)
+            ).fetchone()
+            if row is None or row["lease_owner"] != owner:
+                return "lost"
+            if row["cancel_requested"]:
+                return "cancel"
+            self._conn.execute("UPDATE work_queue SET lease_expires_at = ? WHERE id = ?", (expires, run_id))
+            self._conn.commit()
+        return "ok"
+
+    async def request_cancel(self, run_id: int) -> str | None:
+        """Cancel a run: queued runs cancel immediately; running runs get a
+        cooperative flag their worker honours at the next heartbeat. Returns the
+        resulting state, or None if the run is unknown/already finished."""
+        return await asyncio.to_thread(self._request_cancel_sync, run_id)
+
+    def _request_cancel_sync(self, run_id: int) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT state FROM work_queue WHERE id = ?", (run_id,)).fetchone()
+            if row is None or row["state"] not in ("queued", "running"):
+                return None
+            if row["state"] == "queued":
+                self._conn.execute("UPDATE work_queue SET state = 'cancelled' WHERE id = ?", (run_id,))
+                self._conn.commit()
+                return "cancelled"
+            self._conn.execute("UPDATE work_queue SET cancel_requested = 1 WHERE id = ?", (run_id,))
+            self._conn.commit()
+        return "cancelling"
+
+    async def requeue_run(self, run_id: int, *, error: str) -> None:
+        """Put a failed attempt back on the queue for a durable retry."""
+        await asyncio.to_thread(self._requeue_run_sync, run_id, error)
+
+    def _requeue_run_sync(self, run_id: int, error: str) -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE work_queue SET state = ?, error = ? WHERE id = ?",
-                ("succeeded" if success else "failed", error, run_id),
+                "UPDATE work_queue SET state = 'queued', error = ?, lease_owner = NULL, lease_expires_at = NULL "
+                "WHERE id = ?",
+                (error, run_id),
+            )
+            self._conn.commit()
+
+    async def finish_run(
+        self, run_id: int, *, success: bool, error: str | None = None, status: str | None = None
+    ) -> None:
+        await asyncio.to_thread(self._finish_run_sync, run_id, success, error, status)
+
+    def _finish_run_sync(self, run_id: int, success: bool, error: str | None, status: str | None) -> None:
+        state = status or ("succeeded" if success else "failed")
+        with self._lock:
+            self._conn.execute(
+                "UPDATE work_queue SET state = ?, error = ?, lease_owner = NULL, lease_expires_at = NULL "
+                "WHERE id = ?",
+                (state, error, run_id),
             )
             self._conn.commit()
 

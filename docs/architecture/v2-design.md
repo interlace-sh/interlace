@@ -230,6 +230,13 @@ end-to-end: a second OS process ran `interlace apply` through quack while the da
 DuckLake catalog lock. When quack's catalog mapping matures (stable targeted for DuckDB 2.0),
 the adapter can switch to native `ATTACH` without touching callers.
 
+**Status (multi-engine core implemented, July 2026).** Named engines: `engines:` config +
+`default_engine` (top-level warehouse fields synthesise `default`); `engine:` on models —
+fingerprinted, so a move is a BREAKING rebuild; snapshots record their owning engine (migration
+0006) and GC drops on the right one; apply/CLI/worker/service route through a lazy
+`EngineRegistry`. Cross-engine dependencies are rejected at compile until the T2 transfer planner
+lands. Contract: docs/architecture/MULTI_ENGINE.md.
+
 **Role 2 — the federation/transport hub.** When a model's inputs span engines, the planner
 inserts an explicit **transfer edge**, visible in `interlace plan` output — no silent data
 movement. Transfer execution picks the cheapest mechanism:

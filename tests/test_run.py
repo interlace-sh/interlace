@@ -66,7 +66,7 @@ async def test_run_merge_picks_up_new_source_data(env: tuple[DuckDBAdapter, Sqli
     project = compile_models([sql_model("dim", "SELECT id, name FROM main.src", strategy="merge_by_key", key=("id",))])
 
     await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
-    assert sorted(await _fetch(engine, "SELECT id, name FROM prod__main.dim"), key=lambda r: r["id"]) == [
+    assert sorted(await _fetch(engine, "SELECT id, name FROM main.dim"), key=lambda r: r["id"]) == [
         {"id": 1, "name": "a"}
     ]
 
@@ -76,7 +76,7 @@ async def test_run_merge_picks_up_new_source_data(env: tuple[DuckDBAdapter, Sqli
 
     # a second run upserts the new data into the same physical table
     await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
-    assert sorted(await _fetch(engine, "SELECT id, name FROM prod__main.dim"), key=lambda r: r["id"]) == [
+    assert sorted(await _fetch(engine, "SELECT id, name FROM main.dim"), key=lambda r: r["id"]) == [
         {"id": 1, "name": "A"},
         {"id": 2, "name": "b"},
     ]

@@ -69,7 +69,7 @@ async def test_clean_downstream_reuses_previous_table(env: tuple[DuckDBAdapter, 
     new = await store.get_snapshot("down", second["down"])
     assert new is not None and old is not None
     assert new.physical_table == old.physical_table
-    assert await _rows(engine, "SELECT x FROM prod__main.down") == [{"x": 1}]  # env view still resolves
+    assert await _rows(engine, "SELECT x FROM main.down") == [{"x": 1}]  # env view still resolves
 
 
 async def test_star_downstream_rebuilds_and_inherits_columns(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -79,7 +79,7 @@ async def test_star_downstream_rebuilds_and_inherits_columns(env: tuple[DuckDBAd
 
     assert set(result.built) == {"up", "down"}  # star inherits the new column -> rebuild
     assert result.reused == []
-    assert await _rows(engine, "SELECT x, y FROM prod__main.down") == [{"x": 1, "y": 2}]
+    assert await _rows(engine, "SELECT x, y FROM main.down") == [{"x": 1, "y": 2}]
 
 
 async def test_where_change_is_semantic_and_rebuilds_downstream(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -95,7 +95,7 @@ async def test_where_change_is_semantic_and_rebuilds_downstream(env: tuple[DuckD
     assert by_name["up"].category is ChangeCategory.BREAKING
     assert set(result.built) == {"up", "down"}
     assert result.reused == []
-    assert len(await _rows(engine, "SELECT x FROM prod__main.down")) == 2  # downstream sees filtered data
+    assert len(await _rows(engine, "SELECT x FROM main.down")) == 2  # downstream sees filtered data
 
 
 async def test_skip_propagates_down_a_clean_chain(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -162,7 +162,7 @@ async def test_rebuilt_model_resolves_reused_upstream_table(env: tuple[DuckDBAda
 
     assert set(result.built) == {"a", "d", "c"}
     assert result.reused == ["b"]
-    assert await _rows(engine, "SELECT x, w FROM prod__main.c") == [{"x": 1, "w": 99}]
+    assert await _rows(engine, "SELECT x, w FROM main.c") == [{"x": 1, "w": 99}]
 
 
 async def test_reuse_survives_plan_render_fields(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

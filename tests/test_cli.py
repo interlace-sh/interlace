@@ -48,7 +48,7 @@ def test_apply_builds_then_replan_is_clean(tmp_path: Path) -> None:
     # the warehouse file now holds the env view with the computed value
     con = duckdb.connect(f"ducklake:{tmp_path / '.interlace' / 'warehouse.ducklake'}")
     try:
-        rows = con.execute("SELECT id, v2 FROM prod__main.b").fetchall()
+        rows = con.execute("SELECT id, v2 FROM main.b").fetchall()
     finally:
         con.close()
     assert rows == [(1, 20)]
@@ -74,7 +74,7 @@ def test_apply_ensures_stream_tables_without_daemon(tmp_path: Path) -> None:
 
     con = duckdb.connect(f"ducklake:{tmp_path / '.interlace' / 'warehouse.ducklake'}")
     try:
-        assert con.execute("SELECT count(*) FROM prod__main.latest_clicks").fetchone() == (0,)
+        assert con.execute("SELECT count(*) FROM main.latest_clicks").fetchone() == (0,)
     finally:
         con.close()
 

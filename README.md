@@ -25,8 +25,10 @@ interlace serve           # the daemon: HTTP API + scheduler + stream ingestion,
 ```
 
 Every model builds into a fingerprinted physical table (`interlace__main.orders__a1b2c3`);
-environments (`dev`, `prod`, …) are views over those tables, so promotion and rollback are
-atomic view swaps and a dev environment reuses prod's tables for free.
+environments are views over those tables, so promotion and rollback are atomic view swaps and a
+dev environment reuses prod's tables for free. **Production is the unprefixed namespace** —
+consumers query `main.orders`; sandboxes are prefixed (`dev__main.orders`). Commands default to
+prod; pass `--env dev` while developing.
 
 ## Models
 

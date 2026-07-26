@@ -582,7 +582,7 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
 
 def create_app(
     root: Path | str,
-    environment: str = "dev",
+    environment: str = "prod",
     quack: str | None = None,
     quack_token: str | None = None,
     scheduler: bool = False,

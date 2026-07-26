@@ -46,7 +46,7 @@ def _root(
     pass
 
 
-_ENV = typer.Option("dev", "--env", "-e", help="Target data environment.")
+_ENV = typer.Option("prod", "--env", "-e", help="Target data environment (prod = the unprefixed namespace).")
 _PATH = typer.Option(Path("."), "--path", "-p", help="Project root.")
 _SELECT = typer.Option([], "--select", "-s", help="Model selectors: name, +name, name+, tag:x.")
 _START = typer.Option("", "--start", help="Window start (ISO), for incremental models.")
@@ -94,7 +94,7 @@ def init(
     console.print(f"[green]Initialised interlace project in {path}[/green]")
     for written_path in written:
         console.print(f"  + {written_path}")
-    console.print("\nNext: [bold]interlace apply --env dev[/bold]")
+    console.print("\nNext: [bold]interlace apply[/bold] (or --env dev for a sandbox)")
 
 
 _FORWARD_ONLY = typer.Option(
@@ -344,21 +344,189 @@ def serve(
 
 @app.command("list")
 def list_models(path: Path = _PATH, select: list[str] = _SELECT) -> None:
-    """List models with their materialisation, strategy, and dependencies."""
+    """List models with their materialisation, strategy, engine, and dependencies."""
     project = Project.load(path)
     compiled = project.compile()
     chosen = _selection(compiled, select)
+    multi_engine = len({m.engine for m in compiled.models.values()}) > 1
     table = Table(title="Models")
     table.add_column("Model")
     table.add_column("Output")
     table.add_column("Strategy")
+    if multi_engine:
+        table.add_column("Engine")
     table.add_column("Depends on")
     for name in compiled.graph.topological_sort():
         if chosen is not None and name not in chosen:
             continue
         model = compiled.models[name]
         output = "sink" if model.export is not None else model.materialise
-        table.add_row(name, output, model.strategy, ", ".join(model.dependencies) or "—")
+        row = [name, output, model.strategy]
+        if multi_engine:
+            row.append(model.engine)
+        table.add_row(*row, ", ".join(model.dependencies) or "—")
+    console.print(table)
+
+
+@app.command()
+def envs(path: Path = _PATH) -> None:
+    """List environments: promoted models and drift against the compiled project."""
+    asyncio.run(_envs(path))
+
+
+async def _envs(path: Path) -> None:
+    from interlace.plan.plan import PRODUCTION_ENV
+
+    project = Project.load(path)
+    compiled = project.compile()
+    state = await project.open_state()
+    try:
+        table = Table(title="Environments")
+        table.add_column("Environment")
+        table.add_column("Views")
+        table.add_column("Models")
+        table.add_column("Drift")
+        names = await state.list_environments()
+        if not names:
+            console.print("No environments promoted yet — run [bold]interlace apply[/bold].")
+            return
+        for name in names:
+            promoted = await state.get_environment(name)
+            drift = sum(1 for m in compiled.models.values() if promoted.get(m.name) != m.fingerprint)
+            views = "main.* (production)" if name == PRODUCTION_ENV else f"{name}__*.*"
+            table.add_row(name, views, str(len(promoted)), str(drift) if drift else "—")
+        console.print(table)
+    finally:
+        await state.close()
+
+
+@app.command()
+def runs(path: Path = _PATH, limit: int = typer.Option(20, "--limit", "-n", help="Rows to show.")) -> None:
+    """Recent runs from the durable queue (newest first)."""
+    asyncio.run(_runs(path, limit))
+
+
+async def _runs(path: Path, limit: int) -> None:
+    project = Project.load(path)
+    state = await project.open_state()
+    try:
+        table = Table(title="Runs")
+        table.add_column("Id")
+        table.add_column("State")
+        table.add_column("Trigger")
+        table.add_column("Models")
+        table.add_column("Enqueued")
+        table.add_column("Error")
+        for run in await state.list_runs(limit):
+            key = str(run["idempotency_key"] or "")
+            trigger = key.split(":", 1)[0] if ":" in key else "manual"
+            models = ", ".join(run["flow_selector"][:3]) + (" …" if len(run["flow_selector"]) > 3 else "")
+            enqueued = str(run["enqueued_at"] or "")[:19]
+            table.add_row(str(run["id"]), str(run["state"]), trigger, models, enqueued, str(run["error"] or "—")[:60])
+        console.print(table)
+    finally:
+        await state.close()
+
+
+@app.command()
+def checks(
+    path: Path = _PATH,
+    model: str = typer.Option("", "--model", "-m", help="Filter to one model."),
+    limit: int = typer.Option(20, "--limit", "-n", help="Rows to show."),
+) -> None:
+    """Recent data-quality check results (newest first)."""
+    asyncio.run(_checks(path, model or None, limit))
+
+
+async def _checks(path: Path, model: str | None, limit: int) -> None:
+    project = Project.load(path)
+    state = await project.open_state()
+    try:
+        rows = await state.list_check_results(model, limit)
+        table = Table(title="Check results")
+        table.add_column("Model")
+        table.add_column("Check")
+        table.add_column("Severity")
+        table.add_column("Status")
+        table.add_column("Failures")
+        table.add_column("At")
+        colours = {"passed": "green", "failed": "red", "error": "yellow"}
+        for row in rows:
+            status = str(row["status"])
+            table.add_row(
+                str(row["model"]),
+                str(row["check_name"]),
+                str(row["severity"]),
+                f"[{colours.get(status, 'white')}]{status}[/]",
+                str(row["failures"] or "—"),
+                str(row["executed_at"])[:19],
+            )
+        console.print(table)
+    finally:
+        await state.close()
+
+
+@app.command()
+def streams(path: Path = _PATH) -> None:
+    """Declared streams with their log head and warehouse watermark."""
+    asyncio.run(_streams(path))
+
+
+async def _streams(path: Path) -> None:
+    from interlace.streaming.materializer import ensure_stream_tables, stream_watermark
+
+    project = Project.load(path)
+    if not project.streams:
+        console.print("No streams declared.")
+        return
+    engines = project.open_engines()
+    log = await project.open_stream_log()
+    try:
+        engine = engines.get()
+        await ensure_stream_tables(project.streams, engine)
+        table = Table(title="Streams")
+        table.add_column("Stream")
+        table.add_column("Table")
+        table.add_column("Drift")
+        table.add_column("Retention")
+        table.add_column("Head")
+        table.add_column("Watermark")
+        table.add_column("Pending")
+        for stream in project.streams:
+            head = await log.head(stream.name)
+            watermark = await stream_watermark(stream, engine)
+            table.add_row(
+                stream.name,
+                f"streams.{stream.name}",
+                stream.on_schema_drift,
+                stream.retention or "—",
+                str(head),
+                str(watermark),
+                str(head - watermark) if head > watermark else "—",
+            )
+        console.print(table)
+    finally:
+        await log.close()
+        engines.close()
+
+
+@app.command()
+def engines(path: Path = _PATH) -> None:
+    """Configured execution engines (models pin to these with `engine:`)."""
+    project = Project.load(path)
+    configs = project.config.engine_configs()
+    table = Table(title="Engines")
+    table.add_column("Engine")
+    table.add_column("Type")
+    table.add_column("Dialect")
+    table.add_column("Database")
+    for name in sorted(configs):
+        cfg = configs[name]
+        database = cfg.database or "—"
+        if cfg.type == "postgres" and "@" in database:  # never print credentials
+            database = "postgresql://…" + database.rsplit("@", 1)[-1]
+        marker = " (default)" if name == project.config.default_engine else ""
+        table.add_row(f"{name}{marker}", cfg.type, cfg.resolved_dialect(), database)
     console.print(table)
 
 

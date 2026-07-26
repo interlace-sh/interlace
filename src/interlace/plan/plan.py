@@ -99,10 +99,18 @@ class ViewSwap:
     engine: str = "default"  # named engine that hosts the view
 
 
+PRODUCTION_ENV = "prod"
+"""The production environment lives at the *unprefixed* schema (``main.orders``):
+that's what BI tools and consumers connect to. Every other environment is a
+prefixed sandbox (``dev__main.orders``) over the same physical snapshots."""
+
+
 def env_view(environment: str, model_name: str) -> TableRef:
-    """The virtual-environment view name for a model: ``<env>__<schema>.<model>``."""
+    """The virtual-environment view for a model: ``<schema>.<model>`` in
+    production, ``<env>__<schema>.<model>`` everywhere else."""
     schema, _, base = model_name.rpartition(".")
-    return TableRef(schema=f"{environment}__{schema or 'main'}", name=base)
+    prefix = "" if environment == PRODUCTION_ENV else f"{environment}__"
+    return TableRef(schema=f"{prefix}{schema or 'main'}", name=base)
 
 
 def schedule_build(plan: Plan, model: CompiledModel, snapshot: Snapshot, environment: str) -> None:

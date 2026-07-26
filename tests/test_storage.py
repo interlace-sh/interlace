@@ -142,7 +142,7 @@ async def test_plan_apply_through_quack(quack_warehouse: tuple[str, str, DuckDBA
         )
         result = await apply(await diff(compiled, "prod", store), compiled=compiled, engine=client, state=store)
         assert set(result.built) == {"a", "b"}
-        rows = await _rows(client, "SELECT id, v2 FROM prod__main.b")
+        rows = await _rows(client, "SELECT id, v2 FROM main.b")
         assert rows == [{"id": 1, "v2": 20}]
     finally:
         await store.close()

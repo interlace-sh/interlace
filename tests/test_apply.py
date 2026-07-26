@@ -50,7 +50,7 @@ async def test_apply_builds_dependency_chain_and_env_views(env: tuple[DuckDBAdap
     assert set(result.timings) == {"a", "b"}
     assert all(seconds >= 0 for seconds in result.timings.values())
     # the downstream model read through to the upstream's physical table and the env view resolves
-    assert await _rows(engine, "SELECT id, v2 FROM prod__main.b") == [{"id": 1, "v2": 20}]
+    assert await _rows(engine, "SELECT id, v2 FROM main.b") == [{"id": 1, "v2": 20}]
 
 
 async def test_re_apply_is_a_no_op(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -69,7 +69,7 @@ async def test_view_materialisation(env: tuple[DuckDBAdapter, SqliteStateStore])
     project = compile_models([sql_model("answer", "SELECT 42 AS n", materialise="view")])
     await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
 
-    assert await _rows(engine, "SELECT n FROM prod__main.answer") == [{"n": 42}]
+    assert await _rows(engine, "SELECT n FROM main.answer") == [{"n": 42}]
 
 
 async def test_merge_by_key_upserts_across_runs(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -112,7 +112,7 @@ async def test_apply_merge_model_first_build(env: tuple[DuckDBAdapter, SqliteSta
         [sql_model("dim", "SELECT * FROM (VALUES (1, 'a')) v(id, name)", strategy="merge_by_key", key=("id",))]
     )
     await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
-    assert await _rows(engine, "SELECT id, name FROM prod__main.dim") == [{"id": 1, "name": "a"}]
+    assert await _rows(engine, "SELECT id, name FROM main.dim") == [{"id": 1, "name": "a"}]
 
 
 async def test_apply_passes_a_satisfied_contract(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -145,4 +145,4 @@ async def test_modify_then_reapply_rebuilds_and_repoints(env: tuple[DuckDBAdapte
     assert plan.changes[0].change_type is ChangeType.MODIFIED
     await apply(plan, compiled=v2, engine=engine, state=store)
 
-    assert await _rows(engine, "SELECT x FROM prod__main.a") == [{"x": 2}]
+    assert await _rows(engine, "SELECT x FROM main.a") == [{"x": 2}]

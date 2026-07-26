@@ -69,7 +69,7 @@ async def test_worker_drains_and_executes_a_run(env: tuple[DuckDBAdapter, Sqlite
     assert processed == 1
     assert await store.count_pending_runs() == 0
 
-    reader = await engine.fetch(sqlglot.parse_one("SELECT x FROM prod__main.m"))
+    reader = await engine.fetch(sqlglot.parse_one("SELECT x FROM main.m"))
     assert reader.read_all().to_pylist() == [{"x": 7}]
 
 

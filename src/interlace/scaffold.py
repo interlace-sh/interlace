@@ -54,8 +54,9 @@ _README = """\
 An interlace project.
 
 ```bash
-interlace plan --env dev     # preview changes
-interlace apply --env dev    # build models and promote the environment
+interlace plan               # preview changes (prod: unprefixed views)
+interlace apply              # build models and promote production
+interlace apply --env dev    # or a prefixed dev sandbox (dev__main.*)
 ```
 """
 

@@ -22,7 +22,7 @@ async def drain(
     store: SqliteStateStore,
     project: CompiledProject,
     engine: EngineAdapter | None = None,
-    environment: str = "dev",
+    environment: str = "prod",
     *,
     engines: EngineRegistry | dict[str, EngineAdapter] | None = None,
     base_path: Path | None = None,

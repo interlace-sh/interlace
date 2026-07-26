@@ -311,6 +311,11 @@ transactional store separate from the analytical engine"; pointing the store at 
 day one is the only other sanctioned option. What we do **not** do is back the OLTP control plane
 with the OLAP DuckDB engine.
 
+**Environment naming (July 2026):** production (``prod``) is the *unprefixed* namespace —
+its views live at ``<schema>.<model>`` (``main.orders``), which is what BI tools and consumers
+connect to. Every other environment is a prefixed sandbox (``dev__main.orders``). CLI/API/daemon
+default to prod; ``--env dev`` opts into a sandbox.
+
 **Virtual data environments** (sqlmesh, adopted):
 
 - Physical layer: `interlace__<schema>.<model>__<fp_short>` — one table per snapshot version.

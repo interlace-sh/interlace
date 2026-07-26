@@ -70,7 +70,7 @@ async def test_incremental_processes_windows_and_fills_the_ledger(env: tuple[Duc
         state=store,
     )
 
-    rows = await _fetch(engine, "SELECT val FROM prod__main.agg ORDER BY val")
+    rows = await _fetch(engine, "SELECT val FROM main.agg ORDER BY val")
     assert [r["val"] for r in rows] == [1, 2]  # day 3 excluded
 
     # the ledger records the contiguous filled range [d1, d3)
@@ -155,5 +155,5 @@ async def test_reprocessing_a_window_is_idempotent(env: tuple[DuckDBAdapter, Sql
     await apply(_windowed_plan(model, window), compiled=project, engine=engine, state=store)
     await apply(_windowed_plan(model, window), compiled=project, engine=engine, state=store)  # re-run
 
-    rows = await _fetch(engine, "SELECT count(*) AS n FROM prod__main.agg")
+    rows = await _fetch(engine, "SELECT count(*) AS n FROM main.agg")
     assert rows == [{"n": 1}]  # not duplicated

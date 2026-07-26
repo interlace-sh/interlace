@@ -65,7 +65,7 @@ async def test_gc_removes_superseded_snapshot_and_table(env: tuple[DuckDBAdapter
     assert len(result.removed_snapshots) == 1
     assert len(result.dropped_tables) == 1
     assert len(await _tables(engine, "a__%")) == 1  # only the promoted table remains
-    assert await _rows(engine, "SELECT x FROM prod__main.a") == [{"x": 2}]  # env untouched
+    assert await _rows(engine, "SELECT x FROM main.a") == [{"x": 2}]  # env untouched
 
 
 async def test_gc_keeps_tables_shared_by_reuse(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -82,7 +82,7 @@ async def test_gc_keeps_tables_shared_by_reuse(env: tuple[DuckDBAdapter, SqliteS
     assert removed_models == {"up", "down"}  # both v1 rows are unreferenced now
     down_tables = await _tables(engine, "down__%")
     assert len(down_tables) == 1  # the shared table survived the row deletion
-    assert await _rows(engine, "SELECT x FROM prod__main.down") == [{"x": 1}]
+    assert await _rows(engine, "SELECT x FROM main.down") == [{"x": 1}]
 
 
 async def test_gc_grace_protects_recent_snapshots(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -114,7 +114,7 @@ async def test_gc_respects_every_environment(env: tuple[DuckDBAdapter, SqliteSta
     result = await gc(store, engine, grace=NONE)
     assert result.removed_snapshots == []  # both fingerprints referenced somewhere
     assert await _rows(engine, "SELECT x FROM staging__main.a") == [{"x": 1}]
-    assert await _rows(engine, "SELECT x FROM prod__main.a") == [{"x": 2}]
+    assert await _rows(engine, "SELECT x FROM main.a") == [{"x": 2}]
 
 
 async def test_gc_sweeps_transfer_staging(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

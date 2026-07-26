@@ -1,9 +1,41 @@
 # Changelog
 
-All notable changes to Interlace will be documented in this file.
+## 2.0.0a1 (2026-07-27)
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+First alpha of the ground-up v2 rebuild. The 0.x line on PyPI is unrelated to
+this codebase.
+
+**Transformation** — sqlglot-AST IR with Arrow as the only interchange format;
+fingerprinted snapshot tables with virtual environments (production is the
+unprefixed namespace, sandboxes are prefixed); terraform-style plan/apply with
+breaking / non-breaking / forward-only classification and provably-identical
+downstream models reusing their tables instead of rebuilding; strategies:
+full, view, ephemeral, merge_by_key, full_merge, incremental_by_time (interval
+ledger, backfill/restate), scd_type_2; schema contracts; column lineage;
+data-quality checks (10 built-ins + @check) gating promotion; Python models
+over Arrow with cursor/this incremental extraction and keyed strategies;
+reference-aware GC.
+
+**Orchestration** — cron/interval triggers over a durable run queue; per-task
+leases with crash reclaim, durable retries, timeouts, and cooperative
+cancellation; the combined daemon (`interlace serve`): HTTP API (Litestar,
+OpenAPI/Scalar, scoped API keys, SSE event log) + scheduler + streams in one
+process.
+
+**Streaming** — durable stream log (SQLite WAL) with idempotency-key dedup and
+consumer-group lease fencing; schema-validated ingestion with reject / evolve /
+quarantine drift modes; exactly-once materialization into `streams.<name>`;
+stream-append triggers; retention sweeps.
+
+**Storage & engines** — DuckLake default warehouse (quack-served for
+multi-process access); named engines with model pinning (fingerprinted),
+native Postgres execution via ADBC, explicit cross-engine transfers with an
+attach fast lane; `attach:` federation and table sinks (reverse ETL) with
+replace/append/merge_by_key/full_merge delivery.
+
+---
+
+# 0.x line (frozen; unrelated to the v2 rebuild)
 
 ## [0.2.0] - 2026-02-24
 

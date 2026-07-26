@@ -105,7 +105,29 @@ class Project:
         def opener(engine_name: str) -> EngineAdapter:
             return self._open_engine_config(engine_name, configs[engine_name])
 
-        return EngineRegistry(configs.keys(), opener, default=self.config.default_engine)
+        return EngineRegistry(
+            configs.keys(),
+            opener,
+            default=self.config.default_engine,
+            attach_uris=self._attachable_uris(configs),
+        )
+
+    def _attachable_uris(self, configs: dict[str, EngineConfig]) -> dict[str, str]:
+        """URIs a DuckDB-family target could ATTACH to read an engine directly
+        (the transfer fast lane). In-memory and quack engines are not attachable."""
+        uris: dict[str, str] = {}
+        for name, cfg in configs.items():
+            database = cfg.database or ""
+            if cfg.type in ("duckdb", "ducklake") and database and database != ":memory:":
+                target = database
+                path_part = target.removeprefix("ducklake:")
+                if path_part != ":memory:" and not Path(path_part).is_absolute():
+                    resolved = str(self.root / path_part)
+                    target = f"ducklake:{resolved}" if target.startswith("ducklake:") else resolved
+                uris[name] = target
+            elif cfg.type == "postgres" and database:
+                uris[name] = database  # DuckDB's postgres extension attaches DSNs/URIs
+        return uris
 
     def _open_engine_config(self, name: str, cfg: EngineConfig) -> EngineAdapter:
         """Open a single engine from its config. DuckDB-family only for now."""

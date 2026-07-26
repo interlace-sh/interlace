@@ -17,6 +17,7 @@ from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
+from interlace.plan.plan import XFER_SCHEMA
 from interlace.state.store import SqliteStateStore
 
 
@@ -25,6 +26,7 @@ class GcResult:
     removed_snapshots: list[tuple[str, str]] = field(default_factory=list)  # (model, fingerprint)
     dropped_tables: list[str] = field(default_factory=list)  # engine:schema.name
     kept_snapshots: int = 0
+    swept_staging: list[str] = field(default_factory=list)  # engine:interlace__xfer.name
 
 
 def _table_key(row: dict[str, str]) -> str:
@@ -69,8 +71,28 @@ async def gc(
         dropped_tables=dead_keys,
         kept_snapshots=len(surviving),
     )
-    if dry_run or not doomed:
+
+    # transfer staging is scratch: rebuilt on demand by the next apply that needs it
+    engine_names = {row.get("engine") or "default" for row in rows} | {registry.default}
+    for engine_name in sorted(engine_names):
+        if engine_name not in registry:
+            continue  # snapshots from an engine no longer configured: leave its staging alone
+        adapter = registry.require(engine_name)
+        reader = await adapter.fetch_sql(
+            f"SELECT table_name FROM information_schema.tables WHERE table_schema = '{XFER_SCHEMA}'"
+        )
+        for row in reader.read_all().to_pylist():
+            result.swept_staging.append(f"{engine_name}:{XFER_SCHEMA}.{row['table_name']}")
+
+    if dry_run or not (doomed or result.swept_staging):
         return result
+
+    for staged in result.swept_staging:
+        engine_name, rest = staged.split(":", 1)
+        schema, name = rest.split(".", 1)
+        await registry.require(engine_name).execute(
+            exp.Drop(this=exp.table_(name, db=schema), kind="TABLE", exists=True)
+        )
 
     await state.delete_snapshots(result.removed_snapshots)
     for table_key in dead_keys:

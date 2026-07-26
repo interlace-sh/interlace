@@ -59,7 +59,7 @@ async def test_transfer_planned_and_executed(env: tuple[EngineRegistry, SqliteSt
     ]
 
     result = await apply(plan, compiled=compiled, engines=registry, state=store)
-    assert result.transfers == ["up: default -> second (interlace__xfer.up)"]
+    assert result.transfers == ["up: default -> second (interlace__xfer.up, arrow)"]
     assert await _rows(registry.get("second"), "SELECT total FROM dev__main.down") == [{"total": 6}]
     # the staged copy lives on the consumer's engine
     assert await _rows(registry.get("second"), "SELECT count(*) AS n FROM interlace__xfer.up") == [{"n": 3}]
@@ -147,3 +147,60 @@ async def test_python_consumer_reads_staged_cross_engine_upstream(
     await apply(plan, compiled=compiled, engines=registry, state=store)
     rows = await _rows(registry.get("second"), "SELECT x FROM dev__main.doubled ORDER BY x")
     assert [r["x"] for r in rows] == [20, 40]
+
+
+async def test_attach_fast_lane_for_file_backed_engines(tmp_path: Path) -> None:
+    """When engines are file-backed in one process, the transfer upgrades to a
+    federated CTAS (via=attach) — no Arrow hop. Falls back to Arrow otherwise."""
+    from interlace.project import Project
+
+    project_dir = tmp_path / "proj"
+    (project_dir / "models").mkdir(parents=True)
+    (project_dir / "interlace.yaml").write_text(
+        "name: fastlane\n"
+        "database: primary.duckdb\n"
+        "engines:\n"
+        "  analytics:\n"
+        "    type: duckdb\n"
+        "    database: analytics.duckdb\n"
+    )
+    (project_dir / "models" / "up.sql").write_text("SELECT * FROM (VALUES (1), (2)) AS t (x)")
+    (project_dir / "models" / "down.sql").write_text(
+        "/* interlace: {engine: analytics} */\nSELECT sum(x) AS total FROM up"
+    )
+
+    project = Project.load(project_dir)
+    compiled = project.compile()
+
+    # first apply builds `up` too, so its engine is open: the fast lane must
+    # detect the file-handle conflict and fall back to Arrow
+    registry = project.open_engines()
+    store = await project.open_state()
+    try:
+        first = await apply(await diff(compiled, "dev", store), compiled=compiled, engines=registry, state=store)
+        assert first.transfers == ["up: default -> analytics (interlace__xfer.up, arrow)"]
+    finally:
+        await store.close()
+        registry.close()
+
+    # change only the consumer: the source engine is never opened this apply,
+    # so the transfer upgrades to a federated CTAS (attach) — and DETACHes after
+    (project_dir / "models" / "down.sql").write_text(
+        "/* interlace: {engine: analytics} */\nSELECT sum(x) + 100 AS total FROM up"
+    )
+    project = Project.load(project_dir)
+    compiled = project.compile()
+    registry = project.open_engines()
+    store = await project.open_state()
+    try:
+        second = await apply(await diff(compiled, "dev", store), compiled=compiled, engines=registry, state=store)
+        assert second.built == ["down"]
+        assert second.transfers == ["up: default -> analytics (interlace__xfer.up, attach)"]
+        rows = await _rows(registry.get("analytics"), "SELECT total FROM dev__main.down")
+        assert rows == [{"total": 103}]
+        # the DETACH left the source openable: its own adapter still works
+        rows = await _rows(registry.get("default"), "SELECT count(*) AS n FROM dev__main.up")
+        assert rows == [{"n": 2}]
+    finally:
+        await store.close()
+        registry.close()

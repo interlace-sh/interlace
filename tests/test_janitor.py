@@ -115,3 +115,19 @@ async def test_gc_respects_every_environment(env: tuple[DuckDBAdapter, SqliteSta
     assert result.removed_snapshots == []  # both fingerprints referenced somewhere
     assert await _rows(engine, "SELECT x FROM staging__main.a") == [{"x": 1}]
     assert await _rows(engine, "SELECT x FROM prod__main.a") == [{"x": 2}]
+
+
+async def test_gc_sweeps_transfer_staging(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    await _apply(env, [sql_model("a", "SELECT 1 AS x")])
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS interlace__xfer")
+    await engine.execute_sql("CREATE TABLE interlace__xfer.leftover AS SELECT 1 AS x")
+
+    dry = await gc(store, engine, grace=NONE, dry_run=True)
+    assert dry.swept_staging == ["default:interlace__xfer.leftover"]
+    assert (await _rows(engine, "SELECT count(*) AS n FROM interlace__xfer.leftover")) == [{"n": 1}]  # untouched
+
+    result = await gc(store, engine, grace=NONE)
+    assert result.swept_staging == ["default:interlace__xfer.leftover"]
+    tables = await _tables(engine, "leftover")
+    assert tables == []  # scratch swept; the next apply that needs it re-stages

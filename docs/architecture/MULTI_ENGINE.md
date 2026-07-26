@@ -65,6 +65,11 @@ Unset → the project's `default_engine`. The model's dialect defaults from its 
   upstreams are never read stale. One transfer per (upstream, target engine) per apply; the
   staged override is scoped to the cross-engine consumer, so same-engine readers keep the
   original. Ephemeral models still must share their consumers' engine (they inline as CTEs).
+  **Fast lane:** when the target is DuckDB-family and the source is attachable (a file-backed
+  DuckDB/DuckLake not currently held open, or a Postgres DSN), the transfer upgrades to one
+  federated `ATTACH → CTAS → DETACH` — no Python hop; any failure falls back to Arrow. The plan
+  line reports which lane ran. `interlace gc` sweeps `interlace__xfer` staging (scratch — the
+  next apply that needs it re-stages).
 - **Environments span engines; views don't.** `dev__main.report` is created on the engine that
   owns `report`. Promote repoints views per engine; the environment mapping itself lives in the
   control-plane state store as always.
@@ -112,6 +117,6 @@ work natively there.
 
 1. ~~Registry + routing + fingerprinted engine binding~~ (done)
 2. ~~Postgres adapter (ADBC) — first native remote engine~~ (done)
-3. ~~T2 transfer planner (Arrow fetch→load, staging, plan rendering)~~ (done; attach-path fast lane later)
+3. ~~T2 transfer planner (Arrow fetch→load, staging, plan rendering, attach fast lane)~~ (done)
 4. Second cloud warehouse (Snowflake or BigQuery — driven by a named user)
 5. Author-dialect ≠ run-dialect polish; native MERGE where caps allow

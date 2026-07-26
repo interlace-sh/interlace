@@ -10,6 +10,7 @@ upstream physical tables exist before downstream models build against them.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -159,17 +160,47 @@ async def _stage_cross_engine_inputs(
         key = (dep, model.engine)
         if key in staged:
             continue
-        source_engine = registry.require(upstream.engine, model=dep)
         target = registry.require(model.engine, model=model.name)
         origin = physical.get(dep, upstream.physical_table)
-        reader = await source_engine.fetch(
-            exp.select("*").from_(exp.table_(origin.name, db=origin.schema, catalog=origin.catalog))
-        )
         await target.create_schema(stage.schema)
-        await target.load(stage, reader, "create")
+        via = "arrow"
+        if await _attach_transfer(target, registry.attach_uris.get(upstream.engine), upstream.engine, origin, stage):
+            via = "attach"  # federated CTAS: no Python hop at all
+        else:
+            source_engine = registry.require(upstream.engine, model=dep)
+            reader = await source_engine.fetch(
+                exp.select("*").from_(exp.table_(origin.name, db=origin.schema, catalog=origin.catalog))
+            )
+            await target.load(stage, reader, "create")
         staged.add(key)
-        result.transfers.append(f"{dep}: {upstream.engine} -> {model.engine} ({stage.schema}.{stage.name})")
+        result.transfers.append(f"{dep}: {upstream.engine} -> {model.engine} ({stage.schema}.{stage.name}, {via})")
     return local
+
+
+async def _attach_transfer(
+    target: EngineAdapter, uri: str | None, source_name: str, origin: TableRef, stage: TableRef
+) -> bool:
+    """Fast lane: when the target is DuckDB-family and the source is attachable,
+    stage with one federated CTAS. Opportunistic — any failure falls back to Arrow."""
+    from interlace.engines.duckdb import DuckDBAdapter
+    from interlace.engines.quack import QuackAdapter
+
+    if uri is None or not isinstance(target, DuckDBAdapter) or isinstance(target, QuackAdapter):
+        return False
+    alias = f"__xfer_{source_name}"
+    src = exp.table_(origin.name, db=origin.schema, catalog=alias).sql(dialect="duckdb")
+    dst = exp.table_(stage.name, db=stage.schema).sql(dialect="duckdb")
+    try:
+        target.attach(alias, uri)
+        await target.execute_sql(f"CREATE OR REPLACE TABLE {dst} AS SELECT * FROM {src}")
+    except Exception:
+        return False  # e.g. the source file is held open by its own adapter -> Arrow path
+    finally:
+        # release the handle either way: the source engine must stay openable
+        # by its own adapter later in this (long-lived daemon) process
+        with contextlib.suppress(Exception):
+            await target.execute_sql(f"DETACH {exp.to_identifier(alias).sql('duckdb')}")
+    return True
 
 
 async def _gate_checks(

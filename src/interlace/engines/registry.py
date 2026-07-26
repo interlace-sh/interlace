@@ -26,11 +26,21 @@ class EngineRegistry(Mapping[str, EngineAdapter]):
     :class:`ConfigurationError`. ``default`` is the project's default engine name.
     """
 
-    def __init__(self, names: Iterable[str], opener: Opener, *, default: str = "default") -> None:
+    def __init__(
+        self,
+        names: Iterable[str],
+        opener: Opener,
+        *,
+        default: str = "default",
+        attach_uris: Mapping[str, str] | None = None,
+    ) -> None:
         self._names = frozenset(names)
         self._opener = opener
         self.default = default
         self._cache: dict[str, EngineAdapter] = {}
+        # engine name -> URI another DuckDB-family engine could ATTACH (transfer
+        # fast lane); absent/None = only reachable through its own adapter.
+        self.attach_uris: dict[str, str] = dict(attach_uris or {})
         if default not in self._names:
             raise ConfigurationError(
                 f"default_engine {default!r} is not a configured engine",

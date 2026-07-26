@@ -193,6 +193,6 @@ async def test_cross_engine_transfer_duckdb_to_postgres(
     assert [(t.model, t.source.name, t.target.name) for t in plan.transfers] == [("seed", "default", "pg")]
 
     result = await apply(plan, compiled=compiled, engines=registry, state=store)
-    assert result.transfers == ["seed: default -> pg (interlace__xfer.seed)"]
+    assert result.transfers == ["seed: default -> pg (interlace__xfer.seed, arrow)"]
     reader = await registry.get("pg").fetch_sql(f'SELECT n FROM "dev_{marker}__main".agg')
     assert reader.read_all().to_pylist() == [{"n": 3}]

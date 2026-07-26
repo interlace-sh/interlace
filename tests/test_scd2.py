@@ -98,7 +98,9 @@ def test_resolver_and_validation() -> None:
 
 
 def test_statements_shape() -> None:
-    statements = ScdType2(("id",)).plan_statements(_relation("SELECT 1 AS id"), TARGET, EngineCaps())
+    statements = ScdType2(("id",)).plan_statements(
+        _relation("SELECT 1 AS id"), TARGET, EngineCaps(supports_star_exclude=True)
+    )
     kinds = [type(s) for s in statements]
     assert kinds == [exp.Create, exp.Update, exp.Insert]
     create, update, insert = (s.sql(dialect="duckdb") for s in statements)

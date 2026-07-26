@@ -28,6 +28,7 @@ _DUCKDB_CAPS = EngineCaps(
     supports_create_or_replace=True,
     supports_arrow_ingest=True,
     supports_attach=True,
+    supports_star_exclude=True,
 )
 
 

@@ -33,6 +33,7 @@ class EngineCaps:
     supports_create_or_replace: bool = False
     supports_arrow_ingest: bool = False
     supports_attach: bool = False
+    supports_star_exclude: bool = False  # SELECT * EXCLUDE (...) — scd_type_2 needs it
 
 
 class EngineAdapter(ABC):

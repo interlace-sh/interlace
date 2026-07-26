@@ -57,6 +57,11 @@ class ScdType2(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
     ) -> list[exp.Expression]:
+        if not caps.supports_star_exclude:
+            raise PlanError(
+                "scd_type_2 needs star-EXCLUDE projections, which this engine lacks "
+                "(DuckDB-family/Snowflake/BigQuery only for now)"
+            )
         query = relation.ast
         table = table_expr(target)
 

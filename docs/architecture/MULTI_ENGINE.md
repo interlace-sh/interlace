@@ -78,10 +78,37 @@ Unset → the project's `default_engine`. The model's dialect defaults from its 
 4. DuckDB is never an obligatory middleman once a model's inputs and target share a remote engine.
 5. Arrow (`RecordBatchReader`) is the only Python hop, for transfers and Python models alike.
 
+## Postgres (first native remote engine)
+
+```yaml
+engines:
+  pg:
+    type: postgres
+    database: ${PG_DSN}          # postgresql://user:pass@host:5432/db
+```
+
+Requires the ``adbc`` extra (`pip install 'interlace[adbc]'`). Strategies transpile to the
+postgres dialect and execute over one ADBC connection; Arrow flows both ways (`fetch` streams
+results, `adbc_ingest` bulk-loads Python model output). Checks, env views, contracts, and GC all
+work natively there.
+
+### Caps matrix (drives strategy fallbacks)
+
+| Cap | DuckDB family | Postgres |
+|---|---|---|
+| `supports_create_or_replace` | ✓ | ✗ → FullRefresh emits DROP + CREATE |
+| `supports_star_exclude` | ✓ | ✗ → `scd_type_2` refuses with a clear error |
+| `supports_arrow_ingest` | ✓ (register) | ✓ (adbc_ingest) |
+| `supports_merge` | ✓ | ✓ (15+) — strategies use portable DELETE+INSERT today |
+| `supports_attach` | ✓ | ✗ |
+
+`full`, `view`, `merge_by_key`, `full_merge`, and `incremental_by_time` run on Postgres;
+`scd_type_2` is DuckDB-family-only until it grows a describe()-based projection.
+
 ## Roadmap
 
 1. ~~Registry + routing + fingerprinted engine binding~~ (done)
-2. Postgres adapter (ADBC) — first native remote engine
+2. ~~Postgres adapter (ADBC) — first native remote engine~~ (done)
 3. T2 transfer planner (attach + ADBC), staging lifecycle, plan rendering
 4. Second cloud warehouse (Snowflake or BigQuery — driven by a named user)
 5. Author-dialect ≠ run-dialect polish; native MERGE where caps allow

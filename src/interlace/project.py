@@ -110,10 +110,19 @@ class Project:
     def _open_engine_config(self, name: str, cfg: EngineConfig) -> EngineAdapter:
         """Open a single engine from its config. DuckDB-family only for now."""
         self._reject_unresolved_env(cfg)
+        if cfg.type == "postgres":
+            from interlace.engines.postgres import PostgresAdapter  # lazy: needs the adbc extra
+
+            if not cfg.database:
+                raise ConfigurationError(
+                    f"engine {name!r}: postgres needs a DSN in 'database' (postgresql://...)",
+                    details={"engine": name},
+                )
+            return PostgresAdapter.connect(cfg.database)
         if cfg.type not in ("duckdb", "ducklake", "quack"):
             raise ConfigurationError(
                 f"engine {name!r}: type {cfg.type!r} is not implemented yet "
-                f"(supported: duckdb, ducklake, quack). See docs/architecture/MULTI_ENGINE.md",
+                f"(supported: duckdb, ducklake, quack, postgres). See docs/architecture/MULTI_ENGINE.md",
                 details={"engine": name, "type": cfg.type},
             )
         database = cfg.database or "ducklake:.interlace/warehouse.ducklake"

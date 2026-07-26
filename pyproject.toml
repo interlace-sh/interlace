@@ -153,6 +153,7 @@ markers = [
     "unit: Unit tests (fast, isolated)",
     "integration: Integration tests (slower, require database)",
     "slow: Slow tests (may take a long time)",
+    "requires_db: Needs a reachable external database (e.g. Postgres)",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

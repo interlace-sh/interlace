@@ -67,12 +67,21 @@ def test_envs_runs_checks_engines_streams_commands(tmp_path: Path) -> None:
         assert result.exit_code == 0, result.output
         return result.output
 
-    assert "No environments promoted yet" in run("envs")
+    assert "No environments promoted yet" in run("env", "list")
     run("apply")  # default env: production, unprefixed views
-    envs_out = run("envs")
+    envs_out = run("env", "list")
     assert "prod" in envs_out and "main.* (production)" in envs_out
     assert "not_null_x" in run("checks")
     assert "clicks" in run("streams")
     engines_out = run("engines")
     assert "default" in engines_out and "side" in engines_out
     assert "Runs" in run("runs")
+
+    # environment lifecycle: sandboxes drop freely, production is guarded
+    run("apply", "--env", "dev")
+    assert "dev" in run("env", "list")
+    dropped = run("env", "drop", "dev")
+    assert "Dropped environment" in dropped
+    assert "dev" not in run("env", "list").replace("dev__", "")  # row gone (ignore view-name column)
+    guarded = runner.invoke(app, ["env", "drop", "prod", "--path", str(project)])
+    assert guarded.exit_code == 1 and "production" in guarded.output

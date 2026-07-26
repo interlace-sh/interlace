@@ -375,6 +375,16 @@ class SqliteStateStore:
             ).fetchall()
         return {row["model_name"]: row["fingerprint"] for row in rows}
 
+    async def delete_environment(self, environment: str) -> int:
+        """Remove an environment's promotion rows; returns how many were deleted."""
+        return await asyncio.to_thread(self._delete_environment_sync, environment)
+
+    def _delete_environment_sync(self, environment: str) -> int:
+        with self._lock:
+            cursor = self._conn.execute("DELETE FROM environments WHERE environment = ?", (environment,))
+            self._conn.commit()
+        return int(cursor.rowcount)
+
     async def list_environments(self) -> list[str]:
         return await asyncio.to_thread(self._list_environments_sync)
 

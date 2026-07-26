@@ -97,14 +97,6 @@ def init(
     console.print("\nNext: [bold]interlace apply[/bold] (or --env dev for a sandbox)")
 
 
-_FORWARD_ONLY = typer.Option(
-    False,
-    "--forward-only",
-    help="Modified history-keeping models (merge/full_merge/scd2/incremental) keep their existing "
-    "table and history; the new logic applies going forward. Requires a shape-compatible change.",
-)
-
-
 @app.command()
 def plan(
     environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, forward_only: bool = _FORWARD_ONLY
@@ -368,10 +360,46 @@ def list_models(path: Path = _PATH, select: list[str] = _SELECT) -> None:
     console.print(table)
 
 
-@app.command()
-def envs(path: Path = _PATH) -> None:
+env_app = typer.Typer(no_args_is_help=True, help="Inspect and manage environments.")
+app.add_typer(env_app, name="env")
+
+
+@env_app.command("list")
+def env_list(path: Path = _PATH) -> None:
     """List environments: promoted models and drift against the compiled project."""
     asyncio.run(_envs(path))
+
+
+@env_app.command("drop")
+def env_drop(
+    name: str = typer.Argument(..., help="Environment to remove."),
+    path: Path = _PATH,
+    force: bool = typer.Option(False, "--force", help="Required to drop the production environment."),
+) -> None:
+    """Drop an environment: its views go, its snapshots become reclaimable by gc."""
+    asyncio.run(_env_drop(name, path, force))
+
+
+async def _env_drop(name: str, path: Path, force: bool) -> None:
+    from interlace.plan.plan import PRODUCTION_ENV
+    from interlace.state.janitor import drop_environment
+
+    if name == PRODUCTION_ENV and not force:
+        console.print(f"[red]{name!r} is the production environment (unprefixed views); pass --force to drop it.[/red]")
+        raise typer.Exit(1)
+    project = Project.load(path)
+    engines = project.open_engines()
+    state = await project.open_state()
+    try:
+        if not await state.get_environment(name):
+            console.print(f"No environment {name!r}.")
+            raise typer.Exit(1)
+        dropped = await drop_environment(state, engines=engines, environment=name)
+        console.print(f"Dropped environment [bold]{name}[/bold] ({len(dropped)} view(s) removed).")
+        console.print("[dim]Its snapshots are now unreferenced — `interlace gc` reclaims their tables.[/dim]")
+    finally:
+        await state.close()
+        engines.close()
 
 
 async def _envs(path: Path) -> None:

@@ -131,3 +131,39 @@ async def test_gc_sweeps_transfer_staging(env: tuple[DuckDBAdapter, SqliteStateS
     assert result.swept_staging == ["default:interlace__xfer.leftover"]
     tables = await _tables(engine, "leftover")
     assert tables == []  # scratch swept; the next apply that needs it re-stages
+
+
+async def test_drop_environment_releases_snapshots(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    from interlace.state.janitor import drop_environment
+
+    engine, store = env
+    await _apply(env, [sql_model("a", "SELECT 1 AS x")], environment="dev")
+    assert await _rows(engine, "SELECT x FROM dev__main.a") == [{"x": 1}]
+
+    dropped = await drop_environment(store, engine, environment="dev")
+
+    assert dropped == ["default:dev__main.a"]
+    assert await store.get_environment("dev") == {}  # promotion rows gone
+    schemas = await _rows(
+        engine, "SELECT count(*) AS n FROM information_schema.schemata WHERE schema_name = 'dev__main'"
+    )
+    assert schemas == [{"n": 0}]  # the sandbox schema itself is gone
+
+    # its snapshots are unreferenced now: gc reclaims the physical table
+    result = await gc(store, engine, grace=NONE)
+    assert len(result.removed_snapshots) == 1
+    assert len(await _tables(engine, "a__%")) == 0
+
+
+async def test_drop_production_keeps_natural_schemas(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    from interlace.state.janitor import drop_environment
+
+    engine, store = env
+    await engine.execute_sql("CREATE TABLE IF NOT EXISTS main.user_owned AS SELECT 1 AS keep")
+    await _apply(env, [sql_model("a", "SELECT 1 AS x")])  # prod: main.a view
+
+    dropped = await drop_environment(store, engine, environment="prod")
+
+    assert dropped == ["default:main.a"]
+    # only the view went; the natural schema and user tables survive
+    assert await _rows(engine, "SELECT keep FROM main.user_owned") == [{"keep": 1}]

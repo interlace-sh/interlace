@@ -34,6 +34,41 @@ def _table_key(row: dict[str, str]) -> str:
     return f"{engine}:{row['physical_schema']}.{row['physical_name']}"
 
 
+async def drop_environment(
+    state: SqliteStateStore,
+    engine: EngineAdapter | None = None,
+    *,
+    engines: EngineRegistry | dict[str, EngineAdapter] | None = None,
+    environment: str,
+) -> list[str]:
+    """Remove an environment: drop its views (on each model's engine), delete its
+    promotion rows, and — for prefixed sandboxes — drop the now-empty env schemas.
+    Returns the dropped view names. The environment's snapshots become
+    unreferenced, so a later ``gc`` reclaims their tables.
+    """
+    from interlace.plan.plan import PRODUCTION_ENV, env_view
+
+    registry = as_registry(engine, engines)
+    mapping = await state.get_environment(environment)
+    dropped: list[str] = []
+    schemas: dict[str, set[str]] = {}  # engine -> env schemas touched
+    for model, fingerprint in mapping.items():
+        snapshot = await state.get_snapshot(model, fingerprint)
+        engine_name = snapshot.engine if snapshot is not None else registry.default
+        view = env_view(environment, model)
+        adapter = registry.require(engine_name)
+        await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+        dropped.append(f"{engine_name}:{view.schema}.{view.name}")
+        if environment != PRODUCTION_ENV:  # never touch the natural schemas
+            schemas.setdefault(engine_name, set()).add(view.schema)
+    for engine_name, names in schemas.items():
+        adapter = registry.require(engine_name)
+        for schema in sorted(names):  # exclusively env-owned (prefixed): safe to cascade
+            await adapter.execute_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await state.delete_environment(environment)
+    return dropped
+
+
 async def gc(
     state: SqliteStateStore,
     engine: EngineAdapter | None = None,

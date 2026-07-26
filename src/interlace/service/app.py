@@ -22,7 +22,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import msgspec
-from litestar import Litestar, Request, get, post
+from litestar import Litestar, Request, delete, get, post
 from litestar.datastructures import State
 from litestar.exceptions import ClientException, ImproperlyConfiguredException, NotFoundException
 from litestar.openapi import OpenAPIConfig
@@ -319,6 +319,22 @@ async def get_environments(state: State) -> list[EnvironmentInfo]:
         changed = sum(1 for model in compiled.models.values() if promoted.get(model.name) != model.fingerprint)
         out.append(EnvironmentInfo(name=env, models=len(promoted), changed=changed))
     return out
+
+
+@delete("/environments/{name:str}", opt={"scope": "admin"}, status_code=200)
+async def drop_environment_endpoint(name: FromPath[str], state: State, force: FromQuery[bool] = False) -> dict:
+    """Drop an environment: views removed, snapshots released to gc. Production needs force=true."""
+    from interlace.plan.plan import PRODUCTION_ENV
+    from interlace.state.janitor import drop_environment
+
+    if name == PRODUCTION_ENV and not force:
+        raise ClientException(detail=f"{name!r} is the production environment; pass force=true to drop it")
+    if not await state.store.get_environment(name):
+        raise NotFoundException(detail=f"unknown environment: {name}")
+    async with state.apply_lock:
+        dropped = await drop_environment(state.store, engines=state.engines, environment=name)
+    await state.store.append_event("environment.dropped", entity=name, payload={"views": dropped})
+    return {"environment": name, "dropped_views": dropped}
 
 
 @get("/runs")
@@ -664,6 +680,7 @@ def create_app(
             get_model,
             get_plan,
             get_environments,
+            drop_environment_endpoint,
             get_runs,
             get_run,
             create_run,

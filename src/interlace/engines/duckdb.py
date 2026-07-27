@@ -11,6 +11,7 @@ the same table at once.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Sequence
 from uuid import uuid4
 
@@ -56,6 +57,7 @@ class DuckDBAdapter(EngineAdapter):
         # per-session state (LOAD, temporary secrets, USE) set on the main connection
         # does not carry over. Empty for plain databases.
         self._session_init = list(session_init)
+        self._attached: list[str] = []  # aliases to DETACH on close (see close())
 
     def _cursor(self) -> duckdb.DuckDBPyConnection:
         cur = self._conn.cursor()
@@ -108,12 +110,20 @@ class DuckDBAdapter(EngineAdapter):
         return cls(conn, session_init=session_init)
 
     def close(self) -> None:
+        # DETACH long-lived attaches first: DuckLake leaks its DatabaseInstance when
+        # concurrent cursors were used (duckdb 1.5.4), which would otherwise keep the
+        # attached databases' file handles locked for the rest of the process.
+        for alias in self._attached:
+            with contextlib.suppress(Exception):
+                self._conn.execute(f"DETACH {exp.to_identifier(alias).sql('duckdb')}")
+        self._attached.clear()
         self._conn.close()
 
     def attach(self, alias: str, uri: str) -> None:
         """ATTACH another database (duckdb/sqlite/postgres/... URI) under ``alias``."""
         escaped = uri.replace("'", "''")
         self._conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {exp.to_identifier(alias).sql('duckdb')}")
+        self._attached.append(alias)
 
     # --- identifier helpers -------------------------------------------------
 

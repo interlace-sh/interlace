@@ -283,11 +283,14 @@ async def get_plan(state: State, environment: FromQuery[str | None] = None) -> P
     compiled: CompiledProject = state.compiled
     plan = await diff(compiled, env, state.store)
     reused = {snapshot.name for snapshot in plan.reuses}
+    previous_snapshots = await state.store.get_snapshots(
+        (c.name, c.previous_fingerprint) for c in plan.changes if c.previous_fingerprint is not None
+    )
     changes: list[Change] = []
     for change in plan.changes:
         previous_sql: str | None = None
         if change.previous_fingerprint is not None:
-            snapshot = await state.store.get_snapshot(change.name, change.previous_fingerprint)
+            snapshot = previous_snapshots.get((change.name, change.previous_fingerprint))
             previous_sql = snapshot.definition_sql if snapshot else None
         model = compiled.models.get(change.name)
         changes.append(

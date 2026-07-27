@@ -10,6 +10,7 @@ upstream physical tables exist before downstream models build against them.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 from collections.abc import Mapping
@@ -28,7 +29,7 @@ from interlace.exports import export_statements, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
-from interlace.plan.plan import Plan, staging_table
+from interlace.plan.plan import BackfillTask, Plan, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.state.store import StateStore
@@ -141,6 +142,7 @@ async def _stage_cross_engine_inputs(
     registry: EngineRegistry,
     physical: Mapping[str, TableRef],
     staged: set[tuple[str, str]],
+    stage_lock: asyncio.Lock,
     result: ApplyResult,
 ) -> dict[str, TableRef]:
     """Move cross-engine upstreams into staging tables on the model's engine.
@@ -148,7 +150,9 @@ async def _stage_cross_engine_inputs(
     Returns the model's *local* resolution map: cross-engine deps point at their
     staged copies; everything else keeps the global physical map. Each
     (upstream, target-engine) pair transfers once per apply — always replaced,
-    so a re-run upstream (merge/incremental) is never read stale.
+    so a re-run upstream (merge/incremental) is never read stale. The lock is
+    held across the transfer so a concurrent consumer of the same upstream
+    never reads a half-populated stage table.
     """
     local = dict(physical)
     for dep in model.dependencies:
@@ -158,22 +162,25 @@ async def _stage_cross_engine_inputs(
         stage = staging_table(dep)
         local[dep] = stage
         key = (dep, model.engine)
-        if key in staged:
-            continue
-        target = registry.require(model.engine, model=model.name)
-        origin = physical.get(dep, upstream.physical_table)
-        await target.create_schema(stage.schema)
-        via = "arrow"
-        if await _attach_transfer(target, registry.attach_uris.get(upstream.engine), upstream.engine, origin, stage):
-            via = "attach"  # federated CTAS: no Python hop at all
-        else:
-            source_engine = registry.require(upstream.engine, model=dep)
-            reader = await source_engine.fetch(
-                exp.select("*").from_(exp.table_(origin.name, db=origin.schema, catalog=origin.catalog))
-            )
-            await target.load(stage, reader, "create")
-        staged.add(key)
-        result.transfers.append(f"{dep}: {upstream.engine} -> {model.engine} ({stage.schema}.{stage.name}, {via})")
+        async with stage_lock:
+            if key in staged:
+                continue
+            target = registry.require(model.engine, model=model.name)
+            origin = physical.get(dep, upstream.physical_table)
+            await target.create_schema(stage.schema)
+            via = "arrow"
+            if await _attach_transfer(
+                target, registry.attach_uris.get(upstream.engine), upstream.engine, origin, stage
+            ):
+                via = "attach"  # federated CTAS: no Python hop at all
+            else:
+                source_engine = registry.require(upstream.engine, model=dep)
+                reader = await source_engine.fetch(
+                    exp.select("*").from_(exp.table_(origin.name, db=origin.schema, catalog=origin.catalog))
+                )
+                await target.load(stage, reader, "create")
+            staged.add(key)
+            result.transfers.append(f"{dep}: {upstream.engine} -> {model.engine} ({stage.schema}.{stage.name}, {via})")
     return local
 
 
@@ -246,6 +253,96 @@ async def _gate_checks(
         raise CheckError(f"checks failed — promotion blocked: {details}")
 
 
+async def _run_backfill(
+    task: BackfillTask,
+    plan: Plan,
+    compiled: CompiledProject,
+    registry: EngineRegistry,
+    physical: Mapping[str, TableRef],
+    staged: set[tuple[str, str]],
+    stage_lock: asyncio.Lock,
+    state: StateStore,
+    base_path: Path | None,
+    result: ApplyResult,
+) -> None:
+    """Build one backfill task end-to-end: stage inputs, execute, contract, record, gate."""
+    task_started = time.perf_counter()
+    snapshot = task.snapshot
+    model = compiled.models[snapshot.name]
+    target_engine = registry.require(model.engine, model=model.name)
+    resolution = await _stage_cross_engine_inputs(model, compiled, registry, physical, staged, stage_lock, result)
+
+    if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
+        if model.export is not None:
+            raise PlanError(f"Python model {snapshot.name!r} cannot be a sink yet; write SQL over its output")
+        if model.materialise != "table":
+            raise PlanError(f"Python model {snapshot.name!r} must materialise as a table")
+        if model.strategy == "incremental_by_time":
+            raise PlanError(
+                f"Python model {snapshot.name!r} cannot use incremental_by_time; "
+                f"use cursor= with merge_by_key instead"
+            )
+        recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
+        previous = recorded_self.physical_table if recorded_self is not None else None
+        await target_engine.create_schema(snapshot.physical_table.schema)
+        if task.seed_from is not None:  # forward-only: the seeded copy IS the history
+            await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
+            previous = previous or snapshot.physical_table
+        if model.strategy == "full":
+            await build_python_model(
+                model, compiled, target_engine, snapshot.physical_table, physical=resolution, previous=previous
+            )
+        else:  # keyed strategy: stage the Arrow output, then merge it in SQL
+            reader = await run_python_model(model, compiled, target_engine, resolution, previous)
+            await _merge_python_output(
+                model, target_engine, snapshot.physical_table, reader, exists=previous is not None
+            )
+        if model.columns:
+            validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
+        await state.add_snapshot(snapshot)
+        result.built.append(snapshot.name)
+        await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
+        result.timings[snapshot.name] = time.perf_counter() - task_started
+        return
+
+    resolved = resolve_model_query(model, compiled, resolution)
+
+    if model.export is not None:  # sink: push the result to a destination, no table/view
+        if model.export.to == "table":  # reverse ETL into an attached database
+            await target_engine.execute_all(
+                table_export_statements(model.export, resolved, model.dialect, model.engine)
+            )
+        else:
+            export_path = _resolve_export_path(base_path, model.export.path)
+            Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+            await target_engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
+        await state.add_snapshot(snapshot)
+        result.built.append(snapshot.name)
+        result.timings[snapshot.name] = time.perf_counter() - task_started
+        return
+
+    relation = SqlRelation(
+        ast=resolved, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
+    )
+    strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
+
+    await target_engine.create_schema(snapshot.physical_table.schema)
+    if task.seed_from is not None:  # forward-only: history moves onto the new table first
+        await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
+    statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, task.interval)
+    await target_engine.execute_all(statements)
+    if model.columns:  # validate the built schema against the contract before recording it
+        validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
+
+    if task.interval is not None:  # incremental: accumulate the filled window in the ledger
+        filled = (await state.get_intervals(snapshot.name, snapshot.fingerprint)).add(task.interval)
+        snapshot = replace(snapshot, intervals=filled)
+    await state.add_snapshot(snapshot)
+    result.built.append(snapshot.name)
+    await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
+    result.timings[snapshot.name] = time.perf_counter() - task_started
+
+
 async def apply(
     plan: Plan,
     *,
@@ -254,6 +351,7 @@ async def apply(
     engines: Mapping[str, EngineAdapter] | EngineRegistry | None = None,
     state: StateStore,
     base_path: Path | None = None,
+    parallelism: int = 4,
 ) -> ApplyResult:
     """Execute a plan and record the result in ``state``.
 
@@ -267,93 +365,53 @@ async def apply(
     # Where each model's data actually lives: recorded snapshots win over the
     # fingerprint-derived name (a reused snapshot sits on an older table), and
     # models building in this apply resolve to where they are being built now.
-    physical: dict[str, TableRef] = {}
-    for name, compiled_model in compiled.models.items():
-        recorded = await state.get_snapshot(name, compiled_model.fingerprint)
-        if recorded is not None:
-            physical[name] = recorded.physical_table
+    recorded_snapshots = await state.get_snapshots(
+        (name, compiled_model.fingerprint) for name, compiled_model in compiled.models.items()
+    )
+    physical: dict[str, TableRef] = {
+        name: snapshot.physical_table for (name, _), snapshot in recorded_snapshots.items()
+    }
     for task in plan.backfills:
         physical[task.snapshot.name] = task.snapshot.physical_table
     for reuse in plan.reuses:
         physical[reuse.name] = reuse.physical_table
 
+    # Independent DAG branches build concurrently: tasks group per model (a model's
+    # interval windows stay ordered), models group into dependency levels, and each
+    # level runs as a TaskGroup — a failure cancels its level before promote.
     staged: set[tuple[str, str]] = set()  # (upstream, target engine) pairs moved this apply
-    for task in plan.backfills:
-        task_started = time.perf_counter()
-        snapshot = task.snapshot
-        model = compiled.models[snapshot.name]
-        target_engine = registry.require(model.engine, model=model.name)
-        resolution = await _stage_cross_engine_inputs(model, compiled, registry, physical, staged, result)
-
-        if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
-            if model.export is not None:
-                raise PlanError(f"Python model {snapshot.name!r} cannot be a sink yet; write SQL over its output")
-            if model.materialise != "table":
-                raise PlanError(f"Python model {snapshot.name!r} must materialise as a table")
-            if model.strategy == "incremental_by_time":
-                raise PlanError(
-                    f"Python model {snapshot.name!r} cannot use incremental_by_time; "
-                    f"use cursor= with merge_by_key instead"
-                )
-            recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
-            previous = recorded_self.physical_table if recorded_self is not None else None
-            await target_engine.create_schema(snapshot.physical_table.schema)
-            if task.seed_from is not None:  # forward-only: the seeded copy IS the history
-                await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
-                previous = previous or snapshot.physical_table
-            if model.strategy == "full":
-                await build_python_model(
-                    model, compiled, target_engine, snapshot.physical_table, physical=resolution, previous=previous
-                )
-            else:  # keyed strategy: stage the Arrow output, then merge it in SQL
-                reader = await run_python_model(model, compiled, target_engine, resolution, previous)
-                await _merge_python_output(
-                    model, target_engine, snapshot.physical_table, reader, exists=previous is not None
-                )
-            if model.columns:
-                validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
-            await state.add_snapshot(snapshot)
-            result.built.append(snapshot.name)
-            await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-            result.timings[snapshot.name] = time.perf_counter() - task_started
-            continue
-
-        resolved = resolve_model_query(model, compiled, resolution)
-
-        if model.export is not None:  # sink: push the result to a destination, no table/view
-            if model.export.to == "table":  # reverse ETL into an attached database
-                await target_engine.execute_all(
-                    table_export_statements(model.export, resolved, model.dialect, model.engine)
-                )
-            else:
-                export_path = _resolve_export_path(base_path, model.export.path)
-                Path(export_path).parent.mkdir(parents=True, exist_ok=True)
-                await target_engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
-            await state.add_snapshot(snapshot)
-            result.built.append(snapshot.name)
-            result.timings[snapshot.name] = time.perf_counter() - task_started
-            continue
-
-        relation = SqlRelation(
-            ast=resolved, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
+    stage_lock = asyncio.Lock()
+    per_model: dict[str, list[BackfillTask]] = {}
+    for task in plan.backfills:  # differ/run emit tasks in topological order
+        per_model.setdefault(task.snapshot.name, []).append(task)
+    # Depth counts in-plan ancestors and propagates through models that aren't
+    # building (ephemeral, reused): a Python model over an ephemeral view of a
+    # building table must still wait for that table.
+    depth: dict[str, int] = {}
+    for compiled_model in compiled.ordered():
+        depth[compiled_model.name] = max(
+            (depth[dep] + (1 if dep in per_model else 0) for dep in compiled_model.dependencies if dep in depth),
+            default=0,
         )
-        strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
+    level = {name: depth[name] for name in per_model}
+    build_slots = asyncio.Semaphore(max(1, parallelism))
 
-        await target_engine.create_schema(snapshot.physical_table.schema)
-        if task.seed_from is not None:  # forward-only: history moves onto the new table first
-            await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
-        statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, task.interval)
-        await target_engine.execute_all(statements)
-        if model.columns:  # validate the built schema against the contract before recording it
-            validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
+    async def run_model(name: str) -> None:
+        async with build_slots:
+            for model_task in per_model[name]:
+                await _run_backfill(
+                    model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
+                )
 
-        if task.interval is not None:  # incremental: accumulate the filled window in the ledger
-            filled = (await state.get_intervals(snapshot.name, snapshot.fingerprint)).add(task.interval)
-            snapshot = replace(snapshot, intervals=filled)
-        await state.add_snapshot(snapshot)
-        result.built.append(snapshot.name)
-        await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-        result.timings[snapshot.name] = time.perf_counter() - task_started
+    try:
+        for tier in sorted(set(level.values())):
+            async with asyncio.TaskGroup() as group:
+                for name in (n for n in per_model if level[n] == tier):
+                    group.create_task(run_model(name))
+    except ExceptionGroup as failures:  # single failure keeps apply()'s plain-exception contract
+        if len(failures.exceptions) == 1:
+            raise failures.exceptions[0] from None
+        raise
 
     for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing
         await state.add_snapshot(reuse)

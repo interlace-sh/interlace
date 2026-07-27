@@ -9,7 +9,7 @@ current time and when it last fired, it returns the runs that are now due.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from cronsim import CronSim
@@ -75,8 +75,10 @@ class IntervalTrigger:
             # Key by the slot on the interval grid, not by ``now``: a crash between
             # enqueue and the last-fired write re-lands on the SAME key next start,
             # so the durable queue dedupes instead of running the model twice.
+            # Stamped in UTC — a naive local stamp repeats across the DST fall-back,
+            # which would collide two different slots into one key (a missed fire).
             seconds = max(1, int(self.every.total_seconds()))
             slot = int(now.timestamp()) // seconds * seconds
-            stamp = datetime.fromtimestamp(slot, tz=now.tzinfo).isoformat()
+            stamp = datetime.fromtimestamp(slot, tz=UTC).isoformat()
             return [RunRequest([self.model], idempotency_key=f"interval:{self.model}:{stamp}")]
         return []

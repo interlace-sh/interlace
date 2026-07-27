@@ -93,15 +93,17 @@ async def _merge_python_output(
     await engine.load(stage, reader, "create")
     stage_table = stage.to_expr()
 
+    strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
     source: exp.Query = exp.select("*").from_(stage_table.copy())
     pre_statements: list[exp.Expression] = []
     if exists:
-        pre_statements, source, _ = await _align_stage_to_target(engine, stage, target)
+        pre_statements, source, _ = await _align_stage_to_target(
+            engine, stage, target, exclude=strategy.managed_columns
+        )
 
     relation = SqlRelation(
         ast=source, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
     )
-    strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
     statements = strategy.plan_statements(relation, target, engine.caps, None)
     drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
     counts = await engine.execute_all([*pre_statements, *statements, drop_stage])
@@ -109,13 +111,19 @@ async def _merge_python_output(
 
 
 async def _align_stage_to_target(
-    engine: EngineAdapter, stage: TableRef, target: TableRef
+    engine: EngineAdapter, stage: TableRef, target: TableRef, exclude: tuple[str, ...] = ()
 ) -> tuple[list[exp.Expression], exp.Query, list[str]]:
     """Align a staged source to an EXISTING target: additive ALTERs for new columns,
     widening type promotions in place, and a projection over the stage matching the
     target's final column set (NULL-fill vanished columns, cast type drift). Returns
-    (pre-statements, aligned source select, target column order)."""
+    (pre-statements, aligned source select, target column order).
+
+    ``exclude`` names strategy-managed bookkeeping columns (e.g. scd2's validity
+    pair): they live on the target but never in the model's output, so they must
+    not be NULL-filled into the aligned source — the strategy owns them."""
     target_columns = await engine.describe(target)
+    for column in exclude:
+        target_columns.pop(column, None)
     stage_columns = await engine.describe(stage)
     target_expr = target.to_expr()
     pre_statements: list[exp.Expression] = []
@@ -398,8 +406,10 @@ async def _run_backfill(
         validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
 
     if task.interval is not None:  # incremental: accumulate the filled window in the ledger
-        filled = (await state.get_intervals(snapshot.name, snapshot.fingerprint)).add(task.interval)
-        snapshot = replace(snapshot, intervals=filled)
+        filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
+        for carried in snapshot.intervals:  # forward-only: the INHERITED ledger must persist too
+            filled = filled.add(carried)
+        snapshot = replace(snapshot, intervals=filled.add(task.interval))
     await state.add_snapshot(snapshot)
     result.built.append(snapshot.name)
     await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
@@ -481,6 +491,10 @@ async def apply(
                     await _run_backfill(
                         model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
                     )
+            except asyncio.CancelledError:  # a SIBLING failed; this model is collateral
+                if on_progress is not None:
+                    on_progress(name, "cancelled")
+                raise
             except BaseException:
                 if on_progress is not None:
                     on_progress(name, "failed")

@@ -125,8 +125,7 @@ def schedule_build(
 
     An incremental_by_time model cannot build without a window, so an apply fills
     the latest grain interval — the same default as ``interlace run`` — leaving
-    history to ``run --start/--end``. A forward-only snapshot's inherited ledger
-    skips windows it already carries.
+    history to ``run --start/--end``.
     """
     if model.materialise == "ephemeral":  # inlined into consumers, never built
         return
@@ -138,8 +137,10 @@ def schedule_build(
         grain = parse_grain(model.interval or "1d")
         now = datetime.now()
         window = Interval(now - grain, now)
-        if not snapshot.intervals.covers(window):
-            plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
+        # scheduled even when an inherited ledger covers the window: the task is what
+        # seeds forward-only history, creates the table, and records the snapshot —
+        # and forward-only means the new logic owns the latest window anyway
+        plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
         plan.virtual_updates.append(
             ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
         )

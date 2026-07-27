@@ -55,6 +55,8 @@ class _BuildProgress:
             self._rows[model] = self.progress.add_task(model, total=1, status="")
         elif event == "done":
             self.progress.update(self._rows[model], completed=1, status="[green]✓[/green]")
+        elif event == "cancelled":  # collateral of a sibling's failure, not a failure itself
+            self.progress.update(self._rows[model], completed=1, status="[dim]⊘[/dim]")
         else:  # failed
             self.progress.update(self._rows[model], completed=1, status="[red]✗[/red]")
 
@@ -338,10 +340,15 @@ def _window(value: str, flag: str) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         console.print(f"[red]{flag} must be an ISO timestamp (e.g. 2026-07-01T00:00:00); got {value!r}[/red]")
         raise typer.Exit(2) from exc
+    if parsed.tzinfo is not None:
+        # the interval ledger stores naive local timestamps; one aware window would
+        # poison every later naive/aware comparison for that model
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 
 async def _execute(environment: str, path: Path, select: list[str], start: str, end: str, *, restate: bool) -> None:
@@ -404,11 +411,16 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
     from interlace.state.janitor import gc as run_gc
     from interlace.streaming.materializer import sweep_streams
 
+    try:
+        parsed_grace = parse_grain(grace)
+    except ValueError as exc:
+        console.print(f"[red]--grace must be a grain like 7d or 12h; got {grace!r}[/red]")
+        raise typer.Exit(2) from exc
     project = Project.load(path)
     engines = project.open_engines()
     state = await project.open_state()
     try:
-        result = await run_gc(state, engines=engines, grace=parse_grain(grace), dry_run=dry_run)
+        result = await run_gc(state, engines=engines, grace=parsed_grace, dry_run=dry_run)
         verb = "Would remove" if dry_run else "Removed"
         console.print(
             f"{verb} {len(result.removed_snapshots)} snapshot(s), dropped {len(result.dropped_tables)} table(s); "
@@ -742,11 +754,15 @@ async def _checks_run(environment: str, path: Path, select: list[str], as_json: 
                 continue
             if not model.checks and not compiled.python_checks.get(name):
                 continue
+            if model.export is not None:  # sinks have no physical table to check
+                continue
             snapshot = snapshots.get((name, promoted.get(name, "")))
             if snapshot is None:  # declared but never promoted here: nothing to check against
                 skipped.append(name)
                 continue
-            engine = engines_registry.require(model.engine, model=name)
+            # the SNAPSHOT's engine, not the compiled model's: an engine re-pin since
+            # the last promote means the promoted table still lives on the old engine
+            engine = engines_registry.require(snapshot.engine, model=name)
             results = await run_checks(
                 model, compiled, engine, snapshot.physical_table, compiled.python_checks.get(name, ()), physical
             )
@@ -783,6 +799,7 @@ async def _checks(path: Path, model: str | None, limit: int, as_json: bool = Fal
             _emit_json(rows)
             return
         table = _table("Check results")
+        table.add_column("Env", style="dim")
         table.add_column("Model")
         table.add_column("Check")
         table.add_column("Severity", style="dim")
@@ -793,6 +810,7 @@ async def _checks(path: Path, model: str | None, limit: int, as_json: bool = Fal
         for row in rows:
             status = str(row["status"])
             table.add_row(
+                str(row["environment"]),
                 str(row["model"]),
                 str(row["check_name"]),
                 str(row["severity"]),
@@ -951,15 +969,19 @@ def _lineage_dot(
     sources: dict[str, list[tuple[str, str]]],
 ) -> str:
     """The model's dependency neighbourhood as a Graphviz digraph (pipe to `dot -Tsvg`)."""
+
+    def node(name: str) -> str:
+        return '"' + name.replace('"', '\\"') + '"'
+
     subgraph = {model, *upstream, *downstream}
-    lines = ["digraph lineage {", "  rankdir=LR;", f'  "{model}" [style=bold];']
+    lines = ["digraph lineage {", "  rankdir=LR;", f"  {node(model)} [style=bold];"]
     for name in sorted(subgraph):
         for dep in compiled.models[name].dependencies:
             if dep in subgraph:
-                lines.append(f'  "{dep}" -> "{name}";')
+                lines.append(f"  {node(dep)} -> {node(name)};")
     for output, refs in sources.items():  # column edges when --columns
         for table, column in refs:
-            lines.append(f'  "{table}.{column}" -> "{model}.{output}" [color=gray];')
+            lines.append(f"  {node(f'{table}.{column}')} -> {node(f'{model}.{output}')} [color=gray];")
     lines.append("}")
     return "\n".join(lines)
 

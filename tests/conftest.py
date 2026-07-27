@@ -18,6 +18,12 @@ from interlace.engines.duckdb import DuckDBAdapter
 from interlace.state.store import SqliteStateStore
 
 
+@pytest.fixture(autouse=True)
+def _isolate_interlace_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI tests must not inherit the developer's INTERLACE_ENV."""
+    monkeypatch.delenv("INTERLACE_ENV", raising=False)
+
+
 @pytest.fixture()
 async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
     engine = DuckDBAdapter.in_memory()

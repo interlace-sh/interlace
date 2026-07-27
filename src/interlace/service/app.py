@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -147,6 +148,7 @@ class RunDetail(msgspec.Struct):
     priority: int
     partition: list[str] | None
     events: list[EventInfo]
+    restate: bool = False
     idempotency_key: str | None = None
 
 
@@ -391,6 +393,7 @@ async def get_run(run_id: FromPath[int], state: State) -> RunDetail:
         priority=run["priority"],
         partition=partition,
         events=[EventInfo(**event) for event in events],
+        restate=run["restate"],
         idempotency_key=run["idempotency_key"],
     )
 
@@ -408,8 +411,14 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     if data.start or data.end:
         from datetime import datetime
 
+        def naive(value: str) -> str:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is not None:  # ledger timestamps are naive local
+                parsed = parsed.astimezone().replace(tzinfo=None)
+            return parsed.isoformat()
+
         try:
-            bounds = tuple(datetime.fromisoformat(v).isoformat() if v else "" for v in (data.start, data.end))
+            bounds = tuple(naive(v) if v else "" for v in (data.start, data.end))
         except ValueError as exc:
             raise ClientException(detail=f"start/end must be ISO timestamps: {exc}") from exc
         partition = (bounds[0] or None, bounds[1] or None)
@@ -441,7 +450,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         raise ClientException(detail=exc.message) from exc
     async with state.apply_lock:
         if state.streams:  # an apply must see every event the publish path has accepted
-            await flush_streams(state.streams.values(), state.stream_log, state.engine)
+            await flush_streams(state.flush_targets, state.stream_log, state.engine)
         plan = await diff(compiled, env, state.store, select=selected, forward_only=data.forward_only)
         breaking = plan.has_breaking_changes
         if breaking and not data.force:
@@ -614,7 +623,7 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
         # Subscribe FIRST so nothing lands between the backlog read and the live
         # tail (the seq guard drops anything the replay already delivered), then
         # replay history from the store and switch to the shared broadcast.
-        queue: asyncio.Queue[dict] = asyncio.Queue()
+        queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=512)
         state.sse_subscribers.add(queue)
         cursor = after
         try:
@@ -627,6 +636,8 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
                     yield ServerSentEventMessage(data=json.dumps(event), event=str(event["type"]), id=str(cursor))
             while True:
                 event = await queue.get()
+                if event is None:  # poisoned: we fell behind — end the stream, the client replays on reconnect
+                    return
                 if int(event["seq"]) <= cursor:
                     continue
                 cursor = int(event["seq"])
@@ -635,6 +646,21 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
             state.sse_subscribers.discard(queue)
 
     return ServerSentEvent(tail())
+
+
+def _broadcast(subscribers: set[asyncio.Queue], event: dict) -> None:
+    """Fan one event out to every SSE subscriber. A client that can't keep up is
+    poisoned and dropped — its EventSource reconnects with Last-Event-ID and
+    replays from the store, so nothing is lost, and one stalled TCP connection
+    can't grow a queue forever."""
+    for queue in list(subscribers):
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            subscribers.discard(queue)
+            with contextlib.suppress(asyncio.QueueEmpty, asyncio.QueueFull):
+                queue.get_nowait()  # make room so the poison pill always lands
+                queue.put_nowait(None)
 
 
 def create_app(
@@ -691,9 +717,15 @@ def create_app(
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
         app.state.streams = streams
         app.state.stream_log = stream_log
+        app.state.flush_targets = flush_targets  # streams + their quarantine shadows
         app.state.flush_wanted = asyncio.Event()
         app.state.sse_subscribers = set()
 
+        logger = logging.getLogger("interlace.service")
+
+        # Background loops NEVER die on an exception: one transient warehouse error
+        # must not silently stop flushing/scheduling for the rest of the process
+        # (publishes would keep acking 200 while nothing materializes). Log + retry.
         async def event_tail() -> None:
             """One store poller feeds every SSE client — N clients, one query.
 
@@ -703,12 +735,23 @@ def create_app(
             """
             cursor = await store.latest_event_seq()  # history is each client's replay, not ours
             while True:
-                if app.state.sse_subscribers:
-                    for event in await store.read_events(cursor):
-                        cursor = int(event["seq"])  # type: ignore[call-overload]  # rows carry int seq
-                        for queue in app.state.sse_subscribers:
-                            queue.put_nowait(event)
+                try:
+                    if app.state.sse_subscribers:
+                        for event in await store.read_events(cursor):
+                            cursor = int(event["seq"])  # type: ignore[call-overload]  # rows carry int seq
+                            _broadcast(app.state.sse_subscribers, event)
+                except Exception:
+                    logger.exception("event tail failed; retrying")
                 await asyncio.sleep(0.5)
+
+        async def flush_once() -> None:
+            """One coalesced flush + the consumer enqueues it earns."""
+            async with app.state.apply_lock:
+                flushed = await flush_streams(flush_targets, stream_log, engine)
+            for stream_name, rows in flushed.items():
+                await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})
+                if stream_name in streams:
+                    await _enqueue_stream_consumers(app.state, streams[stream_name])
 
         async def flusher_loop() -> None:
             """Micro-batch materializer: publishes signal, this coalesces everything
@@ -717,12 +760,12 @@ def create_app(
                 await app.state.flush_wanted.wait()
                 await asyncio.sleep(stream_flush_interval)  # let a burst pile up behind one write
                 app.state.flush_wanted.clear()
-                async with app.state.apply_lock:
-                    flushed = await flush_streams(flush_targets, stream_log, engine)
-                for stream_name, rows in flushed.items():
-                    await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})
-                    if stream_name in streams:
-                        await _enqueue_stream_consumers(app.state, streams[stream_name])
+                try:
+                    await flush_once()
+                except Exception:
+                    logger.exception("stream flush failed; will retry")
+                    app.state.flush_wanted.set()  # the durable log still holds the events
+                    await asyncio.sleep(1.0)  # don't spin on a persistent failure
 
         if streams:
             app.state.flush_wanted.set()  # catch up anything durable but unflushed at last shutdown
@@ -730,12 +773,15 @@ def create_app(
         async def scheduler_loop() -> None:
             trigger_engine = TriggerEngine(build_triggers(compiled), store)
             while True:
-                await trigger_engine.tick(datetime.now())
-                async with app.state.apply_lock:  # one warehouse writer at a time
-                    await drain(store, compiled, engines=engines, environment=environment, base_path=project.root)
-                if streams:
-                    app.state.flush_wanted.set()  # catch up anything the flusher hasn't seen
-                    await sweep_streams(streams.values(), stream_log, engine)  # apply retention
+                try:
+                    await trigger_engine.tick(datetime.now())
+                    async with app.state.apply_lock:  # one warehouse writer at a time
+                        await drain(store, compiled, engines=engines, environment=environment, base_path=project.root)
+                    if streams:
+                        app.state.flush_wanted.set()  # catch up anything the flusher hasn't seen
+                        await sweep_streams(streams.values(), stream_log, engine)  # apply retention
+                except Exception:
+                    logger.exception("scheduler tick failed; retrying next interval")
                 await asyncio.sleep(scheduler_interval)
 
         tail_task = asyncio.create_task(event_tail())
@@ -747,11 +793,13 @@ def create_app(
             for task in (loop_task, flusher_task, tail_task):
                 if task is not None:
                     task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
+                    # suppress Exception too: a task that already died must not
+                    # abort teardown and leak the store/log/engine handles
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
             if streams:  # clean shutdown leaves nothing durable-but-unflushed behind
-                async with app.state.apply_lock:
-                    await flush_streams(flush_targets, stream_log, engine)
+                with contextlib.suppress(Exception):
+                    await flush_once()  # incl. consumer enqueues, so restarts owe nothing
             await stream_log.close()
             await store.close()
             engines.close()

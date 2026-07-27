@@ -532,27 +532,31 @@ class SqliteStateStore:
         claimed: list[sqlite3.Row] = []
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
-            rows = self._conn.execute(
-                "SELECT id, flow_selector, partition_start, partition_end, priority, attempts, restate "
-                "FROM work_queue WHERE state = 'queued' "
-                "   OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
-                "ORDER BY priority DESC, id LIMIT ?",
-                (now.isoformat(), limit),
-            ).fetchall()
-            for row in rows:
-                if row["attempts"] >= max_attempts:  # a dead worker's run out of retries
+            try:
+                rows = self._conn.execute(
+                    "SELECT id, flow_selector, partition_start, partition_end, priority, attempts, restate "
+                    "FROM work_queue WHERE state = 'queued' "
+                    "   OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
+                    "ORDER BY priority DESC, id LIMIT ?",
+                    (now.isoformat(), limit),
+                ).fetchall()
+                for row in rows:
+                    if row["attempts"] >= max_attempts:  # a dead worker's run out of retries
+                        self._conn.execute(
+                            "UPDATE work_queue SET state = 'failed', error = ?, lease_owner = NULL WHERE id = ?",
+                            (f"lease expired after {row['attempts']} attempt(s); retries exhausted", row["id"]),
+                        )
+                        continue
                     self._conn.execute(
-                        "UPDATE work_queue SET state = 'failed', error = ?, lease_owner = NULL WHERE id = ?",
-                        (f"lease expired after {row['attempts']} attempt(s); retries exhausted", row["id"]),
+                        "UPDATE work_queue SET state = 'running', attempts = attempts + 1, "
+                        "lease_owner = ?, lease_expires_at = ?, cancel_requested = 0 WHERE id = ?",
+                        (owner, expires, row["id"]),
                     )
-                    continue
-                self._conn.execute(
-                    "UPDATE work_queue SET state = 'running', attempts = attempts + 1, "
-                    "lease_owner = ?, lease_expires_at = ?, cancel_requested = 0 WHERE id = ?",
-                    (owner, expires, row["id"]),
-                )
-                claimed.append(row)
-            self._conn.commit()
+                    claimed.append(row)
+                self._conn.commit()
+            except BaseException:  # never leave the shared connection inside an open txn
+                self._conn.rollback()
+                raise
         return [
             QueuedRun(
                 id=row["id"],

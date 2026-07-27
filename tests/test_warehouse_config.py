@@ -115,6 +115,28 @@ def test_remote_catalog_is_not_path_resolved(tmp_path: Path, monkeypatch: pytest
     assert not any("postgres:" in p.name for p in tmp_path.iterdir())
 
 
+def test_alias_overrides_the_project_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A project whose warehouse holds a schema of the same name must be able to
+    ATTACH its catalog under a different alias — DuckDB cannot bind ``seccl.clients``
+    when ``seccl`` is both a catalog and a schema."""
+    (tmp_path / "interlace.yaml").write_text(
+        "name: seccl\n"
+        'database: "ducklake:postgres:dbname=lakes host=db"\n'
+        "metadata_schema: seccl\n"
+        "alias: warehouse\n"
+    )
+    captured: dict = {}
+
+    def fake_connect_ducklake(catalog: str, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "engine"
+
+    monkeypatch.setattr(DuckDBAdapter, "connect_ducklake", staticmethod(fake_connect_ducklake))
+    Project.load(tmp_path).open_engine()
+    assert captured["alias"] == "warehouse"
+    assert captured["metadata_schema"] == "seccl"
+
+
 def test_plain_file_ducklake_unchanged(tmp_path: Path) -> None:
     """No options => the original duckdb.connect('ducklake:<path>') fast path."""
     (tmp_path / "interlace.yaml").write_text("name: plain\n")
@@ -201,3 +223,16 @@ def test_explicit_pg_hosts_pass_the_guard() -> None:
     _require_explicit_pg_host("postgresql://writer@db.internal:5455/analytics", "t")
     _require_explicit_pg_host("dbname=analytics host=db.internal port=5455", "t")
     _require_explicit_pg_host("postgres:dbname=crm host=/var/run/postgresql", "t")  # deliberate unix socket
+
+
+def test_pg_guard_accepts_libpq_conventions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legit libpq forms must not be rejected: URI ?host=, service=, PGHOST."""
+    from interlace.project import _require_explicit_pg_host
+
+    monkeypatch.delenv("PGHOST", raising=False)
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    _require_explicit_pg_host("postgresql:///analytics?host=db.internal", "t")
+    _require_explicit_pg_host("postgresql:///analytics?host=/var/run/postgresql", "t")
+    _require_explicit_pg_host("service=warehouse", "t")
+    monkeypatch.setenv("PGHOST", "db.internal")
+    _require_explicit_pg_host("dbname=analytics", "t")  # target named via libpq env

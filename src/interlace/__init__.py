@@ -13,7 +13,7 @@ from __future__ import annotations
 from interlace.dsl.decorators import check, model, stream
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 
-__version__ = "2.0.0a1"
+__version__ = "2.0.0a2"
 
 __all__ = [
     "EngineRef",

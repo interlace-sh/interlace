@@ -62,6 +62,12 @@ class EngineConfig(BaseModel):
     # Path / URI for DuckDB-family engines. Also accepted on the project top level
     # as ``database:`` (synthesised into the ``default`` engine).
     database: str | None = None
+    # The catalog's ATTACH alias. Defaults to the engine name, or the project name
+    # for the ``default`` engine. Set it when a SCHEMA inside the warehouse would
+    # otherwise share the alias — DuckDB cannot bind ``x.y`` when ``x`` is both a
+    # catalog and a schema, so a project named `seccl` holding a `seccl` schema
+    # needs one of the two renamed.
+    alias: str | None = None
     data_path: str | None = None
     metadata_schema: str | None = None
     secrets: dict[str, SecretConfig] = Field(default_factory=dict)
@@ -92,6 +98,9 @@ class ProjectConfig(BaseModel):
     # warehouse served by `interlace serve --quack`.
     # When ``engines.default`` is not set, these top-level fields synthesise it.
     database: str = "ducklake:.interlace/warehouse.ducklake"
+    # The warehouse catalog's ATTACH alias (defaults to ``name``). Set it when a
+    # schema inside the warehouse shares the project name — see EngineConfig.alias.
+    alias: str | None = None
     # DuckLake attach options for non-default layouts: where the Parquet data lives
     # (local dir or s3://bucket/prefix/) and which schema of the catalog database
     # holds this warehouse's ducklake_* metadata (multiple warehouses can share one
@@ -131,6 +140,7 @@ def _default_engine_from_top_level(config: ProjectConfig) -> EngineConfig:
     return EngineConfig(
         type=_infer_engine_type(config.database),
         database=config.database,
+        alias=config.alias,
         data_path=config.data_path,
         metadata_schema=config.metadata_schema,
         secrets=config.secrets,

@@ -41,6 +41,18 @@ from interlace.runtime.handles import RelationHandle
 RESERVED_PARAMS = frozenset({"cursor", "this"})
 
 
+def _param_spellings(dependencies: tuple[str, ...]) -> dict[str, str]:
+    """Map each accepted parameter spelling to the dependency it resolves to.
+
+    A schema-qualified dependency (``raw.accounts``) has no legal Python parameter
+    name, so it is also addressable with dots replaced by underscores
+    (``raw_accounts``). Exact names win, so an unqualified model always shadows
+    another model's alias rather than being silently displaced by it.
+    """
+    aliases = {name.replace(".", "_"): name for name in dependencies}
+    return {**aliases, **{name: name for name in dependencies}}
+
+
 async def _upstream_reader(
     upstream: CompiledModel,
     compiled: CompiledProject,
@@ -118,12 +130,14 @@ async def run_python_model(
         raise PlanError(f"model {model.name!r} has no function to execute")
 
     parameters = list(inspect.signature(model.fn).parameters)
-    unknown = [p for p in parameters if p not in model.dependencies and p not in RESERVED_PARAMS]
+    spellings = _param_spellings(model.dependencies)
+    unknown = [p for p in parameters if p not in spellings and p not in RESERVED_PARAMS]
     if unknown:
         raise DefinitionError(
             f"Python model {model.name!r} takes parameters {unknown} that are not declared dependencies; "
             f"declare them with depends_on or name them after upstream models "
-            f"(`cursor` and `this` are reserved for incremental state)"
+            f"(a qualified dependency `raw.accounts` is also spelled `raw_accounts`; "
+            f"`cursor` and `this` are reserved for incremental state)"
         )
 
     arguments: dict[str, Any] = {}
@@ -135,8 +149,9 @@ async def run_python_model(
                 RelationHandle(model.name, await engine.fetch(_table_query(previous))) if previous else None
             )
         else:
-            upstream = compiled.models[param]
-            arguments[param] = RelationHandle(param, await _upstream_reader(upstream, compiled, engine, physical))
+            dependency = spellings[param]
+            upstream = compiled.models[dependency]
+            arguments[param] = RelationHandle(dependency, await _upstream_reader(upstream, compiled, engine, physical))
 
     if inspect.iscoroutinefunction(model.fn):
         result = await model.fn(**arguments)

@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.0.0a2 (2026-07-28)
+
+Hardening + throughput alpha: everything a first-principles review of a1 found,
+plus the CLI growing into a daily driver.
+
+**Performance** — backfills now build DAG-parallel within dependency levels
+(`apply(parallelism=4)`; models a check reads are ordered too); snapshot reads
+batched (2 queries per apply, not 2N); stream publishing is append-only with a
+micro-batching flusher (no warehouse write on the hot path); SSE clients share
+one event tail; startup-cached column lineage.
+
+**Correctness** — forward-only is copy-on-write: history moves to the new
+fingerprint's table and checks gate before production views move; GC decides
+and deletes in one transaction (safe against concurrent promotes from other
+processes); interval-trigger idempotency keys survive crash/restart; worker
+lease fencing + drain under the apply lock; table sinks evolve their external
+target (additive ALTERs + column-list inserts — no more positional breakage);
+`apply` works on incremental_by_time models (fills the latest grain interval);
+DuckDB secrets/extensions apply once per instance (fixes a catalog write-write
+race under parallel builds); Postgres DSNs must name their host — no silent
+localhost:5432; DuckLake attach handles are released on close (upstream
+DatabaseInstance leak worked around).
+
+**CLI** — live per-model build progress; a build-results table (output,
+strategy, engine, dependencies, +new ~updated -deleted rows, time) backed by
+strategy-interpreted affected counts, also on the HTTP ApplyResponse; `--json`
+on the inspection commands; `checks run` (validate promoted tables without
+rebuilding); `interlace list` renamed `models`; run windows + restate over
+HTTP (`POST /runs` start/end/restate); shell completion; `INTERLACE_ENV`;
+lineage `--format dot`; minimal restyled tables; self-explaining empty states.
+
+**Examples** — new `examples/benchmark` (25M rows through a concurrent fan-out
+DAG, incremental windows, Arrow streaming, a Parquet sink — with measured
+timings); platform_tour demonstrates sink evolution; stale v0.x example
+leftovers removed.
+
 ## 2.0.0a1 (2026-07-27)
 
 First alpha of the ground-up v2 rebuild. The 0.x line on PyPI is unrelated to

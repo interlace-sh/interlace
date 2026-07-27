@@ -92,8 +92,10 @@ def table_export_statements(
     """Deliver ``query`` into the external table — never DROP it (grants/readers survive).
 
     ``columns`` names the target's column order when the source has been aligned to an
-    existing target (see ``plan.apply._deliver_table_export``): inserts then carry an
-    explicit column list, so delivery can never bind positionally against a drifted table."""
+    existing target (see ``plan.apply._deliver_table_export``): replace/append inserts
+    then carry an explicit column list. The keyed modes reuse the strategy builders,
+    whose inserts bind positionally — safe because the aligned projection reproduces
+    the target's column order exactly."""
     from interlace.strategies import FullMerge, MergeByKey  # runtime import: strategies build on ir like this module
 
     target = export_target_ref(export.target)

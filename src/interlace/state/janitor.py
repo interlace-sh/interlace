@@ -124,7 +124,15 @@ async def gc(
             exp.Drop(this=exp.table_(name, db=schema), kind="TABLE", exists=True)
         )
 
+    # Re-check right before dropping: a concurrent apply in ANOTHER process may have
+    # recorded a rebuild-skip reuse row over one of these tables after our transaction
+    # committed. The remaining window (this query -> DROP) is milliseconds, guarded in
+    # practice by the grace period; the doomed ROWS stay deleted either way.
+    still_live = {_table_key(row) for row in await state.list_snapshot_rows()}
     for table_key in dead_keys:
+        if table_key in still_live:
+            result.dropped_tables.remove(table_key)
+            continue
         eng_name, rest = table_key.split(":", 1)
         schema, name = rest.split(".", 1)
         target = registry.require(key_engine.get(table_key, eng_name))

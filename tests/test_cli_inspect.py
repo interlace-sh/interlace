@@ -133,6 +133,11 @@ def test_checks_run_fails_on_blocking_check(tmp_path: Path) -> None:
     (project / "interlace.yaml").write_text("name: gate\ndatabase: wh.duckdb\n")  # promoted tables must persist
     model = project / "models" / "m.sql"
     model.write_text("/* interlace: {checks: [{accepted_values: {column: x, values: [1]}}]} */\nSELECT 1 AS x")
+    # a sink with a declared check must be skipped, not error (it has no table to check)
+    (project / "models" / "report.sql").write_text(
+        "/* interlace: {export: {to: parquet, path: out/report.parquet}, checks: [{not_null: x}]} */\n"
+        "SELECT x FROM m"
+    )
     assert runner.invoke(app, ["apply", "--path", str(project)]).exit_code == 0
 
     passing = runner.invoke(app, ["checks", "run", "--path", str(project)])

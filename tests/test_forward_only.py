@@ -140,6 +140,41 @@ async def test_forward_only_inherits_interval_ledger(env: tuple[DuckDBAdapter, S
     assert filled in list(task.snapshot.intervals)  # ledger carried over: no re-backfill of old windows
 
 
+async def test_forward_only_apply_persists_the_inherited_ledger(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """Regression: apply used to persist only the freshly-built window, so the next
+    catchup saw all history as missing and rewrote it with the new logic — exactly
+    what forward-only exists to prevent."""
+    from datetime import datetime
+
+    from interlace.plan.run import run_plan
+    from interlace.state.interval import Interval
+
+    engine, store = env
+    await engine.execute_sql(
+        "CREATE TABLE raw.events AS SELECT * FROM (VALUES "
+        "(TIMESTAMP '2026-01-01 10:00', 1), (TIMESTAMP '2026-01-02 10:00', 2)) t(ts, id)"
+    )
+
+    def inc(sql: str) -> ModelDef:
+        return ModelDef(name="inc", sql=sql, strategy="incremental_by_time", time_column="ts", interval="1d")
+
+    v1 = inc("SELECT ts, id FROM raw.events")
+    compiled = compile_models([v1])
+    plan = await run_plan(compiled, "dev", store, start=datetime(2026, 1, 1), end=datetime(2026, 1, 3))
+    await apply(plan, compiled=compiled, engine=engine, state=store)
+    history = Interval(datetime(2026, 1, 1), datetime(2026, 1, 3))
+    assert (await store.get_intervals("inc", compiled.models["inc"].fingerprint)).covers(history)
+
+    v2 = inc("SELECT ts, id FROM raw.events WHERE id > 0")  # semantic change, shape-compatible
+    compiled2 = compile_models([v2])
+    await apply(await diff(compiled2, "dev", store, forward_only=True), compiled=compiled2, engine=engine, state=store)
+
+    persisted = await store.get_intervals("inc", compiled2.models["inc"].fingerprint)
+    assert persisted.covers(history)  # the inherited windows survived persistence
+
+
 async def test_forward_only_check_failure_leaves_production_untouched(
     env: tuple[DuckDBAdapter, SqliteStateStore],
 ) -> None:

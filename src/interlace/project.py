@@ -24,26 +24,34 @@ from interlace.state.store import SqliteStateStore
 from interlace.streaming.log import SqliteStreamLog
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_PG_HOST = re.compile(r"\bhost(addr)?\s*=")
+_PG_HOST = re.compile(r"\b(host|hostaddr|service)\s*=")
 
 
 def _require_explicit_pg_host(dsn: str, context: str) -> None:
     """Fail fast when a Postgres DSN names no host: libpq would silently fall back
     to its defaults — the local socket / localhost:5432 — i.e. whichever Postgres
-    happens to live on this machine. A pipeline that writes must name its target
-    (``host=`` explicitly covers the deliberate unix-socket case too)."""
-    from urllib.parse import urlparse
+    happens to live on this machine. A pipeline that writes must name its target.
 
-    bare = dsn.removeprefix("postgres:") if not dsn.startswith(("postgres://", "postgresql://")) else dsn
+    Every deliberate libpq form still passes: ``host=``/``hostaddr=`` (including
+    unix sockets), URI hosts, URI ``?host=`` query params, ``service=`` (the host
+    lives in pg_service.conf), and deployments that set PGHOST/PGSERVICE."""
+    from urllib.parse import parse_qs, urlparse
+
+    bare = dsn if dsn.startswith(("postgres://", "postgresql://")) else dsn.removeprefix("postgres:")
     if bare.startswith(("postgresql://", "postgres://")):
-        if urlparse(bare).hostname:
+        parsed = urlparse(bare)
+        query = parse_qs(parsed.query)
+        if parsed.hostname or "host" in query or "hostaddr" in query or "service" in query:
             return
     elif _PG_HOST.search(bare):
         return
+    if os.environ.get("PGHOST") or os.environ.get("PGSERVICE"):
+        return  # the environment names the target via libpq's own convention
     raise ConfigurationError(
         f"{context}: the Postgres DSN names no host, so it would silently connect to whatever "
         f"Postgres lives on libpq's default (local socket / localhost:5432). Name the target: "
-        f"add host= and port=, or use a full postgresql://user@host:port/dbname URI.",
+        f"add host= and port= (or service=, or a postgresql://user@host:port/dbname URI, "
+        f"or set PGHOST).",
         details={"context": context},  # never echo the DSN: it may carry credentials
     )
 
@@ -148,6 +156,9 @@ class Project:
                     target = f"ducklake:{resolved}" if target.startswith("ducklake:") else resolved
                 uris[name] = target
             elif cfg.type == "postgres" and database:
+                # the fast lane ATTACHes this DSN without ever opening the adapter,
+                # so the no-silent-localhost guard must run here too
+                _require_explicit_pg_host(database, f"engine {name!r} (attach fast lane)")
                 uris[name] = database  # DuckDB's postgres extension attaches DSNs/URIs
         return uris
 
@@ -246,7 +257,7 @@ class Project:
         ):
             extensions.append("httpfs")
         secrets = [_secret_sql(secret_name, secret) for secret_name, secret in cfg.secrets.items()]
-        alias = name if name != "default" else (self.config.name or "warehouse")
+        alias = cfg.alias or (name if name != "default" else (self.config.name or "warehouse"))
         return DuckDBAdapter.connect_ducklake(
             database,
             alias=alias,

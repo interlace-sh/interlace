@@ -72,5 +72,11 @@ class IntervalTrigger:
 
     def due(self, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
         if last_fired is None or now - last_fired >= self.every:
-            return [RunRequest([self.model], idempotency_key=f"interval:{self.model}:{now.isoformat()}")]
+            # Key by the slot on the interval grid, not by ``now``: a crash between
+            # enqueue and the last-fired write re-lands on the SAME key next start,
+            # so the durable queue dedupes instead of running the model twice.
+            seconds = max(1, int(self.every.total_seconds()))
+            slot = int(now.timestamp()) // seconds * seconds
+            stamp = datetime.fromtimestamp(slot, tz=now.tzinfo).isoformat()
+            return [RunRequest([self.model], idempotency_key=f"interval:{self.model}:{stamp}")]
         return []

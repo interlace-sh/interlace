@@ -79,22 +79,17 @@ async def gc(
 ) -> GcResult:
     """Remove unreferenced snapshots past ``grace`` and drop their orphaned tables.
 
-    Tables are dropped on the engine recorded on each snapshot row (multi-engine).
+    The decide-and-delete happens in ONE state-store transaction, so a concurrent
+    promote — from this process or another (a CLI apply while the daemon GCs) —
+    either lands before the check (the row is referenced, it survives) or after
+    the delete (and a promote can only reference fingerprints whose snapshot rows
+    exist, which the doomed ones no longer do). Physical tables are then dropped
+    on the engine recorded on each deleted row (multi-engine).
     """
     registry = as_registry(engine, engines)
-    referenced = await state.referenced_snapshots()
-    rows = await state.list_snapshot_rows()
     cutoff = datetime.now(UTC) - grace
-
-    doomed: list[dict[str, str]] = []
-    surviving: list[dict[str, str]] = []
-    for row in rows:
-        key = (row["name"], row["fingerprint"])
-        created = datetime.fromisoformat(row["created_at"])
-        if key not in referenced and created < cutoff:
-            doomed.append(row)
-        else:
-            surviving.append(row)
+    doomed, surviving = await state.collect_snapshot_garbage(cutoff, delete=not dry_run)
+    rows = doomed + surviving
 
     live_tables = {_table_key(row) for row in surviving}
     dead_keys = sorted({_table_key(row) for row in doomed} - live_tables)
@@ -129,7 +124,6 @@ async def gc(
             exp.Drop(this=exp.table_(name, db=schema), kind="TABLE", exists=True)
         )
 
-    await state.delete_snapshots(result.removed_snapshots)
     for table_key in dead_keys:
         eng_name, rest = table_key.split(":", 1)
         schema, name = rest.split(".", 1)

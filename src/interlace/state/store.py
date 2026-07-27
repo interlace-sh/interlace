@@ -339,15 +339,6 @@ class SqliteStateStore:
 
     # --- garbage collection ---------------------------------------------------
 
-    async def referenced_snapshots(self) -> set[tuple[str, str]]:
-        """Every ``(model, fingerprint)`` some environment currently points at."""
-        return await asyncio.to_thread(self._referenced_snapshots_sync)
-
-    def _referenced_snapshots_sync(self) -> set[tuple[str, str]]:
-        with self._lock:
-            rows = self._conn.execute("SELECT DISTINCT model_name, fingerprint FROM environments").fetchall()
-        return {(row["model_name"], row["fingerprint"]) for row in rows}
-
     async def list_snapshot_rows(self) -> list[dict[str, str]]:
         """Every snapshot row (no intervals): name, fingerprint, physical table, engine, created_at."""
         return await asyncio.to_thread(self._list_snapshot_rows_sync)
@@ -368,6 +359,47 @@ class SqliteStateStore:
             self._conn.executemany("DELETE FROM snapshots WHERE name = ? AND fingerprint = ?", pairs)
             self._conn.executemany("DELETE FROM intervals WHERE name = ? AND fingerprint = ?", pairs)
             self._conn.commit()
+
+    async def collect_snapshot_garbage(
+        self, cutoff: datetime, *, delete: bool
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        """Partition snapshot rows into (doomed, surviving) and delete the doomed —
+        one BEGIN IMMEDIATE transaction, so the reference check and the delete are
+        atomic against a concurrent promote from any process. A row is doomed when
+        no environment references its fingerprint AND it predates ``cutoff``.
+        ``delete=False`` (dry run) returns the same partition without deleting."""
+        return await asyncio.to_thread(self._collect_snapshot_garbage_sync, cutoff, delete)
+
+    def _collect_snapshot_garbage_sync(
+        self, cutoff: datetime, delete: bool
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        doomed: list[dict[str, str]] = []
+        surviving: list[dict[str, str]] = []
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                referenced = {
+                    (row["model_name"], row["fingerprint"])
+                    for row in self._conn.execute("SELECT DISTINCT model_name, fingerprint FROM environments")
+                }
+                rows = self._conn.execute(
+                    "SELECT name, fingerprint, physical_schema, physical_name, engine, created_at FROM snapshots"
+                ).fetchall()
+                for row in map(dict, rows):
+                    created = datetime.fromisoformat(row["created_at"])
+                    if (row["name"], row["fingerprint"]) not in referenced and created < cutoff:
+                        doomed.append(row)
+                    else:
+                        surviving.append(row)
+                if delete and doomed:
+                    pairs = [(row["name"], row["fingerprint"]) for row in doomed]
+                    self._conn.executemany("DELETE FROM snapshots WHERE name = ? AND fingerprint = ?", pairs)
+                    self._conn.executemany("DELETE FROM intervals WHERE name = ? AND fingerprint = ?", pairs)
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return doomed, surviving
 
     # --- interval ledger ----------------------------------------------------
 

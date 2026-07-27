@@ -39,6 +39,17 @@ def test_interval_trigger_fires_on_first_sight_then_every() -> None:
     assert trigger.due(now, now - timedelta(minutes=6))
 
 
+def test_interval_trigger_key_is_stable_within_a_slot() -> None:
+    """Crash between enqueue and the last-fired write: the retry after restart
+    must land on the SAME idempotency key so the durable queue dedupes it."""
+    trigger = IntervalTrigger("m", timedelta(minutes=5))
+    first = trigger.due(datetime(2026, 1, 1, 12, 0, 1), None)[0]
+    retry = trigger.due(datetime(2026, 1, 1, 12, 3, 59), None)[0]  # restarted, same 5-min slot
+    assert first.idempotency_key == retry.idempotency_key
+    later = trigger.due(datetime(2026, 1, 1, 12, 5, 1), None)[0]  # next slot: a new firing
+    assert later.idempotency_key != first.idempotency_key
+
+
 async def test_engine_tick_enqueues_then_dedupes(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     _, store = env
     project = compile_models([ModelDef(name="m", sql="SELECT 1 AS x", schedule={"every": "1h"})])

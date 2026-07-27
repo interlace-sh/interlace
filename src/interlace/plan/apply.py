@@ -26,11 +26,11 @@ from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, PlanError
-from interlace.exports import export_statements, table_export_statements
+from interlace.exports import export_statements, export_target_ref, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
-from interlace.plan.plan import BackfillTask, Plan, staging_table
+from interlace.plan.plan import XFER_SCHEMA, BackfillTask, Plan, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.state.store import StateStore
@@ -88,45 +88,8 @@ async def _merge_python_output(
 
     source: exp.Query = exp.select("*").from_(stage_table.copy())
     pre_statements: list[exp.Expression] = []
-    if exists:  # align the stage to the target: new columns, NULL-fill vanished, type drift
-        target_columns = await engine.describe(target)
-        stage_columns = await engine.describe(stage)
-        target_expr = target.to_expr()
-        for column, dtype in stage_columns.items():
-            if column not in target_columns:
-                pre_statements.append(
-                    exp.Alter(
-                        this=target_expr.copy(),
-                        kind="TABLE",
-                        actions=[
-                            exp.ColumnDef(this=exp.to_identifier(column), kind=exp.DataType.build(dtype)),
-                        ],
-                    )
-                )
-                target_columns[column] = dtype
-            elif dtype != target_columns[column] and _widens(target_columns[column], dtype):
-                # Source type drifted wider (int -> bigint -> double): promote the target
-                # in place — DuckLake supports exactly these widening promotions.
-                pre_statements.append(
-                    exp.Alter(
-                        this=target_expr.copy(),
-                        kind="TABLE",
-                        actions=[exp.AlterColumn(this=exp.column(column), dtype=exp.DataType.build(dtype))],
-                    )
-                )
-                target_columns[column] = dtype
-        # Any remaining type mismatch (e.g. a numeric field arriving as VARCHAR) is cast
-        # to the target's type — deterministic, and loudly fails the run on values that
-        # genuinely don't convert rather than silently corrupting the column.
-        projection = []
-        for column, dtype in target_columns.items():
-            if column not in stage_columns:
-                projection.append(exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column))
-            elif stage_columns[column] != dtype:
-                projection.append(exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column))
-            else:
-                projection.append(exp.column(column))
-        source = exp.select(*projection).from_(stage_table.copy())
+    if exists:
+        pre_statements, source, _ = await _align_stage_to_target(engine, stage, target)
 
     relation = SqlRelation(
         ast=source, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
@@ -135,6 +98,78 @@ async def _merge_python_output(
     statements = strategy.plan_statements(relation, target, engine.caps, None)
     drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
     await engine.execute_all([*pre_statements, *statements, drop_stage])
+
+
+async def _align_stage_to_target(
+    engine: EngineAdapter, stage: TableRef, target: TableRef
+) -> tuple[list[exp.Expression], exp.Query, list[str]]:
+    """Align a staged source to an EXISTING target: additive ALTERs for new columns,
+    widening type promotions in place, and a projection over the stage matching the
+    target's final column set (NULL-fill vanished columns, cast type drift). Returns
+    (pre-statements, aligned source select, target column order)."""
+    target_columns = await engine.describe(target)
+    stage_columns = await engine.describe(stage)
+    target_expr = target.to_expr()
+    pre_statements: list[exp.Expression] = []
+    for column, dtype in stage_columns.items():
+        if column not in target_columns:
+            pre_statements.append(
+                exp.Alter(
+                    this=target_expr.copy(),
+                    kind="TABLE",
+                    actions=[
+                        exp.ColumnDef(this=exp.to_identifier(column), kind=exp.DataType.build(dtype)),
+                    ],
+                )
+            )
+            target_columns[column] = dtype
+        elif dtype != target_columns[column] and _widens(target_columns[column], dtype):
+            # Source type drifted wider (int -> bigint -> double): promote the target
+            # in place — DuckLake supports exactly these widening promotions.
+            pre_statements.append(
+                exp.Alter(
+                    this=target_expr.copy(),
+                    kind="TABLE",
+                    actions=[exp.AlterColumn(this=exp.column(column), dtype=exp.DataType.build(dtype))],
+                )
+            )
+            target_columns[column] = dtype
+    # Any remaining type mismatch (e.g. a numeric field arriving as VARCHAR) is cast
+    # to the target's type — deterministic, and loudly fails the run on values that
+    # genuinely don't convert rather than silently corrupting the column.
+    projection = []
+    for column, dtype in target_columns.items():
+        if column not in stage_columns:
+            projection.append(exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column))
+        elif stage_columns[column] != dtype:
+            projection.append(exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column))
+        else:
+            projection.append(exp.column(column))
+    source = exp.select(*projection).from_(stage.to_expr())
+    return pre_statements, source, list(target_columns)
+
+
+async def _deliver_table_export(model: CompiledModel, engine: EngineAdapter, resolved: exp.Expression) -> None:
+    """Reverse ETL with schema evolution. The external target is never dropped (grants
+    and readers survive), so when it already exists the source is staged in the
+    warehouse, aligned to the target (additive ALTERs, NULL-fill, casts), and delivered
+    with an explicit column list — a sink model growing or reordering columns must
+    evolve the destination, never break it or positionally corrupt it."""
+    assert model.export is not None
+    target = export_target_ref(model.export.target)
+    if not await engine.table_exists(target):  # first delivery: the ensure-create matches the source
+        await engine.execute_all(table_export_statements(model.export, resolved, model.dialect, model.engine))
+        return
+    stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
+    await engine.create_schema(stage.schema)
+    await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
+    pre_statements, aligned, columns = await _align_stage_to_target(engine, stage, target)
+    statements = table_export_statements(model.export, aligned, model.dialect, model.engine, columns=columns)
+    # One transaction may write only ONE attached database: the delivery batch writes the
+    # external target; the stage lives in the warehouse and is dropped separately (a
+    # leftover is harmless — the next delivery CREATE OR REPLACEs it).
+    await engine.execute_all([*pre_statements, *statements])
+    await engine.execute(exp.Drop(this=stage.to_expr(), kind="TABLE", exists=True))
 
 
 async def _stage_cross_engine_inputs(
@@ -324,9 +359,7 @@ async def _run_backfill(
 
     if model.export is not None:  # sink: push the result to a destination, no table/view
         if model.export.to == "table":  # reverse ETL into an attached database
-            await target_engine.execute_all(
-                table_export_statements(model.export, resolved, model.dialect, model.engine)
-            )
+            await _deliver_table_export(model, target_engine, resolved)
         else:
             export_path = _resolve_export_path(base_path, model.export.path)
             Path(export_path).parent.mkdir(parents=True, exist_ok=True)

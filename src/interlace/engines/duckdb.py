@@ -207,11 +207,14 @@ class DuckDBAdapter(EngineAdapter):
             cur.close()
 
     def _table_exists_sync(self, table: TableRef) -> bool:
+        # information_schema spans every attached catalog: pin to the ref's catalog
+        # (or the session default) so same-named tables elsewhere don't collide.
         cur = self._cursor()
         try:
             row = cur.execute(
-                "SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
-                [table.schema, table.name],
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ? "
+                "AND table_catalog = coalesce(?, current_database())",
+                [table.schema, table.name, table.catalog],
             ).fetchone()
         finally:
             cur.close()
@@ -222,8 +225,9 @@ class DuckDBAdapter(EngineAdapter):
         try:
             rows = cur.execute(
                 "SELECT column_name, data_type FROM information_schema.columns "
-                "WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-                [table.schema, table.name],
+                "WHERE table_schema = ? AND table_name = ? "
+                "AND table_catalog = coalesce(?, current_database()) ORDER BY ordinal_position",
+                [table.schema, table.name, table.catalog],
             ).fetchall()
         finally:
             cur.close()

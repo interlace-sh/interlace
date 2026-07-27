@@ -61,6 +61,10 @@ class EngineAdapter(ABC):
     async def describe(self, table: TableRef) -> dict[str, str]:
         """Return a table or view's columns as an ordered ``{name: type}`` mapping."""
 
+    async def table_exists(self, table: TableRef) -> bool:
+        """Whether the table (or view) exists. Adapters override with a direct probe."""
+        return bool(await self.describe(table))
+
     async def execute_all(self, statements: Sequence[exp.Expression]) -> None:
         """Run statements in order. Override to make the batch atomic (one transaction)."""
         for statement in statements:

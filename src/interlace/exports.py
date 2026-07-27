@@ -18,6 +18,7 @@ Exports are side-effecting — no view-swap rollback (see v2-design §6).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,7 +70,7 @@ class ExportConfig:
         return config
 
 
-def _target_ref(target: str) -> TableRef:
+def export_target_ref(target: str) -> TableRef:
     parts = target.split(".")
     if len(parts) == 3:
         return TableRef(catalog=parts[0], schema=parts[1], name=parts[2])
@@ -81,12 +82,20 @@ def _target_ref(target: str) -> TableRef:
 
 
 def table_export_statements(
-    export: ExportConfig, query: exp.Expression, dialect: str, engine: str = "default"
+    export: ExportConfig,
+    query: exp.Expression,
+    dialect: str,
+    engine: str = "default",
+    columns: Sequence[str] | None = None,
 ) -> list[exp.Expression]:
-    """Deliver ``query`` into the external table — never DROP it (grants/readers survive)."""
+    """Deliver ``query`` into the external table — never DROP it (grants/readers survive).
+
+    ``columns`` names the target's column order when the source has been aligned to an
+    existing target (see ``plan.apply._deliver_table_export``): inserts then carry an
+    explicit column list, so delivery can never bind positionally against a drifted table."""
     from interlace.strategies import FullMerge, MergeByKey  # runtime import: strategies build on ir like this module
 
-    target = _target_ref(export.target)
+    target = export_target_ref(export.target)
     table = target.to_expr()
     relation = SqlRelation(ast=query, engine=EngineRef(name=engine, dialect=dialect), schema=empty_schema())
 
@@ -97,7 +106,10 @@ def table_export_statements(
 
     derived = exp.select("*").from_(exp.Subquery(this=query.copy(), alias=exp.TableAlias(this="_s")))
     ensure = exp.Create(this=table.copy(), kind="TABLE", exists=True, expression=derived.copy().limit(0))
-    insert = exp.Insert(this=table.copy(), expression=query.copy())
+    insert_this: exp.Expression = table.copy()
+    if columns:
+        insert_this = exp.Schema(this=table.copy(), expressions=[exp.to_identifier(c) for c in columns])
+    insert = exp.Insert(this=insert_this, expression=query.copy())
     if export.mode == "append":
         return [ensure, insert]
     wipe = exp.Delete(this=table.copy())  # replace: empty in place, never drop

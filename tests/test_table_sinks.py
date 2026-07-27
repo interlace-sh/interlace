@@ -94,6 +94,52 @@ async def test_full_merge_deletes_vanished_keys(env: tuple[DuckDBAdapter, Sqlite
     assert await _rows(engine, "SELECT id FROM ext.main.state") == [{"id": 1}]
 
 
+async def test_sink_evolves_added_column(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """The user-hit regression: the sink model grows a column — the external table must
+    gain it (never 'has 3 columns but 4 values were supplied')."""
+    engine, _ = env
+    export = ExportConfig(to="table", target="ext.main.scores", mode="replace")
+    await _apply(env, "SELECT 1 AS id, 'a' AS v", export)
+    await _apply(env, "SELECT 2 AS id, 'b' AS v, 9.5 AS score", export)  # grew a column
+
+    assert await _rows(engine, "SELECT id, v, score FROM ext.main.scores") == [{"id": 2, "v": "b", "score": 9.5}]
+
+
+async def test_sink_null_fills_vanished_column(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, _ = env
+    export = ExportConfig(to="table", target="ext.main.trimmed", mode="replace")
+    await _apply(env, "SELECT 1 AS id, 'a' AS v", export)
+    await _apply(env, "SELECT 2 AS id", export)  # v vanished from the model
+
+    assert await _rows(engine, "SELECT id, v FROM ext.main.trimmed") == [{"id": 2, "v": None}]
+
+
+async def test_sink_reordered_columns_land_by_name(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """Positional-insert regression: same columns, different order — values must land in
+    the right columns, not silently swap."""
+    engine, _ = env
+    export = ExportConfig(to="table", target="ext.main.swapped", mode="append")
+    await _apply(env, "SELECT 1 AS id, 'a' AS v", export)
+    await _apply(env, "SELECT 'b' AS v, 2 AS id", export)  # reordered projection
+
+    assert await _rows(engine, "SELECT id, v FROM ext.main.swapped ORDER BY id") == [
+        {"id": 1, "v": "a"},
+        {"id": 2, "v": "b"},
+    ]
+
+
+async def test_sink_merge_evolves_added_column(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, _ = env
+    export = ExportConfig(to="table", target="ext.main.members", mode="merge_by_key", key=("id",))
+    await _apply(env, _values("(1, 'a'), (2, 'b')"), export)
+    await _apply(env, "SELECT 2 AS id, 'B' AS v, 'gold' AS tier", export)  # upsert with a new column
+
+    assert await _rows(engine, "SELECT id, v, tier FROM ext.main.members ORDER BY id") == [
+        {"id": 1, "v": "a", "tier": None},
+        {"id": 2, "v": "B", "tier": "gold"},
+    ]
+
+
 async def test_project_attach_reaches_external_database(tmp_path: Path) -> None:
     """attach: config wires an external db; a sink model delivers into it."""
     import duckdb

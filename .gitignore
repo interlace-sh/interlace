@@ -71,6 +71,7 @@ examples/*/data/raw/*.csv
 examples/*/data/dev/
 examples/*/data/prod/
 examples/*/logs/
+examples/*/out/
 
 # Jupyter
 .ipynb_checkpoints/

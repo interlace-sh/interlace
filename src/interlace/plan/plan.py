@@ -121,8 +121,28 @@ def schedule_build(
     plan: Plan, model: CompiledModel, snapshot: Snapshot, environment: str, *, seed_from: TableRef | None = None
 ) -> None:
     """Add the right tasks for a model: ephemeral builds nothing; a sink builds but
-    gets no view; a table/view builds and is repointed by an environment view."""
+    gets no view; a table/view builds and is repointed by an environment view.
+
+    An incremental_by_time model cannot build without a window, so an apply fills
+    the latest grain interval — the same default as ``interlace run`` — leaving
+    history to ``run --start/--end``. A forward-only snapshot's inherited ledger
+    skips windows it already carries.
+    """
     if model.materialise == "ephemeral":  # inlined into consumers, never built
+        return
+    if model.strategy == "incremental_by_time" and model.export is None:
+        from datetime import datetime
+
+        from interlace.state.interval import parse_grain
+
+        grain = parse_grain(model.interval or "1d")
+        now = datetime.now()
+        window = Interval(now - grain, now)
+        if not snapshot.intervals.covers(window):
+            plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
+        plan.virtual_updates.append(
+            ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
+        )
         return
     plan.backfills.append(BackfillTask(snapshot=snapshot, seed_from=seed_from))
     if model.export is None and model.materialise in ("table", "view"):  # sinks have no view

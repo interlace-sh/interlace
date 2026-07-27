@@ -250,7 +250,7 @@ async def _apply(
             raise typer.Exit(1) from exc
         _render_checks(result)
         console.print(
-            f"[green]Built {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
+            f"[green]Built {len(set(result.built))} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
     finally:
         await state.close()
@@ -323,7 +323,8 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
         _render_checks(result)
         verb = "Restated" if restate else "Ran"
         console.print(
-            f"[green]{verb} {len(result.built)} model(s); promoted {result.promoted} to '{environment}'.[/green]"
+            f"[green]{verb} {len(set(result.built))} model(s) ({len(result.built)} task(s)); "
+            f"promoted {result.promoted} to '{environment}'.[/green]"
         )
     finally:
         await state.close()

@@ -67,6 +67,28 @@ async def test_incremental_processes_windows_and_fills_the_ledger(env: tuple[Duc
     assert intervals == [Interval(d(1), d(3))]
 
 
+async def test_apply_schedules_latest_window_for_incremental(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """`interlace apply` on a project with an incremental model must work: diff
+    schedules the latest grain interval (run --start/--end covers history)."""
+    from interlace.plan.differ import diff
+
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
+    await engine.execute_sql("CREATE TABLE main.events AS SELECT now() AS ts, 1 AS val")
+    project = compile_models(
+        [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental_by_time", time_column="ts")]
+    )
+
+    plan = await diff(project, "prod", store)
+    assert len(plan.backfills) == 1
+    assert plan.backfills[0].interval is not None  # windowed, not the unbuildable bare task
+
+    result = await apply(plan, compiled=project, engine=engine, state=store)
+    assert result.built == ["agg"]
+    rows = await _fetch(engine, "SELECT val FROM main.agg")
+    assert [r["val"] for r in rows] == [1]  # now() falls inside the latest-day window
+
+
 async def test_run_plan_expands_window_and_catches_up(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")

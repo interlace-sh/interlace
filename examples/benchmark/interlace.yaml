@@ -1,0 +1,4 @@
+name: benchmark
+default_dialect: duckdb
+# DuckLake warehouse (the default). The scale knob is ROWS in models/events.sql —
+# 25M by default; bump it to 100M+ to make the machine work for its dinner.

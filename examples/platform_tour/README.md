@@ -28,4 +28,8 @@ Things to try:
   closes the old version and opens a new one; then try the same edit with
   `interlace apply --forward-only` to keep history across a *definition* change.
 - `duckdb crm.duckdb "SELECT * FROM customer_scores"` — the sink's upserts.
+- Add a column to `crm_push.sql` (say `score * 2 AS score_2x`) and re-run — the
+  external table **evolves** (additive ALTER + aligned insert); it is never
+  dropped, so grants and readers survive.
+- `interlace checks run` — re-validate the promoted tables without rebuilding.
 - `interlace gc --dry-run` after a few changes — superseded snapshots to reap.

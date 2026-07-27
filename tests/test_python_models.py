@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
+from collections.abc import Iterator
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef, model
 from interlace.engines.duckdb import DuckDBAdapter
@@ -20,20 +19,6 @@ from interlace.runtime.handles import RelationHandle
 from interlace.state.store import SqliteStateStore
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    reader = await engine.fetch(sqlglot.parse_one(sql))
-    return reader.read_all().to_pylist()
 
 
 async def _build(env: tuple[DuckDBAdapter, SqliteStateStore], models: list[ModelDef]) -> None:

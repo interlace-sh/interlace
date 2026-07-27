@@ -8,7 +8,7 @@ from typing import Any
 
 import pyarrow as pa
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
@@ -32,11 +32,6 @@ async def env(tmp_path: Path) -> AsyncIterator[Env]:
     yield engine, store
     await store.close()
     engine.close()
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    reader = await engine.fetch(sqlglot.parse_one(sql))
-    return reader.read_all().to_pylist()
 
 
 async def _initial(env: Env, models: list[ModelDef]) -> Any:

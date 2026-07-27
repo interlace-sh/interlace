@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
@@ -31,10 +31,6 @@ async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateS
     yield engine, store
     await store.close()
     engine.close()
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    return (await engine.fetch(sqlglot.parse_one(sql))).read_all().to_pylist()
 
 
 def _dim(sql: str) -> ModelDef:

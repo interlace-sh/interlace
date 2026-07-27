@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from pathlib import Path
-
 import pytest
 import sqlglot
 
@@ -18,15 +15,6 @@ from interlace.plan.resolve import resolve_model_query
 from interlace.state.store import SqliteStateStore
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
 
 
 async def _fetch(engine: DuckDBAdapter, sql: str) -> list[dict]:

@@ -8,11 +8,8 @@ projection ``*`` (or a Python model, which sees whole tables) inherits them.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from pathlib import Path
-
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
@@ -25,22 +22,8 @@ from interlace.state.store import SqliteStateStore
 pytestmark = pytest.mark.unit
 
 
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
-
-
 def sql_model(name: str, sql: str, **kwargs: object) -> ModelDef:
     return ModelDef(name=name, sql=sql, **kwargs)  # type: ignore[arg-type]
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    reader = await engine.fetch(sqlglot.parse_one(sql))
-    return reader.read_all().to_pylist()
 
 
 async def _apply(env: tuple[DuckDBAdapter, SqliteStateStore], models: list[ModelDef], environment: str = "prod"):

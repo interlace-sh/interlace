@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 import sqlglot
@@ -25,15 +23,6 @@ pytestmark = pytest.mark.unit
 
 def d(day: int) -> datetime:
     return datetime(2026, 1, day)
-
-
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
 
 
 async def _fetch(engine: DuckDBAdapter, sql: str) -> list[dict]:

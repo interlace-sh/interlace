@@ -3,8 +3,6 @@ DuckDB through apply), Python @check functions, and the promotion gate."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
@@ -31,15 +29,6 @@ SELECT * FROM (VALUES
 ) AS t (order_id, status, amount, email, customer_id)
 """
 CUSTOMERS_SQL = "SELECT * FROM (VALUES (1), (2), (3)) AS t (customer_id)"
-
-
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
 
 
 async def _apply_orders(

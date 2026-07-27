@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -24,15 +23,6 @@ pytestmark = pytest.mark.unit
 
 runner = CliRunner()
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
-
-
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
 
 
 def test_cron_trigger_due_only_after_a_scheduled_time() -> None:

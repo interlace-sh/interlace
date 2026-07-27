@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
@@ -35,11 +36,6 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    reader = await engine.fetch(sqlglot.parse_one(sql))
-    return reader.read_all().to_pylist()
 
 
 # --- DuckLake (default storage) ----------------------------------------------

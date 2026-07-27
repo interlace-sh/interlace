@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from pathlib import Path
-
 import pytest
 import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
@@ -21,20 +19,6 @@ pytestmark = pytest.mark.unit
 
 def sql_model(name: str, sql: str, **kwargs: object) -> ModelDef:
     return ModelDef(name=name, sql=sql, **kwargs)  # type: ignore[arg-type]
-
-
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    reader = await engine.fetch(sqlglot.parse_one(sql))
-    return reader.read_all().to_pylist()
 
 
 async def test_apply_builds_dependency_chain_and_env_views(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

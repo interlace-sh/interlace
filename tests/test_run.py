@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-from collections.abc import AsyncIterator
 from pathlib import Path
 
 import duckdb
@@ -28,15 +27,6 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
 
 def sql_model(name: str, sql: str, **kwargs: object) -> ModelDef:
     return ModelDef(name=name, sql=sql, **kwargs)  # type: ignore[arg-type]
-
-
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
 
 
 async def _fetch(engine: DuckDBAdapter, sql: str) -> list[dict]:

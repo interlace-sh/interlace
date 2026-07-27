@@ -7,10 +7,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
-from interlace.engines.base import EngineAdapter
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.engines.registry import EngineRegistry
 from interlace.graph.project import compile_models
@@ -39,10 +38,6 @@ async def env(tmp_path: Path) -> AsyncIterator[tuple[EngineRegistry, SqliteState
     yield registry, store
     await store.close()
     registry.close()
-
-
-async def _rows(engine: EngineAdapter, sql: str) -> list[dict]:
-    return (await engine.fetch(sqlglot.parse_one(sql))).read_all().to_pylist()
 
 
 async def test_transfer_planned_and_executed(env: tuple[EngineRegistry, SqliteStateStore]) -> None:

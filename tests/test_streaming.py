@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import StreamDef
 from interlace.engines.duckdb import DuckDBAdapter
@@ -158,10 +158,6 @@ def test_arrow_schema_appends_ingestion_metadata() -> None:
 
 
 # --- materializer ---------------------------------------------------------------
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    return (await engine.fetch(sqlglot.parse_one(sql))).read_all().to_pylist()
 
 
 async def test_flush_is_exactly_once(log: SqliteStreamLog) -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.base import EngineAdapter
@@ -87,10 +87,6 @@ async def env(tmp_path: Path) -> AsyncIterator[tuple[EngineRegistry, SqliteState
     yield registry, store
     await store.close()
     registry.close()
-
-
-async def _rows(engine: EngineAdapter, sql: str) -> list[dict]:
-    return (await engine.fetch(sqlglot.parse_one(sql))).read_all().to_pylist()
 
 
 async def test_models_build_on_their_declared_engines(env: tuple[EngineRegistry, SqliteStateStore]) -> None:

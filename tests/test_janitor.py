@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
-import sqlglot
+from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
@@ -22,15 +20,6 @@ pytestmark = pytest.mark.unit
 NONE = timedelta(0)
 
 
-@pytest.fixture()
-async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateStore]]:
-    engine = DuckDBAdapter.in_memory()
-    store = await SqliteStateStore.open(tmp_path / "state.db")
-    yield engine, store
-    await store.close()
-    engine.close()
-
-
 def sql_model(name: str, sql: str) -> ModelDef:
     return ModelDef(name=name, sql=sql)
 
@@ -39,10 +28,6 @@ async def _apply(env: tuple[DuckDBAdapter, SqliteStateStore], models: list[Model
     engine, store = env
     compiled = compile_models(models)
     return await apply(await diff(compiled, environment, store), compiled=compiled, engine=engine, state=store)
-
-
-async def _rows(engine: DuckDBAdapter, sql: str) -> list[dict]:
-    return (await engine.fetch(sqlglot.parse_one(sql))).read_all().to_pylist()
 
 
 async def _tables(engine: DuckDBAdapter, like: str) -> list[str]:

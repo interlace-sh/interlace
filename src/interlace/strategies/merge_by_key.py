@@ -12,6 +12,7 @@ with column lineage.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import ClassVar, cast
 
 from sqlglot import exp
@@ -20,7 +21,7 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import Strategy, table_expr
+from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
 
 class MergeByKey(Strategy):
@@ -61,3 +62,8 @@ class MergeByKey(Strategy):
         )
         insert = exp.Insert(this=table.copy(), expression=query.copy())
         return [ensure, delete, insert]
+
+    def row_counts(self, counts: Sequence[int]) -> RowCounts:
+        # [ensure, delete existing keys, insert]: a deleted key was re-inserted -> update
+        updated = _at(counts, 1)
+        return RowCounts(inserted=max(0, _at(counts, 2) - updated), updated=updated)

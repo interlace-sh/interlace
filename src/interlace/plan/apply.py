@@ -26,7 +26,7 @@ from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, PlanError
-from interlace.exports import export_statements, export_target_ref, table_export_statements
+from interlace.exports import export_row_counts, export_statements, export_target_ref, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
@@ -35,6 +35,7 @@ from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.state.store import StateStore
 from interlace.strategies import resolve_strategy
+from interlace.strategies.base import RowCounts
 
 
 @dataclass
@@ -46,6 +47,12 @@ class ApplyResult:
     checks: list[CheckOutcome] = field(default_factory=list)
     # Wall-clock build seconds per built model (extraction + strategy + checks).
     timings: dict[str, float] = field(default_factory=dict)
+    # What each build did to its target's rows, as its strategy interprets the
+    # engine's affected-row counts. Interval windows accumulate.
+    rows: dict[str, RowCounts] = field(default_factory=dict)
+
+    def record_rows(self, name: str, counts: RowCounts) -> None:
+        self.rows[name] = self.rows.get(name, RowCounts()) + counts
 
 
 # The widening promotions DuckLake's ALTER COLUMN supports, in order.
@@ -73,7 +80,7 @@ async def _merge_python_output(
     reader: pa.RecordBatchReader,
     *,
     exists: bool,
-) -> None:
+) -> RowCounts:
     """Stage a Python model's Arrow output and apply its keyed strategy in SQL.
 
     The output lands in a stage table (CREATE OR REPLACE, so a crashed run's
@@ -97,7 +104,8 @@ async def _merge_python_output(
     strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
     statements = strategy.plan_statements(relation, target, engine.caps, None)
     drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
-    await engine.execute_all([*pre_statements, *statements, drop_stage])
+    counts = await engine.execute_all([*pre_statements, *statements, drop_stage])
+    return strategy.row_counts(counts[len(pre_statements) : len(pre_statements) + len(statements)])
 
 
 async def _align_stage_to_target(
@@ -149,7 +157,7 @@ async def _align_stage_to_target(
     return pre_statements, source, list(target_columns)
 
 
-async def _deliver_table_export(model: CompiledModel, engine: EngineAdapter, resolved: exp.Expression) -> None:
+async def _deliver_table_export(model: CompiledModel, engine: EngineAdapter, resolved: exp.Expression) -> RowCounts:
     """Reverse ETL with schema evolution. The external target is never dropped (grants
     and readers survive), so when it already exists the source is staged in the
     warehouse, aligned to the target (additive ALTERs, NULL-fill, casts), and delivered
@@ -158,8 +166,8 @@ async def _deliver_table_export(model: CompiledModel, engine: EngineAdapter, res
     assert model.export is not None
     target = export_target_ref(model.export.target)
     if not await engine.table_exists(target):  # first delivery: the ensure-create matches the source
-        await engine.execute_all(table_export_statements(model.export, resolved, model.dialect, model.engine))
-        return
+        counts = await engine.execute_all(table_export_statements(model.export, resolved, model.dialect, model.engine))
+        return export_row_counts(model.export, counts)
     stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
@@ -168,8 +176,9 @@ async def _deliver_table_export(model: CompiledModel, engine: EngineAdapter, res
     # One transaction may write only ONE attached database: the delivery batch writes the
     # external target; the stage lives in the warehouse and is dropped separately (a
     # leftover is harmless — the next delivery CREATE OR REPLACEs it).
-    await engine.execute_all([*pre_statements, *statements])
+    counts = await engine.execute_all([*pre_statements, *statements])
     await engine.execute(exp.Drop(this=stage.to_expr(), kind="TABLE", exists=True))
+    return export_row_counts(model.export, counts[len(pre_statements) :])
 
 
 async def _stage_cross_engine_inputs(
@@ -339,14 +348,16 @@ async def _run_backfill(
             await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
             previous = previous or snapshot.physical_table
         if model.strategy == "full":
-            await build_python_model(
+            loaded = await build_python_model(
                 model, compiled, target_engine, snapshot.physical_table, physical=resolution, previous=previous
             )
+            result.record_rows(snapshot.name, RowCounts(inserted=loaded))
         else:  # keyed strategy: stage the Arrow output, then merge it in SQL
             reader = await run_python_model(model, compiled, target_engine, resolution, previous)
-            await _merge_python_output(
+            merged = await _merge_python_output(
                 model, target_engine, snapshot.physical_table, reader, exists=previous is not None
             )
+            result.record_rows(snapshot.name, merged)
         if model.columns:
             validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
         await state.add_snapshot(snapshot)
@@ -359,11 +370,14 @@ async def _run_backfill(
 
     if model.export is not None:  # sink: push the result to a destination, no table/view
         if model.export.to == "table":  # reverse ETL into an attached database
-            await _deliver_table_export(model, target_engine, resolved)
+            result.record_rows(snapshot.name, await _deliver_table_export(model, target_engine, resolved))
         else:
             export_path = _resolve_export_path(base_path, model.export.path)
             Path(export_path).parent.mkdir(parents=True, exist_ok=True)
-            await target_engine.execute_all(export_statements(model.export, resolved, export_path, model.dialect))
+            copied = await target_engine.execute_all(
+                export_statements(model.export, resolved, export_path, model.dialect)
+            )
+            result.record_rows(snapshot.name, RowCounts(inserted=copied[0] if copied else 0))
         await state.add_snapshot(snapshot)
         result.built.append(snapshot.name)
         result.timings[snapshot.name] = time.perf_counter() - task_started
@@ -378,7 +392,8 @@ async def _run_backfill(
     if task.seed_from is not None:  # forward-only: history moves onto the new table first
         await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
     statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, task.interval)
-    await target_engine.execute_all(statements)
+    counts = await target_engine.execute_all(statements)
+    result.record_rows(snapshot.name, strategy.row_counts(counts))
     if model.columns:  # validate the built schema against the contract before recording it
         validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
 

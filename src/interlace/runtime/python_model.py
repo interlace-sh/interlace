@@ -153,7 +153,8 @@ async def build_python_model(
     target: TableRef,
     physical: Mapping[str, TableRef] | None = None,
     previous: TableRef | None = None,
-) -> None:
-    """Run ``model``'s function over its upstreams and load the result into ``target``."""
+) -> int:
+    """Run ``model``'s function over its upstreams and load the result into ``target``.
+    Returns the number of rows written."""
     reader = await run_python_model(model, compiled, engine, physical, previous)
-    await engine.load(target, reader, "create")
+    return await engine.load(target, reader, "create")

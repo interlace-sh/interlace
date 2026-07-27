@@ -40,6 +40,16 @@ _commit_retry = tenacity.retry(
 )
 
 
+def _affected(cur: duckdb.DuckDBPyConnection) -> int:
+    """DML/CTAS/COPY return their affected-row count as a one-cell result; DDL returns
+    nothing. Never raises — row stats are best-effort decoration, not correctness."""
+    try:
+        rows = cur.fetchall()
+        return int(rows[0][0]) if rows and rows[0] and isinstance(rows[0][0], int) else 0
+    except Exception:
+        return 0
+
+
 class DuckDBAdapter(EngineAdapter):
     """Executes canonical ASTs and moves Arrow data in and out of a DuckDB database."""
 
@@ -130,14 +140,14 @@ class DuckDBAdapter(EngineAdapter):
     async def execute(self, ast: exp.Expression) -> None:
         await self.execute_sql(self.transpile(ast))
 
-    async def execute_all(self, statements: Sequence[exp.Expression]) -> None:
-        await asyncio.to_thread(self._execute_all_sync, [self.transpile(s) for s in statements])
+    async def execute_all(self, statements: Sequence[exp.Expression]) -> list[int]:
+        return await asyncio.to_thread(self._execute_all_sync, [self.transpile(s) for s in statements])
 
     async def fetch(self, ast: exp.Expression) -> pa.RecordBatchReader:
         return await self.fetch_sql(self.transpile(ast))
 
-    async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
-        await asyncio.to_thread(self._load_sync, table, reader, mode)
+    async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
+        return await asyncio.to_thread(self._load_sync, table, reader, mode)
 
     async def create_view(self, name: TableRef, target: TableRef) -> None:
         await self.execute_sql(
@@ -172,18 +182,21 @@ class DuckDBAdapter(EngineAdapter):
             cur.close()
 
     @_commit_retry
-    def _execute_all_sync(self, sqls: list[str]) -> None:
+    def _execute_all_sync(self, sqls: list[str]) -> list[int]:
         cur = self._cursor()
+        counts: list[int] = []
         try:
             cur.execute("BEGIN")
             for sql in sqls:
                 cur.execute(sql)
+                counts.append(_affected(cur))
             cur.execute("COMMIT")
         except Exception:
             cur.execute("ROLLBACK")
             raise
         finally:
             cur.close()
+        return counts
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
         # The reader keeps the underlying result alive after the cursor is dropped.
@@ -192,7 +205,7 @@ class DuckDBAdapter(EngineAdapter):
         return cur.to_arrow_reader()
 
     @_commit_retry
-    def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
+    def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
         cur = self._cursor()
         src = f"__interlace_src_{uuid4().hex}"
         cur.register(src, reader)
@@ -202,6 +215,7 @@ class DuckDBAdapter(EngineAdapter):
                 cur.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}")
             else:
                 cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
+            return _affected(cur)
         finally:
             cur.unregister(src)
             cur.close()

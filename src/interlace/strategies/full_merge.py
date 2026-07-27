@@ -20,6 +20,7 @@ apply runs the statements atomically.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import ClassVar, cast
 
 from sqlglot import exp
@@ -28,7 +29,7 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import Strategy, table_expr
+from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
 
 class FullMerge(Strategy):
@@ -90,3 +91,8 @@ class FullMerge(Strategy):
             expression=exp.select("*").from_(exp.Subquery(this=fresh, alias=exp.TableAlias(this="_fresh"))),
         )
         return [ensure, delete_changed, delete_missing, insert]
+
+    def row_counts(self, counts: Sequence[int]) -> RowCounts:
+        # [ensure, delete changed keys, delete vanished keys, insert fresh versions]
+        updated = _at(counts, 1)
+        return RowCounts(inserted=max(0, _at(counts, 3) - updated), updated=updated, deleted=_at(counts, 2))

@@ -57,15 +57,17 @@ class QuackAdapter(DuckDBAdapter):
         finally:
             cur.close()
 
-    def _execute_all_sync(self, sqls: list[str]) -> None:
-        # One payload, transactional server-side; quack executes it as a unit.
+    def _execute_all_sync(self, sqls: list[str]) -> list[int]:
+        # One payload, transactional server-side; quack executes it as a unit —
+        # per-statement affected counts are not observable over the wire.
         self._execute_sync(";\n".join(["BEGIN", *sqls, "COMMIT"]))
+        return [0] * len(sqls)
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
         cur = self._conn.cursor()
         return self._remote_sync(cur, sql).to_arrow_reader()
 
-    def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
+    def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
         # Register the reader locally; schema-qualified DDL against the attached
         # remote catalog streams the batches over the wire. The attach caches the
         # remote catalog, so refresh it to see schemas created since we connected.
@@ -79,6 +81,8 @@ class QuackAdapter(DuckDBAdapter):
                 cur.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}")
             else:
                 cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
+            rows = cur.fetchall()
+            return int(rows[0][0]) if rows and rows[0] and isinstance(rows[0][0], int) else 0
         finally:
             cur.unregister(src)
             cur.close()

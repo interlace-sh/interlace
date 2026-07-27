@@ -9,6 +9,7 @@ config) lives there, not here.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import ClassVar, cast
 
 from sqlglot import exp
@@ -17,7 +18,7 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import Strategy, table_expr
+from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
 
 class IncrementalByTime(Strategy):
@@ -58,3 +59,7 @@ class IncrementalByTime(Strategy):
         delete = exp.Delete(this=table.copy(), where=exp.Where(this=window()))
         insert = exp.Insert(this=table.copy(), expression=exp.select("*").from_(derived()).where(window()))
         return [ensure, delete, insert]
+
+    def row_counts(self, counts: Sequence[int]) -> RowCounts:
+        # [ensure, delete window, insert window]: catchup deletes 0; restate rewrites
+        return RowCounts(inserted=_at(counts, 2), deleted=_at(counts, 1))

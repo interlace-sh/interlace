@@ -46,8 +46,9 @@ class EngineAdapter(ABC):
         """Extract: evaluate a query and stream the result as Arrow batches."""
 
     @abstractmethod
-    async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
-        """Load: write Arrow batches into a table, creating or appending."""
+    async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
+        """Load: write Arrow batches into a table, creating or appending.
+        Returns the number of rows written (0 when the backend cannot tell)."""
 
     @abstractmethod
     async def create_view(self, name: TableRef, target: TableRef) -> None:
@@ -65,10 +66,12 @@ class EngineAdapter(ABC):
         """Whether the table (or view) exists. Adapters override with a direct probe."""
         return bool(await self.describe(table))
 
-    async def execute_all(self, statements: Sequence[exp.Expression]) -> None:
-        """Run statements in order. Override to make the batch atomic (one transaction)."""
+    async def execute_all(self, statements: Sequence[exp.Expression]) -> list[int]:
+        """Run statements in order; returns affected-row counts per statement (0 when
+        unknown). Override to make the batch atomic (one transaction)."""
         for statement in statements:
             await self.execute(statement)
+        return [0] * len(statements)
 
     async def execute_sql(self, sql: str) -> None:
         """Run one raw SQL statement written in this engine's dialect."""

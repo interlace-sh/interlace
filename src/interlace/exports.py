@@ -29,6 +29,7 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import ConfigurationError, PlanError
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
+from interlace.strategies.base import RowCounts
 
 _FILE_FORMATS = frozenset({"parquet", "csv", "json"})
 _TABLE_MODES = frozenset({"replace", "append", "merge_by_key", "full_merge"})
@@ -114,6 +115,20 @@ def table_export_statements(
         return [ensure, insert]
     wipe = exp.Delete(this=table.copy())  # replace: empty in place, never drop
     return [ensure, wipe, insert]
+
+
+def export_row_counts(export: ExportConfig, counts: Sequence[int]) -> RowCounts:
+    """Interpret a table delivery's per-statement counts for its mode."""
+    from interlace.strategies import FullMerge, MergeByKey
+
+    if export.mode == "merge_by_key":
+        return MergeByKey(export.key).row_counts(counts)
+    if export.mode == "full_merge":
+        return FullMerge(export.key).row_counts(counts)
+    if export.mode == "append":  # [ensure, insert]
+        return RowCounts(inserted=counts[1] if len(counts) > 1 else 0)
+    # replace: [ensure, wipe, insert] — the wipe clears the previous delivery
+    return RowCounts(inserted=counts[2] if len(counts) > 2 else 0, deleted=counts[1] if len(counts) > 1 else 0)
 
 
 def export_statements(

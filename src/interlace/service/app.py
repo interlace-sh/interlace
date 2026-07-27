@@ -170,6 +170,9 @@ class ApplyResponse(msgspec.Struct):
     breaking: bool
     reused: list[str] = msgspec.field(default_factory=list)
     transfers: list[str] = msgspec.field(default_factory=list)
+    # per-model row movement (inserted/updated/deleted) and build seconds
+    rows: dict[str, dict[str, int]] = msgspec.field(default_factory=dict)
+    timings: dict[str, float] = msgspec.field(default_factory=dict)
 
 
 class CheckResultInfo(msgspec.Struct):
@@ -468,6 +471,11 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         breaking=breaking,
         reused=result.reused,
         transfers=result.transfers,
+        rows={
+            name: {"inserted": c.inserted, "updated": c.updated, "deleted": c.deleted}
+            for name, c in result.rows.items()
+        },
+        timings={name: round(seconds, 3) for name, seconds in result.timings.items()},
     )
 
 

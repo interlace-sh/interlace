@@ -107,6 +107,47 @@ def _emit_json(data: object) -> None:
     typer.echo(json.dumps(data, indent=2, default=str))
 
 
+def _render_build_results(result: ApplyResult, compiled: CompiledProject) -> None:
+    """Per-model outcome table: what was built, how it writes, what it did to the
+    rows (as the strategy interprets the engine's affected counts), and how long."""
+    built = set(result.built)
+    if not built:
+        return
+    multi_engine = len({m.engine for m in compiled.models.values()}) > 1
+    table = Table(title="Build results")
+    table.add_column("Model")
+    table.add_column("Output")
+    table.add_column("Strategy")
+    if multi_engine:
+        table.add_column("Engine")
+    table.add_column("Rows", justify="right")
+    table.add_column("Time", justify="right")
+    for model in compiled.ordered():
+        if model.name not in built:
+            continue
+        counts = result.rows.get(model.name)
+        parts = []
+        if counts is not None:
+            if counts.inserted:
+                parts.append(f"[green]+{counts.inserted:,}[/]")
+            if counts.updated:
+                parts.append(f"[yellow]~{counts.updated:,}[/]")
+            if counts.deleted:
+                parts.append(f"[red]-{counts.deleted:,}[/]")
+        seconds = result.timings.get(model.name)
+        cells = [
+            model.name,
+            "sink" if model.export is not None else model.materialise,
+            model.export.mode if model.export is not None else model.strategy,  # sinks: the delivery mode
+        ]
+        if multi_engine:
+            cells.append(model.engine)
+        cells.append(" ".join(parts) or "—")
+        cells.append(f"{seconds:.2f}s" if seconds is not None else "—")
+        table.add_row(*cells)
+    console.print(table)
+
+
 def _render_checks(result: ApplyResult) -> None:
     if not result.checks:
         return
@@ -248,6 +289,7 @@ async def _apply(
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")
             raise typer.Exit(1) from exc
+        _render_build_results(result, compiled)
         _render_checks(result)
         console.print(
             f"[green]Built {len(set(result.built))} model(s); promoted {result.promoted} to '{environment}'.[/green]"
@@ -320,6 +362,7 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")
             raise typer.Exit(1) from exc
+        _render_build_results(result, compiled)
         _render_checks(result)
         verb = "Restated" if restate else "Ran"
         console.print(
@@ -578,8 +621,17 @@ async def _runs(path: Path, limit: int, as_json: bool = False) -> None:
     project = Project.load(path)
     state = await project.open_state()
     try:
+        recorded = await state.list_runs(limit)
         if as_json:
-            _emit_json(await state.list_runs(limit))
+            _emit_json(recorded)
+            return
+        if not recorded:
+            console.print(
+                "No runs recorded. The queue holds daemon-triggered work — schedules, stream flushes, "
+                "POST /runs — while [bold]interlace apply[/bold]/[bold]run[/bold] execute immediately "
+                "without enqueueing. Start one with [bold]interlace serve[/bold] or "
+                "[bold]interlace scheduler[/bold]."
+            )
             return
         table = Table(title="Runs")
         table.add_column("Id")
@@ -588,7 +640,7 @@ async def _runs(path: Path, limit: int, as_json: bool = False) -> None:
         table.add_column("Models")
         table.add_column("Enqueued")
         table.add_column("Error")
-        for run in await state.list_runs(limit):
+        for run in recorded:
             key = str(run["idempotency_key"] or "")
             trigger = key.split(":", 1)[0] if ":" in key else "manual"
             models = ", ".join(run["flow_selector"][:3]) + (" …" if len(run["flow_selector"]) > 3 else "")

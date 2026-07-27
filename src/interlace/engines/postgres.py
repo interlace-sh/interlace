@@ -62,14 +62,14 @@ class PostgresAdapter(EngineAdapter):
     async def execute(self, ast: exp.Expression) -> None:
         await self.execute_sql(self.transpile(ast))
 
-    async def execute_all(self, statements: Sequence[exp.Expression]) -> None:
-        await asyncio.to_thread(self._execute_all_sync, [self.transpile(s) for s in statements])
+    async def execute_all(self, statements: Sequence[exp.Expression]) -> list[int]:
+        return await asyncio.to_thread(self._execute_all_sync, [self.transpile(s) for s in statements])
 
     async def fetch(self, ast: exp.Expression) -> pa.RecordBatchReader:
         return await self.fetch_sql(self.transpile(ast))
 
-    async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
-        await asyncio.to_thread(self._load_sync, table, reader, mode)
+    async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
+        return await asyncio.to_thread(self._load_sync, table, reader, mode)
 
     async def create_view(self, name: TableRef, target: TableRef) -> None:
         await self.execute_sql(
@@ -101,16 +101,20 @@ class PostgresAdapter(EngineAdapter):
             cur.execute(sql)
             self._conn.commit()
 
-    def _execute_all_sync(self, sqls: list[str]) -> None:
+    def _execute_all_sync(self, sqls: list[str]) -> list[int]:
+        counts: list[int] = []
         with self._lock:
             try:
                 with self._conn.cursor() as cur:
                     for sql in sqls:
                         cur.execute(sql)
+                        rowcount = getattr(cur, "rowcount", -1)
+                        counts.append(rowcount if isinstance(rowcount, int) and rowcount > 0 else 0)
                 self._conn.commit()  # ADBC autocommit is off: this is one transaction
             except Exception:
                 self._conn.rollback()
                 raise
+        return counts
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
         with self._lock, self._conn.cursor() as cur:
@@ -119,16 +123,17 @@ class PostgresAdapter(EngineAdapter):
             self._conn.commit()
         return table.to_reader()
 
-    def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> None:
+    def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
         ingest_mode = "replace" if mode == "create" else "append"  # "create" == CREATE OR REPLACE semantics
         with self._lock:
             try:
                 with self._conn.cursor() as cur:
-                    cur.adbc_ingest(table.name, reader, mode=ingest_mode, db_schema_name=table.schema)
+                    loaded = cur.adbc_ingest(table.name, reader, mode=ingest_mode, db_schema_name=table.schema)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
                 raise
+        return int(loaded) if isinstance(loaded, int) and loaded > 0 else 0
 
     def _table_exists_sync(self, table: TableRef) -> bool:
         with self._lock, self._conn.cursor() as cur:

@@ -37,6 +37,38 @@ async def test_apply_builds_dependency_chain_and_env_views(env: tuple[DuckDBAdap
     assert await _rows(engine, "SELECT id, v2 FROM main.b") == [{"id": 1, "v2": 20}]
 
 
+async def test_apply_reports_row_counts(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """Each strategy interprets the engine's affected-row counts: full = inserted,
+    merge_by_key = updated (re-keyed) vs inserted (new), scd2 = closed vs new versions."""
+    from dataclasses import replace as dc_replace
+
+    from interlace.plan.run import run_plan
+    from interlace.strategies.base import RowCounts
+
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA raw")
+    await engine.execute_sql("CREATE TABLE raw.src AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, v)")
+    models = [
+        sql_model("plain", "SELECT id, v FROM raw.src"),
+        sql_model("merged", "SELECT id, v FROM raw.src", strategy="merge_by_key", key=("id",)),
+        sql_model("dim", "SELECT id, v FROM raw.src", strategy="scd_type_2", key=("id",)),
+    ]
+    project = compile_models(models)
+    result = await apply(await diff(project, "dev", store), compiled=project, engine=engine, state=store)
+    assert result.rows["plain"] == RowCounts(inserted=2)
+    assert result.rows["merged"] == RowCounts(inserted=2)  # nothing pre-existing: all new
+    assert result.rows["dim"] == RowCounts(inserted=2)
+
+    # second pass over changed data: 1 changed key + 1 new key
+    await engine.execute_sql("UPDATE raw.src SET v = 'B' WHERE id = 2")
+    await engine.execute_sql("INSERT INTO raw.src VALUES (3, 'c')")
+    rerun = await apply(await run_plan(project, "dev", store), compiled=project, engine=engine, state=store)
+    assert rerun.rows["plain"] == RowCounts(inserted=3)  # full refresh rewrites everything
+    assert rerun.rows["merged"] == RowCounts(inserted=1, updated=2)  # keys 1+2 re-merged, 3 new
+    assert rerun.rows["dim"] == RowCounts(inserted=2, updated=1)  # id=2 closed + reopened, id=3 new
+    assert dc_replace(rerun.rows["dim"], updated=0)  # smoke: RowCounts is a plain dataclass
+
+
 async def test_apply_reports_progress_events(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     project = compile_models([sql_model("a", "SELECT 1 AS x"), sql_model("b", "SELECT x FROM a")])

@@ -111,7 +111,8 @@ def test_envs_runs_checks_engines_streams_commands(tmp_path: Path) -> None:
     assert "clicks" in run("streams")
     engines_out = run("engines")
     assert "default" in engines_out and "side" in engines_out
-    assert "Runs" in run("runs")
+    # nothing enqueued yet: the empty state explains itself instead of a bare table
+    assert "No runs recorded" in run("runs")
 
     # environment lifecycle: sandboxes drop freely, production is guarded
     run("apply", "--env", "dev")

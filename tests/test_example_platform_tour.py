@@ -22,9 +22,10 @@ def test_platform_tour_end_to_end(tmp_path: Path) -> None:
     shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace", "*.duckdb*"))
 
     with TestClient(app=create_app(project_dir, "dev")) as client:
-        # ingest: durable, deduplicated
+        # ingest: durable, deduplicated (materialization is micro-batched;
+        # /apply flushes pending events itself, so no polling is needed here)
         first = client.post("/streams/orders", json={"order_id": "o1", "customer_id": 1, "total": 49.5}).json()
-        assert first["accepted"] == 1 and first["materialized"] == 1
+        assert first["accepted"] == 1
         retry = client.post(
             "/streams/orders",
             json=[

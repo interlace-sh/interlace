@@ -44,7 +44,6 @@ from interlace.state.snapshot import ChangeCategory
 from interlace.streaming.log import Event
 from interlace.streaming.materializer import (
     ensure_stream_tables,
-    flush_stream,
     flush_streams,
     quarantine_stream,
     stream_consumers,
@@ -203,10 +202,13 @@ class StreamDetail(msgspec.Struct):
 
 
 class PublishResult(msgspec.Struct):
+    """Ack for a durable append. Materialization is micro-batched: a flusher task
+    coalesces publishes into one warehouse write moments later — poll the stream's
+    ``watermark`` (GET /streams/{name}) to observe it land."""
+
     accepted: int
     deduplicated: int
     last_offset: int | None
-    materialized: int  # rows flushed to the warehouse in this request
     quarantined: int = 0  # events diverted to <stream>__quarantine (quarantine mode)
 
 
@@ -421,6 +423,8 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
     async with state.apply_lock:
+        if state.streams:  # an apply must see every event the publish path has accepted
+            await flush_streams(state.streams.values(), state.stream_log, state.engine)
         plan = await diff(compiled, env, state.store, select=selected, forward_only=data.forward_only)
         breaking = plan.has_breaking_changes
         if breaking and not data.force:
@@ -540,19 +544,12 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
         await state.stream_log.append(
             shadow.name, [Event(payload={"error": error, "payload": json.dumps(row)}) for row, error in quarantined]
         )
-        async with state.apply_lock:
-            await flush_stream(shadow, state.stream_log, state.engine)
-    accepted = result.deduped.count(False) if result else 0
-    async with state.apply_lock:  # micro-batch straight through: POST -> queryable
-        materialized = await flush_stream(stream, state.stream_log, state.engine)
-    if materialized:
-        await state.store.append_event("stream.flushed", entity=name, payload={"rows": materialized})
-        await _enqueue_stream_consumers(state, stream)
+    if result or quarantined:  # durable: hand materialization to the flusher micro-batch
+        state.flush_wanted.set()
     return PublishResult(
-        accepted=accepted,
+        accepted=result.deduped.count(False) if result else 0,
         deduplicated=result.deduped.count(True) if result else 0,
         last_offset=max(result.offsets) if result and result.offsets else None,
-        materialized=materialized,
         quarantined=len(quarantined),
     )
 
@@ -617,6 +614,7 @@ def create_app(
     quack_token: str | None = None,
     scheduler: bool = False,
     scheduler_interval: float = 60.0,
+    stream_flush_interval: float = 0.05,
 ) -> Litestar:
     """Build the Litestar app for the project at ``root``.
 
@@ -649,9 +647,10 @@ def create_app(
         compiled = project.compile()
         stream_log = await project.open_stream_log()
         streams = {stream.name: stream for stream in project.streams}
+        shadows = [s for s in streams.values() if s.on_schema_drift == "quarantine"]
+        flush_targets = [*streams.values(), *(quarantine_stream(s) for s in shadows)]
         if streams:
-            shadows = [quarantine_stream(s) for s in streams.values() if s.on_schema_drift == "quarantine"]
-            await ensure_stream_tables([*streams.values(), *shadows], engine)
+            await ensure_stream_tables(flush_targets, engine)
         app.state.compiled = compiled
         app.state.lineage = column_lineage(compiled)  # whole-project qualify: compute once, not per request
         app.state.store = store
@@ -662,6 +661,24 @@ def create_app(
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
         app.state.streams = streams
         app.state.stream_log = stream_log
+        app.state.flush_wanted = asyncio.Event()
+
+        async def flusher_loop() -> None:
+            """Micro-batch materializer: publishes signal, this coalesces everything
+            appended since the last flush into one warehouse write."""
+            while True:
+                await app.state.flush_wanted.wait()
+                await asyncio.sleep(stream_flush_interval)  # let a burst pile up behind one write
+                app.state.flush_wanted.clear()
+                async with app.state.apply_lock:
+                    flushed = await flush_streams(flush_targets, stream_log, engine)
+                for stream_name, rows in flushed.items():
+                    await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})
+                    if stream_name in streams:
+                        await _enqueue_stream_consumers(app.state, streams[stream_name])
+
+        if streams:
+            app.state.flush_wanted.set()  # catch up anything durable but unflushed at last shutdown
 
         async def scheduler_loop() -> None:
             trigger_engine = TriggerEngine(build_triggers(compiled), store)
@@ -669,22 +686,24 @@ def create_app(
                 await trigger_engine.tick(datetime.now())
                 async with app.state.apply_lock:  # one warehouse writer at a time
                     await drain(store, compiled, engines=engines, environment=environment, base_path=project.root)
-                if streams:  # catch up anything the publish path didn't flush
-                    async with app.state.apply_lock:
-                        flushed = await flush_streams(streams.values(), stream_log, engine)
-                    for stream_name in flushed:
-                        await _enqueue_stream_consumers(app.state, streams[stream_name])
+                if streams:
+                    app.state.flush_wanted.set()  # catch up anything the flusher hasn't seen
                     await sweep_streams(streams.values(), stream_log, engine)  # apply retention
                 await asyncio.sleep(scheduler_interval)
 
+        flusher_task = asyncio.create_task(flusher_loop()) if streams else None
         loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None
         try:
             yield
         finally:
-            if loop_task is not None:
-                loop_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await loop_task
+            for task in (loop_task, flusher_task):
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+            if streams:  # clean shutdown leaves nothing durable-but-unflushed behind
+                async with app.state.apply_lock:
+                    await flush_streams(flush_targets, stream_log, engine)
             await stream_log.close()
             await store.close()
             engines.close()

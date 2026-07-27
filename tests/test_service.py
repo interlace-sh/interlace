@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import shutil
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,24 @@ from interlace.service.app import create_app
 pytestmark = pytest.mark.unit
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
+
+
+def _wait_for(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+    """Publishing is durable immediately but materializes via a micro-batch flusher."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition not met within timeout")
+
+
+def _drained(client: TestClient, name: str) -> Callable[[], bool]:
+    def check() -> bool:
+        detail = client.get(f"/streams/{name}").json()
+        return bool(detail["head"]) and detail["watermark"] == detail["head"]
+
+    return check
 
 
 def _make_project(tmp_path: Path) -> Path:
@@ -180,15 +199,15 @@ def test_stream_publish_and_inspect(tmp_path: Path) -> None:
         assert [(s["name"], s["head"], s["watermark"]) for s in streams] == [("clicks", 0, 0)]
 
         one = client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0}).json()
-        assert one == {"accepted": 1, "deduplicated": 0, "last_offset": 1, "materialized": 1, "quarantined": 0}
+        assert one == {"accepted": 1, "deduplicated": 0, "last_offset": 1, "quarantined": 0}
 
         batch = client.post(
             "/streams/clicks",
             json=[{"event_id": "e1", "amount": 5.0}, {"event_id": "e2", "amount": 7.5}],  # e1 = retry
         ).json()
         assert batch["accepted"] == 1 and batch["deduplicated"] == 1
-        assert batch["materialized"] == 1  # only the new event reaches the warehouse
 
+        _wait_for(_drained(client, "clicks"))  # the micro-batch flusher lands both events
         detail = client.get("/streams/clicks").json()
         assert detail["head"] == 2 and detail["watermark"] == 2  # durable and materialized
         assert detail["table"] == "streams.clicks"
@@ -196,7 +215,7 @@ def test_stream_publish_and_inspect(tmp_path: Path) -> None:
 
         assert client.post("/streams/clicks", json={"event_id": "e3", "nope": 1}).status_code == 400
         assert client.post("/streams/ghost", json={}).status_code == 404
-        assert any(e["type"] == "stream.flushed" for e in client.get("/events").json())
+        _wait_for(lambda: any(e["type"] == "stream.flushed" for e in client.get("/events").json()))
 
 
 def test_stream_evolve_mode_over_http(tmp_path: Path) -> None:
@@ -209,11 +228,12 @@ def test_stream_evolve_mode_over_http(tmp_path: Path) -> None:
     with TestClient(app=create_app(project_dir, "dev")) as client:
         assert client.get("/streams").json()[0]["on_schema_drift"] == "evolve"
         first = client.post("/streams/signals", json={"id": "a"}).json()
-        assert first["materialized"] == 1
+        assert first["accepted"] == 1
 
         drifted = client.post("/streams/signals", json={"id": "b", "region": "eu", "score": 9}).json()
-        assert drifted["materialized"] == 1  # new fields became columns, not errors
+        assert drifted["accepted"] == 1  # new fields became columns, not errors
 
+        _wait_for(_drained(client, "signals"))  # drift evolved the table rather than erroring
         detail = client.get("/streams/signals").json()
         assert detail["recent"][-1]["region"] == "eu"
 
@@ -235,8 +255,8 @@ def test_stream_quarantine_mode_over_http(tmp_path: Path) -> None:
             ],
         ).json()
         assert result["accepted"] == 1 and result["quarantined"] == 2
-        assert result["materialized"] == 1
 
+        _wait_for(_drained(client, "orders"))
         detail = client.get("/streams/orders").json()
         assert detail["head"] == 1 and detail["watermark"] == 1  # only the good event flowed
 
@@ -253,15 +273,17 @@ def test_stream_flush_enqueues_consumer_models(tmp_path: Path) -> None:
 
     with TestClient(app=create_app(project_dir, "dev")) as client:
         client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0})
+        _wait_for(lambda: len(client.get("/runs").json()) == 1)  # flush enqueues after materializing
         runs = client.get("/runs").json()
         assert len(runs) == 1
         assert runs[0]["flow_selector"] == ["click_report", "click_totals"]  # reader + its downstream
 
-        client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0})  # dupe: no flush
+        client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0})  # dupe: nothing to flush
+        _wait_for(_drained(client, "clicks"))
         assert len(client.get("/runs").json()) == 1  # nothing new enqueued
 
         client.post("/streams/clicks", json={"event_id": "e2", "amount": 1.0})  # new data: new run
-        assert len(client.get("/runs").json()) == 2
+        _wait_for(lambda: len(client.get("/runs").json()) == 2)
 
 
 def test_combined_daemon_executes_enqueued_runs(tmp_path: Path) -> None:

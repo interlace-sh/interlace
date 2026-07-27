@@ -484,8 +484,10 @@ schema-validated (``on_schema_drift: reject``; extra fields/wrong types → 400,
 durable before the 200, deduplicated on retry. The materializer flushes micro-batches into
 ``streams.<name>`` (declared fields + ``_offset``/``_ingested_at``) with the watermark committed
 **in the same warehouse transaction** as the data — exactly-once without coordinating with the
-log; SQL models just ``FROM streams.<name>``. Publish flushes inline (POST → queryable in one
-request); the combined daemon's loop catches up any residue. A flush **triggers the models
+log; SQL models just ``FROM streams.<name>``. Publish only appends (durable ack, no warehouse
+work on the hot path); a signal-driven flusher task coalesces publishes into one warehouse
+write moments later (``stream_flush_interval``, 50 ms default), applies flush pending events
+before planning, and a clean shutdown drains the residue. A flush **triggers the models
 that read the stream** (plus their downstream closure) through the durable run queue, with the
 watermark as the idempotency key — repeated flushes debounce, new data re-enqueues.
 

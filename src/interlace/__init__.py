@@ -11,14 +11,13 @@ This package is under active greenfield construction; the public surface is the
 from __future__ import annotations
 
 from interlace.dsl.decorators import check, model, stream
-from interlace.ir.relation import EngineRef, SqlRelation, StreamRelation, TableRef
+from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 
 __version__ = "2.0.0a1"
 
 __all__ = [
     "EngineRef",
     "SqlRelation",
-    "StreamRelation",
     "TableRef",
     "__version__",
     "check",

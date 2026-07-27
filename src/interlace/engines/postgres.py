@@ -29,12 +29,7 @@ from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
 _POSTGRES_CAPS = EngineCaps(
-    supports_merge=True,  # PG 15+; strategies still use portable DELETE+INSERT
-    supports_clone=False,
-    supports_qualify=True,
     supports_create_or_replace=False,  # no CREATE OR REPLACE TABLE -> DROP+CREATE fallback
-    supports_arrow_ingest=True,  # adbc_ingest
-    supports_attach=False,
     supports_star_exclude=False,  # no SELECT * EXCLUDE -> scd_type_2 unsupported for now
 )
 
@@ -99,7 +94,7 @@ class PostgresAdapter(EngineAdapter):
     # --- sync workers (one connection; ADBC is synchronous) ------------------
 
     def _table_sql(self, table: TableRef) -> str:
-        return exp.table_(table.name, db=table.schema, catalog=table.catalog).sql(dialect=self.dialect)
+        return table.to_expr().sql(dialect=self.dialect)
 
     def _execute_sync(self, sql: str) -> None:
         with self._lock, self._conn.cursor() as cur:

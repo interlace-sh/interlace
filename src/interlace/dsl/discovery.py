@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from interlace.checks.spec import parse_checks
-from interlace.dsl.decorators import _KINDS, _MATERIALISATIONS, REGISTRY, ModelDef, _as_columns, _as_export, _as_tuple
+from interlace.dsl.decorators import _MATERIALISATIONS, REGISTRY, ModelDef, _as_columns, _as_export, _as_tuple
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError
 
@@ -40,9 +40,6 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
     materialise = config.get("materialise", "table")
     if materialise not in _MATERIALISATIONS:
         raise DefinitionError(f"unknown materialise {materialise!r}", details={"model": default_name})
-    kind = config.get("kind", "batch")
-    if kind not in _KINDS:
-        raise DefinitionError(f"unknown kind {kind!r}", details={"model": default_name})
     return ModelDef(
         name=config.get("name", default_name),
         sql=sql,
@@ -52,7 +49,6 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         dialect=config.get("dialect"),  # None → compile fills from engine dialect
         engine=config.get("engine"),
         depends_on=_as_tuple(config.get("depends_on") or ()),
-        kind=kind,
         interval=config.get("interval"),
         time_column=config.get("time_column"),
         tags=_as_tuple(config.get("tags") or ()),

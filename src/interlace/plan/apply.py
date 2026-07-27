@@ -84,14 +84,14 @@ async def _merge_python_output(
     """
     stage = replace(target, name=f"{target.name}__stage")
     await engine.load(stage, reader, "create")
-    stage_table = exp.table_(stage.name, db=stage.schema, catalog=stage.catalog)
+    stage_table = stage.to_expr()
 
     source: exp.Query = exp.select("*").from_(stage_table.copy())
     pre_statements: list[exp.Expression] = []
     if exists:  # align the stage to the target: new columns, NULL-fill vanished, type drift
         target_columns = await engine.describe(target)
         stage_columns = await engine.describe(stage)
-        target_expr = exp.table_(target.name, db=target.schema, catalog=target.catalog)
+        target_expr = target.to_expr()
         for column, dtype in stage_columns.items():
             if column not in target_columns:
                 pre_statements.append(
@@ -176,9 +176,7 @@ async def _stage_cross_engine_inputs(
                 via = "attach"  # federated CTAS: no Python hop at all
             else:
                 source_engine = registry.require(upstream.engine, model=dep)
-                reader = await source_engine.fetch(
-                    exp.select("*").from_(exp.table_(origin.name, db=origin.schema, catalog=origin.catalog))
-                )
+                reader = await source_engine.fetch(exp.select("*").from_(origin.to_expr()))
                 await target.load(stage, reader, "create")
             staged.add(key)
             result.transfers.append(f"{dep}: {upstream.engine} -> {model.engine} ({stage.schema}.{stage.name}, {via})")
@@ -216,10 +214,10 @@ async def _seed_history(engine: EngineAdapter, source: TableRef, target: TableRe
     one. Idempotent (IF NOT EXISTS), so a crashed apply re-seeds harmlessly; the old
     table is untouched and stays the rollback until gc reclaims it."""
     await engine.create_schema(target.schema)
-    source_expr = exp.table_(source.name, db=source.schema, catalog=source.catalog)
+    source_expr = source.to_expr()
     await engine.execute(
         exp.Create(
-            this=exp.table_(target.name, db=target.schema, catalog=target.catalog),
+            this=target.to_expr(),
             kind="TABLE",
             exists=True,
             expression=exp.select("*").from_(source_expr),

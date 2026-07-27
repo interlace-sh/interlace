@@ -437,8 +437,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
             result = await apply_plan(
                 plan,
                 compiled=compiled,
-                engines=getattr(state, "engines", None) or state.engine,
-                engine=state.engine if not getattr(state, "engines", None) else None,
+                engines=state.engines,
                 state=state.store,
                 base_path=state.root,
             )
@@ -566,14 +565,7 @@ async def post_gc(state: State, data: GcRequest | None = None) -> GcResponse:
     except ValueError as exc:
         raise ClientException(detail=str(exc)) from exc
     async with state.apply_lock:
-        engines = getattr(state, "engines", None)
-        result = await run_gc(
-            state.store,
-            engine=None if engines else state.engine,
-            engines=engines,
-            grace=grace,
-            dry_run=request.dry_run,
-        )
+        result = await run_gc(state.store, engines=state.engines, grace=grace, dry_run=request.dry_run)
     if result.removed_snapshots and not request.dry_run:
         await state.store.append_event(
             "gc.finished",

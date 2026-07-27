@@ -24,12 +24,7 @@ from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode
 from interlace.ir.relation import TableRef
 
 _DUCKDB_CAPS = EngineCaps(
-    supports_merge=True,  # MERGE INTO verified on DuckDB >= 1.3
-    supports_clone=False,
-    supports_qualify=True,
     supports_create_or_replace=True,
-    supports_arrow_ingest=True,
-    supports_attach=True,
     supports_star_exclude=True,
 )
 
@@ -128,7 +123,7 @@ class DuckDBAdapter(EngineAdapter):
     # --- identifier helpers -------------------------------------------------
 
     def _table_sql(self, table: TableRef) -> str:
-        return exp.table_(table.name, db=table.schema, catalog=table.catalog).sql(dialect=self.dialect)
+        return table.to_expr().sql(dialect=self.dialect)
 
     # --- EngineAdapter ------------------------------------------------------
 

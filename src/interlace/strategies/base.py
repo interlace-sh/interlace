@@ -21,7 +21,7 @@ from interlace.state.interval import Interval
 
 def table_expr(target: TableRef) -> exp.Table:
     """A sqlglot Table node for a target, for building DDL statements."""
-    return exp.to_table(target.qualified())
+    return target.to_expr()
 
 
 class Strategy(ABC):

@@ -52,7 +52,7 @@ async def _upstream_reader(
     if upstream.materialise == "ephemeral":  # no physical table: run its (inlined) query
         return await engine.fetch(resolve_model_query(upstream, compiled, physical))
     table = (physical or {}).get(upstream.name, upstream.physical_table)
-    return await engine.fetch(exp.select("*").from_(exp.table_(table.name, db=table.schema, catalog=table.catalog)))
+    return await engine.fetch(exp.select("*").from_(table.to_expr()))
 
 
 def _to_reader(model_name: str, result: Any) -> pa.RecordBatchReader:
@@ -85,7 +85,7 @@ def _to_reader(model_name: str, result: Any) -> pa.RecordBatchReader:
 
 
 def _table_query(table: TableRef) -> exp.Select:
-    return exp.select("*").from_(exp.table_(table.name, db=table.schema, catalog=table.catalog))
+    return exp.select("*").from_(table.to_expr())
 
 
 async def _cursor_value(model: CompiledModel, engine: EngineAdapter, previous: TableRef | None) -> Any:
@@ -96,9 +96,7 @@ async def _cursor_value(model: CompiledModel, engine: EngineAdapter, previous: T
         )
     if previous is None:
         return None
-    query = exp.select(exp.func("max", exp.column(model.cursor))).from_(
-        exp.table_(previous.name, db=previous.schema, catalog=previous.catalog)
-    )
+    query = exp.select(exp.func("max", exp.column(model.cursor))).from_(previous.to_expr())
     reader = await engine.fetch(query)
     value = reader.read_all().column(0)[0]
     return value.as_py()

@@ -2,18 +2,15 @@
 
 Every model produces a :class:`Relation`. A relation is *logical* until a sink
 forces it: a :class:`SqlRelation` carries a sqlglot AST that the owning engine
-evaluates natively (zero rows enter Python), while a :class:`StreamRelation`
-carries an Arrow ``RecordBatchReader`` for the cases where Python actually
-transforms data in bounded-memory batches.
+evaluates natively (zero rows enter Python). Python models move data as plain
+Arrow ``RecordBatchReader`` handles (see ``runtime/``), not as relations.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar, Protocol, runtime_checkable
 
-import pyarrow as pa
 from sqlglot import exp
 
 from interlace.ir.schema import ArrowSchema
@@ -26,6 +23,10 @@ class TableRef:
     schema: str
     name: str
     catalog: str | None = None
+
+    def to_expr(self) -> exp.Table:
+        """This table as a sqlglot Table node (identifier-safe, dialect-agnostic)."""
+        return exp.table_(self.name, db=self.schema, catalog=self.catalog)
 
     def qualified(self) -> str:
         parts = [p for p in (self.catalog, self.schema, self.name) if p]
@@ -68,22 +69,3 @@ class SqlRelation:
     schema: ArrowSchema
 
     plane: ClassVar[str] = "logical"
-
-
-@dataclass
-class StreamRelation:
-    """Physical plane: a single-pass, batched Arrow reader.
-
-    Produced by Python models that actually transform data (Path B in the design).
-    Sinks consume the reader directly — DuckDB registers it zero-copy; remote
-    engines bulk-ingest via ADBC.
-    """
-
-    schema: ArrowSchema
-    reader_factory: Callable[[], pa.RecordBatchReader]
-
-    plane: ClassVar[str] = "physical"
-
-    def reader(self) -> pa.RecordBatchReader:
-        """Open the batch reader. Single-pass: call once per materialisation."""
-        return self.reader_factory()

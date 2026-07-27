@@ -169,7 +169,6 @@ def compile_models(
             "materialise": definition.materialise,
             "strategy": definition.strategy,
             "key": list(definition.key),
-            "kind": definition.kind,
             "interval": definition.interval,
             "time_column": definition.time_column,
             "cursor": definition.cursor,

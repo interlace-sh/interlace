@@ -87,7 +87,7 @@ def table_export_statements(
     from interlace.strategies import FullMerge, MergeByKey  # runtime import: strategies build on ir like this module
 
     target = _target_ref(export.target)
-    table = exp.table_(target.name, db=target.schema, catalog=target.catalog)
+    table = target.to_expr()
     relation = SqlRelation(ast=query, engine=EngineRef(name=engine, dialect=dialect), schema=empty_schema())
 
     if export.mode == "merge_by_key":

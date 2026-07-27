@@ -19,7 +19,6 @@ from interlace.exports import ExportConfig
 ModelFn = Callable[..., Any]
 
 _MATERIALISATIONS = frozenset({"table", "view", "ephemeral", "incremental", "none"})
-_KINDS = frozenset({"batch", "incremental", "incremental_stream"})
 _DRIFT_MODES = frozenset({"evolve", "reject", "quarantine"})
 
 
@@ -55,7 +54,6 @@ class ModelDef:
     dialect: str | None = None
     engine: str | None = None  # named engine from config (None → project default_engine)
     depends_on: tuple[str, ...] = ()
-    kind: str = "batch"
     interval: str | None = None  # grain for incremental_by_time (e.g. "1d")
     time_column: str | None = None  # partition column for incremental_by_time
     cursor: str | None = None  # column whose max is injected into the fn's `cursor` param
@@ -129,7 +127,6 @@ def model(
     dialect: str | None = None,
     engine: str | None = None,
     depends_on: str | Sequence[str] = (),
-    kind: str = "batch",
     interval: str | None = None,
     time_column: str | None = None,
     cursor: str | None = None,
@@ -157,8 +154,6 @@ def model(
         raise DefinitionError("Python models cannot be ephemeral; ephemeral requires SQL (it is inlined as a CTE)")
     if materialise == "view":
         raise DefinitionError("Python models cannot be views; a view requires SQL the engine can evaluate")
-    if kind not in _KINDS:
-        raise DefinitionError(f"unknown kind {kind!r}; expected one of {sorted(_KINDS)}")
 
     def decorator(fn: ModelFn) -> ModelFn:
         REGISTRY.register_model(
@@ -171,7 +166,6 @@ def model(
                 dialect=dialect,
                 engine=engine,
                 depends_on=_as_tuple(depends_on),
-                kind=kind,
                 interval=interval,
                 time_column=time_column,
                 cursor=cursor,

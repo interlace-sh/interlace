@@ -77,9 +77,7 @@ async def test_describe_returns_columns_and_types(adapter: DuckDBAdapter) -> Non
 
 def test_caps_are_honest_for_duckdb(adapter: DuckDBAdapter) -> None:
     assert adapter.dialect == "duckdb"
-    assert adapter.caps.supports_merge
     assert adapter.caps.supports_create_or_replace
-    assert adapter.caps.supports_arrow_ingest
 
 
 async def test_write_paths_retry_transaction_conflicts() -> None:

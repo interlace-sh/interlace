@@ -27,12 +27,7 @@ LoadMode = Literal["create", "append"]
 class EngineCaps:
     """Feature flags that drive strategy fallbacks. Conservative defaults (all off)."""
 
-    supports_merge: bool = False
-    supports_clone: bool = False
-    supports_qualify: bool = False
     supports_create_or_replace: bool = False
-    supports_arrow_ingest: bool = False
-    supports_attach: bool = False
     supports_star_exclude: bool = False  # SELECT * EXCLUDE (...) — scd_type_2 needs it
 
 

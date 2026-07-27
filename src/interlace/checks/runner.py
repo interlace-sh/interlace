@@ -73,7 +73,7 @@ async def _run_declared(
 
 async def _run_python(check: CheckDef, engine: EngineAdapter, table: TableRef, model: str) -> CheckOutcome:
     try:
-        query = exp.select("*").from_(exp.table_(table.name, db=table.schema, catalog=table.catalog))
+        query = exp.select("*").from_(table.to_expr())
         handle = RelationHandle(model, await engine.fetch(query))
         if inspect.iscoroutinefunction(check.fn):
             result = await check.fn(handle)

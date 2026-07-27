@@ -188,9 +188,11 @@ def compile_models(
             "dialect": dialect,
         }
         query = _fingerprint_query(definition, ast)
-        local_fingerprint = data_fingerprint(query=query, strategy_config=strategy_config, upstream_fingerprints=[])
+        # render the canonical SQL once: it feeds both fingerprints and definition_sql
+        canonical = canonical_sql(query) if isinstance(query, exp.Expression) else query
+        local_fingerprint = data_fingerprint(query=canonical, strategy_config=strategy_config, upstream_fingerprints=[])
         fingerprint = data_fingerprint(
-            query=query,
+            query=canonical,
             strategy_config=strategy_config,
             upstream_fingerprints=[compiled[dep].fingerprint for dep in deps],
         )
@@ -213,7 +215,7 @@ def compile_models(
             fingerprint=fingerprint,
             local_fingerprint=local_fingerprint,
             metadata_hash=metadata_hash,
-            definition_sql=canonical_sql(ast) if ast is not None else None,
+            definition_sql=canonical if ast is not None else None,
             physical_table=_physical_table(name, fingerprint, catalog),
             materialise=definition.materialise,
             strategy=definition.strategy,

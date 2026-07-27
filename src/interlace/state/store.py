@@ -677,6 +677,15 @@ class SqliteStateStore:
             self._conn.commit()
             return int(cursor.lastrowid or 0)
 
+    async def latest_event_seq(self) -> int:
+        """The event log's current head (0 when empty) — where a live tail starts."""
+        return await asyncio.to_thread(self._latest_event_seq_sync)
+
+    def _latest_event_seq_sync(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT max(seq) FROM event_log").fetchone()
+        return int(row[0] or 0)
+
     async def read_events(self, after_seq: int = 0, limit: int = 200) -> list[dict[str, object]]:
         return await asyncio.to_thread(self._read_events_sync, after_seq, limit)
 

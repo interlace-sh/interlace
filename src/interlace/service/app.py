@@ -589,12 +589,28 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
     after = int(request.headers.get("Last-Event-ID") or 0)
 
     async def tail() -> AsyncIterator[ServerSentEventMessage]:
+        # Subscribe FIRST so nothing lands between the backlog read and the live
+        # tail (the seq guard drops anything the replay already delivered), then
+        # replay history from the store and switch to the shared broadcast.
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+        state.sse_subscribers.add(queue)
         cursor = after
-        while True:
-            for event in await state.store.read_events(cursor):
+        try:
+            while True:
+                backlog = await state.store.read_events(cursor)
+                if not backlog:
+                    break
+                for event in backlog:
+                    cursor = int(event["seq"])
+                    yield ServerSentEventMessage(data=json.dumps(event), event=str(event["type"]), id=str(cursor))
+            while True:
+                event = await queue.get()
+                if int(event["seq"]) <= cursor:
+                    continue
                 cursor = int(event["seq"])
                 yield ServerSentEventMessage(data=json.dumps(event), event=str(event["type"]), id=str(cursor))
-            await asyncio.sleep(0.5)
+        finally:
+            state.sse_subscribers.discard(queue)
 
     return ServerSentEvent(tail())
 
@@ -654,6 +670,23 @@ def create_app(
         app.state.streams = streams
         app.state.stream_log = stream_log
         app.state.flush_wanted = asyncio.Event()
+        app.state.sse_subscribers = set()
+
+        async def event_tail() -> None:
+            """One store poller feeds every SSE client — N clients, one query.
+
+            The store is polled (not hooked) because other processes — a CLI
+            apply against the same project — also append events this daemon
+            must surface.
+            """
+            cursor = await store.latest_event_seq()  # history is each client's replay, not ours
+            while True:
+                if app.state.sse_subscribers:
+                    for event in await store.read_events(cursor):
+                        cursor = int(event["seq"])  # type: ignore[call-overload]  # rows carry int seq
+                        for queue in app.state.sse_subscribers:
+                            queue.put_nowait(event)
+                await asyncio.sleep(0.5)
 
         async def flusher_loop() -> None:
             """Micro-batch materializer: publishes signal, this coalesces everything
@@ -683,12 +716,13 @@ def create_app(
                     await sweep_streams(streams.values(), stream_log, engine)  # apply retention
                 await asyncio.sleep(scheduler_interval)
 
+        tail_task = asyncio.create_task(event_tail())
         flusher_task = asyncio.create_task(flusher_loop()) if streams else None
         loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None
         try:
             yield
         finally:
-            for task in (loop_task, flusher_task):
+            for task in (loop_task, flusher_task, tail_task):
                 if task is not None:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

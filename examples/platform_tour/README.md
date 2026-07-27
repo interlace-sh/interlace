@@ -17,7 +17,7 @@ Or without the daemon (the stream table just stays empty):
 
 ```bash
 interlace apply --env dev --path .
-interlace list --path .
+interlace models --path .
 interlace lineage customer_value --columns --path .
 ```
 

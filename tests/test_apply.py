@@ -37,6 +37,41 @@ async def test_apply_builds_dependency_chain_and_env_views(env: tuple[DuckDBAdap
     assert await _rows(engine, "SELECT id, v2 FROM main.b") == [{"id": 1, "v2": 20}]
 
 
+async def test_apply_reports_progress_events(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    project = compile_models([sql_model("a", "SELECT 1 AS x"), sql_model("b", "SELECT x FROM a")])
+    events: list[tuple[str, str]] = []
+
+    await apply(
+        await diff(project, "dev", store),
+        compiled=project,
+        engine=engine,
+        state=store,
+        on_progress=lambda model, event: events.append((model, event)),
+    )
+
+    for name in ("a", "b"):
+        assert events.index((name, "start")) < events.index((name, "done"))
+    assert events.index(("a", "done")) < events.index(("b", "start"))  # b waits for its upstream
+
+
+async def test_apply_reports_failed_progress_event(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    project = compile_models([sql_model("broken", "SELECT x FROM does_not_exist_anywhere")])
+    events: list[tuple[str, str]] = []
+
+    with pytest.raises(Exception):  # noqa: B017 - any engine error; the event is what's under test
+        await apply(
+            await diff(project, "dev", store),
+            compiled=project,
+            engine=engine,
+            state=store,
+            on_progress=lambda model, event: events.append((model, event)),
+        )
+
+    assert events == [("broken", "start"), ("broken", "failed")]
+
+
 async def test_re_apply_is_a_no_op(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     models = [sql_model("a", "SELECT 1 AS x")]

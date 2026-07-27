@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -400,12 +400,15 @@ async def apply(
     state: StateStore,
     base_path: Path | None = None,
     parallelism: int = 4,
+    on_progress: Callable[[str, str], None] | None = None,
 ) -> ApplyResult:
     """Execute a plan and record the result in ``state``.
 
     Pass either a single ``engine`` (single-engine projects / tests) or an
     ``engines`` registry / mapping. Each model builds on ``model.engine``.
     ``base_path`` is the project root used to resolve relative export paths.
+    ``on_progress`` (model, event) fires on the event loop as each model's
+    build starts / finishes: events are ``"start"``, ``"done"``, ``"failed"``.
     """
     registry = as_registry(engine, engines)
     result = ApplyResult()
@@ -456,10 +459,19 @@ async def apply(
 
     async def run_model(name: str) -> None:
         async with build_slots:
-            for model_task in per_model[name]:
-                await _run_backfill(
-                    model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
-                )
+            if on_progress is not None:
+                on_progress(name, "start")
+            try:
+                for model_task in per_model[name]:
+                    await _run_backfill(
+                        model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
+                    )
+            except BaseException:
+                if on_progress is not None:
+                    on_progress(name, "failed")
+                raise
+            if on_progress is not None:
+                on_progress(name, "done")
 
     try:
         for tier in sorted(set(level.values())):

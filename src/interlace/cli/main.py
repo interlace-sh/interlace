@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from interlace.exceptions import CheckError, ConfigurationError, SelectionError
@@ -25,8 +28,39 @@ from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
 from interlace.streaming import ensure_stream_tables
 
-app = typer.Typer(no_args_is_help=True, add_completion=False, help="Python/SQL-first data platform.")
+app = typer.Typer(no_args_is_help=True, help="Python/SQL-first data platform.")
 console = Console()
+
+
+class _BuildProgress:
+    """Live per-model build rows: a row appears when a model starts, ✓/✗ when it ends.
+
+    Doubles as the ``apply(on_progress=...)`` callback; use ``.progress`` as the
+    context manager around the apply call.
+    """
+
+    def __init__(self) -> None:
+        self.progress = Progress(
+            SpinnerColumn(finished_text=" "),
+            TextColumn("{task.description}"),
+            TextColumn("{task.fields[status]}"),
+            TimeElapsedColumn(),
+            console=console,
+        )
+        self._rows: dict[str, TaskID] = {}
+
+    def __call__(self, model: str, event: str) -> None:
+        if event == "start":
+            self._rows[model] = self.progress.add_task(model, total=1, status="")
+        elif event == "done":
+            self.progress.update(self._rows[model], completed=1, status="[green]✓[/green]")
+        else:  # failed
+            self.progress.update(self._rows[model], completed=1, status="[red]✗[/red]")
+
+
+def _build_progress(plan_result: Plan) -> _BuildProgress | None:
+    """Progress display when it can render live and there is something to watch."""
+    return _BuildProgress() if console.is_terminal and plan_result.backfills else None
 
 
 def _version_callback(value: bool) -> None:
@@ -46,7 +80,13 @@ def _root(
     pass
 
 
-_ENV = typer.Option("prod", "--env", "-e", help="Target data environment (prod = the unprefixed namespace).")
+_ENV = typer.Option(
+    "prod",
+    "--env",
+    "-e",
+    envvar="INTERLACE_ENV",
+    help="Target data environment (prod = the unprefixed namespace).",
+)
 _PATH = typer.Option(Path("."), "--path", "-p", help="Project root.")
 _SELECT = typer.Option([], "--select", "-s", help="Model selectors: name, +name, name+, tag:x.")
 _START = typer.Option("", "--start", help="Window start (ISO), for incremental models.")
@@ -58,6 +98,13 @@ _FORWARD_ONLY = typer.Option(
     "forward: it is copied to the new version, the new logic applies to the copy, and checks gate "
     "before views move. Requires a shape-compatible change.",
 )
+_JSON = typer.Option(False, "--json", help="Emit JSON instead of a table (for scripts and CI).")
+
+
+def _emit_json(data: object) -> None:
+    import json
+
+    typer.echo(json.dumps(data, indent=2, default=str))
 
 
 def _render_checks(result: ApplyResult) -> None:
@@ -100,10 +147,14 @@ def init(
 
 @app.command()
 def plan(
-    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, forward_only: bool = _FORWARD_ONLY
+    environment: str = _ENV,
+    path: Path = _PATH,
+    select: list[str] = _SELECT,
+    forward_only: bool = _FORWARD_ONLY,
+    as_json: bool = _JSON,
 ) -> None:
     """Show what apply would change in an environment."""
-    asyncio.run(_plan(environment, path, select, forward_only))
+    asyncio.run(_plan(environment, path, select, forward_only, as_json))
 
 
 @app.command()
@@ -118,17 +169,45 @@ def apply(
     asyncio.run(_apply(environment, path, select, forward_only, force))
 
 
-async def _plan(environment: str, path: Path, select: list[str], forward_only: bool = False) -> None:
+async def _plan(
+    environment: str, path: Path, select: list[str], forward_only: bool = False, as_json: bool = False
+) -> None:
     project = Project.load(path)
     compiled = project.compile()
     state = await project.open_state()
     try:
-        _render(
-            await diff(compiled, environment, state, select=_selection(compiled, select), forward_only=forward_only),
-            environment,
+        result = await diff(
+            compiled, environment, state, select=_selection(compiled, select), forward_only=forward_only
         )
+        if as_json:
+            _emit_json(_plan_dict(result, environment))
+        else:
+            _render(result, environment)
     finally:
         await state.close()
+
+
+def _plan_dict(plan: Plan, environment: str) -> dict:
+    """The plan as data — mirrors the HTTP API's PlanResponse shape."""
+    reused = {snapshot.name for snapshot in plan.reuses}
+    return {
+        "environment": environment,
+        "changes": [
+            {
+                "name": change.name,
+                "change_type": change.change_type.value,
+                "category": change.category.value if change.category else None,
+                "reused": change.name in reused,
+                "previous_fingerprint": change.previous_fingerprint,
+                "new_fingerprint": change.new_fingerprint,
+            }
+            for change in plan.changes
+        ],
+        "transfers": [
+            f"{t.model}: {t.source.name} -> {t.target.name} ({t.via} -> {t.table.schema}.{t.table.name})"
+            for t in plan.transfers
+        ],
+    }
 
 
 async def _apply(
@@ -155,10 +234,17 @@ async def _apply(
             )
             console.print(f"[red]plan has breaking changes ({breaking}); re-run with --force to proceed[/red]")
             raise typer.Exit(1)
+        progress = _build_progress(plan_result)
         try:
-            result = await apply_plan(
-                plan_result, compiled=compiled, engines=engines, state=state, base_path=project.root
-            )
+            with progress.progress if progress else contextlib.nullcontext():
+                result = await apply_plan(
+                    plan_result,
+                    compiled=compiled,
+                    engines=engines,
+                    state=state,
+                    base_path=project.root,
+                    on_progress=progress,
+                )
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")
             raise typer.Exit(1) from exc
@@ -191,9 +277,19 @@ def restate(
     asyncio.run(_execute(environment, path, select, start, end, restate=True))
 
 
+def _window(value: str, flag: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        console.print(f"[red]{flag} must be an ISO timestamp (e.g. 2026-07-01T00:00:00); got {value!r}[/red]")
+        raise typer.Exit(2) from exc
+
+
 async def _execute(environment: str, path: Path, select: list[str], start: str, end: str, *, restate: bool) -> None:
-    window_start = datetime.fromisoformat(start) if start else None
-    window_end = datetime.fromisoformat(end) if end else None
+    window_start = _window(start, "--start")
+    window_end = _window(end, "--end")
     project = Project.load(path)
     compiled = project.compile()
     engines = project.open_engines()
@@ -210,10 +306,17 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
             select=_selection(compiled, select),
             restate=restate,
         )
+        progress = _build_progress(plan_result)
         try:
-            result = await apply_plan(
-                plan_result, compiled=compiled, engines=engines, state=state, base_path=project.root
-            )
+            with progress.progress if progress else contextlib.nullcontext():
+                result = await apply_plan(
+                    plan_result,
+                    compiled=compiled,
+                    engines=engines,
+                    state=state,
+                    base_path=project.root,
+                    on_progress=progress,
+                )
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")
             raise typer.Exit(1) from exc
@@ -347,12 +450,26 @@ def serve(
     )
 
 
-@app.command("list")
-def list_models(path: Path = _PATH, select: list[str] = _SELECT) -> None:
+@app.command("models")
+def list_models(path: Path = _PATH, select: list[str] = _SELECT, as_json: bool = _JSON) -> None:
     """List models with their materialisation, strategy, engine, and dependencies."""
     project = Project.load(path)
     compiled = project.compile()
     chosen = _selection(compiled, select)
+    rows: list[dict[str, Any]] = [
+        {
+            "name": name,
+            "output": "sink" if compiled.models[name].export is not None else compiled.models[name].materialise,
+            "strategy": compiled.models[name].strategy,
+            "engine": compiled.models[name].engine,
+            "depends_on": list(compiled.models[name].dependencies),
+        }
+        for name in compiled.graph.topological_sort()
+        if chosen is None or name in chosen
+    ]
+    if as_json:
+        _emit_json(rows)
+        return
     multi_engine = len({m.engine for m in compiled.models.values()}) > 1
     table = Table(title="Models")
     table.add_column("Model")
@@ -361,16 +478,15 @@ def list_models(path: Path = _PATH, select: list[str] = _SELECT) -> None:
     if multi_engine:
         table.add_column("Engine")
     table.add_column("Depends on")
-    for name in compiled.graph.topological_sort():
-        if chosen is not None and name not in chosen:
-            continue
-        model = compiled.models[name]
-        output = "sink" if model.export is not None else model.materialise
-        row = [name, output, model.strategy]
+    for row in rows:
+        cells = [row["name"], row["output"], row["strategy"]]
         if multi_engine:
-            row.append(model.engine)
-        table.add_row(*row, ", ".join(model.dependencies) or "—")
+            cells.append(row["engine"])
+        table.add_row(*cells, ", ".join(row["depends_on"]) or "—")
     console.print(table)
+
+
+app.command("list", hidden=True)(list_models)  # deprecated alias for `models`
 
 
 env_app = typer.Typer(no_args_is_help=True, help="Inspect and manage environments.")
@@ -378,9 +494,9 @@ app.add_typer(env_app, name="env")
 
 
 @env_app.command("list")
-def env_list(path: Path = _PATH) -> None:
+def env_list(path: Path = _PATH, as_json: bool = _JSON) -> None:
     """List environments: promoted models and drift against the compiled project."""
-    asyncio.run(_envs(path))
+    asyncio.run(_envs(path, as_json))
 
 
 @env_app.command("drop")
@@ -415,42 +531,55 @@ async def _env_drop(name: str, path: Path, force: bool) -> None:
         engines.close()
 
 
-async def _envs(path: Path) -> None:
+async def _envs(path: Path, as_json: bool = False) -> None:
     from interlace.plan.plan import PRODUCTION_ENV
 
     project = Project.load(path)
     compiled = project.compile()
     state = await project.open_state()
     try:
+        names = await state.list_environments()
+        rows: list[dict[str, Any]] = []
+        for name in names:
+            promoted = await state.get_environment(name)
+            drift = sum(1 for m in compiled.models.values() if promoted.get(m.name) != m.fingerprint)
+            views = "main.* (production)" if name == PRODUCTION_ENV else f"{name}__*.*"
+            rows.append({"name": name, "views": views, "models": len(promoted), "drift": drift})
+        if as_json:
+            _emit_json(rows)
+            return
+        if not names:
+            console.print("No environments promoted yet — run [bold]interlace apply[/bold].")
+            return
         table = Table(title="Environments")
         table.add_column("Environment")
         table.add_column("Views")
         table.add_column("Models")
         table.add_column("Drift")
-        names = await state.list_environments()
-        if not names:
-            console.print("No environments promoted yet — run [bold]interlace apply[/bold].")
-            return
-        for name in names:
-            promoted = await state.get_environment(name)
-            drift = sum(1 for m in compiled.models.values() if promoted.get(m.name) != m.fingerprint)
-            views = "main.* (production)" if name == PRODUCTION_ENV else f"{name}__*.*"
-            table.add_row(name, views, str(len(promoted)), str(drift) if drift else "—")
+        for row in rows:
+            table.add_row(row["name"], row["views"], str(row["models"]), str(row["drift"]) if row["drift"] else "—")
         console.print(table)
     finally:
         await state.close()
 
 
 @app.command()
-def runs(path: Path = _PATH, limit: int = typer.Option(20, "--limit", "-n", help="Rows to show.")) -> None:
+def runs(
+    path: Path = _PATH,
+    limit: int = typer.Option(20, "--limit", "-n", help="Rows to show."),
+    as_json: bool = _JSON,
+) -> None:
     """Recent runs from the durable queue (newest first)."""
-    asyncio.run(_runs(path, limit))
+    asyncio.run(_runs(path, limit, as_json))
 
 
-async def _runs(path: Path, limit: int) -> None:
+async def _runs(path: Path, limit: int, as_json: bool = False) -> None:
     project = Project.load(path)
     state = await project.open_state()
     try:
+        if as_json:
+            _emit_json(await state.list_runs(limit))
+            return
         table = Table(title="Runs")
         table.add_column("Id")
         table.add_column("State")
@@ -488,21 +617,95 @@ async def _cancel(run_id: int, path: Path) -> None:
         await state.close()
 
 
-@app.command()
-def checks(
+checks_app = typer.Typer(no_args_is_help=True, help="Run and inspect data-quality checks.")
+app.add_typer(checks_app, name="checks")
+
+
+@checks_app.command("list")
+def checks_list(
     path: Path = _PATH,
     model: str = typer.Option("", "--model", "-m", help="Filter to one model."),
     limit: int = typer.Option(20, "--limit", "-n", help="Rows to show."),
+    as_json: bool = _JSON,
 ) -> None:
     """Recent data-quality check results (newest first)."""
-    asyncio.run(_checks(path, model or None, limit))
+    asyncio.run(_checks(path, model or None, limit, as_json))
 
 
-async def _checks(path: Path, model: str | None, limit: int) -> None:
+@checks_app.command("run")
+def checks_run(environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, as_json: bool = _JSON) -> None:
+    """Run checks against an environment's promoted tables — no rebuild.
+
+    Results are recorded, so `interlace checks list` shows them. Exits 1 when
+    any error-severity check fails.
+    """
+    asyncio.run(_checks_run(environment, path, select, as_json))
+
+
+async def _checks_run(environment: str, path: Path, select: list[str], as_json: bool = False) -> None:
+    from dataclasses import asdict
+
+    from interlace.checks.runner import CheckOutcome, run_checks
+
+    project = Project.load(path)
+    compiled = project.compile()
+    chosen = _selection(compiled, select)
+    engines_registry = project.open_engines()
+    state = await project.open_state()
+    try:
+        promoted = await state.get_environment(environment)
+        if not promoted:
+            console.print(f"[red]no environment {environment!r} — run `interlace apply` first[/red]")
+            raise typer.Exit(1)
+        snapshots = await state.get_snapshots(promoted.items())
+        physical = {name: snapshot.physical_table for (name, _), snapshot in snapshots.items()}
+        outcomes: list[CheckOutcome] = []
+        skipped: list[str] = []
+        for name, model in compiled.models.items():
+            if chosen is not None and name not in chosen:
+                continue
+            if not model.checks and not compiled.python_checks.get(name):
+                continue
+            snapshot = snapshots.get((name, promoted.get(name, "")))
+            if snapshot is None:  # declared but never promoted here: nothing to check against
+                skipped.append(name)
+                continue
+            engine = engines_registry.require(model.engine, model=name)
+            results = await run_checks(
+                model, compiled, engine, snapshot.physical_table, compiled.python_checks.get(name, ()), physical
+            )
+            if results:
+                await state.record_check_results(environment, snapshot.fingerprint, results)
+            outcomes.extend(results)
+    finally:
+        await state.close()
+        engines_registry.close()
+
+    blocking = [o for o in outcomes if o.blocking]
+    if as_json:
+        _emit_json([asdict(o) for o in outcomes])
+    else:
+        colours = {"passed": "green", "failed": "red", "error": "yellow"}
+        for outcome in outcomes:
+            colour = colours.get(outcome.status, "white")
+            failures = f" ({outcome.failures} failing)" if outcome.failures else ""
+            console.print(f"[{colour}]{outcome.status:6}[/] {outcome.model}.{outcome.name}{failures}")
+        for name in skipped:
+            console.print(f"[dim]skip   {name} — not promoted in '{environment}'[/dim]")
+        passed = sum(1 for o in outcomes if o.status == "passed")
+        console.print(f"Checks: {passed}/{len(outcomes)} passed against '{environment}'.")
+    if blocking:
+        raise typer.Exit(1)
+
+
+async def _checks(path: Path, model: str | None, limit: int, as_json: bool = False) -> None:
     project = Project.load(path)
     state = await project.open_state()
     try:
         rows = await state.list_check_results(model, limit)
+        if as_json:
+            _emit_json(rows)
+            return
         table = Table(title="Check results")
         table.add_column("Model")
         table.add_column("Check")
@@ -527,23 +730,41 @@ async def _checks(path: Path, model: str | None, limit: int) -> None:
 
 
 @app.command()
-def streams(path: Path = _PATH) -> None:
+def streams(path: Path = _PATH, as_json: bool = _JSON) -> None:
     """Declared streams with their log head and warehouse watermark."""
-    asyncio.run(_streams(path))
+    asyncio.run(_streams(path, as_json))
 
 
-async def _streams(path: Path) -> None:
+async def _streams(path: Path, as_json: bool = False) -> None:
     from interlace.streaming.materializer import ensure_stream_tables, stream_watermark
 
     project = Project.load(path)
     if not project.streams:
-        console.print("No streams declared.")
+        _emit_json([]) if as_json else console.print("No streams declared.")
         return
     engines = project.open_engines()
     log = await project.open_stream_log()
     try:
         engine = engines.get()
         await ensure_stream_tables(project.streams, engine)
+        rows: list[dict[str, Any]] = []
+        for stream in project.streams:
+            head = await log.head(stream.name)
+            watermark = await stream_watermark(stream, engine)
+            rows.append(
+                {
+                    "name": stream.name,
+                    "table": f"streams.{stream.name}",
+                    "on_schema_drift": stream.on_schema_drift,
+                    "retention": stream.retention,
+                    "head": head,
+                    "watermark": watermark,
+                    "pending": max(0, head - watermark),
+                }
+            )
+        if as_json:
+            _emit_json(rows)
+            return
         table = Table(title="Streams")
         table.add_column("Stream")
         table.add_column("Table")
@@ -552,17 +773,15 @@ async def _streams(path: Path) -> None:
         table.add_column("Head")
         table.add_column("Watermark")
         table.add_column("Pending")
-        for stream in project.streams:
-            head = await log.head(stream.name)
-            watermark = await stream_watermark(stream, engine)
+        for row in rows:
             table.add_row(
-                stream.name,
-                f"streams.{stream.name}",
-                stream.on_schema_drift,
-                stream.retention or "—",
-                str(head),
-                str(watermark),
-                str(head - watermark) if head > watermark else "—",
+                row["name"],
+                row["table"],
+                row["on_schema_drift"],
+                row["retention"] or "—",
+                str(row["head"]),
+                str(row["watermark"]),
+                str(row["pending"]) if row["pending"] else "—",
             )
         console.print(table)
     finally:
@@ -571,22 +790,36 @@ async def _streams(path: Path) -> None:
 
 
 @app.command()
-def engines(path: Path = _PATH) -> None:
+def engines(path: Path = _PATH, as_json: bool = _JSON) -> None:
     """Configured execution engines (models pin to these with `engine:`)."""
     project = Project.load(path)
     configs = project.config.engine_configs()
+    rows: list[dict[str, Any]] = []
+    for name in sorted(configs):
+        cfg = configs[name]
+        database = cfg.database or ""
+        if cfg.type == "postgres" and "@" in database:  # never print credentials
+            database = "postgresql://…" + database.rsplit("@", 1)[-1]
+        rows.append(
+            {
+                "name": name,
+                "default": name == project.config.default_engine,
+                "type": cfg.type,
+                "dialect": cfg.resolved_dialect(),
+                "database": database,
+            }
+        )
+    if as_json:
+        _emit_json(rows)
+        return
     table = Table(title="Engines")
     table.add_column("Engine")
     table.add_column("Type")
     table.add_column("Dialect")
     table.add_column("Database")
-    for name in sorted(configs):
-        cfg = configs[name]
-        database = cfg.database or "—"
-        if cfg.type == "postgres" and "@" in database:  # never print credentials
-            database = "postgresql://…" + database.rsplit("@", 1)[-1]
-        marker = " (default)" if name == project.config.default_engine else ""
-        table.add_row(f"{name}{marker}", cfg.type, cfg.resolved_dialect(), database)
+    for row in rows:
+        marker = " (default)" if row["default"] else ""
+        table.add_row(f"{row['name']}{marker}", row["type"], row["dialect"], row["database"] or "—")
     console.print(table)
 
 
@@ -595,6 +828,7 @@ def lineage(
     model: str = typer.Argument(..., help="Model name."),
     path: Path = _PATH,
     columns: bool = typer.Option(False, "--columns", "-c", help="Show column-level lineage."),
+    fmt: str = typer.Option("text", "--format", "-f", help="Output format: text, json, or dot (Graphviz)."),
 ) -> None:
     """Show a model's lineage — table-level, or column-level with --columns."""
     project = Project.load(path)
@@ -602,9 +836,25 @@ def lineage(
     if model not in compiled.models:
         console.print(f"[red]unknown model: {model}[/red]")
         raise typer.Exit(1)
+    if fmt not in ("text", "json", "dot"):
+        console.print(f"[red]unknown format {fmt!r}; expected text, json, or dot[/red]")
+        raise typer.Exit(2)
+
+    upstream = sorted(compiled.graph.ancestors(model))
+    downstream = sorted(compiled.graph.descendants(model))
+    sources = column_lineage(compiled).get(model, {}) if columns else {}
+
+    if fmt == "dot":
+        typer.echo(_lineage_dot(compiled, model, upstream, downstream, sources))
+        return
+    if fmt == "json":
+        data: dict = {"model": model, "upstream": upstream, "downstream": downstream}
+        if columns:
+            data["columns"] = {out: [f"{table}.{col}" for table, col in refs] for out, refs in sources.items()}
+        _emit_json(data)
+        return
 
     if columns:
-        sources = column_lineage(compiled).get(model, {})
         console.print(f"[bold]{model}[/bold] columns")
         if not sources:
             console.print("  (column lineage unavailable)")
@@ -612,12 +862,30 @@ def lineage(
             rendered = ", ".join(f"{table}.{column}" for table, column in refs) or "—"
             console.print(f"  {output} ← {rendered}")
         return
-
-    upstream = sorted(compiled.graph.ancestors(model))
-    downstream = sorted(compiled.graph.descendants(model))
     console.print(f"[bold]{model}[/bold]")
     console.print(f"  upstream:   {', '.join(upstream) or '—'}")
     console.print(f"  downstream: {', '.join(downstream) or '—'}")
+
+
+def _lineage_dot(
+    compiled: CompiledProject,
+    model: str,
+    upstream: list[str],
+    downstream: list[str],
+    sources: dict[str, list[tuple[str, str]]],
+) -> str:
+    """The model's dependency neighbourhood as a Graphviz digraph (pipe to `dot -Tsvg`)."""
+    subgraph = {model, *upstream, *downstream}
+    lines = ["digraph lineage {", "  rankdir=LR;", f'  "{model}" [style=bold];']
+    for name in sorted(subgraph):
+        for dep in compiled.models[name].dependencies:
+            if dep in subgraph:
+                lines.append(f'  "{dep}" -> "{name}";')
+    for output, refs in sources.items():  # column edges when --columns
+        for table, column in refs:
+            lines.append(f'  "{table}.{column}" -> "{model}.{output}" [color=gray];')
+    lines.append("}")
+    return "\n".join(lines)
 
 
 apikey_app = typer.Typer(no_args_is_help=True, help="Manage HTTP API keys.")

@@ -23,19 +23,48 @@ def project(tmp_path: Path) -> Path:
     return target
 
 
-def test_list_shows_models_and_outputs(project: Path) -> None:
-    result = runner.invoke(app, ["list", "--path", str(project)])
+def test_models_shows_models_and_outputs(project: Path) -> None:
+    result = runner.invoke(app, ["models", "--path", str(project)])
     assert result.exit_code == 0, result.output
     assert "raw_events" in result.output
     assert "event_totals" in result.output
     assert "view" in result.output  # recent_clicks is a view
 
 
-def test_list_honours_selection(project: Path) -> None:
-    result = runner.invoke(app, ["list", "--path", str(project), "--select", "raw_events"])
+def test_list_is_a_hidden_alias_for_models(project: Path) -> None:
+    result = runner.invoke(app, ["list", "--path", str(project)])
+    assert result.exit_code == 0, result.output
+    assert "raw_events" in result.output
+
+
+def test_models_honours_selection(project: Path) -> None:
+    result = runner.invoke(app, ["models", "--path", str(project), "--select", "raw_events"])
     assert result.exit_code == 0, result.output
     assert "raw_events" in result.output
     assert "event_totals" not in result.output
+
+
+def test_models_json_output(project: Path) -> None:
+    import json
+
+    result = runner.invoke(app, ["models", "--path", str(project), "--json"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    by_name = {row["name"]: row for row in rows}
+    assert by_name["recent_clicks"]["output"] == "view"
+    assert "raw_events" in by_name["event_totals"]["depends_on"]
+
+
+def test_plan_json_output(project: Path) -> None:
+    import json
+
+    result = runner.invoke(app, ["plan", "--env", "prod", "--path", str(project), "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["environment"] == "prod"
+    changes = {c["name"]: c for c in data["changes"]}
+    assert changes["event_totals"]["change_type"] == "added"
+    assert changes["event_totals"]["new_fingerprint"]
 
 
 def test_lineage_shows_upstream_and_downstream(project: Path) -> None:
@@ -43,6 +72,13 @@ def test_lineage_shows_upstream_and_downstream(project: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "raw_events" in result.output  # upstream
     assert "top_kind" in result.output  # downstream
+
+
+def test_lineage_dot_output(project: Path) -> None:
+    result = runner.invoke(app, ["lineage", "event_totals", "--path", str(project), "--format", "dot"])
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith("digraph lineage {")
+    assert '"raw_events" -> "event_totals"' in result.output
 
 
 def test_lineage_unknown_model_errors(project: Path) -> None:
@@ -71,7 +107,7 @@ def test_envs_runs_checks_engines_streams_commands(tmp_path: Path) -> None:
     run("apply")  # default env: production, unprefixed views
     envs_out = run("env", "list")
     assert "prod" in envs_out and "main.* (production)" in envs_out
-    assert "not_null_x" in run("checks")
+    assert "not_null_x" in run("checks", "list")
     assert "clicks" in run("streams")
     engines_out = run("engines")
     assert "default" in engines_out and "side" in engines_out
@@ -85,3 +121,37 @@ def test_envs_runs_checks_engines_streams_commands(tmp_path: Path) -> None:
     assert "dev" not in run("env", "list").replace("dev__", "")  # row gone (ignore view-name column)
     guarded = runner.invoke(app, ["env", "drop", "prod", "--path", str(project)])
     assert guarded.exit_code == 1 and "production" in guarded.output
+
+
+def test_checks_run_fails_on_blocking_check(tmp_path: Path) -> None:
+    """checks run exits 1 when an error-severity check fails against the promoted data."""
+    import json
+
+    project = tmp_path / "proj"
+    (project / "models").mkdir(parents=True)
+    (project / "interlace.yaml").write_text("name: gate\ndatabase: wh.duckdb\n")  # promoted tables must persist
+    model = project / "models" / "m.sql"
+    model.write_text("/* interlace: {checks: [{accepted_values: {column: x, values: [1]}}]} */\nSELECT 1 AS x")
+    assert runner.invoke(app, ["apply", "--path", str(project)]).exit_code == 0
+
+    passing = runner.invoke(app, ["checks", "run", "--path", str(project)])
+    assert passing.exit_code == 0, passing.output
+    assert "1/1 passed" in passing.output
+
+    # tighten the check so the SAME promoted data now fails it — no rebuild involved
+    model.write_text("/* interlace: {checks: [{accepted_values: {column: x, values: [2]}}]} */\nSELECT 1 AS x")
+    failing = runner.invoke(app, ["checks", "run", "--path", str(project)])
+    assert failing.exit_code == 1, failing.output
+    assert "failed" in failing.output
+
+    as_json = runner.invoke(app, ["checks", "run", "--path", str(project), "--json"])
+    outcomes = json.loads(as_json.output)
+    assert outcomes[0]["status"] == "failed"
+
+
+def test_run_rejects_bad_iso_window(tmp_path: Path) -> None:
+    (tmp_path / "models").mkdir()
+    (tmp_path / "interlace.yaml").write_text("name: iso\ndatabase: ':memory:'\n")
+    result = runner.invoke(app, ["run", "--path", str(tmp_path), "--start", "not-a-time"])
+    assert result.exit_code == 2
+    assert "ISO timestamp" in result.output

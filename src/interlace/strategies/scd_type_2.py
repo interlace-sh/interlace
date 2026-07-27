@@ -16,8 +16,9 @@ columns (DuckDB/Snowflake/BigQuery); apply runs the statements atomically.
 History lives in the fingerprint's physical table: data changes under a stable
 definition accumulate history across ``interlace run``; a *definition* change
 mints a new fingerprint and starts a fresh table (snapshot semantics) — unless
-applied with ``--forward-only``, which inherits the previous table so history
-survives and the new logic applies going forward.
+applied with ``--forward-only``, which copies the history onto the new version
+(copy-on-write: checks still gate, the old table remains the rollback until gc)
+and the new logic applies going forward.
 """
 
 from __future__ import annotations

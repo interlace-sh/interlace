@@ -203,6 +203,22 @@ async def _attach_transfer(
     return True
 
 
+async def _seed_history(engine: EngineAdapter, source: TableRef, target: TableRef) -> None:
+    """Forward-only copy-on-write: seed the new fingerprint's table from the previous
+    one. Idempotent (IF NOT EXISTS), so a crashed apply re-seeds harmlessly; the old
+    table is untouched and stays the rollback until gc reclaims it."""
+    await engine.create_schema(target.schema)
+    source_expr = exp.table_(source.name, db=source.schema, catalog=source.catalog)
+    await engine.execute(
+        exp.Create(
+            this=exp.table_(target.name, db=target.schema, catalog=target.catalog),
+            kind="TABLE",
+            exists=True,
+            expression=exp.select("*").from_(source_expr),
+        )
+    )
+
+
 async def _gate_checks(
     model: CompiledModel,
     compiled: CompiledProject,
@@ -282,6 +298,9 @@ async def apply(
             recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
             previous = recorded_self.physical_table if recorded_self is not None else None
             await target_engine.create_schema(snapshot.physical_table.schema)
+            if task.seed_from is not None:  # forward-only: the seeded copy IS the history
+                await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
+                previous = previous or snapshot.physical_table
             if model.strategy == "full":
                 await build_python_model(
                     model, compiled, target_engine, snapshot.physical_table, physical=resolution, previous=previous
@@ -321,6 +340,8 @@ async def apply(
         strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
 
         await target_engine.create_schema(snapshot.physical_table.schema)
+        if task.seed_from is not None:  # forward-only: history moves onto the new table first
+            await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
         statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, task.interval)
         await target_engine.execute_all(statements)
         if model.columns:  # validate the built schema against the contract before recording it

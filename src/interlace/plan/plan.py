@@ -48,6 +48,10 @@ class BackfillTask:
 
     snapshot: Snapshot
     interval: Interval | None = None  # None = full refresh (non-incremental models)
+    # Forward-only: copy this table into the snapshot's (new) physical table before
+    # the strategy runs — history moves to the new fingerprint, the old table stays
+    # as the rollback until gc.
+    seed_from: TableRef | None = None
 
 
 @dataclass(frozen=True)
@@ -113,12 +117,14 @@ def env_view(environment: str, model_name: str) -> TableRef:
     return TableRef(schema=f"{prefix}{schema or 'main'}", name=base)
 
 
-def schedule_build(plan: Plan, model: CompiledModel, snapshot: Snapshot, environment: str) -> None:
+def schedule_build(
+    plan: Plan, model: CompiledModel, snapshot: Snapshot, environment: str, *, seed_from: TableRef | None = None
+) -> None:
     """Add the right tasks for a model: ephemeral builds nothing; a sink builds but
     gets no view; a table/view builds and is repointed by an environment view."""
     if model.materialise == "ephemeral":  # inlined into consumers, never built
         return
-    plan.backfills.append(BackfillTask(snapshot=snapshot))
+    plan.backfills.append(BackfillTask(snapshot=snapshot, seed_from=seed_from))
     if model.export is None and model.materialise in ("table", "view"):  # sinks have no view
         # the snapshot's table, not the fingerprint-derived one: a forward-only
         # snapshot builds into (and the view must point at) its inherited table

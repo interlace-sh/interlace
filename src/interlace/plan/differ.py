@@ -179,19 +179,24 @@ async def diff(
 
         if model.name not in selected:
             continue
-        inherit = forward_only and rebuild and model.strategy in _HISTORY_STRATEGIES and previous is not None
+        inherit = (
+            forward_only
+            and rebuild
+            and model.strategy in _HISTORY_STRATEGIES
+            and previous is not None
+            and previous.engine == model.engine  # history can't be copied across engines
+        )
         if inherit:
             category = ChangeCategory.FORWARD_ONLY
         plan.changes.append(
             ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint, added)
         )
-        if inherit:  # keep history: new fingerprint over the previous physical table
+        if inherit:  # copy-on-write: history seeds the NEW table; checks gate before views move
             snapshot = replace(
                 snapshot_of(model, ChangeCategory.FORWARD_ONLY),
-                physical_table=previous.physical_table,  # type: ignore[union-attr]
                 intervals=previous.intervals,  # type: ignore[union-attr]
             )
-            schedule_build(plan, model, snapshot, environment)
+            schedule_build(plan, model, snapshot, environment, seed_from=previous.physical_table)  # type: ignore[union-attr]
         elif rebuild:
             schedule_build(plan, model, snapshot_of(model, category), environment)
         else:

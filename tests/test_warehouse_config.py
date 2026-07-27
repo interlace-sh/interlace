@@ -149,3 +149,55 @@ async def test_file_catalog_with_custom_data_path(tmp_path: Path) -> None:
         engine.close()
     assert (tmp_path / "catalog.ducklake").exists()
     assert any(data_dir.rglob("*.parquet"))  # data landed under the custom data_path
+
+
+# --- secrets are instance-wide: applied once, never re-raced per cursor ----------
+
+
+async def test_secrets_survive_concurrent_cursors(tmp_path: Path) -> None:
+    """Regression: session-init used to re-run CREATE OR REPLACE SECRET on every new
+    cursor; under parallel backfills concurrent cursors hit DuckDB's 'catalog
+    write-write conflict on alter'. Secrets are instance-wide — once is enough."""
+    import asyncio
+
+    engine = DuckDBAdapter.connect_ducklake(
+        f"{tmp_path}/wh.ducklake",
+        secrets=["CREATE OR REPLACE SECRET core_s3 (TYPE S3, KEY_ID 'k', SECRET 's')"],
+    )
+    try:
+        # every cursor still sees the secret (it was never per-session state)...
+        reader = await engine.fetch_sql("SELECT name FROM duckdb_secrets()")
+        assert [row["name"] for row in reader.read_all().to_pylist()] == ["core_s3"]
+        # ...and a storm of concurrent cursor-opening statements never conflicts
+        await asyncio.gather(*(engine.execute_sql(f"CREATE OR REPLACE TABLE t{i % 4} AS SELECT 1") for i in range(64)))
+    finally:
+        engine.close()
+
+
+# --- postgres DSNs must name their host (no silent localhost:5432) ---------------
+
+
+def test_postgres_engine_requires_explicit_host(tmp_path: Path) -> None:
+    from interlace.exceptions import ConfigurationError
+
+    (tmp_path / "interlace.yaml").write_text(
+        "name: pg\nengines:\n  warehouse:\n    type: postgres\n    database: 'dbname=analytics user=writer'\n"
+    )
+    with pytest.raises(ConfigurationError, match="names no host"):
+        Project.load(tmp_path).open_engines().require("warehouse")
+
+
+def test_postgres_attach_requires_explicit_host(tmp_path: Path) -> None:
+    from interlace.exceptions import ConfigurationError
+
+    (tmp_path / "interlace.yaml").write_text("name: pg\ndatabase: ':memory:'\nattach:\n  crm: 'postgres:dbname=crm'\n")
+    with pytest.raises(ConfigurationError, match="names no host"):
+        Project.load(tmp_path).open_engine()
+
+
+def test_explicit_pg_hosts_pass_the_guard() -> None:
+    from interlace.project import _require_explicit_pg_host
+
+    _require_explicit_pg_host("postgresql://writer@db.internal:5455/analytics", "t")
+    _require_explicit_pg_host("dbname=analytics host=db.internal port=5455", "t")
+    _require_explicit_pg_host("postgres:dbname=crm host=/var/run/postgresql", "t")  # deliberate unix socket

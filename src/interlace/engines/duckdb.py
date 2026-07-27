@@ -58,9 +58,9 @@ class DuckDBAdapter(EngineAdapter):
 
     def __init__(self, connection: duckdb.DuckDBPyConnection, session_init: Sequence[str] = ()) -> None:
         self._conn = connection
-        # Statements re-applied on every cursor: cursors are NEW DuckDB sessions, so
-        # per-session state (LOAD, temporary secrets, USE) set on the main connection
-        # does not carry over. Empty for plain databases.
+        # Statements re-applied on every cursor — SESSION-LOCAL state only (USE).
+        # Anything instance-wide (LOAD, secrets, ATTACH) belongs at connect time:
+        # re-running catalog writes here races across concurrent cursors.
         self._session_init = list(session_init)
         self._attached: list[str] = []  # aliases to DETACH on close (see close())
 
@@ -109,10 +109,11 @@ class DuckDBAdapter(EngineAdapter):
         alias_sql = exp.to_identifier(alias).sql("duckdb")
         conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {alias_sql}{options_sql}")
         conn.execute(f"USE {alias_sql}")
-        # Cursors are fresh sessions: re-apply the per-session state on each one
-        # (LOAD, temporary secrets, default catalog). INSTALL/ATTACH are shared.
-        session_init = [f"LOAD {e}" for e in extensions] + list(secrets) + [f"USE {alias_sql}"]
-        return cls(conn, session_init=session_init)
+        # LOAD, secrets, and ATTACH are all instance-wide — they carry into every
+        # cursor and must run ONCE (re-running CREATE OR REPLACE SECRET per cursor
+        # races: concurrent cursors hit "catalog write-write conflict on alter").
+        # Only the default catalog is session state, so that is all a cursor re-applies.
+        return cls(conn, session_init=[f"USE {alias_sql}"])
 
     def close(self) -> None:
         # DETACH long-lived attaches first: DuckLake leaks its DatabaseInstance when

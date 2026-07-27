@@ -24,6 +24,28 @@ from interlace.state.store import SqliteStateStore
 from interlace.streaming.log import SqliteStreamLog
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_PG_HOST = re.compile(r"\bhost(addr)?\s*=")
+
+
+def _require_explicit_pg_host(dsn: str, context: str) -> None:
+    """Fail fast when a Postgres DSN names no host: libpq would silently fall back
+    to its defaults — the local socket / localhost:5432 — i.e. whichever Postgres
+    happens to live on this machine. A pipeline that writes must name its target
+    (``host=`` explicitly covers the deliberate unix-socket case too)."""
+    from urllib.parse import urlparse
+
+    bare = dsn.removeprefix("postgres:") if not dsn.startswith(("postgres://", "postgresql://")) else dsn
+    if bare.startswith(("postgresql://", "postgres://")):
+        if urlparse(bare).hostname:
+            return
+    elif _PG_HOST.search(bare):
+        return
+    raise ConfigurationError(
+        f"{context}: the Postgres DSN names no host, so it would silently connect to whatever "
+        f"Postgres lives on libpq's default (local socket / localhost:5432). Name the target: "
+        f"add host= and port=, or use a full postgresql://user@host:port/dbname URI.",
+        details={"context": context},  # never echo the DSN: it may carry credentials
+    )
 
 
 def _secret_sql(name: str, secret: SecretConfig) -> str:
@@ -140,6 +162,7 @@ class Project:
                     f"engine {name!r}: postgres needs a DSN in 'database' (postgresql://...)",
                     details={"engine": name},
                 )
+            _require_explicit_pg_host(cfg.database, f"engine {name!r}")
             return PostgresAdapter.connect(cfg.database)
         if cfg.type not in ("duckdb", "ducklake", "quack"):
             raise ConfigurationError(
@@ -157,6 +180,8 @@ class Project:
         if cfg.type == "ducklake" or database.startswith("ducklake:"):
             catalog = database.removeprefix("ducklake:")
             remote_catalog = catalog.startswith(("postgres:", "mysql:", "sqlite:"))
+            if catalog.startswith("postgres:"):
+                _require_explicit_pg_host(catalog, f"engine {name!r} (ducklake catalog)")
             if not remote_catalog and not Path(catalog).is_absolute():
                 resolved = self.root / catalog
                 resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -174,7 +199,9 @@ class Project:
 
         for alias, uri in cfg.attach.items():
             target = uri
-            if "://" not in uri and ":" not in uri.split("/")[0] and not Path(uri).is_absolute():
+            if uri.startswith(("postgres:", "postgres://", "postgresql://")):
+                _require_explicit_pg_host(uri, f"attach {alias!r}")
+            elif "://" not in uri and ":" not in uri.split("/")[0] and not Path(uri).is_absolute():
                 target = str(self.root / uri)
             engine.attach(alias, target)
         return engine

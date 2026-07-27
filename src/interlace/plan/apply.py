@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pyarrow as pa
+import sqlglot
 from sqlglot import exp
 
 from interlace.checks.runner import CheckOutcome, run_checks
@@ -253,6 +254,22 @@ async def _gate_checks(
         raise CheckError(f"checks failed — promotion blocked: {details}")
 
 
+def _check_references(model: CompiledModel, compiled: CompiledProject) -> set[str]:
+    """Other models a check reads (``relationships`` targets, tables in ``sql``
+    checks): they must be built before this model's checks can run."""
+    refs: set[str] = set()
+    for spec in model.checks:
+        if spec.type == "relationships":
+            to = str(spec.params.get("to", ""))
+            if to in compiled.models:
+                refs.add(to)
+        elif spec.type == "sql":
+            with contextlib.suppress(Exception):
+                parsed = sqlglot.parse_one(str(spec.params.get("query", "")))
+                refs.update(t.name for t in parsed.find_all(exp.Table) if t.name in compiled.models)
+    return refs
+
+
 async def _run_backfill(
     task: BackfillTask,
     plan: Plan,
@@ -386,13 +403,23 @@ async def apply(
         per_model.setdefault(task.snapshot.name, []).append(task)
     # Depth counts in-plan ancestors and propagates through models that aren't
     # building (ephemeral, reused): a Python model over an ephemeral view of a
-    # building table must still wait for that table.
-    depth: dict[str, int] = {}
-    for compiled_model in compiled.ordered():
-        depth[compiled_model.name] = max(
-            (depth[dep] + (1 if dep in per_model else 0) for dep in compiled_model.dependencies if dep in depth),
-            default=0,
-        )
+    # building table must still wait for that table. Checks that read *other*
+    # models (relationships, sql) add scheduling edges the DAG doesn't have, and
+    # may point "backwards" — so relax to a fixed point instead of one topo pass.
+    scheduling_deps = {
+        model.name: (set(model.dependencies) | _check_references(model, compiled)) - {model.name}
+        for model in compiled.models.values()
+    }
+    depth: dict[str, int] = dict.fromkeys(compiled.models, 0)
+    for _ in range(len(depth)):
+        settled = True
+        for name, deps in scheduling_deps.items():
+            required = max((depth[dep] + (1 if dep in per_model else 0) for dep in deps), default=0)
+            if required > depth[name]:
+                depth[name] = required
+                settled = False
+        if settled:
+            break
     level = {name: depth[name] for name in per_model}
     build_slots = asyncio.Semaphore(max(1, parallelism))
 

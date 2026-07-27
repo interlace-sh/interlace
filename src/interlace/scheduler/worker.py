@@ -104,7 +104,9 @@ async def _execute_run(
     async def execute() -> dict[str, object]:
         start = datetime.fromisoformat(run.partition_start) if run.partition_start else None
         end = datetime.fromisoformat(run.partition_end) if run.partition_end else None
-        plan = await run_plan(project, environment, store, start=start, end=end, select=set(run.flow_selector))
+        plan = await run_plan(
+            project, environment, store, start=start, end=end, select=set(run.flow_selector), restate=run.restate
+        )
         result = await apply(plan, compiled=project, engine=engine, engines=engines, state=store, base_path=base_path)
         return {
             "built": result.built,

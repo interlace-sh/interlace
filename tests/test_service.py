@@ -96,6 +96,25 @@ def test_create_run_rejects_bad_selector(client: TestClient) -> None:
     assert client.post("/runs", json={"selectors": ["nope"]}).status_code == 400
 
 
+def test_create_run_with_window_and_restate(client: TestClient) -> None:
+    created = client.post(
+        "/runs",
+        json={
+            "selectors": ["event_totals"],
+            "environment": "prod",
+            "start": "2026-07-01T00:00:00",
+            "end": "2026-07-02T00:00:00",
+            "restate": True,
+        },
+    ).json()
+    assert created["enqueued"] == 1
+    run = next(r for r in client.get("/runs").json() if r["flow_selector"] == ["event_totals"])
+    assert run["partition"] == ["2026-07-01T00:00:00", "2026-07-02T00:00:00"]
+    assert run["restate"] is True
+
+    assert client.post("/runs", json={"selectors": ["event_totals"], "start": "not-a-time"}).status_code == 400
+
+
 def test_events_endpoint_records_enqueue(client: TestClient) -> None:
     assert client.get("/events").json() == []  # empty to start
     client.post("/runs", json={"selectors": ["raw_events"], "environment": "prod"})

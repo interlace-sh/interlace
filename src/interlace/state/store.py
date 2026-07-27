@@ -134,6 +134,10 @@ _MIGRATIONS: list[str] = [
     CREATE INDEX idx_work_queue_state ON work_queue (state, priority DESC, id);
     CREATE INDEX idx_event_log_entity ON event_log (entity);
     """,
+    # 0009 — restate runs: reprocess the window instead of catching up
+    """
+    ALTER TABLE work_queue ADD COLUMN restate INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -150,6 +154,7 @@ class RunRecord(TypedDict):
     attempts: int
     error: str | None
     enqueued_at: str | None
+    restate: bool
 
 
 @dataclass
@@ -162,6 +167,7 @@ class QueuedRun:
     partition_end: str | None
     priority: int
     attempts: int
+    restate: bool = False
 
 
 def _now_iso() -> str:
@@ -470,19 +476,35 @@ class SqliteStateStore:
     # --- work queue ---------------------------------------------------------
 
     async def enqueue_run(
-        self, idempotency_key: str, flow_selector: list[str], partition: tuple[str, str] | None, priority: int = 0
+        self,
+        idempotency_key: str,
+        flow_selector: list[str],
+        partition: tuple[str | None, str | None] | None,
+        priority: int = 0,
+        *,
+        restate: bool = False,
     ) -> bool:
-        """Enqueue a run; returns False if an identical idempotency key is already queued."""
-        return await asyncio.to_thread(self._enqueue_run_sync, idempotency_key, flow_selector, partition, priority)
+        """Enqueue a run; returns False if an identical idempotency key is already queued.
+
+        ``restate`` reprocesses every interval in the partition window instead of
+        skipping the ones already filled (catchup)."""
+        return await asyncio.to_thread(
+            self._enqueue_run_sync, idempotency_key, flow_selector, partition, priority, restate
+        )
 
     def _enqueue_run_sync(
-        self, idempotency_key: str, flow_selector: list[str], partition: tuple[str, str] | None, priority: int
+        self,
+        idempotency_key: str,
+        flow_selector: list[str],
+        partition: tuple[str | None, str | None] | None,
+        priority: int,
+        restate: bool,
     ) -> bool:
         with self._lock:
             cursor = self._conn.execute(
                 "INSERT OR IGNORE INTO work_queue "
-                "(idempotency_key, flow_selector, partition_start, partition_end, priority, enqueued_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(idempotency_key, flow_selector, partition_start, partition_end, priority, enqueued_at, restate) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     idempotency_key or None,
                     json.dumps(flow_selector),
@@ -490,6 +512,7 @@ class SqliteStateStore:
                     partition[1] if partition else None,
                     priority,
                     _now_iso(),
+                    int(restate),
                 ),
             )
             self._conn.commit()
@@ -510,7 +533,7 @@ class SqliteStateStore:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             rows = self._conn.execute(
-                "SELECT id, flow_selector, partition_start, partition_end, priority, attempts "
+                "SELECT id, flow_selector, partition_start, partition_end, priority, attempts, restate "
                 "FROM work_queue WHERE state = 'queued' "
                 "   OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
                 "ORDER BY priority DESC, id LIMIT ?",
@@ -538,6 +561,7 @@ class SqliteStateStore:
                 partition_end=row["partition_end"],
                 priority=row["priority"],
                 attempts=row["attempts"] + 1,
+                restate=bool(row["restate"]),
             )
             for row in claimed
         ]
@@ -640,7 +664,7 @@ class SqliteStateStore:
 
     _RUN_COLUMNS = (
         "id, idempotency_key, flow_selector, partition_start, partition_end, "
-        "priority, state, attempts, error, enqueued_at"
+        "priority, state, attempts, error, enqueued_at, restate"
     )
 
     @staticmethod
@@ -656,6 +680,7 @@ class SqliteStateStore:
             attempts=row["attempts"],
             error=row["error"],
             enqueued_at=row["enqueued_at"],
+            restate=bool(row["restate"]),
         )
 
     async def list_runs(self, limit: int = 50) -> list[RunRecord]:

@@ -110,6 +110,7 @@ class RunInfo(msgspec.Struct):
     enqueued_at: str | None = None
     priority: int = 0
     partition: list[str] | None = None
+    restate: bool = False
     # how the run came to be — the enqueue key's prefix names the trigger
     # (cron: / interval: / api: / stream:)
     idempotency_key: str | None = None
@@ -118,6 +119,9 @@ class RunInfo(msgspec.Struct):
 class CreateRun(msgspec.Struct):
     selectors: list[str] = msgspec.field(default_factory=list)
     environment: str | None = None
+    start: str | None = None  # ISO timestamp: backfill window start (incremental models)
+    end: str | None = None  # ISO timestamp: backfill window end
+    restate: bool = False  # reprocess the window instead of skipping filled intervals
 
 
 class CreateRunResult(msgspec.Struct):
@@ -357,6 +361,7 @@ async def get_runs(state: State) -> list[RunInfo]:
                 enqueued_at=run["enqueued_at"],
                 priority=run["priority"],
                 partition=partition,
+                restate=run["restate"],
                 idempotency_key=run["idempotency_key"],
             )
         )
@@ -396,8 +401,17 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
     models = sorted(selected)
+    partition = None
+    if data.start or data.end:
+        from datetime import datetime
+
+        try:
+            bounds = tuple(datetime.fromisoformat(v).isoformat() if v else "" for v in (data.start, data.end))
+        except ValueError as exc:
+            raise ClientException(detail=f"start/end must be ISO timestamps: {exc}") from exc
+        partition = (bounds[0] or None, bounds[1] or None)
     key = f"api:{env}:{uuid4().hex}"
-    enqueued = await state.store.enqueue_run(key, models, None, 0)
+    enqueued = await state.store.enqueue_run(key, models, partition, 0, restate=data.restate)
     if enqueued:
         await state.store.append_event("run.enqueued", entity=key, payload={"models": models})
     return CreateRunResult(enqueued=1 if enqueued else 0, models=models)

@@ -29,6 +29,14 @@ async def _state_of(store: SqliteStateStore, run_id: int) -> dict:
     return next(r for r in await store.list_runs() if r["id"] == run_id)
 
 
+async def test_restate_flag_rides_the_queue(store: SqliteStateStore) -> None:
+    await store.enqueue_run("k-restate", ["m"], ("2026-07-01T00:00:00", "2026-07-02T00:00:00"), 0, restate=True)
+    await store.enqueue_run("k-plain", ["m"], None, 0)
+    claimed = await store.claim_runs(owner="w")
+    by_partition = {run.partition_start: run.restate for run in claimed}
+    assert by_partition == {"2026-07-01T00:00:00": True, None: False}
+
+
 # --- lease mechanics -------------------------------------------------------------
 
 

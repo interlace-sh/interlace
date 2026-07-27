@@ -215,6 +215,7 @@ class StateStore(Protocol):
 
     async def add_snapshot(self, snapshot: Snapshot) -> None: ...
     async def get_snapshot(self, name: str, fingerprint: str) -> Snapshot | None: ...
+    async def get_snapshots(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], Snapshot]: ...
     async def list_snapshots(self, name: str) -> list[Snapshot]: ...
     async def record_interval(self, name: str, fingerprint: str, interval: Interval) -> None: ...
     async def get_intervals(self, name: str, fingerprint: str) -> IntervalSet: ...
@@ -292,6 +293,34 @@ class SqliteStateStore:
                 "SELECT start_ts, end_ts FROM intervals WHERE name = ? AND fingerprint = ?", (name, fingerprint)
             ).fetchall()
         return _snapshot_from_row(row, _intervals_from_rows(interval_rows))
+
+    async def get_snapshots(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], Snapshot]:
+        """Batch-fetch snapshots by (name, fingerprint) — two queries total, not 2N."""
+        return await asyncio.to_thread(self._get_snapshots_sync, list(pairs))
+
+    def _get_snapshots_sync(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], Snapshot]:
+        if not pairs:
+            return {}
+        placeholders = ",".join(["(?,?)"] * len(pairs))
+        flat = [value for pair in pairs for value in pair]
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM snapshots WHERE (name, fingerprint) IN (VALUES {placeholders})", flat
+            ).fetchall()
+            interval_rows = self._conn.execute(
+                f"SELECT name, fingerprint, start_ts, end_ts FROM intervals "
+                f"WHERE (name, fingerprint) IN (VALUES {placeholders})",
+                flat,
+            ).fetchall()
+        intervals: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in interval_rows:
+            intervals.setdefault((row["name"], row["fingerprint"]), []).append(row)
+        return {
+            (row["name"], row["fingerprint"]): _snapshot_from_row(
+                row, _intervals_from_rows(intervals.get((row["name"], row["fingerprint"]), []))
+            )
+            for row in rows
+        }
 
     async def list_snapshots(self, name: str) -> list[Snapshot]:
         return await asyncio.to_thread(self._list_snapshots_sync, name)

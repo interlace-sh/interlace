@@ -129,6 +129,11 @@ _MIGRATIONS: list[str] = [
     ALTER TABLE work_queue ADD COLUMN lease_expires_at TEXT;
     ALTER TABLE work_queue ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
     """,
+    # 0008 — indexes for the two hot growing tables (claim scans, run timelines)
+    """
+    CREATE INDEX idx_work_queue_state ON work_queue (state, priority DESC, id);
+    CREATE INDEX idx_event_log_entity ON event_log (entity);
+    """,
 ]
 
 
@@ -238,6 +243,8 @@ class SqliteStateStore:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")  # CLI + daemon share this file: wait, don't error
+        conn.execute("PRAGMA cache_size = -65536")
         _migrate(conn)
         return conn
 
@@ -512,33 +519,55 @@ class SqliteStateStore:
             self._conn.commit()
         return "cancelling"
 
-    async def requeue_run(self, run_id: int, *, error: str) -> None:
-        """Put a failed attempt back on the queue for a durable retry."""
-        await asyncio.to_thread(self._requeue_run_sync, run_id, error)
+    async def requeue_run(self, run_id: int, *, error: str, owner: str | None = None) -> bool:
+        """Put a failed attempt back on the queue for a durable retry (fenced like
+        :meth:`finish_run` when ``owner`` is given). Returns whether it landed."""
+        return await asyncio.to_thread(self._requeue_run_sync, run_id, error, owner)
 
-    def _requeue_run_sync(self, run_id: int, error: str) -> None:
+    def _requeue_run_sync(self, run_id: int, error: str, owner: str | None) -> bool:
+        fence = "" if owner is None else " AND lease_owner = ?"
+        params: list[object] = [error, run_id]
+        if owner is not None:
+            params.append(owner)
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "UPDATE work_queue SET state = 'queued', error = ?, lease_owner = NULL, lease_expires_at = NULL "
-                "WHERE id = ?",
-                (error, run_id),
+                f"WHERE id = ?{fence}",
+                params,
             )
             self._conn.commit()
+        return cursor.rowcount > 0
 
     async def finish_run(
-        self, run_id: int, *, success: bool, error: str | None = None, status: str | None = None
-    ) -> None:
-        await asyncio.to_thread(self._finish_run_sync, run_id, success, error, status)
+        self,
+        run_id: int,
+        *,
+        success: bool,
+        error: str | None = None,
+        status: str | None = None,
+        owner: str | None = None,
+    ) -> bool:
+        """Record a terminal state. With ``owner`` set, the write is fenced: it only
+        lands while that worker still holds the lease — a starved worker whose run
+        was reclaimed cannot stomp the reclaimer's result. Returns whether it landed."""
+        return await asyncio.to_thread(self._finish_run_sync, run_id, success, error, status, owner)
 
-    def _finish_run_sync(self, run_id: int, success: bool, error: str | None, status: str | None) -> None:
+    def _finish_run_sync(
+        self, run_id: int, success: bool, error: str | None, status: str | None, owner: str | None
+    ) -> bool:
         state = status or ("succeeded" if success else "failed")
+        fence = "" if owner is None else " AND lease_owner = ?"
+        params: list[object] = [state, error, run_id]
+        if owner is not None:
+            params.append(owner)
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "UPDATE work_queue SET state = ?, error = ?, lease_owner = NULL, lease_expires_at = NULL "
-                "WHERE id = ?",
-                (state, error, run_id),
+                f"WHERE id = ?{fence}",
+                params,
             )
             self._conn.commit()
+        return cursor.rowcount > 0
 
     async def count_pending_runs(self) -> int:
         return await asyncio.to_thread(self._count_pending_runs_sync)
@@ -754,8 +783,25 @@ class SqliteStateStore:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    for script in _MIGRATIONS[version:]:
-        conn.executescript(script)
-    conn.execute(f"PRAGMA user_version = {len(_MIGRATIONS)}")
-    conn.commit()
+    """Apply pending migrations, each in its own transaction with the version bump
+    inside it — a crash can never commit DDL without advancing user_version, and
+    two processes opening a fresh database serialise on BEGIN IMMEDIATE (the loser
+    re-reads the version and skips)."""
+    while True:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version >= len(_MIGRATIONS):
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            if current != version:  # another process migrated while we waited
+                conn.execute("ROLLBACK")
+                continue
+            for statement in _MIGRATIONS[version].split(";"):
+                if statement.strip():
+                    conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {version + 1}")  # transactional in SQLite
+            conn.commit()
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise

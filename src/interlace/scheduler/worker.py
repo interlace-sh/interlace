@@ -118,21 +118,21 @@ async def _execute_run(
         done, _ = await asyncio.wait({work, watcher}, timeout=task_timeout, return_when=asyncio.FIRST_COMPLETED)
         if work in done:
             payload = work.result()  # raises the run's own error if it failed
-            await store.finish_run(run.id, success=True)
-            await store.append_event("run.succeeded", entity=str(run.id), payload=payload)
+            if await store.finish_run(run.id, success=True, owner=owner):
+                await store.append_event("run.succeeded", entity=str(run.id), payload=payload)
         elif watcher in done:  # cooperative cancellation (or lost lease)
             work.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await work
-            await store.finish_run(run.id, success=False, error="cancelled", status="cancelled")
-            await store.append_event("run.cancelled", entity=str(run.id), payload={})
+            if await store.finish_run(run.id, success=False, error="cancelled", status="cancelled", owner=owner):
+                await store.append_event("run.cancelled", entity=str(run.id), payload={})
         else:  # timeout: the attempt is abandoned; retry policy decides what's next
             work.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await work
-            await _fail_or_retry(store, run, f"timed out after {task_timeout}s", max_attempts)
+            await _fail_or_retry(store, run, f"timed out after {task_timeout}s", max_attempts, owner)
     except Exception as exc:  # a bad run must not kill the worker loop
-        await _fail_or_retry(store, run, str(exc), max_attempts)
+        await _fail_or_retry(store, run, str(exc), max_attempts, owner)
     finally:
         beat.cancel()
         watcher.cancel()
@@ -141,10 +141,12 @@ async def _execute_run(
                 await task
 
 
-async def _fail_or_retry(store: SqliteStateStore, run: QueuedRun, error: str, max_attempts: int) -> None:
+async def _fail_or_retry(store: SqliteStateStore, run: QueuedRun, error: str, max_attempts: int, owner: str) -> None:
+    # fenced: if another worker reclaimed the lease, its outcome wins — stay silent
     if run.attempts < max_attempts:
-        await store.requeue_run(run.id, error=error)
-        await store.append_event("run.retrying", entity=str(run.id), payload={"error": error, "attempt": run.attempts})
-    else:
-        await store.finish_run(run.id, success=False, error=error)
+        if await store.requeue_run(run.id, error=error, owner=owner):
+            await store.append_event(
+                "run.retrying", entity=str(run.id), payload={"error": error, "attempt": run.attempts}
+            )
+    elif await store.finish_run(run.id, success=False, error=error, owner=owner):
         await store.append_event("run.failed", entity=str(run.id), payload={"error": error})

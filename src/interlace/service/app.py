@@ -258,7 +258,7 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
     if name not in compiled.models:
         raise NotFoundException(detail=f"unknown model: {name}")
     model = compiled.models[name]
-    cols = column_lineage(compiled).get(name, {})
+    cols = state.lineage.get(name, {})
     return ModelDetail(
         name=name,
         output=_output(model),
@@ -650,6 +650,7 @@ def create_app(
             shadows = [quarantine_stream(s) for s in streams.values() if s.on_schema_drift == "quarantine"]
             await ensure_stream_tables([*streams.values(), *shadows], engine)
         app.state.compiled = compiled
+        app.state.lineage = column_lineage(compiled)  # whole-project qualify: compute once, not per request
         app.state.store = store
         app.state.engine = engine
         app.state.engines = engines
@@ -663,7 +664,8 @@ def create_app(
             trigger_engine = TriggerEngine(build_triggers(compiled), store)
             while True:
                 await trigger_engine.tick(datetime.now())
-                await drain(store, compiled, engines=engines, environment=environment, base_path=project.root)
+                async with app.state.apply_lock:  # one warehouse writer at a time
+                    await drain(store, compiled, engines=engines, environment=environment, base_path=project.root)
                 if streams:  # catch up anything the publish path didn't flush
                     async with app.state.apply_lock:
                         flushed = await flush_streams(streams.values(), stream_log, engine)

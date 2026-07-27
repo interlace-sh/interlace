@@ -84,3 +84,19 @@ def test_plan_on_empty_project_is_clean(tmp_path: Path) -> None:
     result = runner.invoke(app, ["plan", "--env", "dev", "--path", str(tmp_path)])
     assert result.exit_code == 0
     assert "No changes" in result.output
+
+
+def test_apply_blocks_breaking_changes_without_force(tmp_path: Path) -> None:
+    """The CLI enforces the same breaking-change guard as the HTTP API."""
+    (tmp_path / "models").mkdir()
+    (tmp_path / "interlace.yaml").write_text("name: guard\ndatabase: ':memory:'\n")
+    model = tmp_path / "models" / "m.sql"
+    model.write_text("SELECT 1 AS x")
+    assert runner.invoke(app, ["apply", "--path", str(tmp_path)]).exit_code == 0
+
+    model.write_text("SELECT 2 AS x")  # changed expression: BREAKING
+    blocked = runner.invoke(app, ["apply", "--path", str(tmp_path)])
+    assert blocked.exit_code == 1 and "breaking" in blocked.output and "--force" in blocked.output
+
+    forced = runner.invoke(app, ["apply", "--force", "--path", str(tmp_path)])
+    assert forced.exit_code == 0 and "promoted" in forced.output

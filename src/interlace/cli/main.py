@@ -107,10 +107,14 @@ def plan(
 
 @app.command()
 def apply(
-    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, forward_only: bool = _FORWARD_ONLY
+    environment: str = _ENV,
+    path: Path = _PATH,
+    select: list[str] = _SELECT,
+    forward_only: bool = _FORWARD_ONLY,
+    force: bool = typer.Option(False, "--force", help="Proceed even when the plan contains breaking changes."),
 ) -> None:
     """Build changed models and promote the environment."""
-    asyncio.run(_apply(environment, path, select, forward_only))
+    asyncio.run(_apply(environment, path, select, forward_only, force))
 
 
 async def _plan(environment: str, path: Path, select: list[str], forward_only: bool = False) -> None:
@@ -126,7 +130,9 @@ async def _plan(environment: str, path: Path, select: list[str], forward_only: b
         await state.close()
 
 
-async def _apply(environment: str, path: Path, select: list[str], forward_only: bool = False) -> None:
+async def _apply(
+    environment: str, path: Path, select: list[str], forward_only: bool = False, force: bool = False
+) -> None:
     project = Project.load(path)
     compiled = project.compile()
     engines = project.open_engines()
@@ -142,6 +148,12 @@ async def _apply(environment: str, path: Path, select: list[str], forward_only: 
         _render(plan_result, environment)
         if plan_result.is_empty:
             return
+        if plan_result.has_breaking_changes and not force:  # same guard the HTTP API enforces
+            breaking = ", ".join(
+                c.name for c in plan_result.changes if c.category is not None and c.category.value == "breaking"
+            )
+            console.print(f"[red]plan has breaking changes ({breaking}); re-run with --force to proceed[/red]")
+            raise typer.Exit(1)
         try:
             result = await apply_plan(
                 plan_result, compiled=compiled, engines=engines, state=state, base_path=project.root

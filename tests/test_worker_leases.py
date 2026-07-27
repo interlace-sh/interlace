@@ -140,3 +140,28 @@ async def test_running_run_cancels_cooperatively(store: SqliteStateStore) -> Non
     types = [e["type"] for e in await store.events_for_entity(str(run["id"]))]
     assert "run.cancelled" in types
     engine.close()
+
+
+async def test_terminal_writes_are_fenced_by_lease_owner(store: SqliteStateStore) -> None:
+    """A starved worker whose run was reclaimed cannot stomp the reclaimer's state."""
+    await store.enqueue_run("k1", ["m"], None, 0)
+    await store.claim_runs(owner="worker-a", lease_seconds=0.0)  # a's lease dies instantly
+    await asyncio.sleep(0.01)
+    await store.claim_runs(owner="worker-b", lease_seconds=60.0)  # b reclaims
+
+    landed = await store.finish_run(1, success=True, owner="worker-a")  # a wakes up late
+    assert landed is False
+    assert (await store.list_runs())[0]["state"] == "running"  # b's run untouched
+
+    assert await store.finish_run(1, success=True, owner="worker-b") is True
+    assert (await store.list_runs())[0]["state"] == "succeeded"
+
+
+async def test_requeue_is_fenced_too(store: SqliteStateStore) -> None:
+    await store.enqueue_run("k1", ["m"], None, 0)
+    await store.claim_runs(owner="worker-a", lease_seconds=0.0)
+    await asyncio.sleep(0.01)
+    await store.claim_runs(owner="worker-b", lease_seconds=60.0)
+
+    assert await store.requeue_run(1, error="a is late", owner="worker-a") is False
+    assert (await store.list_runs())[0]["state"] == "running"

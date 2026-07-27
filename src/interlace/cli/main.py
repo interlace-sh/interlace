@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from rich import box
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
@@ -107,21 +108,36 @@ def _emit_json(data: object) -> None:
     typer.echo(json.dumps(data, indent=2, default=str))
 
 
+def _table(title: str) -> Table:
+    """The house table style: no grid, a thin rule under the header, left title.
+
+    Primary columns keep the default style; add secondary columns with
+    ``style="dim"`` so the eye lands on the values that matter.
+    """
+    return Table(
+        title=title,
+        title_justify="left",
+        title_style="bold",
+        box=box.SIMPLE_HEAD,
+        border_style="dim",
+        pad_edge=False,
+    )
+
+
 def _render_build_results(result: ApplyResult, compiled: CompiledProject) -> None:
-    """Per-model outcome table: what was built, how it writes, what it did to the
-    rows (as the strategy interprets the engine's affected counts), and how long."""
+    """Per-model outcome table: what was built, how it writes, where it ran, what
+    it read, what it did to the rows, and how long."""
     built = set(result.built)
     if not built:
         return
-    multi_engine = len({m.engine for m in compiled.models.values()}) > 1
-    table = Table(title="Build results")
+    table = _table("Build results")
     table.add_column("Model")
-    table.add_column("Output")
-    table.add_column("Strategy")
-    if multi_engine:
-        table.add_column("Engine")
+    table.add_column("Output", style="dim")
+    table.add_column("Strategy", style="dim")
+    table.add_column("Engine", style="dim")
+    table.add_column("Depends on", style="dim", no_wrap=True)
     table.add_column("Rows", justify="right")
-    table.add_column("Time", justify="right")
+    table.add_column("Time", justify="right", style="dim")
     for model in compiled.ordered():
         if model.name not in built:
             continue
@@ -135,16 +151,15 @@ def _render_build_results(result: ApplyResult, compiled: CompiledProject) -> Non
             if counts.deleted:
                 parts.append(f"[red]-{counts.deleted:,}[/]")
         seconds = result.timings.get(model.name)
-        cells = [
+        table.add_row(
             model.name,
             "sink" if model.export is not None else model.materialise,
             model.export.mode if model.export is not None else model.strategy,  # sinks: the delivery mode
-        ]
-        if multi_engine:
-            cells.append(model.engine)
-        cells.append(" ".join(parts) or "—")
-        cells.append(f"{seconds:.2f}s" if seconds is not None else "—")
-        table.add_row(*cells)
+            model.engine,
+            ", ".join(model.dependencies) or "—",
+            " ".join(parts) or "[dim]—[/]",
+            f"{seconds:.2f}s" if seconds is not None else "—",
+        )
     console.print(table)
 
 
@@ -504,7 +519,11 @@ def list_models(path: Path = _PATH, select: list[str] = _SELECT, as_json: bool =
         {
             "name": name,
             "output": "sink" if compiled.models[name].export is not None else compiled.models[name].materialise,
-            "strategy": compiled.models[name].strategy,
+            "strategy": (
+                compiled.models[name].export.mode  # type: ignore[union-attr]
+                if compiled.models[name].export is not None
+                else compiled.models[name].strategy
+            ),
             "engine": compiled.models[name].engine,
             "depends_on": list(compiled.models[name].dependencies),
         }
@@ -515,13 +534,13 @@ def list_models(path: Path = _PATH, select: list[str] = _SELECT, as_json: bool =
         _emit_json(rows)
         return
     multi_engine = len({m.engine for m in compiled.models.values()}) > 1
-    table = Table(title="Models")
+    table = _table("Models")
     table.add_column("Model")
-    table.add_column("Output")
-    table.add_column("Strategy")
+    table.add_column("Output", style="dim")
+    table.add_column("Strategy", style="dim")
     if multi_engine:
-        table.add_column("Engine")
-    table.add_column("Depends on")
+        table.add_column("Engine", style="dim")
+    table.add_column("Depends on", style="dim", no_wrap=True)
     for row in rows:
         cells = [row["name"], row["output"], row["strategy"]]
         if multi_engine:
@@ -595,13 +614,14 @@ async def _envs(path: Path, as_json: bool = False) -> None:
         if not names:
             console.print("No environments promoted yet — run [bold]interlace apply[/bold].")
             return
-        table = Table(title="Environments")
+        table = _table("Environments")
         table.add_column("Environment")
-        table.add_column("Views")
-        table.add_column("Models")
-        table.add_column("Drift")
+        table.add_column("Views", style="dim")
+        table.add_column("Models", justify="right")
+        table.add_column("Drift", justify="right")
         for row in rows:
-            table.add_row(row["name"], row["views"], str(row["models"]), str(row["drift"]) if row["drift"] else "—")
+            drift_cell = f"[yellow]{row['drift']}[/]" if row["drift"] else "[dim]—[/]"
+            table.add_row(str(row["name"]), str(row["views"]), str(row["models"]), drift_cell)
         console.print(table)
     finally:
         await state.close()
@@ -633,19 +653,22 @@ async def _runs(path: Path, limit: int, as_json: bool = False) -> None:
                 "[bold]interlace scheduler[/bold]."
             )
             return
-        table = Table(title="Runs")
-        table.add_column("Id")
+        table = _table("Runs")
+        table.add_column("Id", style="dim")
         table.add_column("State")
-        table.add_column("Trigger")
+        table.add_column("Trigger", style="dim")
         table.add_column("Models")
-        table.add_column("Enqueued")
+        table.add_column("Enqueued", style="dim")
         table.add_column("Error")
+        state_colours = {"succeeded": "green", "failed": "red", "running": "cyan", "cancelled": "dim"}
         for run in recorded:
             key = str(run["idempotency_key"] or "")
             trigger = key.split(":", 1)[0] if ":" in key else "manual"
             models = ", ".join(run["flow_selector"][:3]) + (" …" if len(run["flow_selector"]) > 3 else "")
             enqueued = str(run["enqueued_at"] or "")[:19]
-            table.add_row(str(run["id"]), str(run["state"]), trigger, models, enqueued, str(run["error"] or "—")[:60])
+            state_cell = f"[{state_colours.get(str(run['state']), 'yellow')}]{run['state']}[/]"
+            error = f"[red]{str(run['error'])[:60]}[/]" if run["error"] else "[dim]—[/]"
+            table.add_row(str(run["id"]), state_cell, trigger, models, enqueued, error)
         console.print(table)
     finally:
         await state.close()
@@ -759,13 +782,13 @@ async def _checks(path: Path, model: str | None, limit: int, as_json: bool = Fal
         if as_json:
             _emit_json(rows)
             return
-        table = Table(title="Check results")
+        table = _table("Check results")
         table.add_column("Model")
         table.add_column("Check")
-        table.add_column("Severity")
+        table.add_column("Severity", style="dim")
         table.add_column("Status")
-        table.add_column("Failures")
-        table.add_column("At")
+        table.add_column("Failures", justify="right")
+        table.add_column("At", style="dim")
         colours = {"passed": "green", "failed": "red", "error": "yellow"}
         for row in rows:
             status = str(row["status"])
@@ -818,14 +841,14 @@ async def _streams(path: Path, as_json: bool = False) -> None:
         if as_json:
             _emit_json(rows)
             return
-        table = Table(title="Streams")
+        table = _table("Streams")
         table.add_column("Stream")
-        table.add_column("Table")
-        table.add_column("Drift")
-        table.add_column("Retention")
-        table.add_column("Head")
-        table.add_column("Watermark")
-        table.add_column("Pending")
+        table.add_column("Table", style="dim")
+        table.add_column("Drift", style="dim")
+        table.add_column("Retention", style="dim")
+        table.add_column("Head", justify="right")
+        table.add_column("Watermark", justify="right")
+        table.add_column("Pending", justify="right")
         for row in rows:
             table.add_row(
                 row["name"],
@@ -834,7 +857,7 @@ async def _streams(path: Path, as_json: bool = False) -> None:
                 row["retention"] or "—",
                 str(row["head"]),
                 str(row["watermark"]),
-                str(row["pending"]) if row["pending"] else "—",
+                f"[yellow]{row['pending']}[/]" if row["pending"] else "[dim]—[/]",
             )
         console.print(table)
     finally:
@@ -865,11 +888,11 @@ def engines(path: Path = _PATH, as_json: bool = _JSON) -> None:
     if as_json:
         _emit_json(rows)
         return
-    table = Table(title="Engines")
+    table = _table("Engines")
     table.add_column("Engine")
-    table.add_column("Type")
-    table.add_column("Dialect")
-    table.add_column("Database")
+    table.add_column("Type", style="dim")
+    table.add_column("Dialect", style="dim")
+    table.add_column("Database", style="dim")
     for row in rows:
         marker = " (default)" if row["default"] else ""
         table.add_row(f"{row['name']}{marker}", row["type"], row["dialect"], row["database"] or "—")
@@ -978,10 +1001,10 @@ async def _apikey_list(path: Path) -> None:
         keys = await state.list_api_keys()
     finally:
         await state.close()
-    table = Table(title="API keys")
+    table = _table("API keys")
     table.add_column("Name")
     table.add_column("Scopes")
-    table.add_column("Created")
+    table.add_column("Created", style="dim")
     for key in keys:
         table.add_row(str(key["name"]), ", ".join(key["scopes"]), str(key["created_at"]))  # type: ignore[arg-type]
     console.print(table)
@@ -992,14 +1015,27 @@ def _render(plan: Plan, environment: str) -> None:
         console.print(f"No changes for [bold]{environment}[/bold].")
         return
     reused = {snapshot.name for snapshot in plan.reuses}
-    table = Table(title=f"Plan · {environment}")
+    table = _table(f"Plan · {environment}")
     table.add_column("Model")
     table.add_column("Change")
     table.add_column("Category")
     table.add_column("Build")
+    change_colours = {"added": "green", "removed": "red", "modified": "yellow"}
+    category_colours = {"breaking": "red", "non_breaking": "green", "forward_only": "cyan"}
     for change in plan.changes:
-        build = "reuse" if change.name in reused else ("—" if change.change_type is ChangeType.REMOVED else "rebuild")
-        table.add_row(change.name, change.change_type.value, change.category.value if change.category else "—", build)
+        build = (
+            "[cyan]reuse[/]"
+            if change.name in reused
+            else ("[dim]—[/]" if change.change_type is ChangeType.REMOVED else "rebuild")
+        )
+        kind = change.change_type.value
+        category = change.category.value if change.category else None
+        table.add_row(
+            change.name,
+            f"[{change_colours.get(kind, 'white')}]{kind}[/]",
+            f"[{category_colours.get(category, 'white')}]{category}[/]" if category else "[dim]—[/]",
+            build,
+        )
     console.print(table)
     if reused:
         console.print(f"[dim]{len(reused)} model(s) have provably identical output — reusing existing tables.[/dim]")

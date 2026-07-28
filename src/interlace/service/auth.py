@@ -14,7 +14,7 @@ from litestar.connection import ASGIConnection
 from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 from litestar.handlers.base import BaseRouteHandler
 
-_OPEN_PATHS = frozenset({"/health"})
+_OPEN_PATHS = frozenset({"/health", "/"})
 
 
 def _bearer_token(connection: ASGIConnection) -> str | None:
@@ -24,7 +24,8 @@ def _bearer_token(connection: ASGIConnection) -> str | None:
 
 async def auth_guard(connection: ASGIConnection, route_handler: BaseRouteHandler) -> None:
     path = connection.scope["path"]
-    if path in _OPEN_PATHS or path.startswith("/schema"):
+    # /ui is the static shell only — every API call it makes still enforces scopes
+    if path in _OPEN_PATHS or path.startswith(("/schema", "/ui")):
         return
 
     store = connection.app.state.store

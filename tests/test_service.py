@@ -50,7 +50,27 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
 
 
 def test_health(client: TestClient) -> None:
-    assert client.get("/health").json() == {"status": "ok"}
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["version"]  # the UI's nav foot shows it
+
+
+def test_ui_shell_is_served(client: TestClient) -> None:
+    """The daemon serves the in-package UI; / redirects to it."""
+    page = client.get("/ui/")
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    assert "interlace — control plane" in page.text
+    assert client.get("/ui/js/app.js").status_code == 200
+    root = client.get("/", follow_redirects=False)
+    assert root.status_code in (301, 302, 307, 308)
+    assert root.headers["location"].rstrip("/") + "/" == "/ui/"
+
+
+def test_environments_carry_promoted_at(client: TestClient) -> None:
+    client.post("/apply", json={"environment": "prod"})
+    envs = client.get("/environments").json()
+    assert envs and envs[0]["promoted_at"]
 
 
 def test_list_models(client: TestClient) -> None:
@@ -344,3 +364,24 @@ async def test_auth_enforced_once_a_key_exists(tmp_path: Path) -> None:
         )
         assert denied.status_code == 403
         assert client.get("/health").status_code == 200  # health stays open
+
+
+def test_ui_loads_when_api_is_keyed(tmp_path: Path) -> None:
+    """With keys configured the API locks down, but the shell itself still loads —
+    it carries no data; every API call it makes enforces scopes."""
+    import asyncio
+
+    project_dir = _make_project(tmp_path)
+
+    async def make_key() -> None:
+        store = await Project.load(project_dir).open_state()
+        try:
+            await store.create_api_key("ui", ["read"])
+        finally:
+            await store.close()
+
+    asyncio.run(make_key())
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        assert client.get("/ui/").status_code == 200  # shell is public
+        assert client.get("/models").status_code == 401  # data is not
+        assert client.get("/health").status_code == 200

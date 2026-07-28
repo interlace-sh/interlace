@@ -465,6 +465,17 @@ class SqliteStateStore:
             self._conn.commit()
         return int(cursor.rowcount)
 
+    async def environment_promoted_at(self) -> dict[str, str]:
+        """Each environment's most recent promotion timestamp."""
+        return await asyncio.to_thread(self._environment_promoted_at_sync)
+
+    def _environment_promoted_at_sync(self) -> dict[str, str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT environment, MAX(promoted_at) AS at FROM environments GROUP BY environment"
+            ).fetchall()
+        return {row["environment"]: row["at"] for row in rows}
+
     async def list_environments(self) -> list[str]:
         return await asyncio.to_thread(self._list_environments_sync)
 

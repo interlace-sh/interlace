@@ -21,7 +21,7 @@ uv pip install "interlaced[service]"  # or from source: "interlaced[service] @ g
 interlace init my-project && cd my-project
 interlace plan            # terraform-style preview: added / breaking / non-breaking / reuse
 interlace apply           # build changed models, run checks, promote the environment
-interlace serve           # the daemon: HTTP API + scheduler + stream ingestion, one process
+interlace serve           # the daemon: web UI (/ui) + HTTP API + scheduler + streams, one process
 ```
 
 Every model builds into a fingerprinted physical table (`interlace__main.orders__a1b2c3`);
@@ -126,7 +126,9 @@ File exports (`to: parquet|csv|json`) work the same way.
 
 ## The daemon
 
-`interlace serve` runs the HTTP API (Litestar + msgspec, OpenAPI at `/schema/scalar`), the
+`interlace serve` runs the web UI at `/ui` (in-package, zero build step: lineage DAG with
+column-level tracing, plan/apply with SQL diffs, runs, streams, environments, checks —
+live over SSE), the HTTP API (Litestar + msgspec, OpenAPI at `/schema/scalar`), the
 scheduler (cron/interval triggers → durable run queue), stream ingestion, and retention in one
 process. Scoped API keys (`interlace apikey create ci --scope read`) lock it down; a durable
 event log backs `GET /events/stream` (SSE with replay).

@@ -29,7 +29,8 @@ from litestar.exceptions import ClientException, ImproperlyConfiguredException, 
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
 from litestar.params import FromPath, FromQuery
-from litestar.response import ServerSentEvent, ServerSentEventMessage
+from litestar.response import Redirect, ServerSentEvent, ServerSentEventMessage
+from litestar.static_files import create_static_files_router
 
 from interlace import __version__
 from interlace.dsl.decorators import StreamDef
@@ -156,6 +157,7 @@ class EnvironmentInfo(msgspec.Struct):
     name: str
     models: int
     changed: int  # compiled models whose fingerprint differs from the one promoted here
+    promoted_at: str | None = None  # when the environment last moved
 
 
 class ApplyRequest(msgspec.Struct):
@@ -254,7 +256,14 @@ def _info(model: CompiledModel) -> ModelInfo:
 
 @get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    from interlace import __version__
+
+    return {"status": "ok", "version": __version__}
+
+
+@get("/", include_in_schema=False)
+async def ui_redirect() -> Redirect:
+    return Redirect(path="/ui/")
 
 
 @get("/models")
@@ -328,10 +337,11 @@ async def get_plan(state: State, environment: FromQuery[str | None] = None) -> P
 async def get_environments(state: State) -> list[EnvironmentInfo]:
     compiled: CompiledProject = state.compiled
     out: list[EnvironmentInfo] = []
+    promoted_ats = await state.store.environment_promoted_at()
     for env in await state.store.list_environments():
         promoted = await state.store.get_environment(env)
         changed = sum(1 for model in compiled.models.values() if promoted.get(model.name) != model.fingerprint)
-        out.append(EnvironmentInfo(name=env, models=len(promoted), changed=changed))
+        out.append(EnvironmentInfo(name=env, models=len(promoted), changed=changed, promoted_at=promoted_ats.get(env)))
     return out
 
 
@@ -804,8 +814,13 @@ def create_app(
             await store.close()
             engines.close()
 
+    ui_router = create_static_files_router(
+        path="/ui", directories=[Path(__file__).parent / "ui"], html_mode=True, include_in_schema=False
+    )
     return Litestar(
         route_handlers=[
+            ui_router,
+            ui_redirect,
             health,
             get_models,
             get_model,

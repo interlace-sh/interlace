@@ -71,7 +71,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-interlace = ["py.typed"]
+interlace = ["py.typed", "service/ui/*", "service/ui/**/*"]
 
 [tool.black]
 line-length = 120

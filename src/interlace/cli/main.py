@@ -500,6 +500,7 @@ def serve(
     except ImportError as exc:
         console.print("[red]The HTTP API needs the 'service' extra: pip install 'interlaced[service]'[/red]")
         raise typer.Exit(1) from exc
+    console.print(f"UI at [bold cyan]http://{host}:{port}/ui[/bold cyan]")
     token = quack_token
     if quack and not token:
         import secrets

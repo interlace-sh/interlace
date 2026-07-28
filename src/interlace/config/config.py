@@ -3,9 +3,12 @@
 A small pydantic model with sensible defaults so a project works with no config
 file at all. Paths are relative to the project root.
 
-``${VAR}`` references anywhere in the YAML are substituted from the environment
-before parsing (unset variables are left literal), so DSNs and secret values
-never need to be committed: ``database: "ducklake:postgres:${WAREHOUSE_DSN}"``.
+``${VAR}`` references anywhere in the YAML are substituted before parsing, so
+DSNs and secret values never need to be committed:
+``database: "ducklake:postgres:${WAREHOUSE_DSN}"``. Values come from the real
+environment first, then from a ``.env`` file next to the config (dotenv
+KEY=VALUE lines; the process environment always wins). Unset variables are
+left literal so a missing one surfaces as an obvious ``${VAR}`` in errors.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from interlace.exceptions import ConfigurationError
 CONFIG_FILE = "interlace.yaml"
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class SecretConfig(BaseModel):
@@ -150,18 +154,54 @@ def _default_engine_from_top_level(config: ProjectConfig) -> EngineConfig:
     )
 
 
-def _interpolate_env(text: str) -> str:
-    """Replace ``${VAR}`` with the environment value; unset vars stay literal (so a
-    missing variable surfaces as an obvious ``${VAR}`` in errors, never silently '')."""
-    return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), m.group(0)), text)
+def _interpolate_env(text: str, fallback: dict[str, str] | None = None) -> str:
+    """Replace ``${VAR}`` from the process environment, then the ``.env`` fallback;
+    unset vars stay literal (so a missing variable surfaces as an obvious ``${VAR}``
+    in errors, never silently '')."""
+    extra = fallback or {}
+
+    def resolve(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in os.environ:
+            return os.environ[name]
+        return extra.get(name, match.group(0))
+
+    return _ENV_REF.sub(resolve, text)
+
+
+def load_dotenv(path: Path) -> dict[str, str]:
+    """KEY=VALUE pairs from a ``.env`` file (missing file = empty). Supports the
+    common dotenv subset: comments and blank lines skipped, optional ``export``
+    prefix, optional single/double quotes around the value. Never mutates the
+    process environment — values only feed ``${VAR}`` interpolation."""
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, raw = stripped.removeprefix("export ").partition("=")
+        key = key.strip()
+        if not _ENV_KEY.fullmatch(key):
+            continue
+        value = raw.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key] = value
+    return values
 
 
 def load_config(path: Path) -> ProjectConfig:
-    """Load and validate config, returning defaults when the file is absent."""
+    """Load and validate config, returning defaults when the file is absent.
+
+    ``${VAR}`` references resolve from the process environment first, then from
+    a ``.env`` file sitting next to the config."""
     if not path.exists():
         return ProjectConfig()
+    dotenv = load_dotenv(path.parent / ".env")
     try:
-        data = yaml.safe_load(_interpolate_env(path.read_text())) or {}
+        data = yaml.safe_load(_interpolate_env(path.read_text(), dotenv)) or {}
     except yaml.YAMLError as exc:
         raise ConfigurationError("could not parse config", details={"path": str(path), "error": str(exc)}) from exc
     if not isinstance(data, dict):

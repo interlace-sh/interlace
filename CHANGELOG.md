@@ -2,6 +2,12 @@
 
 ## 2.0.0a2 (2026-07-28)
 
+Published to PyPI as **`interlaced`** (the `interlace` name is locked upstream);
+the import and CLI remain `interlace`: `pip install interlaced`.
+
+Config `${VAR}` interpolation now also reads a `.env` file next to
+`interlace.yaml` (the process environment wins; nothing is exported).
+
 Hardening + throughput alpha: everything a first-principles review of a1 found,
 plus the CLI growing into a daily driver.
 

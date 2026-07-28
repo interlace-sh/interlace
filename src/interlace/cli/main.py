@@ -498,7 +498,7 @@ def serve(
 
         from interlace.service.app import create_app
     except ImportError as exc:
-        console.print("[red]The HTTP API needs the 'service' extra: pip install 'interlace[service]'[/red]")
+        console.print("[red]The HTTP API needs the 'service' extra: pip install 'interlaced[service]'[/red]")
         raise typer.Exit(1) from exc
     token = quack_token
     if quack and not token:

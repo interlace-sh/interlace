@@ -11,7 +11,7 @@ and ``full_merge`` are portable by construction (DELETE+INSERT / set difference)
 
 The ADBC connection is synchronous: calls run in a worker thread behind a lock
 (one statement at a time per engine — remote engines parallelise internally).
-Requires the ``adbc`` extra (``pip install 'interlace[adbc]'``).
+Requires the ``adbc`` extra (``pip install 'interlaced[adbc]'``).
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ class PostgresAdapter(EngineAdapter):
             import adbc_driver_postgresql.dbapi as dbapi  # type: ignore[import-untyped]
         except ImportError as exc:  # pragma: no cover - import guard
             raise ConfigurationError(
-                "the postgres engine needs the 'adbc' extra: pip install 'interlace[adbc]'"
+                "the postgres engine needs the 'adbc' extra: pip install 'interlaced[adbc]'"
             ) from exc
         return cls(dbapi.connect(dsn))
 

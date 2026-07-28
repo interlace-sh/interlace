@@ -95,7 +95,7 @@ engines:
     database: ${PG_DSN}          # postgresql://user:pass@host:5432/db
 ```
 
-Requires the ``adbc`` extra (`pip install 'interlace[adbc]'`). Strategies transpile to the
+Requires the ``adbc`` extra (`pip install 'interlaced[adbc]'`). Strategies transpile to the
 postgres dialect and execute over one ADBC connection; Arrow flows both ways (`fetch` streams
 results, `adbc_ingest` bulk-loads Python model output). Checks, env views, contracts, and GC all
 work natively there.

@@ -93,3 +93,7 @@ graphify-out/
 # moon
 .moon/cache/
 .moon/docker/
+
+# Local working notes and prototypes (never part of the repo)
+tasks/
+ui-prototype.html

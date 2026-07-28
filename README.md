@@ -12,7 +12,7 @@ DuckDB + DuckLake by default.
 > PyPI is the older 0.x line). APIs may still move. Requires Python 3.12+.
 
 ```bash
-uv pip install "interlace[service] @ git+https://github.com/interlace-sh/interlace@v2"
+uv pip install "interlaced[service]"  # or from source: "interlaced[service] @ git+https://github.com/interlace-sh/interlace@v2"
 ```
 
 ## Sixty seconds

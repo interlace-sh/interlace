@@ -6,13 +6,23 @@ an Arrow reader and writes it with one ``CREATE TABLE AS`` / ``INSERT``. Blockin
 DuckDB calls run in a worker thread; each call uses its own ``cursor()`` so reads
 proceed concurrently (DuckDB MVCC), while the DAG guarantees no two tasks write
 the same table at once.
+
+Statements that MUTATE THE CATALOG are serialised on ``_write_lock``. DuckLake's
+catalog layer is not safe against concurrent DDL on sibling cursors of one
+DatabaseInstance: under parallel builds a ``CREATE TABLE <schema>.<name>``
+intermittently loses its schema qualification and creates the table in the
+catalog's default schema instead, silently — no error, no transaction conflict.
+The snapshot then disagrees with what the state store recorded, and every later
+run fails resolving the table. Reads stay unlocked, so parallelism is only lost
+where the catalog is actually being written.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
 from uuid import uuid4
 
 import duckdb
@@ -63,6 +73,10 @@ class DuckDBAdapter(EngineAdapter):
         # re-running catalog writes here races across concurrent cursors.
         self._session_init = list(session_init)
         self._attached: list[str] = []  # aliases to DETACH on close (see close())
+        # Serialises catalog-mutating statements (see module docstring). Plain Lock,
+        # not RLock: no locked path calls another, and a plain Lock turns an
+        # accidental nesting into an obvious deadlock rather than silent re-entry.
+        self._write_lock = threading.Lock()
 
     def _cursor(self) -> duckdb.DuckDBPyConnection:
         cur = self._conn.cursor()
@@ -176,50 +190,68 @@ class DuckDBAdapter(EngineAdapter):
 
     @_commit_retry
     def _execute_sync(self, sql: str) -> None:
-        cur = self._cursor()
-        try:
-            cur.execute(sql)
-        finally:
-            cur.close()
+        with self._write_lock:  # may be DDL (create_schema / create_view / migrations)
+            cur = self._cursor()
+            try:
+                cur.execute(sql)
+            finally:
+                cur.close()
 
     @_commit_retry
     def _execute_all_sync(self, sqls: list[str]) -> list[int]:
-        cur = self._cursor()
         counts: list[int] = []
-        try:
-            cur.execute("BEGIN")
-            for sql in sqls:
-                cur.execute(sql)
-                counts.append(_affected(cur))
-            cur.execute("COMMIT")
-        except Exception:
-            cur.execute("ROLLBACK")
-            raise
-        finally:
-            cur.close()
+        with self._write_lock:  # a strategy's CREATE / DELETE / INSERT / DROP batch
+            cur = self._cursor()
+            try:
+                cur.execute("BEGIN")
+                for sql in sqls:
+                    cur.execute(sql)
+                    counts.append(_affected(cur))
+                cur.execute("COMMIT")
+            except Exception:
+                cur.execute("ROLLBACK")
+                raise
+            finally:
+                cur.close()
         return counts
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
-        # The reader keeps the underlying result alive after the cursor is dropped.
+        # Read-only: deliberately not locked, so scans run concurrently (DuckDB MVCC).
+        # The cursor must outlive the stream that reads from it, so it is closed when
+        # that stream ends rather than left for the garbage collector to reclaim on
+        # whatever thread happens to drop the last reference.
         cur = self._cursor()
         cur.execute(sql)
-        return cur.to_arrow_reader()
+        reader = cur.to_arrow_reader()
 
-    @_commit_retry
+        def batches() -> Iterator[pa.RecordBatch]:
+            try:
+                yield from reader
+            finally:
+                cur.close()
+
+        return pa.RecordBatchReader.from_batches(reader.schema, batches())
+
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
-        cur = self._cursor()
-        src = f"__interlace_src_{uuid4().hex}"
-        cur.register(src, reader)
-        try:
-            target = self._table_sql(table)
-            if mode == "create":
-                cur.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}")
-            else:
-                cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
-            return _affected(cur)
-        finally:
-            cur.unregister(src)
-            cur.close()
+        # NOT wrapped in @_commit_retry: ``reader`` is a single-pass stream, and a
+        # DuckLake conflict surfaces at COMMIT — i.e. after the stream has already
+        # been drained. Re-running the body would re-register an exhausted reader and
+        # write an empty table while reporting success. Failing loudly is correct; the
+        # caller re-runs the model, which rebuilds the reader.
+        with self._write_lock:
+            cur = self._cursor()
+            src = f"__interlace_src_{uuid4().hex}"
+            cur.register(src, reader)
+            try:
+                target = self._table_sql(table)
+                if mode == "create":
+                    cur.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}")
+                else:
+                    cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
+                return _affected(cur)
+            finally:
+                cur.unregister(src)
+                cur.close()
 
     def _table_exists_sync(self, table: TableRef) -> bool:
         # information_schema spans every attached catalog: pin to the ref's catalog

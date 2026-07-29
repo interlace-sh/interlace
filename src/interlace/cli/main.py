@@ -102,6 +102,12 @@ _FORWARD_ONLY = typer.Option(
     "before views move. Requires a shape-compatible change.",
 )
 _JSON = typer.Option(False, "--json", help="Emit JSON instead of a table (for scripts and CI).")
+_PARALLELISM = typer.Option(
+    0,
+    "--parallelism",
+    min=0,
+    help="How many models build at once (0 = the project's `parallelism`, default 4). Use 1 to serialise.",
+)
 
 
 def _emit_json(data: object) -> None:
@@ -222,9 +228,10 @@ def apply(
     select: list[str] = _SELECT,
     forward_only: bool = _FORWARD_ONLY,
     force: bool = typer.Option(False, "--force", help="Proceed even when the plan contains breaking changes."),
+    parallelism: int = _PARALLELISM,
 ) -> None:
     """Build changed models and promote the environment."""
-    asyncio.run(_apply(environment, path, select, forward_only, force))
+    asyncio.run(_apply(environment, path, select, forward_only, force, parallelism))
 
 
 async def _plan(
@@ -269,7 +276,12 @@ def _plan_dict(plan: Plan, environment: str) -> dict:
 
 
 async def _apply(
-    environment: str, path: Path, select: list[str], forward_only: bool = False, force: bool = False
+    environment: str,
+    path: Path,
+    select: list[str],
+    forward_only: bool = False,
+    force: bool = False,
+    parallelism: int = 0,
 ) -> None:
     project = Project.load(path)
     compiled = project.compile()
@@ -302,6 +314,7 @@ async def _apply(
                     state=state,
                     base_path=project.root,
                     on_progress=progress,
+                    parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
                 )
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")
@@ -318,22 +331,32 @@ async def _apply(
 
 @app.command()
 def run(
-    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, start: str = _START, end: str = _END
+    environment: str = _ENV,
+    path: Path = _PATH,
+    select: list[str] = _SELECT,
+    start: str = _START,
+    end: str = _END,
+    parallelism: int = _PARALLELISM,
 ) -> None:
     """Force-build models and promote, ignoring change detection.
 
     For incremental_by_time models, --start/--end set the catchup window
     (default: the latest grain interval).
     """
-    asyncio.run(_execute(environment, path, select, start, end, restate=False))
+    asyncio.run(_execute(environment, path, select, start, end, restate=False, parallelism=parallelism))
 
 
 @app.command()
 def restate(
-    environment: str = _ENV, path: Path = _PATH, select: list[str] = _SELECT, start: str = _START, end: str = _END
+    environment: str = _ENV,
+    path: Path = _PATH,
+    select: list[str] = _SELECT,
+    start: str = _START,
+    end: str = _END,
+    parallelism: int = _PARALLELISM,
 ) -> None:
     """Reprocess incremental models over a window, ignoring the ledger (vs run, which skips filled)."""
-    asyncio.run(_execute(environment, path, select, start, end, restate=True))
+    asyncio.run(_execute(environment, path, select, start, end, restate=True, parallelism=parallelism))
 
 
 def _window(value: str, flag: str) -> datetime | None:
@@ -351,7 +374,16 @@ def _window(value: str, flag: str) -> datetime | None:
     return parsed
 
 
-async def _execute(environment: str, path: Path, select: list[str], start: str, end: str, *, restate: bool) -> None:
+async def _execute(
+    environment: str,
+    path: Path,
+    select: list[str],
+    start: str,
+    end: str,
+    *,
+    restate: bool,
+    parallelism: int = 0,
+) -> None:
     window_start = _window(start, "--start")
     window_end = _window(end, "--end")
     project = Project.load(path)
@@ -380,6 +412,7 @@ async def _execute(environment: str, path: Path, select: list[str], start: str, 
                     state=state,
                     base_path=project.root,
                     on_progress=progress,
+                    parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
                 )
         except CheckError as exc:
             console.print(f"[red]{exc.message}[/red]")

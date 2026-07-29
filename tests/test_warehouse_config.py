@@ -257,3 +257,25 @@ def test_dotenv_never_mutates_the_process_environment(tmp_path: Path, monkeypatc
     (tmp_path / "interlace.yaml").write_text("name: pure\ndatabase: ${DOTENV_ONLY}\n")
     assert load_config(tmp_path / "interlace.yaml").database == "secret"
     assert "DOTENV_ONLY" not in os.environ
+
+
+# --- parallelism is configurable (and --parallelism overrides it) ----------------
+
+
+def test_parallelism_defaults_to_four_and_is_configurable(tmp_path: Path) -> None:
+    """Build concurrency used to be a bare function default with no way to reach it;
+    lowering it is the first thing you want when a parallel build misbehaves."""
+    (tmp_path / "interlace.yaml").write_text("name: p\n")
+    assert Project.load(tmp_path).config.parallelism == 4
+
+    (tmp_path / "interlace.yaml").write_text("name: p\nparallelism: 1\n")
+    assert Project.load(tmp_path).config.parallelism == 1
+
+
+def test_parallelism_must_be_at_least_one(tmp_path: Path) -> None:
+    from interlace.exceptions import ConfigurationError
+
+    (tmp_path / "interlace.yaml").write_text("name: p\nparallelism: 0\n")
+    with pytest.raises(ConfigurationError) as caught:
+        Project.load(tmp_path)
+    assert "parallelism" in caught.value.details["error"]

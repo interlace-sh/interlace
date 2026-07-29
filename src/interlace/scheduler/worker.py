@@ -46,6 +46,7 @@ async def drain(
     max_attempts: int = 3,
     task_timeout: float | None = None,
     slots: int = 1,
+    parallelism: int = 4,
 ) -> int:
     """Execute up to ``limit`` queued (or lease-expired) runs; returns how many ran."""
     worker = owner or default_owner()
@@ -66,6 +67,7 @@ async def drain(
                 lease_seconds=lease_seconds,
                 max_attempts=max_attempts,
                 task_timeout=task_timeout,
+                parallelism=parallelism,
             )
 
     if runs:
@@ -86,6 +88,7 @@ async def _execute_run(
     lease_seconds: float,
     max_attempts: int,
     task_timeout: float | None,
+    parallelism: int = 4,
 ) -> None:
     await store.append_event(
         "run.started", entity=str(run.id), payload={"models": run.flow_selector, "attempt": run.attempts}
@@ -107,7 +110,15 @@ async def _execute_run(
         plan = await run_plan(
             project, environment, store, start=start, end=end, select=set(run.flow_selector), restate=run.restate
         )
-        result = await apply(plan, compiled=project, engine=engine, engines=engines, state=store, base_path=base_path)
+        result = await apply(
+            plan,
+            compiled=project,
+            engine=engine,
+            engines=engines,
+            state=store,
+            base_path=base_path,
+            parallelism=parallelism,
+        )
         return {
             "built": result.built,
             "timings": {name: round(seconds, 3) for name, seconds in result.timings.items()},

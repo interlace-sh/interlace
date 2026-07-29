@@ -476,6 +476,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
                 engines=state.engines,
                 state=state.store,
                 base_path=state.root,
+                parallelism=state.parallelism,
             )
         except CheckError as exc:
             await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
@@ -724,6 +725,7 @@ def create_app(
         app.state.engines = engines
         app.state.environment = environment
         app.state.root = project.root
+        app.state.parallelism = project.config.parallelism
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
         app.state.streams = streams
         app.state.stream_log = stream_log
@@ -786,7 +788,14 @@ def create_app(
                 try:
                     await trigger_engine.tick(datetime.now())
                     async with app.state.apply_lock:  # one warehouse writer at a time
-                        await drain(store, compiled, engines=engines, environment=environment, base_path=project.root)
+                        await drain(
+                            store,
+                            compiled,
+                            engines=engines,
+                            environment=environment,
+                            base_path=project.root,
+                            parallelism=project.config.parallelism,
+                        )
                     if streams:
                         app.state.flush_wanted.set()  # catch up anything the flusher hasn't seen
                         await sweep_streams(streams.values(), stream_log, engine)  # apply retention

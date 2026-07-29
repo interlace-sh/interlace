@@ -117,3 +117,100 @@ async def test_write_paths_retry_transaction_conflicts() -> None:
     exhausted_adapter = DuckDBAdapter(exhausted)  # type: ignore[arg-type]
     with pytest.raises(_duckdb.TransactionException):  # gives up after 3 attempts, error surfaces
         await exhausted_adapter.execute_sql("CREATE TABLE t AS SELECT 1")
+
+
+# --- concurrency: catalog writes are serialised, reads are not -------------------
+
+
+async def test_concurrent_ddl_keeps_its_schema_qualification() -> None:
+    """Regression: DuckLake's catalog is not safe against concurrent DDL on sibling
+    cursors of one DatabaseInstance — a ``CREATE TABLE <schema>.<name>`` would
+    intermittently lose its schema and land in the catalog's default schema, silently.
+    Every table must end up in the schema it named."""
+    import asyncio
+
+    adapter = DuckDBAdapter.in_memory()
+    try:
+        await adapter.create_schema("interlace__raw")
+        await asyncio.gather(
+            *(adapter.execute_sql(f"CREATE OR REPLACE TABLE interlace__raw.t{i} AS SELECT {i} AS a") for i in range(48))
+        )
+        reader = await adapter.fetch_sql(
+            "SELECT table_schema, count(*) AS n FROM information_schema.tables WHERE table_name LIKE 't%' GROUP BY 1"
+        )
+        placement = {row["table_schema"]: row["n"] for row in reader.read_all().to_pylist()}
+        assert placement == {"interlace__raw": 48}, f"tables escaped their schema: {placement}"
+    finally:
+        adapter.close()
+
+
+async def test_catalog_writes_never_overlap() -> None:
+    """The write lock must actually serialise: no two catalog-mutating bodies may be
+    in flight at once, or the DuckLake race above is still reachable."""
+    import asyncio
+    import threading
+
+    depth = 0
+    max_depth = 0
+    guard = threading.Lock()
+
+    class WatchedCursor:
+        def execute(self, sql: str, *args: object) -> WatchedCursor:
+            nonlocal depth, max_depth
+            with guard:
+                depth += 1
+                max_depth = max(max_depth, depth)
+            try:
+                import time
+
+                time.sleep(0.001)  # widen the window a serial lock must close
+            finally:
+                with guard:
+                    depth -= 1
+            return self
+
+        def fetchall(self) -> list[tuple[int, ...]]:
+            return []
+
+        def close(self) -> None: ...
+
+    class WatchedConn:
+        def cursor(self) -> WatchedCursor:
+            return WatchedCursor()
+
+    adapter = DuckDBAdapter(WatchedConn())  # type: ignore[arg-type]
+    await asyncio.gather(*(adapter.execute_sql(f"CREATE TABLE t{i} AS SELECT 1") for i in range(16)))
+    assert max_depth == 1, f"{max_depth} catalog writes ran concurrently; the write lock is not holding"
+
+
+async def test_fetch_closes_its_cursor_when_the_stream_ends() -> None:
+    """Regression: fetch used to leak its cursor, leaving the GC to reclaim it on
+    whatever thread dropped the last reference while sibling cursors were mid-query.
+    The cursor must be closed deterministically when the stream is exhausted."""
+
+    class RecordingCursor:
+        def __init__(self, log: list[str]) -> None:
+            self.log = log
+
+        def execute(self, sql: str, *args: object) -> RecordingCursor:
+            return self
+
+        def to_arrow_reader(self, *args: object) -> pa.RecordBatchReader:
+            return pa.table({"i": [1, 2, 3, 4, 5]}).to_reader()
+
+        def close(self) -> None:
+            self.log.append("closed")
+
+    class RecordingConn:
+        def __init__(self) -> None:
+            self.log: list[str] = []
+
+        def cursor(self) -> RecordingCursor:
+            return RecordingCursor(self.log)
+
+    conn = RecordingConn()
+    adapter = DuckDBAdapter(conn)  # type: ignore[arg-type]
+    reader = await adapter.fetch_sql("SELECT * FROM range(5) t(i)")
+    assert conn.log == [], "cursor closed before the stream was read"
+    assert reader.read_all().num_rows == 5
+    assert conn.log == ["closed"], "exhausting the stream must close the cursor"

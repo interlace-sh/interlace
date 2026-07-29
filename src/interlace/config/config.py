@@ -122,6 +122,10 @@ class ProjectConfig(BaseModel):
     # This is T0 federation (all SQL still runs in DuckDB) — see docs/architecture/MULTI_ENGINE.md.
     attach: dict[str, str] = Field(default_factory=dict)
     model_paths: list[str] = Field(default_factory=lambda: ["models"])
+    # How many models build concurrently. Lower it to serialise a build end-to-end
+    # when diagnosing a crash or a warehouse that dislikes parallel writers; `run`
+    # and `apply` also take --parallelism, which wins over this.
+    parallelism: int = Field(default=4, ge=1)
 
     def engine_configs(self) -> dict[str, EngineConfig]:
         """Resolved engine map: explicit ``engines`` plus a synthesised ``default``

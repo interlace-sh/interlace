@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.0.0a4 (2026-07-29)
+
+Concurrency fixes in the DuckDB/DuckLake engine, all reachable from a plain
+parallel build.
+
+DuckLake's catalog is not safe against concurrent DDL on sibling cursors of one
+`DatabaseInstance`, which is exactly how the adapter drove it. Under parallel
+builds a `CREATE TABLE <schema>.<name>` intermittently lost its schema
+qualification and created the table in the catalog's default schema instead —
+silently, with no error and no transaction conflict. The snapshot then disagreed
+with what the state store recorded, and every later run failed resolving the
+table. Catalog-mutating statements now hold a write lock; reads stay unlocked, so
+concurrency is only given up where the catalog is actually being written.
+
+Two more in the same path:
+
+- A load no longer retries on a DuckLake commit conflict. The conflict surfaces
+  at COMMIT, after the single-pass Arrow reader has been drained, so the retry
+  re-registered an exhausted reader and wrote an **empty table while reporting
+  success**. It now fails loudly and the model re-runs.
+- `fetch` closes its cursor when the stream ends, instead of leaving the garbage
+  collector to reclaim it on whatever thread dropped the last reference while
+  sibling cursors were mid-query.
+
+Build concurrency is now configurable: `parallelism` in `interlace.yaml`
+(default 4, minimum 1), with a `--parallelism` override on `run`, `apply`, and
+`restate`. It is honoured by the daemon and scheduler too.
+
 ## 2.0.0a3 (2026-07-28)
 
 Config `${VAR}` interpolation now also reads a `.env` file next to

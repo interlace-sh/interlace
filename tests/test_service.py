@@ -60,11 +60,18 @@ def test_ui_shell_is_served(client: TestClient) -> None:
     page = client.get("/ui/")
     assert page.status_code == 200
     assert "text/html" in page.headers["content-type"]
-    assert "interlace — control plane" in page.text
-    assert client.get("/ui/js/app.js").status_code == 200
+    assert 'id="rail"' in page.text  # the shell chrome
     root = client.get("/", follow_redirects=False)
     assert root.status_code in (301, 302, 307, 308)
     assert root.headers["location"].rstrip("/") + "/" == "/ui/"
+
+    # every module the shell imports must actually be in the package
+    ui_dir = Path(__file__).resolve().parents[1] / "src" / "interlace" / "service" / "ui"
+    for asset in sorted(p.relative_to(ui_dir) for p in ui_dir.rglob("*") if p.is_file()):
+        assert client.get(f"/ui/{asset}").status_code == 200, f"missing UI asset: {asset}"
+    app_js = (ui_dir / "js" / "app.js").read_text()
+    for view in (ui_dir / "js" / "views").glob("*.js"):
+        assert f"views/{view.name}" in app_js, f"view {view.name} is not routed in app.js"
 
 
 def test_environments_carry_promoted_at(client: TestClient) -> None:

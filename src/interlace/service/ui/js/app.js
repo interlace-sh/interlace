@@ -1,130 +1,255 @@
-// Boot + router + command palette + environment switcher.
-import { api } from "./api.js";
-import { currentEnv, invalidate, loadEnvironments, loadModels, loadPlan, setEnv } from "./data.js";
-import { onEvent, startLive } from "./live.js";
-import { $, $$, MAT_GLYPH, esc, toast } from "./util.js";
-import { ui, views } from "./views.js";
+// Shell: hash router, command palette, live pill, rail badges, build dock.
+// Views are ES modules under views/ exporting render(el, ctx) -> cleanup?.
 
-let teardown = null;
-let routeSeq = 0;
+import { api, feed, token } from "./api.js";
+import { glyph, h, seconds } from "./ui.js";
 
-async function setRoute(name) {
-  if (!views[name]) name = "lineage";
-  const seq = ++routeSeq;
-  if (teardown) { teardown(); teardown = null; }
-  $$(".nav-item").forEach((it) => it.classList.toggle("active", it.dataset.route === name));
-  $("#view").innerHTML = `<div class="loading">loading…</div>`;
-  let view;
-  try { view = await views[name](); }
-  catch (err) { view = { html: `<div class="vhead"><h1>${esc(name)}</h1></div><div class="error-box">✕ ${esc(err.detail || err.message || err)}</div>` }; }
-  if (seq !== routeSeq) return; // navigated away while loading
-  $("#view").innerHTML = view.html;
-  if (view.mount) teardown = view.mount() || null;
-  if (location.hash.slice(1) !== name) location.hash = name;
-  refreshCounts();
+import { render as overview } from "./views/overview.js";
+import { render as lineage } from "./views/lineage.js";
+import { render as models } from "./views/models.js";
+import { render as plan } from "./views/plan.js";
+import { render as runs } from "./views/runs.js";
+import { render as query } from "./views/query.js";
+import { render as streams } from "./views/streams.js";
+import { render as checks } from "./views/checks.js";
+import { render as environments } from "./views/environments.js";
+import { render as system } from "./views/system.js";
+
+const routes = { overview, lineage, models, plan, runs, query, streams, checks, environments, system };
+
+// ---- toasts / modal ------------------------------------------------------------
+
+export function toast(message, tone = "") {
+  const el = h("div", { class: `toast ${tone}` }, message);
+  document.getElementById("toasts").append(el);
+  setTimeout(() => el.remove(), tone === "err" ? 6000 : 2800);
 }
-ui.navigate = setRoute;
-ui.setEnv = (env) => { setEnv(env); invalidate("plan"); paintEnvPill(); };
 
-$("#nav").addEventListener("click", (e) => { const it = e.target.closest(".nav-item"); if (it) setRoute(it.dataset.route); });
-document.addEventListener("click", (e) => { const g = e.target.closest("[data-go]"); if (g) setRoute(g.dataset.go); });
-addEventListener("hashchange", () => { const r = location.hash.slice(1); if (r && !$(`.nav-item[data-route="${r}"].active`)) setRoute(r); });
+export function modal(build) {
+  const scrim = document.getElementById("modalScrim");
+  const body = document.getElementById("modalBody");
+  body.replaceChildren();
+  const close = () => {
+    scrim.hidden = true;
+    body.replaceChildren();
+  };
+  build(body, close);
+  scrim.hidden = false;
+  scrim.onclick = (event) => event.target === scrim && close();
+  return close;
+}
 
-/* ---------------- confirm/modal ---------------- */
-const modalScrim = $("#modalScrim"), modalCard = $("#modalCard");
-const closeModal = () => modalScrim.classList.remove("show");
-modalScrim.addEventListener("click", (e) => { if (e.target === modalScrim) closeModal(); });
-ui.confirm = ({ title, body, action, onConfirm, danger = false }) => {
-  modalCard.innerHTML = `<header>${title}</header>
-    <div class="mc-body">${body}</div>
-    <footer><button class="btn" id="mCancel">Cancel</button>
-      <button class="btn primary" id="mGo" ${danger ? 'style="background:var(--coral);border-color:var(--coral)"' : ""}>${esc(action)}</button></footer>`;
-  $("#mCancel").onclick = closeModal;
-  $("#mGo").onclick = () => { closeModal(); onConfirm(); };
-  modalScrim.classList.add("show");
-  modalCard.querySelector("input,textarea")?.focus();
+// ---- build dock: live per-model rows, CLI-style ---------------------------------
+
+const dock = {
+  el: null,
+  rows: new Map(), // model -> {row, started, running}
+  foldTimer: null,
+  start(model) {
+    clearTimeout(this.foldTimer); // building again: stay open
+    const previous = this.rows.get(model);
+    if (previous && !previous.running) {
+      previous.row.remove(); // same model, new run: fresh row
+      this.rows.delete(model);
+    }
+    if (!this.rows.has(model)) {
+      const row = h(
+        "div",
+        { class: "dock-row running" },
+        h("span", { class: "st" }),
+        h("span", { class: "nm" }, model),
+        h("span", { class: "tm" }),
+      );
+      document.getElementById("dockRows").append(row);
+      this.rows.set(model, { row, started: Date.now(), running: true });
+    }
+    this.el.hidden = false;
+  },
+  finish(model, outcome) {
+    const entry = this.rows.get(model);
+    if (!entry) return;
+    entry.running = false;
+    entry.row.classList.remove("running");
+    const mark = { done: glyph.ok, failed: glyph.fail, cancelled: glyph.skip }[outcome] ?? glyph.ok;
+    const cls = { done: "glyph-ok", failed: "glyph-fail", cancelled: "glyph-skip" }[outcome] ?? "glyph-ok";
+    entry.row.querySelector(".st").replaceChildren(h("span", { class: cls }, mark));
+    entry.row.querySelector(".tm").textContent = seconds((Date.now() - entry.started) / 1000);
+    // fold away 8s after the LAST model resolves; any new start cancels the fold
+    clearTimeout(this.foldTimer);
+    this.foldTimer = setTimeout(() => this.clear(), 8000);
+  },
+  clear() {
+    clearTimeout(this.foldTimer);
+    this.rows.clear();
+    document.getElementById("dockRows").replaceChildren();
+    this.el.hidden = true;
+  },
 };
 
-/* ---------------- command palette ---------------- */
-const VIEW_ITEMS = [
-  ["lineage", "⧉", "Lineage"], ["models", "▤", "Models"], ["plan", "±", "Plan"], ["runs", "▸", "Runs"],
-  ["streams", "≈", "Streams"], ["environments", "⊞", "Environments"], ["checks", "✓", "Checks"], ["settings", "⌥", "Settings"],
-];
-const scrim = $("#scrim"), pinput = $("#pinput"), presults = $("#presults");
-let pidx = 0, pitems = [], paletteModels = { byName: {}, names: [] };
-function openPalette() {
-  loadModels().then((m) => { paletteModels = m; renderPalette(pinput.value); }).catch(() => {});
-  scrim.classList.add("show"); pinput.value = ""; renderPalette(""); pinput.focus();
-}
-const closePalette = () => scrim.classList.remove("show");
-function renderPalette(q) {
-  q = q.toLowerCase();
-  const vs = VIEW_ITEMS.filter((v) => v[2].toLowerCase().includes(q)).map((v) => ({ type: "view", route: v[0], g: v[1], nm: v[2], k: "view" }));
-  const ms = paletteModels.names.filter((n) => n.toLowerCase().includes(q)).map((n) => ({ type: "model", route: n, g: MAT_GLYPH[paletteModels.byName[n].mat] || "·", nm: n, k: "model" }));
-  pitems = [...vs, ...ms].slice(0, 9); pidx = 0;
-  presults.innerHTML = pitems.map((it, i) => `<div class="pitem ${i === 0 ? "cur" : ""}" data-i="${i}"><span class="pg">${it.g}</span><span class="nm">${esc(it.nm)}</span><span class="pk">${it.k}</span></div>`).join("")
-    || '<div class="empty">no matches</div>';
-  $$(".pitem", presults).forEach((el) => (el.onclick = () => choose(+el.dataset.i)));
-}
-function choose(i) {
-  const it = pitems[i]; if (!it) return;
-  closePalette();
-  if (it.type === "view") setRoute(it.route);
-  else { ui.selected = it.route; setRoute("lineage"); }
-}
-pinput.addEventListener("input", (e) => renderPalette(e.target.value));
-pinput.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closePalette();
-  else if (e.key === "ArrowDown") { pidx = Math.min(pidx + 1, pitems.length - 1); highlightP(); }
-  else if (e.key === "ArrowUp") { pidx = Math.max(pidx - 1, 0); highlightP(); }
-  else if (e.key === "Enter") choose(pidx);
-});
-const highlightP = () => $$(".pitem", presults).forEach((el, i) => el.classList.toggle("cur", i === pidx));
-scrim.addEventListener("click", (e) => { if (e.target === scrim) closePalette(); });
-$("#searchBtn").onclick = openPalette;
-addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
-  else if (e.key === "Escape" && modalScrim.classList.contains("show")) closeModal();
-});
+// ---- router ---------------------------------------------------------------------
 
-/* ---------------- environment switch ---------------- */
-function paintEnvPill() { $("#envTo").textContent = currentEnv(); }
-$("#envSwitch").onclick = async () => {
-  let names = ["prod", "dev"];
+let cleanup = null;
+
+export function go(route, params = {}) {
+  const query = new URLSearchParams(params).toString();
+  location.hash = `#/${route}${query ? "?" + query : ""}`;
+}
+
+function currentRoute() {
+  const [path, queryString] = (location.hash.replace(/^#\//, "") || "overview").split("?");
+  return { name: routes[path] ? path : "overview", params: Object.fromEntries(new URLSearchParams(queryString || "")) };
+}
+
+async function renderRoute() {
+  const { name, params } = currentRoute();
+  document.querySelectorAll("#rail a").forEach((a) => a.classList.toggle("on", a.dataset.route === name));
+  if (typeof cleanup === "function") cleanup();
+  cleanup = null;
+  const view = document.getElementById("view");
+  view.replaceChildren();
+  view.scrollTop = 0;
   try {
-    const envs = await loadEnvironments();
-    if (envs.length) names = [...new Set([...envs.map((e) => e.name), "prod", "dev"])];
-  } catch { /* offline: cycle defaults */ }
-  const next = names[(names.indexOf(currentEnv()) + 1) % names.length];
-  ui.setEnv(next);
-  toast("Target changed", `plan/apply target → ${next}`);
-  const route = location.hash.slice(1);
-  if (route === "plan" || route === "lineage" || route === "environments") setRoute(route);
-};
-
-/* ---------------- nav counts + foot ---------------- */
-async function refreshCounts() {
-  const set = (key, value) => $$(`[data-count="${key}"]`).forEach((el) => (el.textContent = value ?? ""));
-  loadModels().then(({ names }) => set("models", names.length)).catch(() => set("models", ""));
-  loadPlan().then((p) => set("plan", p.changes.filter((c) => !c.reused).length || "")).catch(() => set("plan", ""));
-  api.runs().then((rs) => set("runs", rs.filter((r) => r.state === "queued" || r.state === "running").length || "")).catch(() => set("runs", ""));
-  loadModels().catch(() => {}); // keep cache warm for the palette
-  api.streams().then((ss) => set("streams", ss.length || "")).catch(() => set("streams", ""));
-  loadEnvironments().then((es) => set("envs", es.length || "")).catch(() => set("envs", ""));
-  api.checks().then((cs) => set("checks", cs.length || "")).catch(() => set("checks", ""));
+    cleanup = await routes[name](view, { api, feed, go, toast, modal, params, token });
+  } catch (error) {
+    view.replaceChildren(
+      h("div", { class: "empty" }, `this view failed to load: ${error.message}`, h("div", { class: "hint" }, "the daemon may be unreachable — check that `interlace serve` is running")),
+    );
+  }
 }
+
+// ---- rail badges + drift chip -----------------------------------------------------
+
+async function refreshBadges() {
+  try {
+    const [planBody, runsBody] = await Promise.all([api.get("/plan"), api.get("/runs")]);
+    const changes = planBody.changes.length;
+    const planBadge = document.querySelector('[data-badge="plan"]');
+    planBadge.textContent = changes || "";
+    const driftChip = document.getElementById("driftChip");
+    driftChip.hidden = !changes;
+    driftChip.textContent = `${changes} pending`;
+    const active = runsBody.filter((run) => run.state === "running" || run.state === "queued").length;
+    const runsBadge = document.querySelector('[data-badge="runs"]');
+    runsBadge.textContent = active || "";
+    runsBadge.classList.toggle("hot", runsBody.some((run) => run.state === "running"));
+  } catch {
+    /* unauthenticated or daemon away; badges stay quiet */
+  }
+}
+
+// ---- command palette ---------------------------------------------------------------
+
+function paletteSetup() {
+  const scrim = document.getElementById("scrim");
+  const input = document.getElementById("paletteInput");
+  const results = document.getElementById("paletteResults");
+  let hits = [];
+  let selected = 0;
+  let modelNames = [];
+
+  const open = async () => {
+    scrim.hidden = false;
+    input.value = "";
+    input.focus();
+    try {
+      modelNames = (await api.get("/models")).map((m) => m.name);
+    } catch {
+      modelNames = [];
+    }
+    update("");
+  };
+  const close = () => (scrim.hidden = true);
+
+  const update = (needle) => {
+    const lower = needle.toLowerCase();
+    const views = Object.keys(routes)
+      .filter((route) => route.includes(lower))
+      .map((route) => ({ kind: "view", label: route, act: () => go(route) }));
+    const models = modelNames
+      .filter((name) => name.toLowerCase().includes(lower))
+      .slice(0, 12)
+      .map((name) => ({ kind: "model", label: name, act: () => go("models", { m: name }) }));
+    const runMatch = /^\d+$/.test(needle) ? [{ kind: "run", label: `run #${needle}`, act: () => go("runs", { r: needle }) }] : [];
+    hits = [...runMatch, ...models, ...views].slice(0, 16);
+    selected = 0;
+    results.replaceChildren(
+      ...hits.map((hit, index) =>
+        h(
+          "div",
+          { class: `hit ${index === selected ? "on" : ""}`, onclick: () => pick(index) },
+          h("span", { class: "kind" }, hit.kind),
+          h("span", {}, hit.label),
+        ),
+      ),
+    );
+  };
+
+  const pick = (index) => {
+    if (hits[index]) {
+      close();
+      hits[index].act();
+    }
+  };
+
+  input.addEventListener("input", () => update(input.value));
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") close();
+    if (event.key === "Enter") pick(selected);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      selected = (selected + (event.key === "ArrowDown" ? 1 : hits.length - 1)) % Math.max(hits.length, 1);
+      results.querySelectorAll(".hit").forEach((el, index) => el.classList.toggle("on", index === selected));
+    }
+  });
+  scrim.addEventListener("click", (event) => event.target === scrim && close());
+  document.getElementById("cmdkBtn").addEventListener("click", open);
+  document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      scrim.hidden ? open() : close();
+    }
+  });
+}
+
+// ---- boot -----------------------------------------------------------------------
 
 async function boot() {
-  paintEnvPill();
+  dock.el = document.getElementById("dock");
+  document.getElementById("dockClose").addEventListener("click", () => dock.clear());
+  document.querySelectorAll("#rail a").forEach((a) => {
+    a.href = `#/${a.dataset.route}`;
+  });
+  document.getElementById("envChip").addEventListener("click", () => go("environments"));
+  paletteSetup();
+
+  feed.onState((state) => {
+    const pillEl = document.getElementById("livePill");
+    pillEl.dataset.state = state;
+    pillEl.querySelector(".live-label").textContent = { live: "live", poll: "poll", connecting: "sync" }[state];
+  });
+  feed.on((event) => {
+    // the dock narrates the build happening NOW — replayed history stays out of it
+    const fresh = event.ts && Date.now() - new Date(event.ts.includes("+") || event.ts.endsWith("Z") ? event.ts : event.ts + "Z").getTime() < 15000;
+    if (event.type === "model.start" && fresh) dock.start(event.entity);
+    else if (event.type?.startsWith("model.") && fresh) dock.finish(event.entity, event.type.slice(6));
+    if (["run.enqueued", "run.started", "run.succeeded", "run.failed", "apply.finished"].includes(event.type)) {
+      refreshBadges();
+    }
+  });
+  feed.start();
+
   try {
-    const health = await api.health();
-    $("#navFoot").innerHTML = `state <span class="ok">healthy</span><br>v${esc(health.version || "?")}`;
+    const health = await api.get("/health");
+    document.getElementById("railFoot").textContent = `v${health.version}`;
+    if (health.environment) document.getElementById("envName").textContent = health.environment;
   } catch {
-    $("#navFoot").innerHTML = `state <span style="color:var(--coral)">unreachable</span>`;
+    document.getElementById("railFoot").textContent = "offline";
   }
-  startLive();
-  // live events nudge the caches so the next render is fresh
-  onEvent(() => invalidate());
-  setRoute(location.hash.slice(1) || "lineage");
+  refreshBadges();
+  setInterval(refreshBadges, 30000);
+
+  window.addEventListener("hashchange", renderRoute);
+  renderRoute();
 }
+
 boot();

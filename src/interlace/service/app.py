@@ -66,6 +66,7 @@ class ModelInfo(msgspec.Struct):
     tags: list[str]
     owner: str | None
     schedule: dict[str, str] | None
+    engine: str = "default"
 
 
 class ModelDetail(msgspec.Struct):
@@ -337,10 +338,10 @@ def _info(model: CompiledModel) -> ModelInfo:
 
 
 @get("/health")
-async def health() -> dict[str, str]:
+async def health(state: State) -> dict[str, str]:
     from interlace import __version__
 
-    return {"status": "ok", "version": __version__}
+    return {"status": "ok", "version": __version__, "environment": state.environment}
 
 
 @get("/", include_in_schema=False)

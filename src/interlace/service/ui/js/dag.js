@@ -1,172 +1,365 @@
-// The lineage canvas, ported from the prototype: layered layout, violet weave
-// edges (the logo gradient), column-level expansion with cross-graph thread
-// tracing, pan, per-node running halo. Column data hydrates lazily on expand.
-import { loadDetail, toCols } from "./data.js";
-import { MAT_GLYPH, STATE_COLOR, css, reduce, shortFp } from "./util.js";
+// Lineage canvas: a circuit-schematic DAG. Layered left→right by longest path,
+// barycenter-ordered rows, orthogonally routed edges, column pins that expand
+// per node and trace column-level lineage both directions. Pure SVG — no
+// dependencies, thousands of edges stay cheap because everything is one <g>
+// transform and hit-testing rides the DOM.
 
-export function mountDag({ wrap, canvas, models, names, selected, onSelect }) {
-  const ctx = canvas.getContext("2d");
-  let W = 0, H = 0, dpr = 1, raf = 0, drag = null;
-  const pan = { x: 0, y: 0 };
-  const pos = {};
-  const expanded = new Set();
-  const cols = {}; // name -> [[out, srcTable, srcCol]] once hydrated
-  let hoverCol = null;
-  let sel = selected;
-  const COLL = 50, HEADER = 30, ROW = 17, NODE_W = 148;
+const NODE_W = 176;
+const NODE_H = 46;
+const PIN_H = 16;
+const GAP_X = 90;
+const GAP_Y = 26;
 
-  async function hydrate(name) {
-    if (cols[name]) return;
-    try { cols[name] = toCols(await loadDetail(name)); } catch { cols[name] = []; }
+const SVG = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs = {}) {
+  const el = document.createElementNS(SVG, tag);
+  for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
+  return el;
+}
+
+export function createDag(container, data, { onSelect } = {}) {
+  // data: {models:[{name,output,strategy,engine,columns,...}], edges:[[up,down]], columns:{m:{c:[[um,uc]]}}}
+  const byName = new Map(data.models.map((model) => [model.name, model]));
+  const downstream = new Map();
+  const upstream = new Map();
+  for (const [up, down] of data.edges) {
+    if (!downstream.has(up)) downstream.set(up, []);
+    if (!upstream.has(down)) upstream.set(down, []);
+    downstream.get(up).push(down);
+    upstream.get(down).push(up);
+  }
+  // column reverse index: "model.col" -> [[downModel, downCol]]
+  const columnDown = new Map();
+  for (const [model, cols] of Object.entries(data.columns || {})) {
+    for (const [col, sources] of Object.entries(cols)) {
+      for (const [upModel, upCol] of sources) {
+        const key = `${upModel}.${upCol}`;
+        if (!columnDown.has(key)) columnDown.set(key, []);
+        columnDown.get(key).push([model, col]);
+      }
+    }
+  }
+
+  // ---- layout: layer = longest path from any root --------------------------
+  const layer = new Map();
+  const depth = (name) => {
+    if (layer.has(name)) return layer.get(name);
+    const ups = upstream.get(name) || [];
+    const value = ups.length ? 1 + Math.max(...ups.map(depth)) : 0;
+    layer.set(name, value);
+    return value;
+  };
+  data.models.forEach((model) => depth(model.name));
+  const layers = [];
+  for (const model of data.models) {
+    const l = layer.get(model.name);
+    (layers[l] ??= []).push(model.name);
+  }
+  // two barycenter passes settle most graphs
+  const rowIndex = new Map();
+  layers.forEach((names, l) => names.forEach((name, index) => rowIndex.set(name, index)));
+  for (let pass = 0; pass < 2; pass++) {
+    for (const names of layers) {
+      names.sort((a, b) => {
+        const center = (name) => {
+          const ups = upstream.get(name) || [];
+          return ups.length ? ups.reduce((sum, up) => sum + (rowIndex.get(up) ?? 0), 0) / ups.length : rowIndex.get(name);
+        };
+        return center(a) - center(b) || a.localeCompare(b);
+      });
+      names.forEach((name, index) => rowIndex.set(name, index));
+    }
+  }
+
+  const expanded = new Set(); // model names showing pins
+  const positions = new Map(); // name -> {x, y, h}
+
+  function nodeHeight(name) {
+    const cols = byName.get(name)?.columns || [];
+    return expanded.has(name) && cols.length ? NODE_H + 6 + cols.length * PIN_H : NODE_H;
   }
 
   function layout() {
-    const r = wrap.getBoundingClientRect();
-    dpr = Math.min(devicePixelRatio || 1, 2);
-    W = r.width; H = r.height;
-    canvas.width = W * dpr; canvas.height = H * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const layers = {};
-    names.forEach((n) => (layers[models[n].layer] ||= []).push(n));
-    const ks = Object.keys(layers), nL = Math.max(ks.length, 2), padX = 30, vGap = 20, padTop = 22;
-    const colGap = (W - padX * 2 - NODE_W) / (nL - 1);
-    ks.forEach((L) => {
-      const ns = layers[L];
-      const hs = ns.map((n) => (expanded.has(n) && cols[n] ? HEADER + cols[n].length * ROW + 10 : COLL));
-      const total = hs.reduce((a, b) => a + b, 0) + vGap * (ns.length - 1);
-      let y = Math.max(padTop, (H - total) / 2);
-      ns.forEach((n, i) => {
-        const p = { x: padX + (+L) * colGap, y, w: NODE_W, h: hs[i] };
-        if (expanded.has(n) && cols[n])
-          p.cols = cols[n].map((c, ci) => ({ name: c[0], src: c[1], srcCol: c[2], y: y + HEADER + ci * ROW + ROW / 2 }));
-        pos[n] = p; y += hs[i] + vGap;
-      });
-    });
-  }
-
-  const rr = (x, y, w, h, r) => { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); };
-  const aOut = (n, col) => { const p = pos[n]; if (col && p.cols) { const c = p.cols.find((c) => c.name === col); if (c) return { x: p.x + p.w, y: c.y }; } return { x: p.x + p.w, y: p.cols ? p.y + HEADER / 2 : p.y + p.h / 2 }; };
-  const aIn = (n, col) => { const p = pos[n]; if (col && p.cols) { const c = p.cols.find((c) => c.name === col); if (c) return { x: p.x, y: c.y }; } return { x: p.x, y: p.cols ? p.y + HEADER / 2 : p.y + p.h / 2 }; };
-  const strand = (a, b) => { const mx = (a.x + b.x) / 2; ctx.moveTo(a.x, a.y); ctx.bezierCurveTo(mx, a.y, mx, b.y, b.x, b.y); };
-
-  function edge(a, b, mode) { // 0 base · 1 selected-path · 2 hovered column thread
-    if (mode) {
-      const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
-      g.addColorStop(0, "#8B5CF6"); g.addColorStop(0.5, "#6366F1"); g.addColorStop(1, "#A855F7");
-      ctx.strokeStyle = g; ctx.globalAlpha = mode === 2 ? 1 : 0.9; ctx.lineWidth = mode === 2 ? 2.8 : 2.3;
-    } else { ctx.strokeStyle = "rgba(139,92,246,.14)"; ctx.globalAlpha = 1; ctx.lineWidth = 1.3; }
-    ctx.beginPath(); strand(a, b); ctx.stroke();
-    ctx.strokeStyle = mode === 2 ? "rgba(250,250,250,.5)" : mode === 1 ? "rgba(250,250,250,.32)" : "rgba(139,92,246,.05)";
-    ctx.lineWidth = mode === 2 ? 0.9 : mode === 1 ? 0.7 : 0.5;
-    ctx.save(); ctx.translate(0, -1.3); ctx.beginPath(); strand(a, b); ctx.stroke(); ctx.restore();
-    ctx.globalAlpha = 1;
-  }
-
-  function draw(t) {
-    ctx.clearRect(0, 0, W, H); ctx.save(); ctx.translate(pan.x, pan.y);
-    ctx.strokeStyle = "rgba(255,255,255,.02)"; ctx.lineWidth = 1;
-    for (let x = 0; x < W; x += 46) { ctx.beginPath(); ctx.moveTo(x, -pan.y); ctx.lineTo(x, H - pan.y); ctx.stroke(); }
-    const selModel = models[sel];
-    const onPath = new Set(selModel ? [sel, ...selModel.depends_on, ...selModel.down] : []);
-    names.forEach((n) => {
-      const m = models[n];
-      m.depends_on.forEach((d) => {
-        if (!pos[d] || !pos[n]) return;
-        const lit = onPath.has(n) && onPath.has(d);
-        const cs = (expanded.has(n) && cols[n] ? cols[n] : []).filter((c) => c[1] === d);
-        if ((!expanded.has(n) && !expanded.has(d)) || !cs.length) { edge(aOut(d, null), aIn(n, null), lit ? 1 : 0); return; }
-        cs.forEach((c) => {
-          const hv = hoverCol && ((hoverCol.node === d && hoverCol.name === c[2]) || (hoverCol.node === n && hoverCol.name === c[0]));
-          edge(aOut(d, c[2]), aIn(n, c[0]), hv ? 2 : lit ? 1 : 0);
-        });
-      });
-    });
-    names.forEach((n) => {
-      const m = models[n], p = pos[n];
-      if (!p) return;
-      const color = STATE_COLOR[m.state], dim = onPath.size && !onPath.has(n);
-      ctx.globalAlpha = dim ? 0.5 : 1;
-      rr(p.x, p.y, p.w, p.h, 8); ctx.fillStyle = n === sel ? "#27272A" : "#18181B"; ctx.fill();
-      ctx.lineWidth = n === sel ? 1.6 : 1; ctx.strokeStyle = n === sel ? css("--accent") : "#2E2E36"; ctx.stroke();
-      ctx.fillStyle = m.running ? css("--cyan") : color; rr(p.x, p.y, 3.5, p.h, 8); ctx.fill();
-      if (m.running && !reduce) {
-        const k = (Math.sin(t / 420) + 1) / 2;
-        ctx.globalAlpha = (dim ? 0.5 : 1) * (0.55 - k * 0.45);
-        ctx.strokeStyle = css("--cyan"); ctx.lineWidth = 1.5;
-        rr(p.x - 3 - k * 4, p.y - 3 - k * 4, p.w + 6 + k * 8, p.h + 6 + k * 8, 11); ctx.stroke();
-        ctx.globalAlpha = dim ? 0.5 : 1;
+    layers.forEach((names, l) => {
+      let y = 0;
+      for (const name of names) {
+        const height = nodeHeight(name);
+        positions.set(name, { x: l * (NODE_W + GAP_X), y, h: height });
+        y += height + GAP_Y;
       }
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = css("--text"); ctx.font = "600 12px ui-monospace,Menlo,monospace";
-      ctx.fillText(n.length > 17 ? n.slice(0, 16) + "…" : n, p.x + 13, p.y + (p.cols ? 15 : 17));
-      if (!p.cols) {
-        ctx.fillStyle = css("--muted"); ctx.font = "10px ui-monospace,Menlo,monospace";
-        ctx.fillText(`${MAT_GLYPH[m.mat] || "·"} ${m.mat}`, p.x + 13, p.y + 33);
-        ctx.fillStyle = css("--faint"); ctx.textAlign = "right"; ctx.fillText(shortFp(m.fingerprint), p.x + p.w - 11, p.y + 33); ctx.textAlign = "left";
-      } else {
-        ctx.fillStyle = css("--faint"); ctx.font = "10px ui-monospace,Menlo,monospace";
-        ctx.textAlign = "right"; ctx.fillText(shortFp(m.fingerprint), p.x + p.w - 22, p.y + 15); ctx.textAlign = "left";
-        ctx.strokeStyle = "#2E2E36"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(p.x + 8, p.y + HEADER); ctx.lineTo(p.x + p.w - 8, p.y + HEADER); ctx.stroke();
-        p.cols.forEach((c) => {
-          const hv = hoverCol && hoverCol.node === n && hoverCol.name === c.name;
-          if (hv) { ctx.fillStyle = "rgba(139,92,246,.12)"; ctx.fillRect(p.x + 4, c.y - ROW / 2, p.w - 8, ROW); }
-          ctx.fillStyle = hv ? css("--text") : css("--muted"); ctx.font = "10.5px ui-monospace,Menlo,monospace";
-          ctx.fillText(c.name.length > 18 ? c.name.slice(0, 17) + "…" : c.name, p.x + 14, c.y);
-          ctx.fillStyle = hv ? css("--accent") : "rgba(139,92,246,.3)";
-          if (m.depends_on.length) ctx.fillRect(p.x + 1, c.y - 2, 3, 4);
-          if (m.down.length) ctx.fillRect(p.x + p.w - 4, c.y - 2, 3, 4);
-        });
-      }
-      ctx.globalAlpha = dim ? 0.55 : 0.8; ctx.fillStyle = css("--faint"); ctx.font = "13px ui-monospace,Menlo,monospace"; ctx.textAlign = "center";
-      ctx.fillText(p.cols ? "–" : "+", p.x + p.w - 10, p.y + (p.cols ? 15 : 12)); ctx.textAlign = "left"; ctx.globalAlpha = 1;
     });
-    ctx.restore();
-    raf = requestAnimationFrame(draw);
+    // vertically centre shorter layers against the tallest
+    const total = Math.max(...layers.map((names) => names.reduce((sum, n) => sum + nodeHeight(n) + GAP_Y, 0)), 1);
+    layers.forEach((names) => {
+      const mine = names.reduce((sum, n) => sum + nodeHeight(n) + GAP_Y, 0);
+      const offset = (total - mine) / 2;
+      for (const name of names) positions.get(name).y += offset;
+    });
   }
 
-  const at = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left - pan.x, y: e.clientY - r.top - pan.y }; };
-  const nodeAt = (m) => names.find((n) => { const p = pos[n]; return p && m.x >= p.x && m.x <= p.x + p.w && m.y >= p.y && m.y <= p.y + p.h; });
-  const toggle = async (n) => {
-    if (expanded.has(n)) expanded.delete(n);
-    else { await hydrate(n); expanded.add(n); }
-    layout();
-  };
+  // ---- svg scaffolding -------------------------------------------------------
+  const root = svg("svg");
+  const world = svg("g");
+  const edgeLayer = svg("g");
+  const nodeLayer = svg("g");
+  world.append(edgeLayer, nodeLayer);
+  root.append(world);
+  container.append(root);
 
-  canvas.addEventListener("mousedown", (e) => {
-    const m = at(e);
-    const tog = names.find((n) => { const p = pos[n]; return p && m.x >= p.x + p.w - 18 && m.x <= p.x + p.w - 2 && m.y >= p.y + 2 && m.y <= p.y + 20; });
-    if (tog) { toggle(tog); return; }
-    const hit = nodeAt(m);
-    if (hit) { sel = hit; onSelect(hit); }
-    else { drag = { x: e.clientX - pan.x, y: e.clientY - pan.y }; canvas.style.cursor = "grabbing"; }
+  let scale = 1;
+  let panX = 40;
+  let panY = 30;
+  const applyTransform = () => world.setAttribute("transform", `translate(${panX},${panY}) scale(${scale})`);
+
+  root.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.12 : 0.89;
+    const rect = root.getBoundingClientRect();
+    const mx = event.clientX - rect.left;
+    const my = event.clientY - rect.top;
+    panX = mx - (mx - panX) * factor;
+    panY = my - (my - panY) * factor;
+    scale = Math.min(2.5, Math.max(0.15, scale * factor));
+    applyTransform();
+  }, { passive: false });
+
+  // Panning WITHOUT pointer capture: capture would retarget pointerup to the
+  // svg root and node/pin click handlers would never fire. A 4px threshold
+  // separates a pan from a click; `moved` lets click handlers ignore drag-ends.
+  let dragging = null;
+  let moved = false;
+  root.addEventListener("pointerdown", (event) => {
+    dragging = { x: event.clientX - panX, y: event.clientY - panY, sx: event.clientX, sy: event.clientY };
+    moved = false;
   });
-  canvas.addEventListener("dblclick", (e) => { const hit = nodeAt(at(e)); if (hit) { sel = hit; onSelect(hit); toggle(hit); } });
-  const mv = (e) => {
-    if (drag) { pan.x = e.clientX - drag.x; pan.y = e.clientY - drag.y; return; }
-    const m = at(e);
-    let hc = null;
-    for (const n of names) {
-      const p = pos[n];
-      if (!p || !p.cols) continue;
-      if (m.x >= p.x && m.x <= p.x + p.w) for (const c of p.cols) { if (Math.abs(m.y - c.y) <= ROW / 2) { hc = { node: n, name: c.name }; break; } }
-      if (hc) break;
+  window.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    if (!moved && Math.hypot(event.clientX - dragging.sx, event.clientY - dragging.sy) < 4) return;
+    moved = true;
+    root.classList.add("panning");
+    panX = event.clientX - dragging.x;
+    panY = event.clientY - dragging.y;
+    applyTransform();
+  });
+  window.addEventListener("pointerup", () => {
+    dragging = null;
+    root.classList.remove("panning");
+  });
+  const wasDrag = () => moved;
+
+  // ---- rendering ---------------------------------------------------------------
+  const edgeEls = new Map(); // "up->down" -> path
+  const nodeEls = new Map();
+  let selected = null;
+  let selectedPin = null;
+
+  function edgePath(up, down) {
+    const a = positions.get(up);
+    const b = positions.get(down);
+    const sx = a.x + NODE_W;
+    const sy = a.y + NODE_H / 2;
+    const tx = b.x;
+    const ty = b.y + NODE_H / 2;
+    const mid = sx + (tx - sx) / 2;
+    return `M ${sx} ${sy} H ${mid} V ${ty} H ${tx}`;
+  }
+
+  function draw() {
+    layout();
+    edgeLayer.replaceChildren();
+    nodeLayer.replaceChildren();
+    edgeEls.clear();
+    nodeEls.clear();
+
+    for (const [up, down] of data.edges) {
+      if (!positions.has(up) || !positions.has(down)) continue;
+      const path = svg("path", { class: "edge", d: edgePath(up, down) });
+      edgeLayer.append(path);
+      edgeEls.set(`${up}->${down}`, path);
     }
-    hoverCol = hc; canvas.style.cursor = hc ? "pointer" : "grab";
-  };
-  const up = () => { drag = null; canvas.style.cursor = hoverCol ? "pointer" : "grab"; };
-  addEventListener("mousemove", mv);
-  addEventListener("mouseup", up);
 
-  const ro = new ResizeObserver(layout);
-  ro.observe(wrap);
-  layout();
-  raf = requestAnimationFrame(draw);
+    for (const model of data.models) {
+      const { x, y } = positions.get(model.name);
+      const group = svg("g", { class: "node", transform: `translate(${x},${y})` });
+      const height = nodeHeight(model.name);
+      group.append(svg("rect", { class: "body", width: NODE_W, height, rx: 6 }));
 
-  return {
-    select(name) { sel = name; },
-    async expand(name) { await hydrate(name); expanded.add(name); layout(); },
-    async expandAll() { await Promise.all(names.map(hydrate)); names.forEach((n) => expanded.add(n)); layout(); },
-    collapseAll() { expanded.clear(); layout(); },
-    destroy() { cancelAnimationFrame(raf); ro.disconnect(); removeEventListener("mousemove", mv); removeEventListener("mouseup", up); },
-  };
+      const name = svg("text", { class: "name", x: 10, y: 19 });
+      name.textContent = model.name.length > 21 ? model.name.slice(0, 20) + "…" : model.name;
+      const meta = svg("text", { class: "meta", x: 10, y: 34 });
+      meta.textContent = `${model.output}${model.strategy && model.strategy !== "full" ? " · " + model.strategy : ""}${model.engine && model.engine !== "default" ? " · " + model.engine : ""}`;
+      group.append(name, meta);
+
+      const marks = [];
+      if (model.has_schedule) marks.push("⏱");
+      if (model.has_checks) marks.push("✓");
+      if (marks.length) {
+        const marksEl = svg("text", { class: "marks", x: NODE_W - 10 - marks.length * 12, y: 19 });
+        marksEl.textContent = marks.join(" ");
+        group.append(marksEl);
+      }
+
+      if ((model.columns || []).length) {
+        const expander = svg("text", { class: "expander", x: NODE_W - 14, y: 34 });
+        expander.textContent = expanded.has(model.name) ? "▾" : "▸";
+        expander.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (wasDrag()) return;
+          expanded.has(model.name) ? expanded.delete(model.name) : expanded.add(model.name);
+          draw();
+          applySelection();
+        });
+        group.append(expander);
+      }
+
+      if (expanded.has(model.name)) {
+        (model.columns || []).forEach((column, index) => {
+          const pin = svg("g", { class: "pin", "data-pin": `${model.name}.${column}` });
+          const label = svg("text", { x: 18, y: NODE_H + 8 + index * PIN_H + 4 });
+          label.textContent = column.length > 20 ? column.slice(0, 19) + "…" : column;
+          pin.append(label);
+          pin.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (wasDrag()) return;
+            selectPin(`${model.name}.${column}`);
+          });
+          group.append(pin);
+        });
+      }
+
+      group.addEventListener("click", () => {
+        if (!wasDrag()) select(model.name);
+      });
+      nodeLayer.append(group);
+      nodeEls.set(model.name, group);
+    }
+    applySelection();
+  }
+
+  // ---- selection / tracing --------------------------------------------------------
+  function reach(start, adjacency) {
+    const seen = new Set([start]);
+    const stack = [start];
+    while (stack.length) {
+      for (const next of adjacency.get(stack.pop()) || []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          stack.push(next);
+        }
+      }
+    }
+    return seen;
+  }
+
+  function applySelection() {
+    const litNodes = selected ? new Set([...reach(selected, upstream), ...reach(selected, downstream)]) : null;
+    for (const [name, el] of nodeEls) {
+      el.classList.toggle("sel", name === selected);
+      el.classList.toggle("dimmed", !!litNodes && !litNodes.has(name));
+    }
+    for (const [key, el] of edgeEls) {
+      const [up, down] = key.split("->");
+      const lit = !!litNodes && litNodes.has(up) && litNodes.has(down);
+      el.classList.toggle("lit", lit);
+      el.classList.toggle("dimmed", !!litNodes && !lit);
+    }
+    // pin highlight: trace the selected column through both directions
+    nodeLayer.querySelectorAll(".pin").forEach((pin) => pin.classList.remove("sel", "lit"));
+    if (selectedPin) {
+      const lit = new Set([selectedPin]);
+      const up = (key) => {
+        const [model, column] = splitPin(key);
+        for (const [upModel, upCol] of data.columns?.[model]?.[column] || []) {
+          const next = `${upModel}.${upCol}`;
+          if (!lit.has(next)) {
+            lit.add(next);
+            up(next);
+          }
+        }
+      };
+      const down = (key) => {
+        for (const [downModel, downCol] of columnDown.get(key) || []) {
+          const next = `${downModel}.${downCol}`;
+          if (!lit.has(next)) {
+            lit.add(next);
+            down(next);
+          }
+        }
+      };
+      up(selectedPin);
+      down(selectedPin);
+      nodeLayer.querySelectorAll(".pin").forEach((pin) => {
+        const key = pin.dataset.pin;
+        if (key === selectedPin) pin.classList.add("sel");
+        else if (lit.has(key)) pin.classList.add("lit");
+      });
+    }
+  }
+
+  function splitPin(key) {
+    const dot = key.lastIndexOf(".");
+    return [key.slice(0, dot), key.slice(dot + 1)];
+  }
+
+  function select(name) {
+    selected = selected === name ? null : name;
+    selectedPin = null;
+    applySelection();
+    onSelect?.(selected);
+  }
+
+  function selectPin(key) {
+    selectedPin = selectedPin === key ? null : key;
+    // expand every model the trace touches so the path is visible
+    if (selectedPin) {
+      const [model] = splitPin(selectedPin);
+      if (!expanded.has(model)) {
+        expanded.add(model);
+        draw();
+      }
+    }
+    applySelection();
+  }
+
+  function focus(name) {
+    if (!positions.has(name)) return;
+    const { x, y } = positions.get(name);
+    const rect = root.getBoundingClientRect();
+    scale = Math.max(scale, 0.8);
+    panX = rect.width / 2 - (x + NODE_W / 2) * scale;
+    panY = rect.height / 2 - (y + NODE_H / 2) * scale;
+    applyTransform();
+    selected = name;
+    selectedPin = null;
+    applySelection();
+    onSelect?.(name);
+  }
+
+  function fit() {
+    let maxX = 0;
+    let maxY = 0;
+    for (const { x, y, h } of positions.values()) {
+      maxX = Math.max(maxX, x + NODE_W);
+      maxY = Math.max(maxY, y + h);
+    }
+    const rect = root.getBoundingClientRect();
+    scale = Math.min(1, (rect.width - 80) / Math.max(maxX, 1), (rect.height - 110) / Math.max(maxY, 1));
+    panX = Math.max(40, (rect.width - maxX * scale) / 2);
+    panY = Math.max(64, (rect.height - maxY * scale) / 2); // clear of the toolbar
+    applyTransform();
+  }
+
+  function setFlow(name, on) {
+    // light the model's incoming edges while it builds
+    for (const up of upstream.get(name) || []) {
+      edgeEls.get(`${up}->${name}`)?.classList.toggle("flow", on);
+    }
+  }
+
+  draw();
+  fit();
+  applyTransform();
+
+  return { focus, fit, setFlow, destroy: () => root.remove() };
 }

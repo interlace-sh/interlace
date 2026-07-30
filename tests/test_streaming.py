@@ -180,6 +180,22 @@ async def test_flush_is_exactly_once(log: SqliteStreamLog) -> None:
     engine.close()
 
 
+async def test_flush_drains_bursts_larger_than_one_batch(log: SqliteStreamLog) -> None:
+    """A burst beyond batch_rows must not strand a durable-but-unmaterialized tail
+    until the next publish — one flush call drains the log."""
+    engine = DuckDBAdapter.in_memory()
+    await ensure_stream_tables([CLICKS_PLAIN], engine)
+
+    events = [Event({"event_id": f"e{i}", "user": "u", "amount": float(i)}) for i in range(7)]
+    await log.append("clicks", events)
+
+    assert await flush_stream(CLICKS_PLAIN, log, engine, batch_rows=3) == 7
+    assert await stream_watermark(CLICKS_PLAIN, engine) == 7
+    rows = await _rows(engine, "SELECT count(*) AS n FROM streams.clicks")
+    assert rows == [{"n": 7}]
+    engine.close()
+
+
 async def test_sql_model_reads_stream_table(log: SqliteStreamLog, tmp_path: Path) -> None:
     """The full loop: publish -> materialize -> a SQL model aggregates streams.<name>."""
     from interlace.dsl.decorators import ModelDef
@@ -213,9 +229,12 @@ async def test_sweep_respects_watermark_and_retention(log: SqliteStreamLog) -> N
     await ensure_stream_tables([kept, expired, forever], engine)
 
     for stream in (kept, expired, forever):
-        await log.append(stream.name, [Event({"event_id": "e1"}), Event({"event_id": "e2"})])
+        await log.append(stream.name, [Event({"event_id": "e1"})])
+    for stream in (kept, expired, forever):
+        await flush_stream(stream, log, engine)
+    for stream in (kept, expired, forever):  # e2 lands after the flush: durable, unmaterialized
+        await log.append(stream.name, [Event({"event_id": "e2"})])
     await flush_stream(kept, log, engine)
-    await flush_stream(expired, log, engine, batch_rows=1)  # watermark 1: e2 stays unmaterialized
     await flush_stream(forever, log, engine)
 
     removed = await sweep_streams([kept, expired, forever], log, engine)

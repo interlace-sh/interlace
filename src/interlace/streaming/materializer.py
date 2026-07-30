@@ -73,11 +73,27 @@ def quarantine_stream(stream: StreamDef) -> StreamDef:
 
 
 async def flush_stream(stream: StreamDef, log: StreamLog, engine: EngineAdapter, *, batch_rows: int = 5000) -> int:
-    """Flush one micro-batch for ``stream``; returns rows materialized."""
+    """Drain everything durable for ``stream`` into the warehouse in
+    ``batch_rows`` micro-batches; returns rows materialized. Draining (not a
+    single batch) is what lets callers — the flusher, an apply's pre-flush,
+    shutdown — assume the warehouse has caught up with the log when this
+    returns."""
+    total = 0
     watermark = await stream_watermark(stream, engine)
+    while True:
+        count, watermark = await _flush_batch(stream, log, engine, watermark, batch_rows)
+        total += count
+        if count < batch_rows:  # short batch: the log is drained
+            return total
+
+
+async def _flush_batch(
+    stream: StreamDef, log: StreamLog, engine: EngineAdapter, watermark: int, batch_rows: int
+) -> tuple[int, int]:
+    """Flush one micro-batch past ``watermark``; returns (rows materialized, new watermark)."""
     events = await log.read(stream.name, watermark, batch_rows)
     if not events:
-        return 0
+        return 0, watermark
 
     evolve = stream.on_schema_drift == "evolve"
     extras = evolved_columns(stream, [event.payload for event in events]) if evolve else {}
@@ -113,7 +129,7 @@ async def flush_stream(stream: StreamDef, log: StreamLog, engine: EngineAdapter,
             parse_one(f"DROP TABLE {_sql(stage)}"),
         ]
     )
-    return len(events)
+    return len(events), last
 
 
 async def flush_streams(

@@ -559,6 +559,11 @@ def serve(
         ),
         host=host,
         port=port,
+        # SSE clients (/events/stream) hold their response open forever; without a
+        # bound, uvicorn's graceful shutdown waits on them indefinitely ("Waiting
+        # for connections to close") and Ctrl+C appears to hang. Lifespan cleanup
+        # (flush, store/engine close) runs only after this drain completes.
+        timeout_graceful_shutdown=3,
     )
 
 

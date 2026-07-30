@@ -34,7 +34,7 @@ async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateS
 async def _apply(env: tuple[DuckDBAdapter, SqliteStateStore], sql: str, export: ExportConfig) -> None:
     engine, store = env
     compiled = compile_models([ModelDef(name="push", sql=sql, export=export)])
-    await apply(await diff(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
+    await apply(await diff(compiled, "prod", store), compiled=compiled, engine=engine, state=store)
 
 
 def _values(rows: str) -> str:
@@ -159,7 +159,7 @@ async def test_project_attach_reaches_external_database(tmp_path: Path) -> None:
     engine = project.open_engine()
     store = await project.open_state()
     try:
-        await apply(await diff(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
+        await apply(await diff(compiled, "prod", store), compiled=compiled, engine=engine, state=store)
     finally:
         await store.close()
         engine.close()
@@ -167,3 +167,33 @@ async def test_project_attach_reaches_external_database(tmp_path: Path) -> None:
     external = duckdb.connect(str(project_dir / "crm.duckdb"))  # relative path resolved against the project
     assert external.execute("SELECT id, name FROM contacts").fetchall() == [(1, "ada")]
     external.close()
+
+
+async def test_sink_is_environment_gated(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A dev apply must not fire reverse-ETL at the live destination: the sink's
+    snapshot is recorded (plan settles) but nothing is delivered."""
+    engine, store = env
+    export = ExportConfig(to="table", target="ext.main.gated")
+    compiled = compile_models([ModelDef(name="push", sql=_values("(1, 'a')"), export=export)])
+    result = await apply(await diff(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
+
+    assert result.gated == ["push"] and result.built == []
+    assert (await diff(compiled, "dev", store)).is_empty  # recorded: no rescheduling loop
+    tables = await _rows(engine, "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'ext'")
+    assert all(t["table_name"] != "gated" for t in tables)  # nothing left the warehouse
+
+    # the same fingerprint delivers when prod applies it
+    prod = await apply(await diff(compiled, "prod", store), compiled=compiled, engine=engine, state=store)
+    assert prod.built == ["push"]
+    assert await _rows(engine, "SELECT id FROM ext.main.gated") == [{"id": 1}]
+
+
+async def test_sink_environments_opt_in(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """environments= widens the gate explicitly."""
+    engine, store = env
+    export = ExportConfig(to="table", target="ext.main.dev_ok", environments=("dev",))
+    compiled = compile_models([ModelDef(name="push", sql=_values("(7, 'z')"), export=export)])
+    result = await apply(await diff(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
+
+    assert result.built == ["push"] and result.gated == []
+    assert await _rows(engine, "SELECT id FROM ext.main.dev_ok") == [{"id": 7}]

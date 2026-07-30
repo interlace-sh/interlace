@@ -298,10 +298,23 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
 
 
 @get("/plan")
-async def get_plan(state: State, environment: FromQuery[str | None] = None) -> PlanResponse:
+async def get_plan(
+    state: State,
+    environment: FromQuery[str | None] = None,
+    select: FromQuery[str | None] = None,
+    forward_only: FromQuery[bool] = False,
+) -> PlanResponse:
+    """Preview a plan. ``select`` takes comma-separated selectors (same grammar as
+    POST /apply's ``selectors``); ``forward_only`` previews history-inheriting plans
+    — so what you preview is exactly what POST /apply will do."""
     env = environment or state.environment
     compiled: CompiledProject = state.compiled
-    plan = await diff(compiled, env, state.store)
+    selectors = [part.strip() for part in select.split(",") if part.strip()] if select else []
+    try:
+        selected = select_models(selectors, compiled) if selectors else None
+    except SelectionError as exc:
+        raise ClientException(detail=exc.message) from exc
+    plan = await diff(compiled, env, state.store, select=selected, forward_only=forward_only)
     reused = {snapshot.name for snapshot in plan.reuses}
     previous_snapshots = await state.store.get_snapshots(
         (c.name, c.previous_fingerprint) for c in plan.changes if c.previous_fingerprint is not None

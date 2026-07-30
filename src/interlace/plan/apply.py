@@ -42,6 +42,7 @@ from interlace.strategies.base import RowCounts
 class ApplyResult:
     built: list[str] = field(default_factory=list)
     reused: list[str] = field(default_factory=list)  # recorded over their previous physical table
+    gated: list[str] = field(default_factory=list)  # sinks recorded but not delivered (environment gate)
     transfers: list[str] = field(default_factory=list)  # executed cross-engine transfers
     promoted: int = 0
     checks: list[CheckOutcome] = field(default_factory=list)
@@ -377,6 +378,13 @@ async def _run_backfill(
     resolved = resolve_model_query(model, compiled, resolution)
 
     if model.export is not None:  # sink: push the result to a destination, no table/view
+        if plan.environment not in model.export.environments:
+            # environment-gated: a dev apply must never fire a side effect at a live
+            # destination. Record the snapshot so the plan settles; deliver nothing.
+            await state.add_snapshot(snapshot)
+            result.gated.append(snapshot.name)
+            result.timings[snapshot.name] = time.perf_counter() - task_started
+            return
         if model.export.to == "table":  # reverse ETL into an attached database
             result.record_rows(snapshot.name, await _deliver_table_export(model, target_engine, resolved))
         else:

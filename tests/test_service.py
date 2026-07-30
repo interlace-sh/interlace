@@ -165,6 +165,16 @@ def test_plan_carries_sql_and_fingerprints(client: TestClient) -> None:
     assert change["new_sql"]  # SQL model carries its canonical definition for diffing
 
 
+def test_plan_preview_accepts_select_and_forward_only(client: TestClient) -> None:
+    """What you preview must be what POST /apply will do — same select grammar,
+    same forward_only semantics."""
+    body = client.get("/plan", params={"environment": "prod", "select": "raw_events"}).json()
+    assert {c["name"] for c in body["changes"]} == {"raw_events"}
+
+    assert client.get("/plan", params={"environment": "prod", "forward_only": "true"}).status_code == 200
+    assert client.get("/plan", params={"select": "nope:bad"}).status_code == 400  # selector errors are 4xx
+
+
 def test_apply_builds_promotes_and_clears_plan(client: TestClient) -> None:
     assert client.get("/environments").json() == []  # nothing promoted yet
 

@@ -38,13 +38,21 @@ _TABLE_MODES = frozenset({"replace", "append", "merge_by_key", "full_merge"})
 @dataclass(frozen=True)
 class ExportConfig:
     """Where a sink writes. ``to`` is the destination type; ``path`` (files) or
-    ``target`` + ``mode`` (+ ``key`` for keyed modes) for tables."""
+    ``target`` + ``mode`` (+ ``key`` for keyed modes) for tables.
+
+    ``environments`` gates the side effect: the export only *executes* when the
+    plan's environment is listed. Default is production only — a dev apply must
+    never fire reverse-ETL at a live external table (v2-design §6 calls this the
+    property that matters most). In a gated-off environment the sink's snapshot
+    is still recorded so the plan settles; nothing leaves the warehouse.
+    """
 
     to: str
     path: str = ""
     target: str = ""
     mode: str = "replace"
     key: tuple[str, ...] = ()
+    environments: tuple[str, ...] = ("prod",)  # PRODUCTION_ENV; literal to avoid a plan-layer import
 
     @classmethod
     def from_dict(cls, data: Any) -> ExportConfig:
@@ -52,12 +60,14 @@ class ExportConfig:
             raise ConfigurationError("export requires 'to'", details={"got": data})
         to = str(data["to"])
         key = data.get("key") or ()
+        environments = data.get("environments", ("prod",))
         config = cls(
             to=to,
             path=str(data.get("path", "")),
             target=str(data.get("target", "")),
             mode=str(data.get("mode", "replace")),
             key=(key,) if isinstance(key, str) else tuple(key),
+            environments=(environments,) if isinstance(environments, str) else tuple(environments),
         )
         if to in _FILE_FORMATS and not config.path:
             raise ConfigurationError(f"export to {to!r} requires 'path'", details={"got": data})

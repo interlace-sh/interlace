@@ -1052,6 +1052,28 @@ async def _apikey_create(name: str, path: Path, scopes: list[str]) -> None:
     console.print("[yellow]store it now — it will not be shown again[/yellow]")
 
 
+@apikey_app.command("revoke")
+def apikey_revoke(
+    name: str = typer.Argument(..., help="The key name to revoke (every key with this name)."),
+    path: Path = _PATH,
+) -> None:
+    """Revoke an API key — it stops authenticating immediately."""
+    asyncio.run(_apikey_revoke(name, path))
+
+
+async def _apikey_revoke(name: str, path: Path) -> None:
+    state = await Project.load(path).open_state()
+    try:
+        removed = await state.revoke_api_key(name)
+    finally:
+        await state.close()
+    if removed:
+        console.print(f"[green]revoked {removed} key(s) named '{name}'[/green]")
+    else:
+        console.print(f"[yellow]no key named '{name}'[/yellow]")
+        raise typer.Exit(1)
+
+
 @apikey_app.command("list")
 def apikey_list(path: Path = _PATH) -> None:
     """List API keys (names and scopes, not the secrets)."""

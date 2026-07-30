@@ -864,6 +864,16 @@ class SqliteStateStore:
             row = self._conn.execute("SELECT scopes FROM api_keys WHERE key_hash = ?", (digest,)).fetchone()
         return json.loads(row["scopes"]) if row else None
 
+    async def revoke_api_key(self, name: str) -> int:
+        """Revoke every key with this name; returns how many were removed."""
+        return await asyncio.to_thread(self._revoke_api_key_sync, name)
+
+    def _revoke_api_key_sync(self, name: str) -> int:
+        with self._lock:
+            removed = self._conn.execute("DELETE FROM api_keys WHERE name = ?", (name,)).rowcount
+            self._conn.commit()
+        return removed
+
     async def count_api_keys(self) -> int:
         return await asyncio.to_thread(self._count_api_keys_sync)
 

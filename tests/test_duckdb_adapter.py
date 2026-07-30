@@ -144,9 +144,10 @@ async def test_concurrent_ddl_keeps_its_schema_qualification() -> None:
         adapter.close()
 
 
-async def test_catalog_writes_never_overlap() -> None:
-    """The write lock must actually serialise: no two catalog-mutating bodies may be
-    in flight at once, or the DuckLake race above is still reachable."""
+async def test_catalog_write_serialisation_is_scoped_to_ducklake() -> None:
+    """On DuckLake connections the write lock must actually serialise (no two
+    catalog-mutating bodies in flight, or the DuckLake race above is reachable);
+    on plain DuckDB it must NOT, so parallel builds keep their overlap."""
     import asyncio
     import threading
 
@@ -178,9 +179,16 @@ async def test_catalog_writes_never_overlap() -> None:
         def cursor(self) -> WatchedCursor:
             return WatchedCursor()
 
-    adapter = DuckDBAdapter(WatchedConn())  # type: ignore[arg-type]
-    await asyncio.gather(*(adapter.execute_sql(f"CREATE TABLE t{i} AS SELECT 1") for i in range(16)))
+    serialised = DuckDBAdapter(WatchedConn(), serialise_writes=True)  # type: ignore[arg-type]
+    await asyncio.gather(*(serialised.execute_sql(f"CREATE TABLE t{i} AS SELECT 1") for i in range(16)))
     assert max_depth == 1, f"{max_depth} catalog writes ran concurrently; the write lock is not holding"
+
+    # plain DuckDB has no such catalog bug: writes must genuinely overlap, or apply
+    # parallelism is a no-op (measured ~4x on concurrent CTAS)
+    depth = max_depth = 0
+    parallel = DuckDBAdapter(WatchedConn())  # type: ignore[arg-type]
+    await asyncio.gather(*(parallel.execute_sql(f"CREATE TABLE t{i} AS SELECT 1") for i in range(16)))
+    assert max_depth > 1, "plain-DuckDB writes were serialised; parallel builds are losing their overlap"
 
 
 async def test_fetch_closes_its_cursor_when_the_stream_ends() -> None:

@@ -7,14 +7,21 @@ DuckDB calls run in a worker thread; each call uses its own ``cursor()`` so read
 proceed concurrently (DuckDB MVCC), while the DAG guarantees no two tasks write
 the same table at once.
 
-Statements that MUTATE THE CATALOG are serialised on ``_write_lock``. DuckLake's
-catalog layer is not safe against concurrent DDL on sibling cursors of one
-DatabaseInstance: under parallel builds a ``CREATE TABLE <schema>.<name>``
-intermittently loses its schema qualification and creates the table in the
-catalog's default schema instead, silently — no error, no transaction conflict.
-The snapshot then disagrees with what the state store recorded, and every later
-run fails resolving the table. Reads stay unlocked, so parallelism is only lost
-where the catalog is actually being written.
+On **DuckLake** connections, statements that MUTATE THE CATALOG are serialised
+on ``_write_lock``. DuckLake's catalog layer is not safe against concurrent DDL
+on sibling cursors of one DatabaseInstance: under parallel builds a
+``CREATE TABLE <schema>.<name>`` intermittently loses its schema qualification
+and creates the table in the catalog's default schema instead, silently — no
+error, no transaction conflict. The snapshot then disagrees with what the state
+store recorded, and every later run fails resolving the table. Reads stay
+unlocked, so parallelism is only lost where the catalog is actually being
+written.
+
+Plain DuckDB catalogs don't have that bug, and the DAG already guarantees no
+two tasks write the same table — so there the "lock" is a no-op context and
+builds genuinely run in parallel (measured ~4x on 4 concurrent CTAS). A
+transaction conflict on genuinely contended catalog objects still surfaces as
+``TransactionException`` and is retried where the batch is idempotent.
 """
 
 from __future__ import annotations
@@ -66,17 +73,27 @@ class DuckDBAdapter(EngineAdapter):
     dialect = "duckdb"
     caps = _DUCKDB_CAPS
 
-    def __init__(self, connection: duckdb.DuckDBPyConnection, session_init: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        session_init: Sequence[str] = (),
+        *,
+        serialise_writes: bool = False,
+    ) -> None:
         self._conn = connection
         # Statements re-applied on every cursor — SESSION-LOCAL state only (USE).
         # Anything instance-wide (LOAD, secrets, ATTACH) belongs at connect time:
         # re-running catalog writes here races across concurrent cursors.
         self._session_init = list(session_init)
         self._attached: list[str] = []  # aliases to DETACH on close (see close())
-        # Serialises catalog-mutating statements (see module docstring). Plain Lock,
-        # not RLock: no locked path calls another, and a plain Lock turns an
-        # accidental nesting into an obvious deadlock rather than silent re-entry.
-        self._write_lock = threading.Lock()
+        # Serialises catalog-mutating statements on DuckLake catalogs only (see
+        # module docstring); a no-op context elsewhere so builds run in parallel.
+        # Plain Lock, not RLock: no locked path calls another, and a plain Lock
+        # turns an accidental nesting into an obvious deadlock rather than silent
+        # re-entry.
+        self._write_lock: contextlib.AbstractContextManager[object] = (
+            threading.Lock() if serialise_writes else contextlib.nullcontext()
+        )
 
     def _cursor(self) -> duckdb.DuckDBPyConnection:
         cur = self._conn.cursor()
@@ -90,7 +107,7 @@ class DuckDBAdapter(EngineAdapter):
 
     @classmethod
     def connect(cls, path: str) -> DuckDBAdapter:
-        return cls(duckdb.connect(path))
+        return cls(duckdb.connect(path), serialise_writes=path.startswith("ducklake:"))
 
     @classmethod
     def connect_ducklake(
@@ -127,7 +144,7 @@ class DuckDBAdapter(EngineAdapter):
         # cursor and must run ONCE (re-running CREATE OR REPLACE SECRET per cursor
         # races: concurrent cursors hit "catalog write-write conflict on alter").
         # Only the default catalog is session state, so that is all a cursor re-applies.
-        return cls(conn, session_init=[f"USE {alias_sql}"])
+        return cls(conn, session_init=[f"USE {alias_sql}"], serialise_writes=True)
 
     def close(self) -> None:
         # DETACH long-lived attaches first: DuckLake leaks its DatabaseInstance when
@@ -144,6 +161,9 @@ class DuckDBAdapter(EngineAdapter):
         escaped = uri.replace("'", "''")
         self._conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {exp.to_identifier(alias).sql('duckdb')}")
         self._attached.append(alias)
+        if uri.startswith("ducklake:"):  # writes may now reach a DuckLake catalog (e.g. table sinks)
+            if isinstance(self._write_lock, contextlib.nullcontext):
+                self._write_lock = threading.Lock()
 
     # --- identifier helpers -------------------------------------------------
 

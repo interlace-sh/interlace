@@ -20,6 +20,14 @@ It needs no column lineage: an indirectly-changed model's SQL is unchanged and
 was previously valid, so it cannot reference newly-added upstream columns —
 the only leak is a projection ``*`` (which inherits new columns), and Python
 models, which see whole upstream tables and are treated as ``*``.
+
+Column pruning extends the clean case to *semantic* upstream changes: when a
+direct change provably touched only specific output columns (projection-only
+edit — FROM/WHERE/GROUP BY identical, so the row set is untouched), a
+downstream that provably consumes none of the touched columns is still clean.
+Both proofs are conservative: any ambiguity (``*``, unattributable unqualified
+references, DISTINCT, aliases leaking into other clauses) falls back to
+"everything touched" / "everything consumed" and the model rebuilds.
 """
 
 from __future__ import annotations
@@ -59,6 +67,8 @@ def _projection_map(ast: exp.Expression | None) -> dict[str, str] | None:
         if projection.find(exp.Star) is not None:
             return None  # star -> output columns unknown without a schema
         expr = projection.this if isinstance(projection, exp.Alias) else projection
+        if projection.alias_or_name in columns:
+            return None  # duplicate output name: positional comparison is unsound
         columns[projection.alias_or_name] = expr.sql()
     return columns
 
@@ -96,6 +106,80 @@ def _selects_star(ast: exp.Expression | None) -> bool:
             if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
                 return True  # qualified: t.*
     return False
+
+
+def _changed_columns(previous_sql: str | None, ast: exp.Expression | None) -> frozenset[str] | None:
+    """The output columns whose data may differ after a direct change, or None
+    when the touched set cannot be proven (assume every column changed).
+
+    Provable only for a projection-level edit: with both projection lists
+    erased the queries must be canonically identical, so the row set (FROM,
+    WHERE, GROUP BY, ...) is untouched and unchanged projections stay
+    byte-identical. Anything that lets a changed alias leak beyond its own
+    projection — DISTINCT, non-column grouping (positions, expressions),
+    references to a changed name from other clauses or sibling projections
+    (lateral aliases) — falls back to None.
+    """
+    if previous_sql is None or not isinstance(ast, exp.Select):
+        return None
+    previous = parse(previous_sql)
+    previous_map = _projection_map(previous)
+    current_map = _projection_map(ast)
+    if previous_map is None or current_map is None:
+        return None
+    stripped_previous = previous.copy()
+    stripped_previous.set("expressions", [exp.Star()])
+    stripped_current = ast.copy()
+    stripped_current.set("expressions", [exp.Star()])
+    if canonical_sql(stripped_current) != canonical_sql(stripped_previous):
+        return None  # row-set change: every column is touched
+    changed = {name for name, expr in previous_map.items() if current_map.get(name) != expr}
+    if not changed:
+        return frozenset()
+    if ast.args.get("distinct"):
+        return None  # DISTINCT dedups over all columns: any change reshapes the row set
+    group = ast.args.get("group")
+    if group is not None and not all(isinstance(e, exp.Column) for e in group.expressions):
+        return None  # positional / computed grouping can silently track a changed projection
+    leaky = [c for c in stripped_current.find_all(exp.Column) if not c.table and c.name in changed]
+    for projection in ast.selects:
+        if projection.alias_or_name in changed:
+            continue
+        leaky.extend(c for c in projection.find_all(exp.Column) if not c.table and c.name in changed)
+    return None if leaky else frozenset(changed)
+
+
+def _consumed_columns(ast: exp.Expression | None, dependency: str) -> frozenset[str] | None:
+    """The columns of ``dependency`` that ``ast`` provably reads, or None when
+    attribution is impossible (Python models, ``*`` projections, unqualified
+    references in a multi-source query) — None means "assume every column".
+
+    Matching mirrors :func:`resolve_references`: a table names the dependency
+    by its ``db.name`` key or its bare name. Ambiguity errs toward *consuming
+    more* (a shadowed alias attributes to the dependency; a CTE reference
+    counts as an extra source), never less.
+    """
+    if ast is None or _selects_star(ast):
+        return None
+    cte_names = {cte.alias_or_name for cte in ast.find_all(exp.CTE)}
+    aliases: set[str] = set()
+    sources: set[str] = set()
+    for table in ast.find_all(exp.Table):
+        if not table.name:
+            continue
+        key = f"{table.db}.{table.name}" if table.db else table.name
+        sources.add(key)
+        if table.name not in cte_names and dependency in (key, table.name):
+            aliases.add(table.alias_or_name)
+    consumed: set[str] = set()
+    for column in ast.find_all(exp.Column):
+        if not column.table:
+            if len(sources) > 1:
+                return None  # unqualified in a multi-source query: not attributable
+            consumed.add(column.name)
+        elif column.table in aliases:
+            consumed.add(column.name)
+    return frozenset(consumed)
 
 
 def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, environment: str) -> None:
@@ -141,6 +225,7 @@ async def diff(
     current = await state.get_environment(environment)
     plan = Plan(environment=environment)
     impact: dict[str, str] = {}  # changed models only: "semantic" | "additive" | "clean"
+    touched: dict[str, frozenset[str] | None] = {}  # semantic models: provably-changed columns (None = all)
 
     for model in compiled.ordered():  # topo order: upstream impact known before downstream
         previous_fingerprint = current.get(model.name)
@@ -159,23 +244,35 @@ async def diff(
         added: tuple[str, ...] = ()
         if previous is None or previous.local_fingerprint != model.local_fingerprint:
             # direct change: always rebuilds itself; additive-only narrows downstream impact
-            columns = _added_columns(previous.definition_sql if previous else None, model.ast)
+            previous_sql = previous.definition_sql if previous else None
+            columns = _added_columns(previous_sql, model.ast)
             semantic = columns is None
             added = columns or ()
             category = ChangeCategory.BREAKING if semantic else ChangeCategory.NON_BREAKING
             impact[model.name] = "semantic" if semantic else "additive"
+            if semantic:
+                touched[model.name] = _changed_columns(previous_sql, model.ast)
             rebuild = True
         else:  # indirect: only upstream fingerprints moved
-            upstream = [impact.get(dep, "clean") for dep in model.dependencies]
-            if "semantic" in upstream:
+            verdict = "clean"
+            for dep in model.dependencies:
+                dep_impact = impact.get(dep, "clean")
+                if dep_impact == "semantic":
+                    dep_touched = touched.get(dep)  # None (or unset) = every column may differ
+                    consumed = _consumed_columns(model.ast, dep)
+                    if dep_touched is not None and consumed is not None and not (consumed & dep_touched):
+                        continue  # column-pruned: reads only provably-unchanged columns
+                    verdict = "semantic"
+                    break
+                if dep_impact == "additive" and _selects_star(model.ast):
+                    verdict = "additive"  # a * projection inherits the new columns
+            impact[model.name] = verdict
+            if verdict == "semantic":
                 category, rebuild = ChangeCategory.BREAKING, True
-                impact[model.name] = "semantic"
-            elif "additive" in upstream and _selects_star(model.ast):
+            elif verdict == "additive":
                 category, rebuild = ChangeCategory.NON_BREAKING, True
-                impact[model.name] = "additive"  # a * projection inherits the new columns
             else:
-                category, rebuild = ChangeCategory.NON_BREAKING, False
-                impact[model.name] = "clean"  # provably identical output
+                category, rebuild = ChangeCategory.NON_BREAKING, False  # provably identical output
 
         if model.name not in selected:
             continue

@@ -148,6 +148,109 @@ async def test_rebuilt_model_resolves_reused_upstream_table(env: tuple[DuckDBAda
     assert await _rows(engine, "SELECT x, w FROM main.c") == [{"x": 1, "w": 99}]
 
 
+async def test_semantic_change_to_unconsumed_column_skips_downstream(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """Column pruning: y's expression changed, but down reads only x — clean skip."""
+    engine, _ = env
+    v1 = [sql_model("up", "SELECT 1 AS x, 2 AS y"), sql_model("down", "SELECT x FROM up")]
+    await _apply(env, v1)
+    v2 = [sql_model("up", "SELECT 1 AS x, 20 AS y"), sql_model("down", "SELECT x FROM up")]
+    plan, result = await _apply(env, v2)
+
+    by_name = {c.name: c for c in plan.changes}
+    assert by_name["up"].category is ChangeCategory.BREAKING  # the direct change itself is semantic
+    assert result.built == ["up"]
+    assert result.reused == ["down"]
+    assert await _rows(engine, "SELECT x FROM main.down") == [{"x": 1}]
+
+
+async def test_semantic_change_to_consumed_column_rebuilds_downstream(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, _ = env
+    v1 = [sql_model("up", "SELECT 1 AS x, 2 AS y"), sql_model("down", "SELECT x FROM up")]
+    await _apply(env, v1)
+    v2 = [sql_model("up", "SELECT 5 AS x, 2 AS y"), sql_model("down", "SELECT x FROM up")]
+    _, result = await _apply(env, v2)
+
+    assert set(result.built) == {"up", "down"}
+    assert result.reused == []
+    assert await _rows(engine, "SELECT x FROM main.down") == [{"x": 5}]
+
+
+async def test_column_pruning_attributes_by_join_alias(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """Qualified references attribute per-source: c reads u.x and o.w, so a change
+    to up.y prunes cleanly even through the join."""
+    v1 = [
+        sql_model("up", "SELECT 1 AS x, 2 AS y"),
+        sql_model("other", "SELECT 10 AS w"),
+        sql_model("c", "SELECT u.x, o.w FROM up u, other o"),
+    ]
+    await _apply(env, v1)
+    v2 = [
+        sql_model("up", "SELECT 1 AS x, 20 AS y"),
+        sql_model("other", "SELECT 10 AS w"),
+        sql_model("c", "SELECT u.x, o.w FROM up u, other o"),
+    ]
+    _, result = await _apply(env, v2)
+
+    assert result.built == ["up"]
+    assert result.reused == ["c"]
+
+
+async def test_unqualified_columns_in_join_disable_pruning(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """An unqualified reference in a multi-source query is unattributable — rebuild."""
+    v1 = [
+        sql_model("up", "SELECT 1 AS x, 2 AS y"),
+        sql_model("other", "SELECT 10 AS w"),
+        sql_model("c", "SELECT w FROM up u, other o"),
+    ]
+    await _apply(env, v1)
+    v2 = [
+        sql_model("up", "SELECT 1 AS x, 20 AS y"),
+        sql_model("other", "SELECT 10 AS w"),
+        sql_model("c", "SELECT w FROM up u, other o"),
+    ]
+    _, result = await _apply(env, v2)
+
+    assert set(result.built) == {"up", "c"}
+
+
+async def test_changed_aggregate_prunes_but_grouped_column_consumers_survive(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """GROUP BY on plain columns keeps the row set stable: only the changed
+    aggregate is touched, so a consumer of the group key skips."""
+    engine, _ = env
+    src = "SELECT * FROM (VALUES (1, 10), (1, 20), (2, 30)) AS t (k, v)"
+    v1 = [sql_model("up", f"SELECT k, sum(v) AS s FROM ({src}) q GROUP BY k"), sql_model("down", "SELECT k FROM up")]
+    await _apply(env, v1)
+    v2 = [
+        sql_model("up", f"SELECT k, sum(v * 2) AS s FROM ({src}) q GROUP BY k"),
+        sql_model("down", "SELECT k FROM up"),
+    ]
+    _, result = await _apply(env, v2)
+
+    assert result.built == ["up"]
+    assert result.reused == ["down"]
+    assert len(await _rows(engine, "SELECT k FROM main.down")) == 2
+
+
+async def test_distinct_upstream_disables_pruning(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """DISTINCT dedups over every column: changing y can change the row set of x too."""
+    src = "SELECT * FROM (VALUES (1, 10), (1, 20)) AS t (a, b)"
+    v1 = [sql_model("up", f"SELECT DISTINCT a AS x, b AS y FROM ({src}) q"), sql_model("down", "SELECT x FROM up")]
+    await _apply(env, v1)
+    v2 = [
+        sql_model("up", f"SELECT DISTINCT a AS x, b % 2 AS y FROM ({src}) q"),
+        sql_model("down", "SELECT x FROM up"),
+    ]
+    _, result = await _apply(env, v2)
+
+    assert set(result.built) == {"up", "down"}
+
+
 async def test_reuse_survives_plan_render_fields(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     await _apply(env, [sql_model("up", "SELECT 1 AS x"), sql_model("down", "SELECT x FROM up")])
     engine, store = env

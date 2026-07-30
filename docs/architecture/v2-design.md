@@ -351,6 +351,17 @@ Correctness hinge: reference resolution consults recorded snapshots (a reused fi
 at an *older* physical table than its name implies), threaded through apply/resolve/runtime/
 checks as a physical-table map.
 
+**Status (implemented, July 2026) — column-pruned skip.** The §7 narrowing above is live: a
+*semantic* direct change computes its provably-**touched** output columns (projection-only edit:
+with both projection lists erased the queries are canonically identical, so the row set is
+untouched and unchanged projections stay byte-identical), and each downstream computes the
+columns it provably **consumes** from that upstream (qualified refs attribute per join alias;
+unqualified refs only in single-source queries). Disjoint ⇒ the downstream is *clean* and skips.
+Both proofs bail to "everything" on ambiguity: ``*``, DISTINCT, positional/computed GROUP BY,
+a changed alias referenced from other clauses or sibling projections (lateral aliases), CTE
+indirection, duplicate output names. Conservative by construction — a false "touched"/"consumed"
+only costs a rebuild, never correctness.
+
 ### Reverse ETL & external sinks (where the snapshot+view layer stops)
 
 **Status (implemented, July 2026).** ``attach: {alias: uri}`` config wires external databases

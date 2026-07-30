@@ -110,6 +110,12 @@ async def _execute_run(
         plan = await run_plan(
             project, environment, store, start=start, end=end, select=set(run.flow_selector), restate=run.restate
         )
+        loop = asyncio.get_running_loop()
+
+        def on_progress(model: str, event: str) -> None:
+            # fire-and-forget telemetry: the SSE tail turns these into live build rows
+            loop.create_task(store.append_event(f"model.{event}", entity=model, payload={"run": run.id}))
+
         result = await apply(
             plan,
             compiled=project,
@@ -118,10 +124,17 @@ async def _execute_run(
             state=store,
             base_path=base_path,
             parallelism=parallelism,
+            on_progress=on_progress,
         )
         return {
             "built": result.built,
+            "reused": result.reused,
+            "gated": result.gated,
             "timings": {name: round(seconds, 3) for name, seconds in result.timings.items()},
+            "rows": {
+                name: {"inserted": c.inserted, "updated": c.updated, "deleted": c.deleted}
+                for name, c in result.rows.items()
+            },
         }
 
     beat = asyncio.create_task(heartbeat())

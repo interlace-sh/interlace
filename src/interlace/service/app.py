@@ -223,6 +223,88 @@ class PublishResult(msgspec.Struct):
     quarantined: int = 0  # events diverted to <stream>__quarantine (quarantine mode)
 
 
+class QueryRequest(msgspec.Struct):
+    sql: str
+    limit: int = 500  # capped at 10_000; the console is for inspection, not extraction
+
+
+class QueryResponse(msgspec.Struct):
+    columns: list[str]
+    types: list[str]
+    rows: list[list]  # JSON-safe cells (non-scalar values stringified)
+    row_count: int
+    truncated: bool
+    elapsed_ms: float
+
+
+class EngineInfo(msgspec.Struct):
+    name: str
+    type: str
+    dialect: str
+    database: str  # credentials redacted
+    default: bool
+
+
+class ScheduleInfo(msgspec.Struct):
+    model: str
+    kind: str  # "cron" | "every"
+    expression: str
+    next_fire: str | None
+    last_fired: str | None
+
+
+class LineageModel(msgspec.Struct):
+    name: str
+    output: str
+    strategy: str
+    engine: str
+    tags: list[str]
+    columns: list[str]  # compile-time resolvable output columns (may be empty for Python models)
+    has_schedule: bool = False
+    has_checks: bool = False
+
+
+class LineageResponse(msgspec.Struct):
+    models: list[LineageModel]
+    edges: list[list[str]]  # [upstream, downstream]
+    # model -> column -> [[upstream_model, upstream_column], ...]
+    columns: dict[str, dict[str, list[list[str]]]]
+
+
+class RunChecksRequest(msgspec.Struct):
+    environment: str | None = None
+    selectors: list[str] = msgspec.field(default_factory=list)
+
+
+class CheckOutcomeInfo(msgspec.Struct):
+    model: str
+    name: str
+    check_type: str
+    severity: str
+    status: str
+    failures: int
+    message: str | None = None
+
+
+class RunChecksResponse(msgspec.Struct):
+    environment: str
+    outcomes: list[CheckOutcomeInfo]
+    skipped: list[str]  # declared but not promoted in this environment
+    passed: int
+    blocking_failures: int
+
+
+class ApiKeyInfo(msgspec.Struct):
+    name: str
+    scopes: list[str]
+    created_at: str
+
+
+class CreateApiKey(msgspec.Struct):
+    name: str
+    scopes: list[str] = msgspec.field(default_factory=lambda: ["read"])
+
+
 class GcRequest(msgspec.Struct):
     grace: str = "7d"  # keep unreferenced snapshots younger than this
     dry_run: bool = False
@@ -482,6 +564,12 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         if plan.is_empty:
             return ApplyResponse(environment=env, built=[], promoted=0, breaking=False)
         await state.store.append_event("apply.started", entity=env, payload={"models": plan.promote})
+        loop = asyncio.get_running_loop()
+
+        def on_progress(model: str, event: str) -> None:
+            # fire-and-forget: build feedback is telemetry, never on the build's critical path
+            loop.create_task(state.store.append_event(f"model.{event}", entity=model, payload={"environment": env}))
+
         try:
             result = await apply_plan(
                 plan,
@@ -490,6 +578,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
                 state=state.store,
                 base_path=state.root,
                 parallelism=state.parallelism,
+                on_progress=on_progress,
             )
         except CheckError as exc:
             await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
@@ -606,6 +695,219 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
         last_offset=max(result.offsets) if result and result.offsets else None,
         quarantined=len(quarantined),
     )
+
+
+def _jsonable(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)  # timestamps, decimals, structs — stringified for the wire
+
+
+@post("/query", opt={"scope": "read"})
+async def post_query(data: QueryRequest, state: State) -> QueryResponse:
+    """Run a read-only query on the default engine. SELECT only — DDL/DML is
+    rejected at parse; a row cap is always applied."""
+    import time as _time
+
+    import sqlglot
+    from sqlglot import exp as _exp
+
+    try:
+        statements = sqlglot.parse(data.sql, read=state.engine.dialect)
+    except Exception as exc:
+        raise ClientException(detail=f"could not parse query: {exc}") from exc
+    if len(statements) != 1 or statements[0] is None:
+        raise ClientException(detail="exactly one statement, please")
+    parsed = statements[0]
+    if not isinstance(parsed, (_exp.Select, _exp.Union)):
+        raise ClientException(detail="SELECT only — the console never writes")
+    limit = max(1, min(data.limit, 10_000))
+    bounded = _exp.select("*").from_(parsed.subquery("q")).limit(limit)
+    started = _time.perf_counter()
+    try:
+        reader = await state.engine.fetch(bounded)
+        table = reader.read_all()
+    except Exception as exc:  # engine errors (missing table, type errors) are the user's feedback
+        raise ClientException(detail=str(exc)) from exc
+    elapsed = (_time.perf_counter() - started) * 1000
+    names = table.column_names
+    records = table.to_pylist()
+    return QueryResponse(
+        columns=names,
+        types=[str(field.type) for field in table.schema],
+        rows=[[_jsonable(record[name]) for name in names] for record in records],
+        row_count=len(records),
+        truncated=len(records) >= limit,
+        elapsed_ms=round(elapsed, 1),
+    )
+
+
+@get("/engines")
+async def get_engines(state: State) -> list[EngineInfo]:
+    infos: list[EngineInfo] = []
+    for name in sorted(state.engine_configs):
+        cfg = state.engine_configs[name]
+        database = cfg.database or ""
+        if "@" in database:  # never expose credentials
+            database = database.split("://", 1)[0] + "://…" + database.rsplit("@", 1)[-1]
+        infos.append(
+            EngineInfo(
+                name=name,
+                type=cfg.type,
+                dialect=cfg.resolved_dialect(),
+                database=database,
+                default=name == state.default_engine,
+            )
+        )
+    return infos
+
+
+@get("/schedules")
+async def get_schedules(state: State) -> list[ScheduleInfo]:
+    from datetime import datetime
+
+    from cronsim import CronSim
+
+    compiled: CompiledProject = state.compiled
+    infos: list[ScheduleInfo] = []
+    for name in sorted(compiled.models):
+        schedule = compiled.models[name].schedule
+        if not schedule:
+            continue
+        kind = "cron" if "cron" in schedule else "every"
+        expression = str(schedule.get("cron") or schedule.get("every"))
+        last = await state.store.get_trigger_last_fired(f"{'cron' if kind == 'cron' else 'interval'}:{name}")
+        next_fire: str | None = None
+        if kind == "cron":
+            with contextlib.suppress(Exception):
+                next_fire = next(CronSim(expression, last or datetime.now())).isoformat()
+        elif last is not None:
+            from interlace.state.interval import parse_grain
+
+            with contextlib.suppress(Exception):
+                next_fire = (last + parse_grain(expression)).isoformat()
+        infos.append(
+            ScheduleInfo(
+                model=name,
+                kind=kind,
+                expression=expression,
+                next_fire=next_fire,
+                last_fired=last.isoformat() if last else None,
+            )
+        )
+    return infos
+
+
+@get("/lineage")
+async def get_lineage(state: State) -> LineageResponse:
+    """The whole graph in one payload: nodes, table edges, and column lineage —
+    the UI renders and traces without a request per node."""
+    compiled: CompiledProject = state.compiled
+    models: list[LineageModel] = []
+    edges: list[list[str]] = []
+    for name in compiled.graph.topological_sort():
+        model = compiled.models[name]
+        models.append(
+            LineageModel(
+                name=name,
+                output=_output(model),
+                strategy=model.strategy,
+                engine=model.engine,
+                tags=list(model.tags),
+                columns=list(state.lineage.get(name, {})),
+                has_schedule=bool(model.schedule),
+                has_checks=bool(model.checks) or bool(compiled.python_checks.get(name)),
+            )
+        )
+        edges.extend([dep, name] for dep in model.dependencies)
+    columns = {
+        name: {col: [[t, c] for t, c in refs] for col, refs in sources.items()}
+        for name, sources in state.lineage.items()
+        if sources
+    }
+    return LineageResponse(models=models, edges=edges, columns=columns)
+
+
+@post("/checks/run", opt={"scope": "write"})
+async def post_checks_run(state: State, data: RunChecksRequest | None = None) -> RunChecksResponse:
+    """Run checks ad hoc against an environment's promoted tables (dbt-test style),
+    recording the results."""
+    from interlace.checks.runner import run_checks
+
+    request = data or RunChecksRequest()
+    compiled: CompiledProject = state.compiled
+    env = request.environment or state.environment
+    try:
+        chosen = select_models(request.selectors, compiled) if request.selectors else None
+    except SelectionError as exc:
+        raise ClientException(detail=exc.message) from exc
+    promoted = await state.store.get_environment(env)
+    if not promoted:
+        raise NotFoundException(detail=f"no environment {env!r} — apply first")
+    snapshots = await state.store.get_snapshots(promoted.items())
+    physical = {name: snapshot.physical_table for (name, _), snapshot in snapshots.items()}
+    outcomes: list[CheckOutcomeInfo] = []
+    blocking = 0
+    skipped: list[str] = []
+    for name, model in compiled.models.items():
+        if chosen is not None and name not in chosen:
+            continue
+        if (not model.checks and not compiled.python_checks.get(name)) or model.export is not None:
+            continue
+        snapshot = snapshots.get((name, promoted.get(name, "")))
+        if snapshot is None:
+            skipped.append(name)
+            continue
+        # the SNAPSHOT's engine, not the compiled model's: an engine re-pin since
+        # the last promote means the promoted table still lives on the old engine
+        engine = state.engines.require(snapshot.engine, model=name)
+        results = await run_checks(
+            model, compiled, engine, snapshot.physical_table, compiled.python_checks.get(name, ()), physical
+        )
+        if results:
+            await state.store.record_check_results(env, snapshot.fingerprint, results)
+        for outcome in results:
+            blocking += 1 if outcome.blocking else 0
+            outcomes.append(
+                CheckOutcomeInfo(
+                    model=outcome.model,
+                    name=outcome.name,
+                    check_type=outcome.type,
+                    severity=outcome.severity,
+                    status=outcome.status,
+                    failures=outcome.failures,
+                    message=outcome.message,
+                )
+            )
+    return RunChecksResponse(
+        environment=env,
+        outcomes=outcomes,
+        skipped=sorted(skipped),
+        passed=sum(1 for o in outcomes if o.status == "passed"),
+        blocking_failures=blocking,
+    )
+
+
+@get("/apikeys", opt={"scope": "admin"})
+async def get_apikeys(state: State) -> list[ApiKeyInfo]:
+    return [
+        ApiKeyInfo(name=str(k["name"]), scopes=[str(s) for s in k["scopes"]], created_at=str(k["created_at"]))
+        for k in await state.store.list_api_keys()
+    ]
+
+
+@post("/apikeys", opt={"scope": "admin"})
+async def post_apikey(data: CreateApiKey, state: State) -> dict:
+    token = await state.store.create_api_key(data.name, data.scopes)
+    return {"name": data.name, "scopes": data.scopes, "token": token}  # token shown once
+
+
+@delete("/apikeys/{name:str}", opt={"scope": "admin"}, status_code=200)
+async def delete_apikey(name: FromPath[str], state: State) -> dict:
+    removed = await state.store.revoke_api_key(name)
+    if not removed:
+        raise NotFoundException(detail=f"no key named {name!r}")
+    return {"name": name, "removed": removed}
 
 
 @post("/gc", opt={"scope": "admin"})
@@ -741,6 +1043,8 @@ def create_app(
         app.state.environment = environment
         app.state.root = project.root
         app.state.parallelism = project.config.parallelism
+        app.state.engine_configs = project.config.engine_configs()
+        app.state.default_engine = project.config.default_engine
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
         app.state.streams = streams
         app.state.stream_log = stream_log
@@ -863,10 +1167,18 @@ def create_app(
             cancel_run,
             post_apply,
             get_checks,
+            post_checks_run,
             get_streams,
             get_stream,
             publish,
             post_gc,
+            post_query,
+            get_engines,
+            get_schedules,
+            get_lineage,
+            get_apikeys,
+            post_apikey,
+            delete_apikey,
             get_events,
             stream_events,
         ],

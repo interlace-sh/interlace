@@ -395,3 +395,60 @@ def test_ui_loads_when_api_is_keyed(tmp_path: Path) -> None:
         assert client.get("/ui/").status_code == 200  # shell is public
         assert client.get("/models").status_code == 401  # data is not
         assert client.get("/health").status_code == 200
+
+
+def test_query_console_selects_and_refuses_writes(client: TestClient) -> None:
+    client.post("/apply", json={"environment": "prod"})
+    body = client.post("/query", json={"sql": "SELECT count(*) AS n FROM main.raw_events"}).json()
+    assert body["columns"] == ["n"] and body["row_count"] == 1
+    assert body["rows"][0][0] >= 1 and body["elapsed_ms"] >= 0
+
+    limited = client.post("/query", json={"sql": "SELECT * FROM range(100) t(i)", "limit": 10}).json()
+    assert limited["row_count"] == 10 and limited["truncated"] is True
+
+    assert client.post("/query", json={"sql": "DROP TABLE main.raw_events"}).status_code == 400
+    assert client.post("/query", json={"sql": "SELECT 1; SELECT 2"}).status_code == 400
+    assert client.post("/query", json={"sql": "SELECT FROM WHERE"}).status_code == 400
+
+
+def test_engines_schedules_lineage_endpoints(client: TestClient) -> None:
+    engines = client.get("/engines").json()
+    assert any(e["default"] for e in engines)
+    assert all("@" not in e["database"] or "…" in e["database"] for e in engines)
+
+    assert isinstance(client.get("/schedules").json(), list)  # example has no schedules; shape only
+
+    lineage = client.get("/lineage").json()
+    names = {m["name"] for m in lineage["models"]}
+    assert {"raw_events", "event_totals"} <= names
+    assert ["raw_events", "event_totals"] in lineage["edges"]
+
+
+def test_checks_run_endpoint(client: TestClient) -> None:
+    assert client.post("/checks/run", json={}).status_code == 404  # nothing promoted yet
+    client.post("/apply", json={"environment": "prod"})
+    body = client.post("/checks/run", json={"environment": "prod"}).json()
+    assert body["environment"] == "prod"
+    assert body["passed"] == len(body["outcomes"]) and body["blocking_failures"] == 0
+
+
+def test_apikey_lifecycle_over_http(client: TestClient) -> None:
+    created = client.post("/apikeys", json={"name": "ci", "scopes": ["read"]}).json()
+    assert created["token"].startswith("ilk_")
+    # a key now exists: auth is enforced, so authenticate the remaining calls
+    auth = {"Authorization": f"Bearer {created['token']}"}
+    assert client.get("/models", headers=auth).status_code == 200
+    admin = client.post("/apikeys", json={"name": "root", "scopes": ["admin"]}).status_code
+    assert admin in (401, 403)  # a read key cannot mint keys
+
+    # unauthenticated is refused once keys exist
+    assert client.get("/models").status_code in (401, 403)
+
+
+def test_apply_emits_per_model_progress_events(client: TestClient) -> None:
+    client.post("/apply", json={"environment": "prod"})
+    _wait_for(lambda: any(e["type"] == "model.done" for e in client.get("/events").json()))
+    events = client.get("/events").json()
+    started = {e["entity"] for e in events if e["type"] == "model.start"}
+    finished = {e["entity"] for e in events if e["type"] == "model.done"}
+    assert "raw_events" in started and started == finished  # every started model resolved

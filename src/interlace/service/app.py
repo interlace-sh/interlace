@@ -1135,6 +1135,12 @@ def create_app(
         try:
             yield
         finally:
+            # Teardown must survive being CANCELLED (a second Ctrl+C, or uvicorn's
+            # graceful-shutdown timeout, lands mid-teardown): anyio cancel scopes are
+            # level-triggered, so every unshielded await below would raise instantly
+            # and the store/log/engine handles would leak — shield the whole thing.
+            import anyio
+
             for task in (loop_task, flusher_task, tail_task):
                 if task is not None:
                     task.cancel()
@@ -1143,10 +1149,14 @@ def create_app(
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
             if streams:  # clean shutdown leaves nothing durable-but-unflushed behind
+                with anyio.move_on_after(8, shield=True):  # best-effort, bounded: force-quit must still quit
+                    with contextlib.suppress(Exception):
+                        await flush_once()  # incl. consumer enqueues, so restarts owe nothing
+            with anyio.CancelScope(shield=True):  # closes are fast and MUST run
                 with contextlib.suppress(Exception):
-                    await flush_once()  # incl. consumer enqueues, so restarts owe nothing
-            await stream_log.close()
-            await store.close()
+                    await stream_log.close()
+                with contextlib.suppress(Exception):
+                    await store.close()
             engines.close()
 
     # no-cache (not no-store): the browser may keep copies but must revalidate,

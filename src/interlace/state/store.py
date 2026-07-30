@@ -226,6 +226,7 @@ class StateStore(Protocol):
     async def record_interval(self, name: str, fingerprint: str, interval: Interval) -> None: ...
     async def get_intervals(self, name: str, fingerprint: str) -> IntervalSet: ...
     async def promote(self, environment: str, mapping: dict[str, str]) -> None: ...
+    async def demote(self, environment: str, names: Iterable[str]) -> None: ...
     async def get_environment(self, environment: str) -> dict[str, str]: ...
     async def record_check_results(self, environment: str, fingerprint: str, outcomes: Iterable[Any]) -> None: ...
     async def close(self) -> None: ...
@@ -307,6 +308,11 @@ class SqliteStateStore:
     def _get_snapshots_sync(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], Snapshot]:
         if not pairs:
             return {}
+        if len(pairs) > 400:  # stay far under SQLITE_MAX_VARIABLE_NUMBER (32766 on conservative builds)
+            merged: dict[tuple[str, str], Snapshot] = {}
+            for start in range(0, len(pairs), 400):
+                merged.update(self._get_snapshots_sync(pairs[start : start + 400]))
+            return merged
         placeholders = ",".join(["(?,?)"] * len(pairs))
         flat = [value for pair in pairs for value in pair]
         with self._lock:
@@ -445,6 +451,38 @@ class SqliteStateStore:
             )
             self._conn.commit()
 
+    async def trim_logs(self, older_than: timedelta = timedelta(days=30)) -> dict[str, int]:
+        """Trim ``event_log`` and ``check_results`` rows older than the cutoff.
+        Also drops terminal ``work_queue`` rows of the same age. Both logs grow
+        with every apply/flush/run and have no other reclamation path."""
+        return await asyncio.to_thread(self._trim_logs_sync, older_than)
+
+    def _trim_logs_sync(self, older_than: timedelta) -> dict[str, int]:
+        cutoff = (datetime.now(UTC) - older_than).isoformat()
+        with self._lock:
+            events = self._conn.execute("DELETE FROM event_log WHERE ts < ?", (cutoff,)).rowcount
+            checks = self._conn.execute("DELETE FROM check_results WHERE executed_at < ?", (cutoff,)).rowcount
+            runs = self._conn.execute(
+                "DELETE FROM work_queue WHERE enqueued_at < ? AND state IN ('succeeded', 'failed', 'cancelled')",
+                (cutoff,),
+            ).rowcount
+            self._conn.commit()
+        return {"events": events, "check_results": checks, "runs": runs}
+
+    async def demote(self, environment: str, names: Iterable[str]) -> None:
+        """Remove models from an environment's promotion map (model deletion)."""
+        await asyncio.to_thread(self._demote_sync, environment, list(names))
+
+    def _demote_sync(self, environment: str, names: list[str]) -> None:
+        if not names:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "DELETE FROM environments WHERE environment = ? AND model_name = ?",
+                [(environment, name) for name in names],
+            )
+            self._conn.commit()
+
     async def get_environment(self, environment: str) -> dict[str, str]:
         return await asyncio.to_thread(self._get_environment_sync, environment)
 
@@ -545,13 +583,20 @@ class SqliteStateStore:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 rows = self._conn.execute(
-                    "SELECT id, flow_selector, partition_start, partition_end, priority, attempts, restate "
+                    "SELECT id, flow_selector, partition_start, partition_end, priority, attempts, restate, "
+                    "       cancel_requested "
                     "FROM work_queue WHERE state = 'queued' "
                     "   OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
                     "ORDER BY priority DESC, id LIMIT ?",
                     (now.isoformat(), limit),
                 ).fetchall()
                 for row in rows:
+                    if row["cancel_requested"]:  # cancelled between attempts: honour it, don't re-run
+                        self._conn.execute(
+                            "UPDATE work_queue SET state = 'cancelled', lease_owner = NULL WHERE id = ?",
+                            (row["id"],),
+                        )
+                        continue
                     if row["attempts"] >= max_attempts:  # a dead worker's run out of retries
                         self._conn.execute(
                             "UPDATE work_queue SET state = 'failed', error = ?, lease_owner = NULL WHERE id = ?",
@@ -587,17 +632,32 @@ class SqliteStateStore:
         return await asyncio.to_thread(self._renew_lease_sync, run_id, owner, lease_seconds)
 
     def _renew_lease_sync(self, run_id: int, owner: str, lease_seconds: float) -> str:
+        # BEGIN IMMEDIATE + owner-fenced UPDATE: without it a starved worker whose
+        # lease already expired can read its own stale ownership just before a
+        # reclaimer's claim commits, then extend the reclaimer's lease — and both
+        # workers execute the run. The fence is what makes reclaim safe.
         expires = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).isoformat()
         with self._lock:
-            row = self._conn.execute(
-                "SELECT lease_owner, cancel_requested FROM work_queue WHERE id = ? AND state = 'running'", (run_id,)
-            ).fetchone()
-            if row is None or row["lease_owner"] != owner:
-                return "lost"
-            if row["cancel_requested"]:
-                return "cancel"
-            self._conn.execute("UPDATE work_queue SET lease_expires_at = ? WHERE id = ?", (expires, run_id))
-            self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT lease_owner, cancel_requested FROM work_queue WHERE id = ? AND state = 'running'",
+                    (run_id,),
+                ).fetchone()
+                if row is None or row["lease_owner"] != owner:
+                    self._conn.commit()
+                    return "lost"
+                if row["cancel_requested"]:
+                    self._conn.commit()
+                    return "cancel"
+                self._conn.execute(
+                    "UPDATE work_queue SET lease_expires_at = ? WHERE id = ? AND lease_owner = ?",
+                    (expires, run_id, owner),
+                )
+                self._conn.commit()
+            except BaseException:  # never leave the shared connection inside an open txn
+                self._conn.rollback()
+                raise
         return "ok"
 
     async def request_cancel(self, run_id: int) -> str | None:

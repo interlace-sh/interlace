@@ -30,7 +30,7 @@ from interlace.exports import export_row_counts, export_statements, export_targe
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import EngineRef, SqlRelation, TableRef
 from interlace.ir.schema import empty_schema
-from interlace.plan.plan import XFER_SCHEMA, BackfillTask, Plan, staging_table
+from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.state.store import StateStore
@@ -524,4 +524,18 @@ async def apply(
     mapping = {name: compiled.models[name].fingerprint for name in plan.promote}
     await state.promote(plan.environment, mapping)
     result.promoted = len(mapping)
+
+    # deleted models: drop their env view and demote them, or the view serves the
+    # last snapshot forever and pins it against gc
+    removed = [c for c in plan.changes if c.change_type is ChangeType.REMOVED]
+    if removed:
+        last_snapshots = await state.get_snapshots(
+            (c.name, c.previous_fingerprint) for c in removed if c.previous_fingerprint is not None
+        )
+        for change in removed:
+            snapshot = last_snapshots.get((change.name, change.previous_fingerprint or ""))
+            view = env_view(plan.environment, change.name)
+            adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
+            await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+        await state.demote(plan.environment, [c.name for c in removed])
     return result

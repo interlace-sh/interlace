@@ -608,6 +608,8 @@ async def post_gc(state: State, data: GcRequest | None = None) -> GcResponse:
         raise ClientException(detail=str(exc)) from exc
     async with state.apply_lock:
         result = await run_gc(state.store, engines=state.engines, grace=grace, dry_run=request.dry_run)
+    if not request.dry_run:
+        await state.store.trim_logs()  # event_log / check_results / terminal queue rows
     if result.removed_snapshots and not request.dry_run:
         await state.store.append_event(
             "gc.finished",
@@ -784,9 +786,15 @@ def create_app(
 
         async def scheduler_loop() -> None:
             trigger_engine = TriggerEngine(build_triggers(compiled), store)
+            next_trim = asyncio.get_running_loop().time()  # first tick trims; then every 6h
             while True:
                 try:
                     await trigger_engine.tick(datetime.now())
+                    if asyncio.get_running_loop().time() >= next_trim:
+                        # event_log / check_results / terminal queue rows grow with
+                        # every apply and flush; nothing else reclaims them
+                        await store.trim_logs()
+                        next_trim = asyncio.get_running_loop().time() + 6 * 3600
                     async with app.state.apply_lock:  # one warehouse writer at a time
                         await drain(
                             store,

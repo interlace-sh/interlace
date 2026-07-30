@@ -459,6 +459,13 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
             f"{verb} {len(result.removed_snapshots)} snapshot(s), dropped {len(result.dropped_tables)} table(s); "
             f"{result.kept_snapshots} snapshot(s) kept."
         )
+        if not dry_run:
+            trimmed = await state.trim_logs()
+            if any(trimmed.values()):
+                console.print(
+                    f"Trimmed {trimmed['events']} event(s), {trimmed['check_results']} check result(s), "
+                    f"{trimmed['runs']} finished run(s) older than 30 days."
+                )
         for table in result.dropped_tables:
             console.print(f"  - {table}")
         if project.streams and not dry_run:

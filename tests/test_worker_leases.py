@@ -173,3 +173,33 @@ async def test_requeue_is_fenced_too(store: SqliteStateStore) -> None:
 
     assert await store.requeue_run(1, error="a is late", owner="worker-a") is False
     assert (await store.list_runs())[0]["state"] == "running"
+
+
+async def test_cancel_between_attempts_is_honoured_at_claim(store: SqliteStateStore) -> None:
+    """A cancel issued while an attempt is failing must not be wiped by the next
+    claim — the run cancels instead of re-executing."""
+    await store.enqueue_run("k-cancel", ["m"], None, 0)
+    claimed = await store.claim_runs(owner="w", lease_seconds=60.0)
+    assert await store.request_cancel(claimed[0].id) == "cancelling"
+    assert await store.requeue_run(claimed[0].id, error="boom", owner="w")  # attempt failed -> durable retry
+
+    reclaimed = await store.claim_runs(owner="w")
+    assert reclaimed == []  # never handed out again
+    assert (await _state_of(store, claimed[0].id))["state"] == "cancelled"
+
+
+async def test_trim_logs_reclaims_old_rows(store: SqliteStateStore) -> None:
+    from datetime import timedelta
+
+    await store.append_event("run.started", entity="1", payload={})
+    await store.enqueue_run("k-done", ["m"], None, 0)
+    run = (await store.claim_runs(owner="w"))[0]
+    assert await store.finish_run(run.id, success=True, owner="w")
+
+    kept = await store.trim_logs(timedelta(days=30))
+    assert kept == {"events": 0, "check_results": 0, "runs": 0}  # everything is fresh
+
+    trimmed = await store.trim_logs(timedelta(seconds=-1))  # cutoff in the future: all rows are older
+    assert trimmed["events"] == 1 and trimmed["runs"] == 1
+    assert await store.read_events(0) == []
+    assert await store.list_runs() == []

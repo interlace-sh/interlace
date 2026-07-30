@@ -197,3 +197,24 @@ async def test_modify_then_reapply_rebuilds_and_repoints(env: tuple[DuckDBAdapte
     await apply(plan, compiled=v2, engine=engine, state=store)
 
     assert await _rows(engine, "SELECT x FROM main.a") == [{"x": 2}]
+
+
+async def test_removed_model_demotes_and_drops_its_view(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """Deleting a model must not leave its env view serving the last snapshot
+    forever (and pinning it against gc)."""
+    engine, store = env
+    v1 = compile_models([sql_model("keep", "SELECT 1 AS x"), sql_model("gone", "SELECT 2 AS y")])
+    await apply(await diff(v1, "prod", store), compiled=v1, engine=engine, state=store)
+    assert await _rows(engine, "SELECT y FROM main.gone") == [{"y": 2}]
+
+    v2 = compile_models([sql_model("keep", "SELECT 1 AS x")])
+    plan = await diff(v2, "prod", store)
+    assert [c.name for c in plan.changes if c.change_type is ChangeType.REMOVED] == ["gone"]
+    await apply(plan, compiled=v2, engine=engine, state=store)
+
+    assert "gone" not in await store.get_environment("prod")  # demoted
+    import duckdb as duckdb_mod
+
+    with pytest.raises(duckdb_mod.CatalogException):
+        await _rows(engine, "SELECT y FROM main.gone")  # view dropped
+    assert await _rows(engine, "SELECT x FROM main.keep") == [{"x": 1}]  # survivor untouched

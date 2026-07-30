@@ -251,6 +251,84 @@ async def test_distinct_upstream_disables_pruning(env: tuple[DuckDBAdapter, Sqli
     assert set(result.built) == {"up", "down"}
 
 
+def test_pruning_proofs_bail_on_unsound_constructs() -> None:
+    """Each construct here lets a projection edit leak beyond its own column (or
+    hides a consumption) — the proofs must fall back to the conservative answer.
+    Regression tests for the 2026-07-30 soundness review."""
+    from interlace.ir.canonicalize import parse
+    from interlace.ir.fingerprint import canonical_sql
+    from interlace.plan.differ import _consumed_columns, _direct_impact
+
+    def impact(prev_raw: str, cur_raw: str) -> tuple[tuple[str, ...] | None, frozenset[str] | None]:
+        return _direct_impact(canonical_sql(parse(prev_raw)), parse(cur_raw))
+
+    # case folding: definition_sql is stored lowercased; consumers keep author case
+    _, touched = impact("SELECT b AS Amount, c FROM t", "SELECT b2 AS Amount, c FROM t")
+    consumed = _consumed_columns(parse("SELECT Amount FROM dep"), "dep")
+    assert touched is not None and consumed is not None and touched & consumed
+
+    # ordinal ORDER BY + LIMIT: the ordinal silently re-points at a changed projection
+    assert impact("SELECT a, b AS x FROM t ORDER BY 2 LIMIT 10", "SELECT a, b * 2 AS x FROM t ORDER BY 2 LIMIT 10") == (
+        None,
+        None,
+    )
+    assert impact("SELECT a, b FROM t ORDER BY 2 LIMIT 5", "SELECT a, c, b FROM t ORDER BY 2 LIMIT 5") == (None, None)
+
+    # GROUP BY ALL: the grouping key set tracks the projection list
+    assert impact("SELECT k, v AS x FROM t GROUP BY ALL", "SELECT k, v2 AS x FROM t GROUP BY ALL") == (None, None)
+    assert impact("SELECT k FROM t GROUP BY ALL", "SELECT k, v FROM t GROUP BY ALL") == (None, None)
+
+    # DISTINCT: adding a column changes the dedup key set of existing columns
+    assert impact("SELECT DISTINCT a FROM t", "SELECT DISTINCT a, b FROM t") == (None, None)
+
+    # identical SQL: the change is strategy/materialise config — outside the proofs
+    assert impact("SELECT a FROM t", "SELECT a FROM t") == (None, None)
+
+    # USING keys are read from both sides; NATURAL keys are unknowable
+    assert _consumed_columns(parse("SELECT dep.a FROM dep JOIN o USING (id)"), "dep") == {"a", "id"}
+    assert _consumed_columns(parse("SELECT a FROM dep NATURAL JOIN o"), "dep") is None
+
+    # struct access consumes its root column, qualified or not
+    assert _consumed_columns(parse("SELECT rec.f1 AS f FROM dep"), "dep") == {"rec"}
+    assert _consumed_columns(parse("SELECT u.rec.f1 FROM dep u"), "dep") == {"rec"}
+
+    # DuckDB COLUMNS(regex) matches unknown (and future) columns
+    assert _consumed_columns(parse("SELECT COLUMNS('a.*') FROM dep"), "dep") is None
+
+
+async def test_strategy_change_with_same_sql_rebuilds_downstream(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """Identical SQL, different strategy: the proofs can't see config, so the
+    downstream must rebuild."""
+    sql = "SELECT * FROM (VALUES (1, 10)) AS t (id, v)"
+    v1 = [sql_model("up", sql), sql_model("down", "SELECT id FROM up")]
+    await _apply(env, v1)
+    v2 = [sql_model("up", sql, strategy="merge_by_key", key=("id",)), sql_model("down", "SELECT id FROM up")]
+    _, result = await _apply(env, v2)
+
+    assert set(result.built) == {"up", "down"}
+    assert result.reused == []
+
+
+async def test_select_subset_pulls_in_changed_ancestors(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """Selecting only the downstream of a changed upstream must schedule the
+    upstream too — otherwise the downstream builds against a fingerprint table
+    that was never materialised."""
+    from interlace.plan.differ import diff as diff_fn
+
+    engine, store = env
+    v1 = [sql_model("up", "SELECT 1 AS x"), sql_model("down", "SELECT x FROM up")]
+    await _apply(env, v1)
+
+    compiled = compile_models([sql_model("up", "SELECT 5 AS x"), sql_model("down", "SELECT x FROM up")])
+    plan = await diff_fn(compiled, "prod", store, select={"down"})
+    result = await apply(plan, compiled=compiled, engine=engine, state=store)
+
+    assert set(result.built) == {"up", "down"}
+    assert await _rows(engine, "SELECT x FROM main.down") == [{"x": 5}]
+
+
 async def test_reuse_survives_plan_render_fields(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     await _apply(env, [sql_model("up", "SELECT 1 AS x"), sql_model("down", "SELECT x FROM up")])
     engine, store = env

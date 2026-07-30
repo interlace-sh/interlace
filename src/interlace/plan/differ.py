@@ -58,41 +58,108 @@ def snapshot_of(model: CompiledModel, category: ChangeCategory) -> Snapshot:
     )
 
 
+def _fold(name: str) -> str:
+    """Case-fold an identifier for comparison. ``definition_sql`` is stored via
+    ``canonical_sql`` (normalize=True → unquoted identifiers lowercased) while the
+    live AST keeps author case; folding both sides keeps the touched/consumed sets
+    comparable. Over-merging distinct quoted-case names only enlarges an
+    intersection — a rebuild, never a false skip."""
+    return name.lower()
+
+
 def _projection_map(ast: exp.Expression | None) -> dict[str, str] | None:
-    """Map output column name -> expression SQL for a simple SELECT, or None if undeterminable."""
+    """Map folded output column name -> canonical expression SQL for a simple
+    SELECT, or None if undeterminable."""
     if not isinstance(ast, exp.Select):
         return None
     columns: dict[str, str] = {}
     for projection in ast.selects:
-        if projection.find(exp.Star) is not None:
-            return None  # star -> output columns unknown without a schema
+        if projection.find(exp.Star, exp.Columns) is not None:
+            return None  # star / COLUMNS(regex) -> output columns unknown without a schema
         expr = projection.this if isinstance(projection, exp.Alias) else projection
-        if projection.alias_or_name in columns:
+        name = _fold(projection.alias_or_name)
+        if name in columns:
             return None  # duplicate output name: positional comparison is unsound
-        columns[projection.alias_or_name] = expr.sql()
+        columns[name] = canonical_sql(expr)
     return columns
 
 
-def _added_columns(previous_sql: str | None, ast: exp.Expression | None) -> tuple[str, ...] | None:
-    """The strictly-added output columns of a direct change, or None if the change
-    is not provably additive (i.e. pre-existing column data may differ)."""
+def _positional_hazard(ast: exp.Select) -> bool:
+    """Whether a clause resolves against projection *positions* or the whole
+    projection list, so a projection edit can silently leak into the row set:
+    ``GROUP BY ALL`` / empty grouping, ordinals in GROUP BY / ORDER BY."""
+    group = ast.args.get("group")
+    if group is not None and (group.args.get("all") or not group.expressions):
+        return True
+    ordinals = list(group.expressions) if group is not None else []
+    order = ast.args.get("order")
+    if order is not None:
+        ordinals.extend(item.this for item in order.expressions)
+    return any(isinstance(e, exp.Literal) for e in ordinals)
+
+
+def _direct_impact(
+    previous_sql: str | None, ast: exp.Expression | None
+) -> tuple[tuple[str, ...] | None, frozenset[str] | None]:
+    """Prove what a direct change did to the model's output: ``(added, touched)``.
+
+    ``added`` — the strictly-added output columns, or None if the change is not
+    provably additive (pre-existing column data may differ). ``touched`` — the
+    output columns whose data may differ, or None when that set cannot be proven
+    (assume every column changed).
+
+    Both proofs hold only for projection-level edits: with the projection lists
+    erased (or the added projections removed) the queries must be canonically
+    identical, so the row set (FROM, WHERE, GROUP BY, ...) is untouched. Anything
+    that lets a projection edit leak beyond its own column — DISTINCT (dedups
+    over all columns), GROUP BY ALL / ordinals (track the projection list
+    positionally), a changed alias referenced from other clauses or sibling
+    projections (lateral aliases) — falls back to the conservative answer.
+    """
     if previous_sql is None or not isinstance(ast, exp.Select):
-        return None
-    previous = parse(previous_sql)
+        return None, None
+    try:
+        previous = parse(previous_sql)
+    except Exception:
+        return None, None  # non-roundtripping construct: conservative, never a crash
     previous_map = _projection_map(previous)
     current_map = _projection_map(ast)
-    if previous_map is None or current_map is None:
-        return None
-    added = [name for name in current_map if name not in previous_map]
-    if not added or any(current_map.get(name) != expr for name, expr in previous_map.items()):
-        return None  # nothing added, or an existing projection changed/was removed
-    # strict: with the added projections removed, everything else (FROM, WHERE,
-    # GROUP BY, ...) must be identical — a filter change is never additive
-    stripped = ast.copy()
-    stripped.set("expressions", [p for p in stripped.selects if p.alias_or_name not in set(added)])
-    if canonical_sql(stripped) != canonical_sql(previous):
-        return None
-    return tuple(added)
+    if previous_map is None or current_map is None or not isinstance(previous, exp.Select):
+        return None, None
+    if ast.args.get("distinct") or _positional_hazard(ast) or _positional_hazard(previous):
+        return None, None
+
+    added = tuple(name for name in current_map if name not in previous_map)
+    changed = {name for name, expr in previous_map.items() if current_map.get(name) != expr}
+    if not added and not changed:
+        # identical projections and (below would confirm) identical shape: the change
+        # is outside the SQL — strategy/materialise config — which these proofs
+        # cannot reason about. Everything may differ.
+        return None, None
+
+    if added and not changed:
+        # additive candidate: with the added projections removed, everything else
+        # (FROM, WHERE, GROUP BY, ...) must be identical — a filter change is never additive
+        stripped = ast.copy()
+        stripped.set("expressions", [p for p in stripped.selects if _fold(p.alias_or_name) not in set(added)])
+        if canonical_sql(stripped) == canonical_sql(previous):
+            return added, frozenset()
+
+    # touched proof: erase both projection lists; the remainder must be identical
+    stripped_previous = previous.copy()
+    stripped_previous.set("expressions", [exp.Star()])
+    stripped_current = ast.copy()
+    stripped_current.set("expressions", [exp.Star()])
+    if canonical_sql(stripped_current) != canonical_sql(stripped_previous):
+        return None, None  # row-set change: every column is touched
+    if not changed:
+        return None, frozenset()
+    leaky = [c for c in stripped_current.find_all(exp.Column) if not c.table and _fold(c.name) in changed]
+    for projection in ast.selects:
+        if _fold(projection.alias_or_name) in changed:
+            continue
+        leaky.extend(c for c in projection.find_all(exp.Column) if not c.table and _fold(c.name) in changed)
+    return None, (None if leaky else frozenset(changed))
 
 
 def _selects_star(ast: exp.Expression | None) -> bool:
@@ -105,80 +172,58 @@ def _selects_star(ast: exp.Expression | None) -> bool:
                 return True
             if isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star):
                 return True  # qualified: t.*
+            if projection.find(exp.Columns) is not None:
+                return True  # DuckDB COLUMNS(regex): matches unknown future columns
     return False
 
 
-def _changed_columns(previous_sql: str | None, ast: exp.Expression | None) -> frozenset[str] | None:
-    """The output columns whose data may differ after a direct change, or None
-    when the touched set cannot be proven (assume every column changed).
-
-    Provable only for a projection-level edit: with both projection lists
-    erased the queries must be canonically identical, so the row set (FROM,
-    WHERE, GROUP BY, ...) is untouched and unchanged projections stay
-    byte-identical. Anything that lets a changed alias leak beyond its own
-    projection — DISTINCT, non-column grouping (positions, expressions),
-    references to a changed name from other clauses or sibling projections
-    (lateral aliases) — falls back to None.
-    """
-    if previous_sql is None or not isinstance(ast, exp.Select):
-        return None
-    previous = parse(previous_sql)
-    previous_map = _projection_map(previous)
-    current_map = _projection_map(ast)
-    if previous_map is None or current_map is None:
-        return None
-    stripped_previous = previous.copy()
-    stripped_previous.set("expressions", [exp.Star()])
-    stripped_current = ast.copy()
-    stripped_current.set("expressions", [exp.Star()])
-    if canonical_sql(stripped_current) != canonical_sql(stripped_previous):
-        return None  # row-set change: every column is touched
-    changed = {name for name, expr in previous_map.items() if current_map.get(name) != expr}
-    if not changed:
-        return frozenset()
-    if ast.args.get("distinct"):
-        return None  # DISTINCT dedups over all columns: any change reshapes the row set
-    group = ast.args.get("group")
-    if group is not None and not all(isinstance(e, exp.Column) for e in group.expressions):
-        return None  # positional / computed grouping can silently track a changed projection
-    leaky = [c for c in stripped_current.find_all(exp.Column) if not c.table and c.name in changed]
-    for projection in ast.selects:
-        if projection.alias_or_name in changed:
-            continue
-        leaky.extend(c for c in projection.find_all(exp.Column) if not c.table and c.name in changed)
-    return None if leaky else frozenset(changed)
-
-
 def _consumed_columns(ast: exp.Expression | None, dependency: str) -> frozenset[str] | None:
-    """The columns of ``dependency`` that ``ast`` provably reads, or None when
-    attribution is impossible (Python models, ``*`` projections, unqualified
-    references in a multi-source query) — None means "assume every column".
+    """The folded columns of ``dependency`` that ``ast`` provably reads, or None
+    when attribution is impossible (Python models, ``*`` / COLUMNS projections,
+    NATURAL joins, unqualified references in a multi-source query) — None means
+    "assume every column".
 
     Matching mirrors :func:`resolve_references`: a table names the dependency
     by its ``db.name`` key or its bare name. Ambiguity errs toward *consuming
     more* (a shadowed alias attributes to the dependency; a CTE reference
-    counts as an extra source), never less.
+    counts as an extra source; USING keys attribute to the dependency; a
+    struct-field qualifier attributes its root column), never less.
     """
     if ast is None or _selects_star(ast):
         return None
     cte_names = {cte.alias_or_name for cte in ast.find_all(exp.CTE)}
-    aliases: set[str] = set()
+    dep_aliases: set[str] = set()
+    all_aliases: set[str] = set()
     sources: set[str] = set()
     for table in ast.find_all(exp.Table):
         if not table.name:
             continue
         key = f"{table.db}.{table.name}" if table.db else table.name
         sources.add(key)
+        all_aliases.add(_fold(table.alias_or_name))
         if table.name not in cte_names and dependency in (key, table.name):
-            aliases.add(table.alias_or_name)
+            dep_aliases.add(_fold(table.alias_or_name))
     consumed: set[str] = set()
+    for join in ast.find_all(exp.Join):
+        if join.method and join.method.upper() == "NATURAL":
+            return None  # the key set is every shared column — unknowable statically
+        for using in join.args.get("using") or []:
+            consumed.add(_fold(using.name))  # USING keys read from both sides
     for column in ast.find_all(exp.Column):
-        if not column.table:
+        parts = column.parts
+        if len(parts) == 1:
             if len(sources) > 1:
                 return None  # unqualified in a multi-source query: not attributable
-            consumed.add(column.name)
-        elif column.table in aliases:
-            consumed.add(column.name)
+            consumed.add(_fold(column.name))
+            continue
+        head = _fold(parts[0].name)
+        if head in dep_aliases:
+            consumed.add(_fold(parts[1].name))  # alias.col / alias.struct.field -> col/struct
+        elif head not in all_aliases:
+            # not a table alias: struct/JSON access rooted at an unqualified column
+            if len(sources) > 1:
+                return None
+            consumed.add(head)
     return frozenset(consumed)
 
 
@@ -202,6 +247,28 @@ _HISTORY_STRATEGIES = frozenset({"merge_by_key", "full_merge", "scd_type_2", "sc
 """Strategies whose targets accumulate state a rebuild would destroy."""
 
 
+def _expand_to_changed_ancestors(compiled: CompiledProject, selected: set[str], current: dict[str, str]) -> set[str]:
+    """Grow a selection to include every changed ancestor of a selected model.
+
+    A selected downstream's new fingerprint hashes its upstreams' new
+    fingerprints; building it while a changed upstream stays unscheduled would
+    resolve against a physical table that was never built. Fingerprints are
+    transitive, so an unchanged dependency proves its whole ancestry unchanged
+    and the walk stops there.
+    """
+    expanded = set(selected)
+    stack = [name for name in selected if name in compiled.models]
+    while stack:
+        for dep in compiled.models[stack.pop()].dependencies:
+            upstream = compiled.models.get(dep)
+            if upstream is None or dep in expanded:
+                continue
+            if current.get(dep) != upstream.fingerprint:
+                expanded.add(dep)
+                stack.append(dep)
+    return expanded
+
+
 async def diff(
     compiled: CompiledProject,
     environment: str,
@@ -223,9 +290,19 @@ async def diff(
     """
     selected = set(compiled.models) if select is None else select
     current = await state.get_environment(environment)
+    if select is not None:
+        # a selected model must never build against an upstream fingerprint that was
+        # never materialised: pull every changed ancestor of the selection in too
+        selected = _expand_to_changed_ancestors(compiled, selected, current)
     plan = Plan(environment=environment)
     impact: dict[str, str] = {}  # changed models only: "semantic" | "additive" | "clean"
     touched: dict[str, frozenset[str] | None] = {}  # semantic models: provably-changed columns (None = all)
+
+    previous_snapshots = await state.get_snapshots(
+        (name, fingerprint)
+        for name, fingerprint in current.items()
+        if name in compiled.models and fingerprint != compiled.models[name].fingerprint
+    )
 
     for model in compiled.ordered():  # topo order: upstream impact known before downstream
         previous_fingerprint = current.get(model.name)
@@ -240,18 +317,18 @@ async def diff(
         if previous_fingerprint == model.fingerprint:
             continue  # unchanged
 
-        previous = await state.get_snapshot(model.name, previous_fingerprint)
+        previous = previous_snapshots.get((model.name, previous_fingerprint))
         added: tuple[str, ...] = ()
         if previous is None or previous.local_fingerprint != model.local_fingerprint:
             # direct change: always rebuilds itself; additive-only narrows downstream impact
             previous_sql = previous.definition_sql if previous else None
-            columns = _added_columns(previous_sql, model.ast)
+            columns, changed_columns = _direct_impact(previous_sql, model.ast)
             semantic = columns is None
             added = columns or ()
             category = ChangeCategory.BREAKING if semantic else ChangeCategory.NON_BREAKING
             impact[model.name] = "semantic" if semantic else "additive"
             if semantic:
-                touched[model.name] = _changed_columns(previous_sql, model.ast)
+                touched[model.name] = changed_columns
             rebuild = True
         else:  # indirect: only upstream fingerprints moved
             verdict = "clean"

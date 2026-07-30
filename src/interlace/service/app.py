@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import msgspec
 from litestar import Litestar, Request, delete, get, post
-from litestar.datastructures import State
+from litestar.datastructures import CacheControlHeader, State
 from litestar.exceptions import ClientException, ImproperlyConfiguredException, NotFoundException
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
@@ -1149,8 +1149,14 @@ def create_app(
             await store.close()
             engines.close()
 
+    # no-cache (not no-store): the browser may keep copies but must revalidate,
+    # so upgrading the daemon can never serve a stale shell against new modules
     ui_router = create_static_files_router(
-        path="/ui", directories=[Path(__file__).parent / "ui"], html_mode=True, include_in_schema=False
+        path="/ui",
+        directories=[Path(__file__).parent / "ui"],
+        html_mode=True,
+        include_in_schema=False,
+        cache_control=CacheControlHeader(no_cache=True),
     )
     return Litestar(
         route_handlers=[

@@ -124,6 +124,24 @@ export function sqlBlock(sql) {
   return h("pre", { class: "sql", html: highlightSql(sql) });
 }
 
+const PY_KEYWORDS = new RegExp(
+  "\\b(def|return|import|from|as|if|elif|else|for|while|in|not|and|or|is|None|True|False|class|with|async|await|" +
+    "yield|lambda|try|except|finally|raise|pass|break|continue|global|nonlocal|assert|del|match|case)\\b",
+  "g",
+);
+const PY_STRINGS = /("(?:""[^]*?""|(?:[^"\\\n]|\\.)*)"|'(?:''[^]*?''|(?:[^'\\\n]|\\.)*)')/g;
+
+/** Python source in the same block chrome as SQL (display only). */
+export function pythonBlock(source) {
+  let out = (source || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  out = out.replace(PY_STRINGS, '<span class="str">$1</span>');
+  out = out.replace(/(#[^\n]*)/g, '<span class="cmt">$1</span>');
+  out = out.replace(/^(\s*@[\w.]+)/gm, '<span class="dec">$1</span>');
+  out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');
+  out = out.replace(PY_KEYWORDS, '<span class="kw">$1</span>');
+  return h("pre", { class: "sql", html: out });
+}
+
 // ---- line diff (LCS) -----------------------------------------------------------
 
 export function diffLines(before, after) {

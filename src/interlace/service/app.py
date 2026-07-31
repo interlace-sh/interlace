@@ -67,6 +67,7 @@ class ModelInfo(msgspec.Struct):
     owner: str | None
     schedule: dict[str, str] | None
     engine: str = "default"
+    language: str = "sql"  # "sql" | "python"
 
 
 class ModelDetail(msgspec.Struct):
@@ -84,6 +85,8 @@ class ModelDetail(msgspec.Struct):
     owner: str | None
     schedule: dict[str, str] | None
     sql: str | None = None  # canonical SQL; None for Python models
+    language: str = "sql"  # "sql" | "python"
+    source: str | None = None  # dedented function source for Python models
 
 
 class Change(msgspec.Struct):
@@ -318,6 +321,18 @@ class GcResponse(msgspec.Struct):
     dry_run: bool
 
 
+def _python_source(model: CompiledModel) -> str | None:
+    if model.fn is None:
+        return None
+    import inspect
+    import textwrap
+
+    try:
+        return textwrap.dedent(inspect.getsource(model.fn))
+    except (OSError, TypeError):  # source unavailable (REPL, C ext): the name still renders
+        return None
+
+
 def _output(model: CompiledModel) -> str:
     return "sink" if model.export is not None else model.materialise
 
@@ -377,6 +392,8 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
         owner=model.owner,
         schedule=model.schedule,
         sql=model.definition_sql,
+        language="python" if model.ast is None else "sql",
+        source=_python_source(model),
     )
 
 
@@ -778,22 +795,28 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
         kind = "cron" if "cron" in schedule else "every"
         expression = str(schedule.get("cron") or schedule.get("every"))
         last = await state.store.get_trigger_last_fired(f"{'cron' if kind == 'cron' else 'interval'}:{name}")
-        next_fire: str | None = None
+
+        def _wire(moment: datetime | None) -> str | None:
+            # trigger timestamps are naive LOCAL (the scheduler ticks datetime.now());
+            # attach the local offset or every consumer reads them as UTC
+            return moment.astimezone().isoformat() if moment else None
+
+        next_fire: datetime | None = None
         if kind == "cron":
             with contextlib.suppress(Exception):
-                next_fire = next(CronSim(expression, last or datetime.now())).isoformat()
+                next_fire = next(CronSim(expression, last or datetime.now()))
         elif last is not None:
             from interlace.state.interval import parse_grain
 
             with contextlib.suppress(Exception):
-                next_fire = (last + parse_grain(expression)).isoformat()
+                next_fire = last + parse_grain(expression)
         infos.append(
             ScheduleInfo(
                 model=name,
                 kind=kind,
                 expression=expression,
-                next_fire=next_fire,
-                last_fired=last.isoformat() if last else None,
+                next_fire=_wire(next_fire),
+                last_fired=_wire(last),
             )
         )
     return infos

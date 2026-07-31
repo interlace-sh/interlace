@@ -56,9 +56,16 @@ def test_platform_tour_end_to_end(tmp_path: Path) -> None:
         stats = client.get("/models/order_stats").json()
         assert stats["depends_on"] == []  # external table ref, not a model dependency
 
-    # reverse ETL: the sink upserted into the attached CRM database
+        # what the sink SHOULD contain: the built model's own rows (never a
+        # hardcoded seed — the example is editable)
+        mirrored = client.post(
+            "/query", json={"sql": "SELECT customer_id FROM dev__main.customer_value ORDER BY 1"}
+        ).json()
+        expected = [row[0] for row in mirrored["rows"]]
+
+    # reverse ETL: the sink upserted exactly that into the attached CRM database
     external = duckdb.connect(str(project_dir / "crm.duckdb"))
     rows = external.execute("SELECT customer_id, score FROM customer_scores ORDER BY customer_id").fetchall()
     external.close()
-    assert [r[0] for r in rows] == [1, 2, 3]
+    assert expected and [r[0] for r in rows] == expected
     assert all(score is not None for _, score in rows)

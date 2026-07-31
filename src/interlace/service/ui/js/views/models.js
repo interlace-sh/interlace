@@ -2,7 +2,7 @@
 // column lineage, graph neighbours, canonical SQL, latest check results — and
 // act from there: trace it, run it, query it.
 
-import { copy, debounce, h, pill, relTime, sqlBlock, statusPill, table } from "../ui.js";
+import { copy, debounce, h, pill, pythonBlock, relTime, sqlBlock, statusPill, table } from "../ui.js";
 
 const OUTPUT_TONE = { sink: "cyan", view: "violet" };
 
@@ -10,7 +10,7 @@ export async function render(el, { api, go, toast, params }) {
   const filter = h("input", { class: "in", placeholder: "filter by name or tag", style: "width:240px" });
   const countLabel = h("span", { class: "sub" });
   const tableWrap = h("div", {});
-  const detailBody = h("div", {});
+  const detailBody = h("div", { style: "margin-top:12px" });
 
   el.append(
     h(
@@ -43,6 +43,11 @@ export async function render(el, { api, go, toast, params }) {
       table(
         [
           { k: "name", label: "model" },
+          {
+            k: "language",
+            label: "lang",
+            render: (m) => pill(m.language === "python" ? "py" : "sql", m.language === "python" ? "amber" : ""),
+          },
           { k: "output", label: "output", render: (m) => pill(m.output, OUTPUT_TONE[m.output] ?? "") },
           { k: "strategy", label: "strategy", render: (m) => h("span", { class: "dim" }, m.strategy) },
           {
@@ -131,6 +136,7 @@ export async function render(el, { api, go, toast, params }) {
       "div",
       { class: "card-head", style: "text-transform:none; letter-spacing:0" },
       h("strong", {}, detail.name),
+      pill(detail.language === "python" ? "py" : "sql", detail.language === "python" ? "amber" : ""),
       pill(detail.output, OUTPUT_TONE[detail.output] ?? ""),
       h(
         "span",
@@ -207,15 +213,17 @@ export async function render(el, { api, go, toast, params }) {
       ),
     );
 
-    // canonical SQL
+    // definition: canonical SQL, or the Python function's source
     cards.push(
       h(
         "div",
         { class: "card" },
-        h("div", { class: "card-head" }, "sql"),
+        h("div", { class: "card-head" }, detail.language === "python" ? "python source" : "sql"),
         detail.sql
           ? h("div", { class: "card-body" }, sqlBlock(detail.sql))
-          : h("div", { class: "empty" }, "python model", h("div", { class: "hint" }, "defined in code — no canonical SQL to show")),
+          : detail.source
+            ? h("div", { class: "card-body" }, pythonBlock(detail.source))
+            : h("div", { class: "empty" }, "python model", h("div", { class: "hint" }, "source unavailable in this session")),
       ),
     );
 

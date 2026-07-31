@@ -8,15 +8,64 @@ const PRODUCTION = "prod"; // the unprefixed namespace (PRODUCTION_ENV server-si
 export async function render(el, { api, go, toast, modal }) {
   const body = h("div", {});
 
+  const newBtn = h("button", { class: "btn primary", onclick: () => createModal() }, "new environment…");
+
   el.append(
     h(
       "div",
       { class: "view-head" },
       h("h1", {}, "Environments"),
       h("span", { class: "sub" }, "prod is the unprefixed namespace; other environments are prefixed sandboxes."),
+      h("span", { class: "spread" }),
+      newBtn,
     ),
     body,
   );
+
+  function createModal() {
+    modal((box, close) => {
+      const name = h("input", { class: "in", placeholder: "dev, staging, feature-x…" });
+      const buildBtn = h(
+        "button",
+        {
+          class: "btn primary",
+          onclick: async () => {
+            const env = name.value.trim();
+            if (!/^[a-z][a-z0-9_-]*$/i.test(env)) {
+              toast("environment names are letters, digits, _ and -", "err");
+              return;
+            }
+            buildBtn.disabled = true;
+            buildBtn.textContent = "building…";
+            try {
+              const result = await api.post("/apply", { environment: env });
+              toast(`built ${result.built.length} model(s) into '${env}'`, "ok");
+              close();
+              refresh();
+            } catch (error) {
+              toast(error.message, "err");
+              buildBtn.disabled = false;
+              buildBtn.textContent = "build";
+            }
+          },
+        },
+        "build",
+      );
+      box.append(
+        h("h2", {}, "New environment"),
+        h(
+          "p",
+          { class: "sub", style: "margin-bottom:10px" },
+          "an environment is created by building into it: every model materialises under the ",
+          h("code", {}, "<name>__"),
+          " schema prefix and gets its own views. prod stays untouched.",
+        ),
+        h("label", { class: "field" }, h("span", {}, "name"), name),
+        h("div", { class: "actions" }, h("button", { class: "btn", onclick: close }, "cancel"), buildBtn),
+      );
+      name.focus();
+    });
+  }
 
   async function refresh() {
     let environments;

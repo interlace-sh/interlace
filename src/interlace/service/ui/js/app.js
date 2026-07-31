@@ -35,7 +35,11 @@ export function modal(build) {
   };
   build(body, close);
   scrim.hidden = false;
-  scrim.onclick = (event) => event.target === scrim && close();
+  // statement body, never an expression: a DOM0 handler RETURNING false means
+  // preventDefault — which silently cancels checkbox toggles inside the modal
+  scrim.onclick = (event) => {
+    if (event.target === scrim) close();
+  };
   return close;
 }
 

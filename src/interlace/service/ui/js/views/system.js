@@ -4,7 +4,13 @@
 import { copy, h, pill, relTime, table } from "../ui.js";
 
 export async function render(el, { api, go, toast, modal, token }) {
-  const grid = h("div", { class: "grid2" });
+  // engines/schedules carry long DSNs and cron lines: full width. Keys and
+  // maintenance are compact and pair up.
+  const pair = h("div", { class: "grid2", style: "margin-top:12px" });
+  const enginesCard = h("div", { class: "card" });
+  const schedulesCard = h("div", { class: "card" });
+  const keysCard = h("div", { class: "card", style: "margin-top:0" });
+  const maintCard = h("div", { class: "card", style: "margin-top:0" });
 
   el.append(
     h(
@@ -13,14 +19,11 @@ export async function render(el, { api, go, toast, modal, token }) {
       h("h1", {}, "System"),
       h("span", { class: "sub" }, "engines, schedules, keys, maintenance"),
     ),
-    grid,
+    enginesCard,
+    schedulesCard,
+    pair,
   );
-
-  const enginesCard = h("div", { class: "card", style: "margin-top:0" });
-  const schedulesCard = h("div", { class: "card", style: "margin-top:0" });
-  const keysCard = h("div", { class: "card", style: "margin-top:0" });
-  const maintCard = h("div", { class: "card", style: "margin-top:0" });
-  grid.append(enginesCard, schedulesCard, keysCard, maintCard);
+  pair.append(keysCard, maintCard);
 
   // ---- engines ----------------------------------------------------------------
 
@@ -38,7 +41,12 @@ export async function render(el, { api, go, toast, modal, token }) {
             },
             { k: "type", label: "type" },
             { k: "dialect", label: "dialect", render: (engine) => h("span", { class: "dim" }, engine.dialect) },
-            { k: "database", label: "database", render: (engine) => h("span", { class: "dim" }, engine.database || "—") },
+            {
+              k: "database",
+              label: "connection",
+              render: (engine) =>
+                h("span", { class: "dim", style: "word-break:break-all" }, engine.database || "—"),
+            },
           ],
           engines,
           { empty: "no engines configured" },

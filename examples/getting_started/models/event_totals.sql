@@ -8,6 +8,7 @@ interlace:
 SELECT
     kind,
     count(*) AS events,
-    sum(amount) AS total_amount
+    sum(amount) AS total_amount,
+    avg(amount) AS avg_amount
 FROM raw_events
 GROUP BY kind

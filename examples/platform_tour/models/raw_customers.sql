@@ -2,7 +2,8 @@
 SELECT *
 FROM (
     VALUES
-        (1, 'ada', 'gold'),
-        (2, 'bob', 'silver'),
-        (3, 'cli', 'bronze')
-) AS t (customer_id, name, tier)
+        (1, 'ada', 'gold', true),
+        (2, 'bob', 'silver', true),
+        (3, 'cli', 'bronze', true),
+        (4, 'qwerty', 'bronze', false)
+) AS t (customer_id, name, tier, enabled)

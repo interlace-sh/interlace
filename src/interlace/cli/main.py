@@ -512,12 +512,31 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
         engines.close()
 
 
+def _free_port(host: str, start: int, attempts: int = 50) -> int:
+    """The requested port, or the next free one above it. A small probe/bind race
+    remains possible; uvicorn still fails loudly if it loses it."""
+    import errno
+    import socket
+
+    for candidate in range(start, start + attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((host, candidate))
+                return candidate
+            except OSError as exc:
+                if exc.errno not in (errno.EADDRINUSE, errno.EACCES):
+                    raise
+    console.print(f"[red]no free port in {start}–{start + attempts - 1}[/red]")
+    raise typer.Exit(1)
+
+
 @app.command()
 def serve(
     environment: str = _ENV,
     path: Path = _PATH,
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host."),
-    port: int = typer.Option(8000, "--port", help="Bind port."),
+    port: int = typer.Option(8000, "--port", help="Bind port (if busy, the next free port is used)."),
     quack: str = typer.Option(
         "", "--quack", help="Also serve the warehouse over the quack protocol, e.g. quack:localhost:4213."
     ),
@@ -540,6 +559,10 @@ def serve(
     except ImportError as exc:
         console.print("[red]The HTTP API needs the 'service' extra: pip install 'interlaced[service]'[/red]")
         raise typer.Exit(1) from exc
+    bound = _free_port(host, port)
+    if bound != port:
+        console.print(f"[yellow]port {port} is in use — serving on {bound}[/yellow]")
+    port = bound
     console.print(f"UI at [bold cyan]http://{host}:{port}/ui[/bold cyan]")
     token = quack_token
     if quack and not token:

@@ -77,13 +77,12 @@ examples/*/out/
 .ipynb_checkpoints/
 
 # Built UI (generated from interlace.ui build)
-src/interlace/service/static/
 
 # Private architectural docs
-docs/
+docs/*
+!docs/architecture/
 
 # Docker data
-data/
 
 # AI agent configs (private)
 CLAUDE.md

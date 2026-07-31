@@ -1,10 +1,12 @@
 """Stream schemas: publish-time validation and the Arrow mapping.
 
 A ``@stream`` declares ``schema={"field": "type", ...}``. Inbound payloads are
-validated *before* they are durable — unknown fields and wrong types are
-rejected (``on_schema_drift: reject``; evolve/quarantine are future modes),
-missing fields become NULL. The same declaration maps to the Arrow schema the
-materializer loads into the warehouse.
+validated *before* they are durable; ``on_schema_drift`` picks the policy —
+``reject`` refuses unknown fields and wrong types, ``evolve`` welcomes new
+fields (they become real columns at flush), ``quarantine`` diverts failing
+payloads to a ``<stream>__quarantine`` shadow stream. Missing fields become
+NULL. The same declaration maps to the Arrow schema the materializer loads
+into the warehouse.
 """
 
 from __future__ import annotations

@@ -12,6 +12,25 @@ const GAP_Y = 26;
 
 const SVG = "http://www.w3.org/2000/svg";
 
+const TYPE_SHORT = [
+  [/^(var)?char|^text|^string/i, "str"],
+  [/int/i, "int"],
+  [/^(double|float|real)/i, "float"],
+  [/^bool/i, "bool"],
+  [/^timestamp/i, "ts"],
+  [/^date$/i, "date"],
+  [/^time/i, "time"],
+  [/^(decimal|numeric)/i, "dec"],
+  [/^json/i, "json"],
+  [/^blob|^bytea/i, "bytes"],
+];
+
+function shortType(raw) {
+  if (!raw) return "";
+  for (const [pattern, short] of TYPE_SHORT) if (pattern.test(raw)) return short;
+  return raw.toLowerCase().split("(")[0].slice(0, 6);
+}
+
 function svg(tag, attrs = {}) {
   const el = document.createElementNS(SVG, tag);
   for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
@@ -185,8 +204,10 @@ export function createDag(container, data, { onSelect } = {}) {
       const height = nodeHeight(model.name);
       group.append(svg("rect", { class: "body", width: NODE_W, height, rx: 6 }));
 
+      if (model.is_stream) group.classList.add("stream");
+      const label = model.display ?? model.name;
       const name = svg("text", { class: "name", x: 10, y: 19 });
-      name.textContent = model.name.length > 21 ? model.name.slice(0, 20) + "…" : model.name;
+      name.textContent = label.length > 21 ? label.slice(0, 20) + "…" : label;
       const meta = svg("text", { class: "meta", x: 10, y: 34 });
       meta.textContent = `${model.output}${model.strategy && model.strategy !== "full" ? " · " + model.strategy : ""}${model.engine && model.engine !== "default" ? " · " + model.engine : ""}`;
       group.append(name, meta);
@@ -201,8 +222,15 @@ export function createDag(container, data, { onSelect } = {}) {
       }
 
       if ((model.columns || []).length) {
-        const expander = svg("text", { class: "expander", x: NODE_W - 14, y: 34 });
-        expander.textContent = expanded.has(model.name) ? "▾" : "▸";
+        // a real control: vertical chevron with a generous invisible hit target
+        const expander = svg("g", { class: "expander" });
+        const hit = svg("rect", { x: NODE_W - 26, y: NODE_H - 26, width: 24, height: 24, fill: "transparent" });
+        const open = expanded.has(model.name);
+        const chevron = svg("path", {
+          class: "chev",
+          d: open ? `M ${NODE_W - 20} ${NODE_H - 10} l 6 -6 l 6 6` : `M ${NODE_W - 20} ${NODE_H - 16} l 6 6 l 6 -6`,
+        });
+        expander.append(hit, chevron);
         expander.addEventListener("click", (event) => {
           event.stopPropagation();
           if (wasDrag()) return;
@@ -216,9 +244,15 @@ export function createDag(container, data, { onSelect } = {}) {
       if (expanded.has(model.name)) {
         (model.columns || []).forEach((column, index) => {
           const pin = svg("g", { class: "pin", "data-pin": `${model.name}.${column}` });
-          const label = svg("text", { x: 18, y: NODE_H + 8 + index * PIN_H + 4 });
-          label.textContent = column.length > 20 ? column.slice(0, 19) + "…" : column;
-          pin.append(label);
+          const pinLabel = svg("text", { x: 18, y: NODE_H + 8 + index * PIN_H + 4 });
+          pinLabel.textContent = column.length > 16 ? column.slice(0, 15) + "…" : column;
+          const kind = shortType((model.types || {})[column]);
+          if (kind) {
+            const typeEl = svg("text", { class: "pin-type", x: NODE_W - 10, y: NODE_H + 8 + index * PIN_H + 4, "text-anchor": "end" });
+            typeEl.textContent = kind;
+            pin.append(typeEl);
+          }
+          pin.append(pinLabel);
           pin.addEventListener("click", (event) => {
             event.stopPropagation();
             if (wasDrag()) return;
@@ -264,36 +298,24 @@ export function createDag(container, data, { onSelect } = {}) {
       el.classList.toggle("lit", lit);
       el.classList.toggle("dimmed", !!litNodes && !lit);
     }
-    // pin highlight: trace the selected column through both directions
+    // pin highlight: trace the selected column both directions, light the pins,
+    // the models that carry them, and the edges between those models
     nodeLayer.querySelectorAll(".pin").forEach((pin) => pin.classList.remove("sel", "lit"));
     if (selectedPin) {
-      const lit = new Set([selectedPin]);
-      const up = (key) => {
-        const [model, column] = splitPin(key);
-        for (const [upModel, upCol] of data.columns?.[model]?.[column] || []) {
-          const next = `${upModel}.${upCol}`;
-          if (!lit.has(next)) {
-            lit.add(next);
-            up(next);
-          }
-        }
-      };
-      const down = (key) => {
-        for (const [downModel, downCol] of columnDown.get(key) || []) {
-          const next = `${downModel}.${downCol}`;
-          if (!lit.has(next)) {
-            lit.add(next);
-            down(next);
-          }
-        }
-      };
-      up(selectedPin);
-      down(selectedPin);
+      const lit = traceColumns(selectedPin);
+      const litModels = new Set([...lit].map((key) => splitPin(key)[0]));
       nodeLayer.querySelectorAll(".pin").forEach((pin) => {
         const key = pin.dataset.pin;
         if (key === selectedPin) pin.classList.add("sel");
         else if (lit.has(key)) pin.classList.add("lit");
       });
+      for (const [nodeName, el] of nodeEls) el.classList.toggle("dimmed", !litModels.has(nodeName));
+      for (const [key, el] of edgeEls) {
+        const [up, down] = key.split("->");
+        const onPath = litModels.has(up) && litModels.has(down);
+        el.classList.toggle("lit", onPath);
+        el.classList.toggle("dimmed", !onPath);
+      }
     }
   }
 
@@ -309,15 +331,46 @@ export function createDag(container, data, { onSelect } = {}) {
     onSelect?.(selected);
   }
 
+  function traceColumns(start) {
+    // the full column blast-radius, both directions, data-level (no DOM needed)
+    const lit = new Set([start]);
+    const up = (key) => {
+      const [model, column] = splitPin(key);
+      for (const [upModel, upCol] of data.columns?.[model]?.[column] || []) {
+        const next = `${upModel}.${upCol}`;
+        if (!lit.has(next)) {
+          lit.add(next);
+          up(next);
+        }
+      }
+    };
+    const down = (key) => {
+      for (const [downModel, downCol] of columnDown.get(key) || []) {
+        const next = `${downModel}.${downCol}`;
+        if (!lit.has(next)) {
+          lit.add(next);
+          down(next);
+        }
+      }
+    };
+    up(start);
+    down(start);
+    return lit;
+  }
+
   function selectPin(key) {
     selectedPin = selectedPin === key ? null : key;
-    // expand every model the trace touches so the path is visible
     if (selectedPin) {
-      const [model] = splitPin(selectedPin);
-      if (!expanded.has(model)) {
-        expanded.add(model);
-        draw();
+      // expand EVERY node the trace touches so the whole path is visible
+      let grew = false;
+      for (const litKey of traceColumns(selectedPin)) {
+        const [model] = splitPin(litKey);
+        if (byName.has(model) && !expanded.has(model)) {
+          expanded.add(model);
+          grew = true;
+        }
       }
+      if (grew) draw();
     }
     applySelection();
   }

@@ -263,9 +263,18 @@ class LineageModel(msgspec.Struct):
     strategy: str
     engine: str
     tags: list[str]
-    columns: list[str]  # compile-time resolvable output columns (may be empty for Python models)
+    columns: list[str]  # output columns: warehouse-described, else parsed from the AST
+    types: dict[str, str] = msgspec.field(default_factory=dict)  # column -> engine type (when described)
     has_schedule: bool = False
     has_checks: bool = False
+
+
+class LineageStream(msgspec.Struct):
+    name: str  # keyed "streams.<name>" in edges/columns to match SQL table refs
+    stream: str  # the bare stream name
+    columns: list[str]
+    types: dict[str, str] = msgspec.field(default_factory=dict)
+    consumers: list[str] = msgspec.field(default_factory=list)  # models reading it directly
 
 
 class LineageResponse(msgspec.Struct):
@@ -273,6 +282,7 @@ class LineageResponse(msgspec.Struct):
     edges: list[list[str]]  # [upstream, downstream]
     # model -> column -> [[upstream_model, upstream_column], ...]
     columns: dict[str, dict[str, list[list[str]]]]
+    streams: list[LineageStream] = msgspec.field(default_factory=list)
 
 
 class RunChecksRequest(msgspec.Struct):
@@ -822,15 +832,54 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
     return infos
 
 
+def _ast_projection_names(model: CompiledModel) -> list[str]:
+    """Output column names read straight off a simple SELECT (no star), else []."""
+    from sqlglot import exp as _exp
+
+    if not isinstance(model.ast, _exp.Select):
+        return []
+    names: list[str] = []
+    for projection in model.ast.selects:
+        if projection.find(_exp.Star, _exp.Columns) is not None:
+            return []
+        names.append(projection.alias_or_name)
+    return names
+
+
+async def _described_columns(state: State, name: str, promoted: dict[str, str], snapshots: dict) -> dict[str, str]:
+    """Column -> type from the promoted physical table, cached per fingerprint.
+    Empty when the model isn't promoted / built yet (compile-time names still show)."""
+    fingerprint = promoted.get(name)
+    snapshot = snapshots.get((name, fingerprint or ""))
+    if snapshot is None:
+        return {}
+    cache: dict[tuple[str, str | None], dict[str, str]] = state.describe_cache
+    key = (name, fingerprint)
+    if key not in cache:
+        described: dict[str, str] = {}
+        with contextlib.suppress(Exception):  # missing table / engine away: names-only is fine
+            engine = state.engines.require(snapshot.engine, model=name)
+            described = await engine.describe(snapshot.physical_table)
+        cache[key] = described
+    return cache[key]
+
+
 @get("/lineage")
 async def get_lineage(state: State) -> LineageResponse:
-    """The whole graph in one payload: nodes, table edges, and column lineage —
-    the UI renders and traces without a request per node."""
+    """The whole graph in one payload: nodes (with warehouse-described column
+    types), table edges, column lineage, and stream sources — the UI renders
+    and traces without a request per node."""
     compiled: CompiledProject = state.compiled
+    promoted = await state.store.get_environment(state.environment)
+    snapshots = await state.store.get_snapshots(promoted.items())
+
     models: list[LineageModel] = []
     edges: list[list[str]] = []
+    known = set(compiled.models)
     for name in compiled.graph.topological_sort():
         model = compiled.models[name]
+        types = await _described_columns(state, name, promoted, snapshots)
+        columns = list(types) or list(state.lineage.get(name, {})) or _ast_projection_names(model)
         models.append(
             LineageModel(
                 name=name,
@@ -838,18 +887,59 @@ async def get_lineage(state: State) -> LineageResponse:
                 strategy=model.strategy,
                 engine=model.engine,
                 tags=list(model.tags),
-                columns=list(state.lineage.get(name, {})),
+                columns=columns,
+                types=types,
                 has_schedule=bool(model.schedule),
                 has_checks=bool(model.checks) or bool(compiled.python_checks.get(name)),
             )
         )
         edges.extend([dep, name] for dep in model.dependencies)
-    columns = {
-        name: {col: [[t, c] for t, c in refs] for col, refs in sources.items()}
+
+    from sqlglot import exp as _exp
+
+    streams: list[LineageStream] = []
+    stream_keys = {f"streams.{stream.name}" for stream in state.streams.values()}
+    for stream in state.streams.values():
+        consumers = sorted(
+            model.name
+            for model in compiled.models.values()
+            if model.ast is not None
+            and any(t.db == "streams" and t.name == stream.name for t in model.ast.find_all(_exp.Table))
+        )
+        key = f"streams.{stream.name}"
+        streams.append(
+            LineageStream(
+                name=key,
+                stream=stream.name,
+                columns=list(stream.schema),
+                types=dict(stream.schema),
+                consumers=consumers,
+            )
+        )
+        edges.extend([key, consumer] for consumer in consumers)
+
+    # column sources: keep only references that resolve to a node on the canvas
+    # (a VALUES alias like `t` is a phantom, not a navigable source)
+    column_sources = {
+        name: {col: [[t, c] for t, c in refs if t in known or t in stream_keys] for col, refs in sources.items()}
         for name, sources in state.lineage.items()
         if sources
     }
-    return LineageResponse(models=models, edges=edges, columns=columns)
+    # models without parsed lineage (Python models, sinks over them) would break
+    # every trace passing through: fall back to NAME-MATCHING against direct
+    # upstreams — a heuristic, but the honest alternative is a dead end
+    columns_of = {info.name: set(info.columns) for info in models}
+    for info in models:
+        if column_sources.get(info.name):
+            continue
+        model = compiled.models[info.name]
+        matched = {
+            col: [[dep, col] for dep in model.dependencies if col in columns_of.get(dep, set())] for col in info.columns
+        }
+        matched = {col: refs for col, refs in matched.items() if refs}
+        if matched:
+            column_sources[info.name] = matched
+    return LineageResponse(models=models, edges=edges, columns=column_sources, streams=streams)
 
 
 @post("/checks/run", opt={"scope": "write"})
@@ -1069,6 +1159,7 @@ def create_app(
         app.state.parallelism = project.config.parallelism
         app.state.engine_configs = project.config.engine_configs()
         app.state.default_engine = project.config.default_engine
+        app.state.describe_cache = {}  # (model, fingerprint) -> {column: type}, filled by /lineage
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
         app.state.streams = streams
         app.state.stream_log = stream_log

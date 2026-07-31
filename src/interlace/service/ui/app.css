@@ -234,8 +234,12 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .node .pin text { fill: var(--tx-dim); font: 10.5px var(--mono); }
 .node .pin:hover text, .node .pin.sel text { fill: var(--cyan); }
 .node .pin.lit text { fill: var(--cyan); }
-.node .expander { fill: var(--tx-faint); font: 9.5px var(--mono); cursor: pointer; }
-.node .expander:hover { fill: var(--tx); }
+.node .expander { cursor: pointer; }
+.node .expander .chev { fill: none; stroke: var(--tx-faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.node .expander:hover .chev { stroke: var(--tx); }
+.node .pin .pin-type { fill: var(--tx-faint); font: 9.5px var(--mono); }
+.node.stream rect.body { stroke: color-mix(in srgb, var(--cyan) 45%, transparent); stroke-dasharray: 5 3; }
+.node.stream text.name { fill: var(--cyan); }
 
 .edge { fill: none; stroke: var(--line); stroke-width: 1.2; }
 .edge.lit { stroke: var(--violet); stroke-width: 1.6; }

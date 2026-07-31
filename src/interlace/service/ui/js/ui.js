@@ -79,13 +79,15 @@ export function statusPill(status) {
   return pill(status, tone);
 }
 
-/** The house table: columns = [{k, label, num?, render?}], rows = objects. */
-export function table(columns, rows, { onRow, empty = "nothing here yet", hint } = {}) {
+/** The house table: columns = [{k, label, num?, render?}], rows = objects.
+ * `expandRow(row)` may return a node rendered full-width directly under that row. */
+export function table(columns, rows, { onRow, empty = "nothing here yet", hint, expandRow } = {}) {
   if (!rows.length) {
     return h("div", { class: "empty" }, empty, hint ? h("div", { class: "hint" }, hint) : null);
   }
   const head = h("tr", {}, columns.map((col) => h("th", { class: col.num ? "num" : "" }, col.label ?? col.k)));
-  const body = rows.map((row) => {
+  const body = [];
+  for (const row of rows) {
     const tr = h(
       "tr",
       { class: onRow ? "click" : "" },
@@ -95,8 +97,10 @@ export function table(columns, rows, { onRow, empty = "nothing here yet", hint }
       }),
     );
     if (onRow) tr.addEventListener("click", () => onRow(row));
-    return tr;
-  });
+    body.push(tr);
+    const detail = expandRow?.(row);
+    if (detail) body.push(h("tr", { class: "expand-row" }, h("td", { colspan: columns.length }, detail)));
+  }
   return h("table", { class: "t" }, h("thead", {}, head), h("tbody", {}, body));
 }
 

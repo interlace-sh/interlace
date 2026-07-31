@@ -130,10 +130,17 @@ async def _execute_run(
             "built": result.built,
             "reused": result.reused,
             "gated": result.gated,
+            "promoted": result.promoted,
+            "environment": environment,
             "timings": {name: round(seconds, 3) for name, seconds in result.timings.items()},
             "rows": {
                 name: {"inserted": c.inserted, "updated": c.updated, "deleted": c.deleted}
                 for name, c in result.rows.items()
+            },
+            "checks": {
+                "passed": sum(1 for c in result.checks if c.status == "passed"),
+                "total": len(result.checks),
+                "warned": [f"{c.model}.{c.name}" for c in result.checks if c.status != "passed"],
             },
         }
 

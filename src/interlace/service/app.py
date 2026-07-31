@@ -352,7 +352,8 @@ def _info(model: CompiledModel) -> ModelInfo:
         name=model.name,
         output=_output(model),
         materialise=model.materialise,
-        strategy=model.strategy,
+        # sinks: the delivery mode is the strategy people reason about (CLI parity)
+        strategy=model.export.mode if model.export is not None else model.strategy,
         is_sink=model.export is not None,
         fingerprint=model.fingerprint,
         depends_on=list(model.dependencies),

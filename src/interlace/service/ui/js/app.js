@@ -110,6 +110,7 @@ async function renderRoute() {
   if (typeof cleanup === "function") cleanup();
   cleanup = null;
   const view = document.getElementById("view");
+  view.dataset.route = name; // route-scoped chrome (lineage disables page scroll)
   view.replaceChildren();
   view.scrollTop = 0;
   try {

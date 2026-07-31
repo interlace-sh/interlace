@@ -121,6 +121,7 @@ input, textarea, select { font: inherit; color: inherit; }
 
 /* ---- view chrome -------------------------------------------------------- */
 main#view { grid-area: view; overflow: auto; padding: 18px 22px 80px; }
+main#view[data-route="lineage"] { overflow: hidden; padding-bottom: 14px; }
 .view-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .view-head h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
 .view-head .sub { color: var(--tx-dim); font-size: 11.5px; }
@@ -132,7 +133,8 @@ main#view { grid-area: view; overflow: auto; padding: 18px 22px 80px; }
 .card-head .spread { flex: 1; }
 .card-body { padding: 12px; }
 
-.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
+.grid2 > .card { margin-top: 0; }
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 12px; }
 .stat { background: var(--ink-1); border: 1px solid var(--line-soft); border-radius: var(--r); padding: 10px 12px; }
 .stat .k { font-size: 10.5px; color: var(--tx-faint); text-transform: uppercase; letter-spacing: 0.07em; }
@@ -154,6 +156,8 @@ table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
 .t tr.click { cursor: pointer; }
 .t tr.click:hover td { background: var(--ink-2); }
 .t td.num, .t th.num { text-align: right; }
+.t tr.expand-row > td { background: var(--ink-0); padding: 12px 14px; }
+.t tr.expand-row:hover > td { background: var(--ink-0); }
 .t .dim { color: var(--tx-dim); }
 .t .faint { color: var(--tx-faint); }
 
@@ -217,11 +221,17 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .diff .del { background: rgba(248, 113, 113, 0.09); color: var(--red); }
 
 /* ---- lineage canvas ------------------------------------------------------ */
-.canvas-wrap { position: relative; height: calc(100vh - var(--top-h) - 110px); min-height: 420px; background: var(--ink-0); border: 1px solid var(--line-soft); border-radius: var(--r); overflow: hidden; }
+.canvas-wrap { position: relative; height: calc(100vh - var(--top-h) - 106px); min-height: 420px; background: var(--ink-0); border: 1px solid var(--line-soft); border-radius: var(--r); overflow: hidden; }
 .canvas-wrap svg { display: block; width: 100%; height: 100%; cursor: grab; }
 .canvas-wrap svg.panning { cursor: grabbing; }
 .canvas-tools { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; z-index: 2; align-items: center; }
 .canvas-tools .in { width: 220px; }
+.canvas-search { position: relative; }
+.canvas-search .hits { position: absolute; top: calc(100% + 4px); left: 0; width: 260px; max-height: 300px; overflow-y: auto; background: var(--ink-1); border: 1px solid var(--line); border-radius: var(--r); box-shadow: 0 10px 26px rgba(0,0,0,0.5); }
+.canvas-search .hits:empty { display: none; }
+.canvas-search .hit { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+.canvas-search .hit.on, .canvas-search .hit:hover { background: var(--violet-soft); }
+.canvas-search .hit .ty { color: var(--tx-faint); font-size: 10.5px; }
 .canvas-legend { position: absolute; bottom: 10px; left: 12px; font-size: 10px; color: var(--tx-faint); z-index: 2; }
 
 .node { cursor: pointer; }

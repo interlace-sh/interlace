@@ -23,13 +23,57 @@ export async function render(el, { api, feed, go, params }) {
     });
   }
 
-  const search = h("input", { class: "in", placeholder: "focus a model…", list: "lineage-models" });
-  const datalist = h("datalist", { id: "lineage-models" }, data.models.map((m) => h("option", { value: m.name })));
+  // custom autocomplete — the native datalist fights the dark theme and
+  // can't show node kinds
+  const search = h("input", { class: "in", placeholder: "focus a model…", autocomplete: "off", spellcheck: "false" });
+  const hits = h("div", { class: "hits" });
+  const searchWrap = h("div", { class: "canvas-search" }, search, hits);
   const fitBtn = h("button", { class: "btn small" }, "fit");
+  let matches = [];
+  let hitIndex = 0;
+
+  function updateHits() {
+    const needle = search.value.trim().toLowerCase();
+    matches = needle
+      ? data.models.filter((m) => (m.display ?? m.name).toLowerCase().includes(needle)).slice(0, 12)
+      : [];
+    hitIndex = 0;
+    hits.replaceChildren(
+      ...matches.map((m, index) =>
+        h(
+          "div",
+          { class: `hit ${index === hitIndex ? "on" : ""}`, onclick: () => pickHit(index) },
+          h("span", {}, m.display ?? m.name),
+          h("span", { class: "ty" }, m.output),
+        ),
+      ),
+    );
+  }
+
+  function pickHit(index) {
+    const model = matches[index];
+    if (!model) return;
+    search.value = model.display ?? model.name;
+    hits.replaceChildren();
+    dag.focus(model.name);
+  }
+
+  search.addEventListener("input", debounce(updateHits, 80));
+  search.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") pickHit(hitIndex);
+    else if (event.key === "Escape") hits.replaceChildren();
+    else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!matches.length) return;
+      hitIndex = (hitIndex + (event.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length;
+      hits.querySelectorAll(".hit").forEach((el, index) => el.classList.toggle("on", index === hitIndex));
+    }
+  });
+  search.addEventListener("blur", () => setTimeout(() => hits.replaceChildren(), 150));
   const hintEl = h("span", { class: "canvas-legend" }, `${data.models.length} nodes · ${data.edges.length} edges — click a model to trace, ▸ to expand columns, click a column to trace it through the graph`);
 
   const wrap = h("div", { class: "canvas-wrap" });
-  const tools = h("div", { class: "canvas-tools" }, search, datalist, fitBtn);
+  const tools = h("div", { class: "canvas-tools" }, searchWrap, fitBtn);
   const detail = h("span", { class: "sub" });
 
   el.append(
@@ -51,10 +95,6 @@ export async function render(el, { api, feed, go, params }) {
     },
   });
 
-  search.addEventListener("input", debounce(() => {
-    const name = search.value.trim();
-    if (data.models.some((m) => m.name === name)) dag.focus(name);
-  }, 120));
   fitBtn.addEventListener("click", () => dag.fit());
   if (params.m) dag.focus(params.m);
 

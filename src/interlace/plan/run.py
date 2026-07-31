@@ -71,6 +71,13 @@ async def run_plan(
             grain = parse_grain(model.interval or "1d")
             filled = await state.get_intervals(model.name, model.fingerprint)
             snapshot = snapshot_of(model, ChangeCategory.BREAKING)
+            if start is None and end is None:
+                window_hint = _window(start, end, grain)
+                plan.warnings.append(
+                    f"{model.name}: no --start/--end given — only the most recent "
+                    f"{model.interval or '1d'} window ({window_hint.start:%Y-%m-%d %H:%M} → "
+                    f"{window_hint.end:%Y-%m-%d %H:%M}) is considered; historical data needs an explicit window"
+                )
             for window in slice_interval(_window(start, end, grain), grain):
                 if restate or not filled.covers(window):  # restate reprocesses; otherwise catch up
                     plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window))

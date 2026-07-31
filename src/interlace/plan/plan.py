@@ -167,6 +167,9 @@ class Plan:
     # Indirectly-changed models whose output is provably identical: their new
     # snapshot points at the previous physical table — recorded, never rebuilt.
     reuses: list[Snapshot] = field(default_factory=list)
+    # Human-facing planning caveats (e.g. an incremental run defaulting its
+    # window) — surfaced by the CLI/API, never blocking.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:

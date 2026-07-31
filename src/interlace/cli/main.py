@@ -182,6 +182,35 @@ def _render_checks(result: ApplyResult) -> None:
     console.print(line)
 
 
+def _render_warnings(plan_result: Plan) -> None:
+    for warning in plan_result.warnings:
+        console.print(f"[yellow]note:[/yellow] {warning}")
+
+
+async def _render_empty_incrementals(result: ApplyResult, compiled: CompiledProject, engines: Any) -> None:
+    """A built incremental model that wrote nothing AND whose table is empty holds
+    no data — reporting success without saying so is how people conclude "no data".
+    (The default window is the most recent grain; historical data needs --start/--end.)"""
+    import sqlglot
+
+    for name in result.built:
+        model = compiled.models[name]
+        if model.strategy != "incremental_by_time" or model.export is not None:
+            continue
+        counts = result.rows.get(name)
+        if counts is not None and (counts.inserted or counts.updated):
+            continue
+        with contextlib.suppress(Exception):
+            engine = engines.require(model.engine)
+            table = model.physical_table.to_expr().sql(dialect=engine.dialect)
+            reader = await engine.fetch(sqlglot.parse_one(f"SELECT count(*) FROM {table}", read=engine.dialect))
+            if int(reader.read_all().column(0)[0].as_py()) == 0:
+                console.print(
+                    f"[yellow]note:[/yellow] {name} is empty — its windows covered no source data. "
+                    f"Backfill the real range: [bold]interlace run --select {name} --start <ISO> --end <ISO>[/bold]"
+                )
+
+
 def _selection(compiled: CompiledProject, selectors: list[str]) -> set[str] | None:
     if not selectors:
         return None
@@ -321,6 +350,7 @@ async def _apply(
             raise typer.Exit(1) from exc
         _render_build_results(result, compiled)
         _render_checks(result)
+        await _render_empty_incrementals(result, compiled, engines)
         console.print(
             f"[green]Built {len(set(result.built))} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
@@ -419,6 +449,8 @@ async def _execute(
             raise typer.Exit(1) from exc
         _render_build_results(result, compiled)
         _render_checks(result)
+        _render_warnings(plan_result)
+        await _render_empty_incrementals(result, compiled, engines)
         verb = "Restated" if restate else "Ran"
         console.print(
             f"[green]{verb} {len(set(result.built))} model(s) ({len(result.built)} task(s)); "

@@ -42,7 +42,15 @@ export async function render(el, { api, feed, go, params }) {
       ...matches.map((m, index) =>
         h(
           "div",
-          { class: `hit ${index === hitIndex ? "on" : ""}`, onclick: () => pickHit(index) },
+          {
+            class: `hit ${index === hitIndex ? "on" : ""}`,
+            // mousedown, not click: click fires on mouse-UP, and the input's blur
+            // clears this list first — a normal-speed click would hit nothing
+            onmousedown: (event) => {
+              event.preventDefault();
+              pickHit(index);
+            },
+          },
           h("span", {}, m.display ?? m.name),
           h("span", { class: "ty" }, m.output),
         ),

@@ -152,7 +152,7 @@ export function createDag(container, data, { onSelect } = {}) {
     dragging = { x: event.clientX - panX, y: event.clientY - panY, sx: event.clientX, sy: event.clientY };
     moved = false;
   });
-  window.addEventListener("pointermove", (event) => {
+  const onPointerMove = (event) => {
     if (!dragging) return;
     if (!moved && Math.hypot(event.clientX - dragging.sx, event.clientY - dragging.sy) < 4) return;
     moved = true;
@@ -160,11 +160,13 @@ export function createDag(container, data, { onSelect } = {}) {
     panX = event.clientX - dragging.x;
     panY = event.clientY - dragging.y;
     applyTransform();
-  });
-  window.addEventListener("pointerup", () => {
+  };
+  const onPointerUp = () => {
     dragging = null;
     root.classList.remove("panning");
-  });
+  };
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
   const wasDrag = () => moved;
 
   // ---- rendering ---------------------------------------------------------------
@@ -417,5 +419,15 @@ export function createDag(container, data, { onSelect } = {}) {
   fit();
   applyTransform();
 
-  return { focus, fit, setFlow, destroy: () => root.remove() };
+  return {
+    focus,
+    fit,
+    setFlow,
+    destroy: () => {
+      // window listeners retain the whole graph payload via closure: release them
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      root.remove();
+    },
+  };
 }

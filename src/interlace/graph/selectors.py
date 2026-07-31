@@ -29,7 +29,15 @@ def _tokens(raw: str) -> list[str]:
 def _resolve(token: str, project: CompiledProject) -> set[str]:
     if token.startswith("tag:"):
         tag = token[4:]
-        return {name for name, model in project.models.items() if tag in model.tags}
+        matched = {name for name, model in project.models.items() if tag in model.tags}
+        if not matched:
+            # a vacuous match turns a CI gate into a no-op that "passes"
+            known = sorted({t for model in project.models.values() for t in model.tags})
+            raise SelectionError(
+                f"tag {tag!r} matches no models" + (f" (known tags: {', '.join(known)})" if known else ""),
+                details={"selector": token},
+            )
+        return matched
 
     include_ancestors = token.startswith("+")
     include_descendants = token.endswith("+")

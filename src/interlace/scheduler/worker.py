@@ -55,6 +55,16 @@ async def drain(
 
     async def bounded(run: QueuedRun) -> None:
         async with semaphore:
+            # the lease was taken at CLAIM time; a run that queued behind a long
+            # sibling may have expired and been reclaimed — re-verify before
+            # executing, or two workers run the same plan for a heartbeat window
+            verdict = await store.renew_lease(run.id, owner=worker, lease_seconds=lease_seconds)
+            if verdict == "lost":
+                return
+            if verdict == "cancel":
+                if await store.finish_run(run.id, success=False, error="cancelled", status="cancelled", owner=worker):
+                    await store.append_event("run.cancelled", entity=str(run.id), payload={})
+                return
             await _execute_run(
                 run,
                 store,
@@ -112,9 +122,15 @@ async def _execute_run(
         )
         loop = asyncio.get_running_loop()
 
+        background: set[asyncio.Task] = getattr(store, "_progress_tasks", None) or set()
+        store._progress_tasks = background  # type: ignore[attr-defined]
+
         def on_progress(model: str, event: str) -> None:
-            # fire-and-forget telemetry: the SSE tail turns these into live build rows
-            loop.create_task(store.append_event(f"model.{event}", entity=model, payload={"run": run.id}))
+            # fire-and-forget telemetry — but hold a strong ref: an unreferenced
+            # task can be GC'd mid-write and its exception silently vanishes
+            task = loop.create_task(store.append_event(f"model.{event}", entity=model, payload={"run": run.id}))
+            background.add(task)
+            task.add_done_callback(background.discard)
 
         result = await apply(
             plan,

@@ -73,7 +73,7 @@ class StreamLog(Protocol):
         ...
 
     async def heads(self) -> dict[str, int]:
-        """Highest assigned offset per stream (0 for streams never appended to)."""
+        """Highest assigned offset for every stream that has ever been appended to\n        (streams with no appends are absent — callers use ``.get(name, 0)``)."""
         ...
 
     async def lease(self, stream: str, group: str, *, ttl: float, owner: str) -> Lease | None:
@@ -159,36 +159,40 @@ class SqliteStreamLog:
         deduped: list[bool] = []
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute("SELECT next_offset FROM stream_heads WHERE stream = ?", (stream,)).fetchone()
-            offset = int(row["next_offset"]) if row else 1
-            for event in events:
-                cursor = self._conn.execute(
-                    "INSERT OR IGNORE INTO stream_events (stream, offset, ts, key, headers, payload) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        stream,
-                        offset,
-                        now,
-                        event.idempotency_key,
-                        json.dumps(event.headers) if event.headers else None,
-                        json.dumps(event.payload),
-                    ),
+            try:
+                row = self._conn.execute("SELECT next_offset FROM stream_heads WHERE stream = ?", (stream,)).fetchone()
+                offset = int(row["next_offset"]) if row else 1
+                for event in events:
+                    cursor = self._conn.execute(
+                        "INSERT OR IGNORE INTO stream_events (stream, offset, ts, key, headers, payload) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            stream,
+                            offset,
+                            now,
+                            event.idempotency_key,
+                            json.dumps(event.headers) if event.headers else None,
+                            json.dumps(event.payload),
+                        ),
+                    )
+                    if cursor.rowcount:
+                        offsets.append(offset)
+                        deduped.append(False)
+                        offset += 1
+                    else:  # idempotency key already seen: report its original offset
+                        seen = self._conn.execute(
+                            "SELECT offset FROM stream_events WHERE stream = ? AND key = ?",
+                            (stream, event.idempotency_key),
+                        ).fetchone()
+                        offsets.append(int(seen["offset"]) if seen else 0)
+                        deduped.append(True)
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO stream_heads (stream, next_offset) VALUES (?, ?)", (stream, offset)
                 )
-                if cursor.rowcount:
-                    offsets.append(offset)
-                    deduped.append(False)
-                    offset += 1
-                else:  # idempotency key already seen: report its original offset
-                    seen = self._conn.execute(
-                        "SELECT offset FROM stream_events WHERE stream = ? AND key = ?",
-                        (stream, event.idempotency_key),
-                    ).fetchone()
-                    offsets.append(int(seen["offset"]) if seen else 0)
-                    deduped.append(True)
-            self._conn.execute(
-                "INSERT OR REPLACE INTO stream_heads (stream, next_offset) VALUES (?, ?)", (stream, offset)
-            )
-            self._conn.commit()  # durable before the publisher sees 200
+                self._conn.commit()  # durable before the publisher sees 200
+            except BaseException:  # a poisoned txn on the shared connection is a publish outage
+                self._conn.rollback()
+                raise
         return AppendResult(offsets=offsets, deduped=deduped)
 
     async def heads(self) -> dict[str, int]:
@@ -245,35 +249,39 @@ class SqliteStreamLog:
         token = uuid4().hex
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute(
-                "SELECT committed_offset, lease_owner, lease_expires_at FROM consumer_state "
-                "WHERE stream = ? AND grp = ?",
-                (stream, group),
-            ).fetchone()
-            if row is None:
+            try:
+                row = self._conn.execute(
+                    "SELECT committed_offset, lease_owner, lease_expires_at FROM consumer_state "
+                    "WHERE stream = ? AND grp = ?",
+                    (stream, group),
+                ).fetchone()
+                if row is None:
+                    self._conn.execute(
+                        "INSERT INTO consumer_state (stream, grp, committed_offset, lease_owner, lease_token, "
+                        "lease_expires_at) VALUES (?, ?, 0, ?, ?, ?)",
+                        (stream, group, owner, token, expires),
+                    )
+                    self._conn.commit()
+                    return Lease(committed_offset=0, token=token)
+                held = (
+                    row["lease_owner"] is not None
+                    and row["lease_owner"] != owner
+                    and row["lease_expires_at"] is not None
+                    and datetime.fromisoformat(row["lease_expires_at"]) > now
+                )
+                if held:
+                    self._conn.commit()
+                    return None
                 self._conn.execute(
-                    "INSERT INTO consumer_state (stream, grp, committed_offset, lease_owner, lease_token, "
-                    "lease_expires_at) VALUES (?, ?, 0, ?, ?, ?)",
-                    (stream, group, owner, token, expires),
+                    "UPDATE consumer_state SET lease_owner = ?, lease_token = ?, lease_expires_at = ? "
+                    "WHERE stream = ? AND grp = ?",
+                    (owner, token, expires, stream, group),
                 )
                 self._conn.commit()
-                return Lease(committed_offset=0, token=token)
-            held = (
-                row["lease_owner"] is not None
-                and row["lease_owner"] != owner
-                and row["lease_expires_at"] is not None
-                and datetime.fromisoformat(row["lease_expires_at"]) > now
-            )
-            if held:
-                self._conn.commit()
-                return None
-            self._conn.execute(
-                "UPDATE consumer_state SET lease_owner = ?, lease_token = ?, lease_expires_at = ? "
-                "WHERE stream = ? AND grp = ?",
-                (owner, token, expires, stream, group),
-            )
-            self._conn.commit()
-            return Lease(committed_offset=int(row["committed_offset"]), token=token)
+                return Lease(committed_offset=int(row["committed_offset"]), token=token)
+            except BaseException:  # a poisoned txn on the shared connection blocks every consumer
+                self._conn.rollback()
+                raise
 
     async def commit(self, stream: str, group: str, offset: int, lease_token: str) -> None:
         await asyncio.to_thread(self._commit_sync, stream, group, offset, lease_token)

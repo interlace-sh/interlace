@@ -52,6 +52,12 @@ async def run_plan(
     interval in the window instead of skipping the ones already filled (catchup).
     """
     selected = set(compiled.models) if select is None else select
+    if select is not None:
+        # a selected model must never resolve an upstream fingerprint that was
+        # never materialised: pull changed ancestors into the run (same rule as diff)
+        from interlace.plan.differ import _expand_to_changed_ancestors
+
+        selected = _expand_to_changed_ancestors(compiled, selected, await state.get_environment(environment))
     plan = Plan(environment=environment)
     for model in compiled.ordered():
         if model.name not in selected:

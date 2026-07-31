@@ -59,15 +59,22 @@ class ExportConfig:
         if not isinstance(data, dict) or "to" not in data:
             raise ConfigurationError("export requires 'to'", details={"got": data})
         to = str(data["to"])
-        key = data.get("key") or ()
-        environments = data.get("environments", ("prod",))
+
+        def _names(field: str, default: tuple[str, ...]) -> tuple[str, ...]:
+            value = data.get(field, default)
+            if isinstance(value, str):
+                return (value,)
+            if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+                return tuple(value)
+            raise ConfigurationError(f"export {field!r} must be a string or a list of strings", details={"got": value})
+
         config = cls(
             to=to,
             path=str(data.get("path", "")),
             target=str(data.get("target", "")),
             mode=str(data.get("mode", "replace")),
-            key=(key,) if isinstance(key, str) else tuple(key),
-            environments=(environments,) if isinstance(environments, str) else tuple(environments),
+            key=_names("key", ()) if data.get("key") else (),
+            environments=_names("environments", ("prod",)),
         )
         if to in _FILE_FORMATS and not config.path:
             raise ConfigurationError(f"export to {to!r} requires 'path'", details={"got": data})

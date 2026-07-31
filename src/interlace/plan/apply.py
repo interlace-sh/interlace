@@ -419,9 +419,10 @@ async def _run_backfill(
             filled = filled.add(carried)
         snapshot = replace(snapshot, intervals=filled.add(task.interval))
     await state.add_snapshot(snapshot)
-    result.built.append(snapshot.name)
+    if snapshot.name not in result.built:  # one entry per model, however many interval windows ran
+        result.built.append(snapshot.name)
     await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-    result.timings[snapshot.name] = time.perf_counter() - task_started
+    result.timings[snapshot.name] = result.timings.get(snapshot.name, 0.0) + (time.perf_counter() - task_started)
 
 
 async def apply(
@@ -543,7 +544,11 @@ async def apply(
         for change in removed:
             snapshot = last_snapshots.get((change.name, change.previous_fingerprint or ""))
             view = env_view(plan.environment, change.name)
-            adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
-            await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+            with contextlib.suppress(Exception):
+                # best effort: the model's engine may have been deleted from config
+                # along with the model — the DEMOTE below must still happen, or the
+                # removal never settles and every later apply fails right here
+                adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
+                await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
         await state.demote(plan.environment, [c.name for c in removed])
     return result

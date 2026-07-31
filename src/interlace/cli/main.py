@@ -1092,6 +1092,14 @@ def apikey_revoke(
 async def _apikey_revoke(name: str, path: Path) -> None:
     state = await Project.load(path).open_state()
     try:
+        keys = await state.list_api_keys()
+        matching = sum(1 for key in keys if key["name"] == name)
+        if matching and matching == len(keys):
+            console.print(
+                "[red]refusing to revoke the last key(s) — that would disable authentication; "
+                "create a replacement first[/red]"
+            )
+            raise typer.Exit(1)
         removed = await state.revoke_api_key(name)
     finally:
         await state.close()

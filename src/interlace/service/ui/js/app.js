@@ -93,6 +93,7 @@ const dock = {
 // ---- router ---------------------------------------------------------------------
 
 let cleanup = null;
+let generation = 0; // stale async renders must not touch the live view
 
 export function go(route, params = {}) {
   const query = new URLSearchParams(params).toString();
@@ -106,6 +107,7 @@ function currentRoute() {
 
 async function renderRoute() {
   const { name, params } = currentRoute();
+  const mine = ++generation;
   document.querySelectorAll("#rail a").forEach((a) => a.classList.toggle("on", a.dataset.route === name));
   if (typeof cleanup === "function") cleanup();
   cleanup = null;
@@ -113,9 +115,21 @@ async function renderRoute() {
   view.dataset.route = name; // route-scoped chrome (lineage disables page scroll)
   view.replaceChildren();
   view.scrollTop = 0;
+  // render into a detached container: a view that resolves AFTER the user has
+  // already navigated away must neither touch the live view nor win the
+  // cleanup slot — its listeners are torn down immediately instead
+  const stage = h("div", { style: "display:contents" });
+  view.append(stage);
   try {
-    cleanup = await routes[name](view, { api, feed, go, toast, modal, params, token });
+    const done = await routes[name](stage, { api, feed, go, toast, modal, params, token });
+    if (mine !== generation) {
+      if (typeof done === "function") done(); // stale: release its listeners now
+      stage.remove();
+      return;
+    }
+    cleanup = done;
   } catch (error) {
+    if (mine !== generation) return;
     view.replaceChildren(
       h("div", { class: "empty" }, `this view failed to load: ${error.message}`, h("div", { class: "hint" }, "the daemon may be unreachable — check that `interlace serve` is running")),
     );

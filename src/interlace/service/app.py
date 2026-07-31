@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -615,6 +616,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         await state.store.append_event(
             "apply.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
         )
+        state.describe_cache.clear()  # new fingerprints, new tables: /lineage re-describes
     return ApplyResponse(
         environment=env,
         built=result.built,
@@ -701,7 +703,11 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
     warehouse.
     """
     stream = _stream_or_404(state, name)
-    pending = state.log_heads.get(name, 0) - state.flushed_heads.get(name, 0)
+    shadow_name = f"{name}__quarantine"
+    pending = max(
+        state.log_heads.get(name, 0) - state.flushed_heads.get(name, 0),
+        state.log_heads.get(shadow_name, 0) - state.flushed_heads.get(shadow_name, 0),
+    )
     if pending > state.stream_max_pending:
         from litestar.exceptions import HTTPException
 
@@ -729,9 +735,11 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
     result = await state.stream_log.append(name, [_event(row) for row in rows]) if rows else None
     if quarantined:  # failures are durable too: the shadow stream keeps error + raw payload
         shadow = quarantine_stream(stream)
-        await state.stream_log.append(
+        shadow_result = await state.stream_log.append(
             shadow.name, [Event(payload={"error": error, "payload": json.dumps(row)}) for row, error in quarantined]
         )
+        if shadow_result.offsets:  # the shadow log is backpressured like any other
+            state.log_heads[shadow.name] = max(state.log_heads.get(shadow.name, 0), max(shadow_result.offsets))
     if result and result.offsets:
         state.log_heads[name] = max(state.log_heads.get(name, 0), max(result.offsets))
     if result or quarantined:  # durable: hand materialization to the flusher micro-batch
@@ -750,10 +758,38 @@ def _jsonable(value: object) -> object:
     return str(value)  # timestamps, decimals, structs — stringified for the wire
 
 
+# DuckDB table functions and scalar functions that read OUTSIDE the warehouse —
+# the console must never become a local-file reader or an HTTP client. Deny by
+# name pattern; the warehouse's own tables/views never match these shapes.
+_EXTERNAL_FN = re.compile(
+    r"^(read_|scan_|sniff_|glob$|getenv$|load_|install$|parquet_|iceberg_|delta_|st_read)|(_scan|_query)$",
+    re.IGNORECASE,
+)
+_QUERY_MAX_CELL_BYTES = 8_000_000  # ~8 MB of rendered cells; the console inspects, never extracts
+
+
+def _guard_console_query(parsed: object) -> None:
+    from sqlglot import exp as _exp
+
+    for node in parsed.walk():  # type: ignore[attr-defined]
+        name = None
+        if isinstance(node, _exp.Anonymous):
+            name = str(node.this)
+        elif isinstance(node, _exp.Func):
+            name = node.sql_name()
+        if name and _EXTERNAL_FN.search(name):
+            raise ClientException(detail=f"function {name!r} reads outside the warehouse — not in the console")
+        if isinstance(node, _exp.Table):
+            raw = node.name or ""
+            if "/" in raw or "\\" in raw or "://" in raw:
+                raise ClientException(detail="file paths are not queryable from the console")
+
+
 @post("/query", opt={"scope": "read"})
 async def post_query(data: QueryRequest, state: State) -> QueryResponse:
-    """Run a read-only query on the default engine. SELECT only — DDL/DML is
-    rejected at parse; a row cap is always applied."""
+    """Run a read-only query on the default engine. SELECT only, warehouse only —
+    DDL/DML and external readers (files, HTTP) are rejected at parse; a row cap
+    and a byte cap are always applied."""
     import time as _time
 
     import sqlglot
@@ -768,8 +804,9 @@ async def post_query(data: QueryRequest, state: State) -> QueryResponse:
     parsed = statements[0]
     if not isinstance(parsed, (_exp.Select, _exp.Union)):
         raise ClientException(detail="SELECT only — the console never writes")
+    _guard_console_query(parsed)
     limit = max(1, min(data.limit, 10_000))
-    bounded = _exp.select("*").from_(parsed.subquery("q")).limit(limit)
+    bounded = _exp.select("*").from_(parsed.subquery("q")).limit(limit + 1)  # +1: exact truncation
     started = _time.perf_counter()
     try:
         reader = await state.engine.fetch(bounded)
@@ -779,12 +816,23 @@ async def post_query(data: QueryRequest, state: State) -> QueryResponse:
     elapsed = (_time.perf_counter() - started) * 1000
     names = table.column_names
     records = table.to_pylist()
+    truncated = len(records) > limit
+    records = records[:limit]
+    rows: list[list] = []
+    budget = _QUERY_MAX_CELL_BYTES
+    for record in records:
+        row = [_jsonable(record[name]) for name in names]
+        budget -= sum(len(cell) if isinstance(cell, str) else 16 for cell in row)
+        if budget < 0:
+            truncated = True
+            break
+        rows.append(row)
     return QueryResponse(
         columns=names,
         types=[str(field.type) for field in table.schema],
-        rows=[[_jsonable(record[name]) for name in names] for record in records],
-        row_count=len(records),
-        truncated=len(records) >= limit,
+        rows=rows,
+        row_count=len(rows),
+        truncated=truncated,
         elapsed_ms=round(elapsed, 1),
     )
 
@@ -879,6 +927,8 @@ async def _described_columns(state: State, name: str, promoted: dict[str, str], 
         with contextlib.suppress(Exception):  # missing table / engine away: names-only is fine
             engine = state.engines.require(snapshot.engine, model=name)
             described = await engine.describe(snapshot.physical_table)
+        if not described:
+            return {}  # transient (outage, not built yet): never cache a negative
         cache[key] = described
     return cache[key]
 
@@ -1031,15 +1081,32 @@ async def get_apikeys(state: State) -> list[ApiKeyInfo]:
 
 @post("/apikeys", opt={"scope": "admin"})
 async def post_apikey(data: CreateApiKey, state: State) -> dict:
-    token = await state.store.create_api_key(data.name, data.scopes)
-    return {"name": data.name, "scopes": data.scopes, "token": token}  # token shown once
+    name = data.name.strip()
+    if not name:
+        raise ClientException(detail="name the key")
+    invalid = set(data.scopes) - {"read", "write", "admin"}
+    if invalid or not data.scopes:
+        raise ClientException(detail=f"scopes must be a non-empty subset of read/write/admin (got {data.scopes})")
+    if any(key["name"] == name for key in await state.store.list_api_keys()):
+        raise ClientException(detail=f"a key named {name!r} already exists — revoke it first or pick another name")
+    token = await state.store.create_api_key(name, data.scopes)
+    return {"name": name, "scopes": data.scopes, "token": token}  # token shown once
 
 
 @delete("/apikeys/{name:str}", opt={"scope": "admin"}, status_code=200)
 async def delete_apikey(name: FromPath[str], state: State) -> dict:
-    removed = await state.store.revoke_api_key(name)
-    if not removed:
+    keys = await state.store.list_api_keys()
+    matching = sum(1 for key in keys if key["name"] == name)
+    if not matching:
         raise NotFoundException(detail=f"no key named {name!r}")
+    if matching == len(keys):
+        # zero keys = keyless mode = every request is admin. Revoking the last
+        # key must never silently disable authentication.
+        raise ClientException(
+            detail="refusing to revoke the last key(s) — that would disable authentication; "
+            "create a replacement first"
+        )
+    removed = await state.store.revoke_api_key(name)
     return {"name": name, "removed": removed}
 
 
@@ -1077,8 +1144,10 @@ async def get_events(state: State, after: FromQuery[int] = 0) -> list[EventInfo]
 
 
 @get("/events/stream")
-async def stream_events(state: State, request: Request) -> ServerSentEvent:
-    after = int(request.headers.get("Last-Event-ID") or 0)
+async def stream_events(state: State, request: Request, after: FromQuery[int] = 0) -> ServerSentEvent:
+    # reconnects carry Last-Event-ID (set from the id: field); fresh connections
+    # pass ?after= so a page load doesn't replay the whole event log
+    after = int(request.headers.get("Last-Event-ID") or after)
 
     async def tail() -> AsyncIterator[ServerSentEventMessage]:
         # Subscribe FIRST so nothing lands between the backlog read and the live
@@ -1094,7 +1163,7 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
                     break
                 for event in backlog:
                     cursor = int(event["seq"])
-                    yield ServerSentEventMessage(data=json.dumps(event), event=str(event["type"]), id=str(cursor))
+                    yield ServerSentEventMessage(data=json.dumps(event), id=str(cursor))
             while True:
                 event = await queue.get()
                 if event is None:  # poisoned: we fell behind — end the stream, the client replays on reconnect
@@ -1102,7 +1171,7 @@ async def stream_events(state: State, request: Request) -> ServerSentEvent:
                 if int(event["seq"]) <= cursor:
                     continue
                 cursor = int(event["seq"])
-                yield ServerSentEventMessage(data=json.dumps(event), event=str(event["type"]), id=str(cursor))
+                yield ServerSentEventMessage(data=json.dumps(event), id=str(cursor))
         finally:
             state.sse_subscribers.discard(queue)
 
@@ -1311,7 +1380,19 @@ def create_app(
         include_in_schema=False,
         cache_control=CacheControlHeader(no_cache=True),
     )
+    from litestar import Response
+
+    from interlace.exceptions import InterlaceError as _InterlaceError
+
+    def _domain_error(request: Request, exc: Exception) -> Response:
+        # user-caused errors (bad selector, unknown engine, contract violation)
+        # are 4xx with their message — never anonymous 500s
+        message = getattr(exc, "message", str(exc))
+        status = 404 if "unknown" in message[:40].lower() else 400
+        return Response(content={"detail": message}, status_code=status)
+
     return Litestar(
+        exception_handlers={_InterlaceError: _domain_error},
         route_handlers=[
             ui_router,
             ui_redirect,

@@ -125,6 +125,15 @@ def _row_error(stream: StreamDef, row: Any, *, allow_unknown: bool) -> str | Non
             return f"field {name!r} must be {declared[name]}"
         if not isinstance(value, expected):
             return f"field {name!r} must be {declared[name]}, got {type(value).__name__}"
+        # publish/flush PARITY: anything accepted here must actually coerce at
+        # materialization, or one durable event freezes the stream's watermark
+        # forever (a "not-a-timestamp" string is a str, but fromisoformat fails)
+        try:
+            materialized = coerce_value(type_name, value)
+            if type_name in ("int", "integer", "bigint") and not (-(2**63) <= materialized < 2**63):
+                return f"field {name!r} overflows BIGINT"
+        except (ValueError, TypeError, OverflowError):
+            return f"field {name!r} is not a valid {declared[name]}: {value!r}"
     return None
 
 

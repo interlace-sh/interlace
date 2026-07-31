@@ -135,14 +135,25 @@ const PY_KEYWORDS = new RegExp(
 );
 const PY_STRINGS = /("(?:""[^]*?""|(?:[^"\\\n]|\\.)*)"|'(?:''[^]*?''|(?:[^'\\\n]|\\.)*)')/g;
 
-/** Python source in the same block chrome as SQL (display only). */
+/** Python source in the same block chrome as SQL (display only).
+ * Strings/comments/decorators are lifted into placeholders FIRST — sequential
+ * regex passes over already-inserted markup would otherwise re-highlight the
+ * markup itself (`class="str"` contains the keyword `class`). */
 export function pythonBlock(source) {
   let out = (source || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
-  out = out.replace(PY_STRINGS, '<span class="str">$1</span>');
-  out = out.replace(/(#[^\n]*)/g, '<span class="cmt">$1</span>');
-  out = out.replace(/^(\s*@[\w.]+)/gm, '<span class="dec">$1</span>');
-  out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');
+  const lifted = [];
+  const lift = (cls) => (match) => {
+    lifted.push(`<span class="${cls}">${match}</span>`);
+    // \x00PY<i>\x00 can't collide: NULs don't occur in source, and the digits
+    // touch word chars so the number pass's \b never fires inside the token
+    return `\x00PY${lifted.length - 1}\x00`;
+  };
+  out = out.replace(PY_STRINGS, lift("str"));
+  out = out.replace(/#[^\n]*/g, lift("cmt"));
+  out = out.replace(/^\s*@[\w.]+/gm, lift("dec"));
   out = out.replace(PY_KEYWORDS, '<span class="kw">$1</span>');
+  out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');  // after keywords: kw markup has no digits
+  out = out.replace(/\x00PY(\d+)\x00/g, (_, index) => lifted[Number(index)]);
   return h("pre", { class: "sql", html: out });
 }
 

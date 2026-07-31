@@ -135,12 +135,26 @@ async def _flush_batch(
 async def flush_streams(
     streams: Iterable[StreamDef], log: StreamLog, engine: EngineAdapter, *, batch_rows: int = 5000
 ) -> dict[str, int]:
-    """Flush every stream once; returns rows materialized per stream."""
+    """Flush every stream once; returns rows materialized per stream.
+
+    Failures are isolated per stream: one stream whose batch cannot materialize
+    (an uncoercible durable event, a dropped column) must not freeze every
+    OTHER stream's watermark. The failing stream's error re-raises after the
+    healthy ones flushed, so callers still see it.
+    """
     flushed: dict[str, int] = {}
+    first_error: Exception | None = None
     for stream in streams:
-        count = await flush_stream(stream, log, engine, batch_rows=batch_rows)
+        try:
+            count = await flush_stream(stream, log, engine, batch_rows=batch_rows)
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+            continue
         if count:
             flushed[stream.name] = count
+    if first_error is not None:
+        raise first_error
     return flushed
 
 

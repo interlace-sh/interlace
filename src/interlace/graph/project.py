@@ -180,6 +180,9 @@ def compile_models(
                     "target": definition.export.target,
                     "mode": definition.export.mode,
                     "key": list(definition.export.key),
+                    # gating is behavioural: widening it must re-plan the sink, or a
+                    # newly-allowed environment would classify UNCHANGED and never deliver
+                    "environments": sorted(definition.export.environments),
                 }
                 if definition.export
                 else None

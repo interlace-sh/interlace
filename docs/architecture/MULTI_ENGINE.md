@@ -2,14 +2,14 @@
 
 interlace runs models on **named engines**. One project can hold a local DuckLake warehouse and
 remote warehouses side by side, with each model pinned to the engine that should execute it.
-This page is the contract; the roadmap tiers at the bottom say what exists today.
+This page is the contract; the tier table below says what exists today.
 
 ## The three tiers
 
 | Tier | Meaning | Status |
 |---|---|---|
 | **T0 — federation hub** | Models run on the (DuckDB-family) default engine; external databases are reachable through `attach:` for reads and table exports (reverse ETL) | Shipped |
-| **T1 — native remote engines** | A model's strategy executes *inside* Postgres/Snowflake/… — no DuckDB middleman | Registry + routing shipped; adapters landing per engine |
+| **T1 — native remote engines** | A model's strategy executes *inside* Postgres/Snowflake/… — no DuckDB middleman | Shipped for Postgres (ADBC); further adapters per engine |
 | **T2 — cross-engine plans** | The planner inserts explicit `TransferEdge`s when a model's inputs live on another engine | Shipped (Arrow path) — see Transfers below |
 
 `attach:` and `engines:` are different things: an attachment is a *catalog visible to one
@@ -29,15 +29,16 @@ database: ducklake:.interlace/warehouse.ducklake
 
 engines:
   analytics:
-    type: duckdb               # duckdb | ducklake | quack | postgres (soon) | ...
+    type: duckdb               # duckdb | ducklake | quack | postgres
     database: analytics.duckdb
   pg:
     type: postgres
     database: ${PG_DSN}        # ${VAR} interpolation; unresolved vars fail at open
 ```
 
-Engine types outside the DuckDB family fail at open with a pointer here until their adapter
-ships. Engines open lazily — a declared-but-unused remote engine is never contacted.
+Engine types without an adapter (anything beyond the DuckDB family and Postgres) fail at open
+with a pointer here. Engines open lazily — a declared-but-unused remote engine is never
+contacted.
 
 ## Binding models
 
@@ -57,7 +58,7 @@ Unset → the project's `default_engine`. The model's dialect defaults from its 
 
 - **The engine is part of the data fingerprint.** Moving a model between engines is a BREAKING
   change: it rebuilds on the new engine, and `interlace gc` later drops the old physical table on
-  the old engine (snapshots record their owning engine — state migration 0006).
+  the old engine (snapshots record their owning engine).
 - **Cross-engine dependencies transfer explicitly.** When a model's upstream lives on another
   engine, the plan carries a `TransferEdge` (rendered by `interlace plan` and the API) and apply
   moves the upstream as Arrow — `source.fetch → target.load` — into
@@ -115,8 +116,5 @@ work natively there.
 
 ## Roadmap
 
-1. ~~Registry + routing + fingerprinted engine binding~~ (done)
-2. ~~Postgres adapter (ADBC) — first native remote engine~~ (done)
-3. ~~T2 transfer planner (Arrow fetch→load, staging, plan rendering, attach fast lane)~~ (done)
-4. Second cloud warehouse (Snowflake or BigQuery — driven by a named user)
-5. Author-dialect ≠ run-dialect polish; native MERGE where caps allow
+1. Second cloud warehouse (Snowflake or BigQuery — driven by a named user)
+2. Author-dialect ≠ run-dialect polish; native MERGE where caps allow

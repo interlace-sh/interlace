@@ -8,11 +8,11 @@ Models are `.sql` files or Python functions; state is versioned snapshots with v
 environments and a terraform-style plan/apply; everything runs in a single daemon on
 DuckDB + DuckLake by default.
 
-> **Status: v2 pre-release.** This branch is a ground-up rebuild (the `interlace` package on
-> PyPI is the older 0.x line). APIs may still move. Requires Python 3.12+.
+> **Status: v2 pre-release (2.0.0a4).** APIs may still move. Requires Python 3.12+.
+> The package is published to PyPI as **`interlaced`**; the import name and CLI are `interlace`.
 
 ```bash
-uv pip install "interlaced[service]"  # or from source: "interlaced[service] @ git+https://github.com/interlace-sh/interlace@v2"
+uv pip install "interlaced[service]"   # extras: service, adbc, postgres, polars, pandas, all
 ```
 
 ## Sixty seconds
@@ -74,22 +74,26 @@ $ interlace plan
  order_stats   modified  non_breaking  reuse      <- output provably identical: not rebuilt
 ```
 
-- Changes classify **breaking / non-breaking / forward-only**; downstream models whose output
-  is provably identical **reuse their existing tables** instead of rebuilding (an improvement
-  over model-granular invalidation).
+- Changes classify **breaking / non-breaking / forward-only**; a plan with breaking changes
+  refuses to apply without `--force`. Downstream models whose output is provably identical
+  (column-pruned impact analysis) **reuse their existing tables** instead of rebuilding — an
+  improvement over model-granular invalidation.
 - `apply --forward-only` lets history-keeping models (scd2/merge/incremental) survive a
-  definition change: the new logic inherits the existing table and applies going forward.
+  definition change: the existing table is copied to the new version, the new logic applies to
+  the copy going forward, and checks gate before views move.
 - **Checks gate promotion**: 10 built-in types (not_null, unique, accepted_values, row_count,
   freshness, expression, relationships, pattern, range, sql) plus `@check` Python functions —
-  an error-severity failure blocks before the environment view moves.
+  an error-severity failure blocks before the environment view moves. `interlace checks run`
+  re-runs them ad hoc against any environment's promoted tables.
 - `interlace gc` removes snapshots no environment references (reference-aware: tables shared
   through reuse survive).
 
 ## Streaming
 
-Declare a stream; POST to it; rows are durable before the 200, deduplicated by idempotency
-key, and materialized exactly-once into `streams.<name>` — where SQL models just read them.
-A flush triggers the models that consume the stream.
+Declare a stream; POST to it; rows are durable (SQLite WAL log) before the 200, deduplicated by
+idempotency key, and materialized exactly-once into `streams.<name>` — a micro-batch flusher
+commits the data and the watermark in one warehouse transaction, and SQL models just read the
+table. A flush triggers the models that consume the stream.
 
 ```python
 from interlace import stream
@@ -104,7 +108,8 @@ curl -X POST localhost:8000/streams/orders -d '{"order_id": "o1", "total": 49.5}
 ```
 
 Schema drift is yours to choose: `reject` (400), `evolve` (new columns appear), or
-`quarantine` (bad events divert to `<stream>__quarantine`).
+`quarantine` (bad events divert to `<stream>__quarantine`). When the warehouse falls behind,
+publishes get **429 backpressure** instead of unbounded backlog.
 
 ## Reverse ETL
 
@@ -122,16 +127,43 @@ attach:
 SELECT id, tier, lifetime_value FROM account_summary
 ```
 
-File exports (`to: parquet|csv|json`) work the same way.
+File exports (`to: parquet|csv|json`) work the same way. Sinks are **environment-gated**: by
+default the side effect fires only from prod — a dev apply never writes to a live external
+table (opt in with `environments: [dev, prod]`).
+
+## Multi-engine
+
+Models run on **named engines**: DuckDB/DuckLake by default, Postgres natively over ADBC
+(`pip install 'interlaced[adbc]'`), with per-model pinning:
+
+```yaml
+engines:
+  pg: {type: postgres, database: "${PG_DSN}"}
+```
+
+```sql
+/* interlace: {engine: pg, strategy: merge_by_key, key: id} */
+```
+
+Strategies execute *inside* the pinned engine (no DuckDB middleman); cross-engine dependencies
+appear as explicit **transfer** lines in the plan and move as Arrow (or a federated `ATTACH`
+fast lane when possible). Contract: `docs/architecture/MULTI_ENGINE.md`.
 
 ## The daemon
 
-`interlace serve` runs the web UI at `/ui` (in-package, zero build step: lineage DAG with
-column-level tracing, plan/apply with SQL diffs, runs, streams, environments, checks —
-live over SSE), the HTTP API (Litestar + msgspec, OpenAPI at `/schema/scalar`), the
-scheduler (cron/interval triggers → durable run queue), stream ingestion, and retention in one
-process. Scoped API keys (`interlace apikey create ci --scope read`) lock it down; a durable
-event log backs `GET /events/stream` (SSE with replay).
+`interlace serve` runs everything in one process:
+
+- the **web UI** at `/ui` (in-package, zero build step) — ten views: overview, lineage canvas
+  with column-level tracing, models, plan/apply with SQL diffs, live runs, query console,
+  streams, checks, environments, and system — live over SSE;
+- the **HTTP API** (Litestar + msgspec, OpenAPI at `/schema/scalar`) with the same surface as
+  the CLI: plan/apply, runs, checks, streams, engines, schedules, lineage, query, gc;
+- the **scheduler**: cron/interval triggers enqueue onto a **durable run queue** (leases,
+  retries, cooperative cancellation — `interlace cancel <id>` or `POST /runs/{id}/cancel`);
+- **stream ingestion** and retention.
+
+Scoped API keys (`interlace apikey create ci --scope read`) lock it down; a durable event log
+backs `GET /events/stream` (SSE with `Last-Event-ID` replay).
 
 Add `--quack quack:localhost:4213` to serve the warehouse itself over DuckDB's quack protocol —
 other processes (CLI runs, ad-hoc DuckDB clients) then share it concurrently by setting
@@ -158,9 +190,9 @@ Toolchain is pinned with [proto](https://moonrepo.dev/proto), tasks run via
 ```bash
 proto install
 moon run interlace:sync      # install deps
-moon run interlace:test      # 240+ tests
+moon run interlace:test      # 350+ tests
 moon run interlace:check     # black + ruff (CI equivalent)
-moon run interlace:typecheck # mypy --strict
+moon run interlace:typecheck # mypy
 ```
 
 MIT licensed.

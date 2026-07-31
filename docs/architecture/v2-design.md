@@ -1,7 +1,8 @@
 # Interlace v2 — Greenfield Architecture
 
-**Status:** Approved design, June 2026
-**Scope:** Clean-slate redesign. v0.2.1 is reference material, not a constraint.
+**Status:** Implemented (single-node). This document is the design rationale and the contract;
+short *current state* notes in each section record where the implementation stands.
+**Scope:** Clean-slate design of the whole platform. v0.2.1 is reference material, not a constraint.
 **Goal:** A comprehensive, independent, MIT-licensed alternative to sqlmesh/dbt with built-in
 orchestration (no Airflow) and durable real-time streaming ingestion (covering Cloudflare
 data-platform-style functionality), deployable as a single process.
@@ -56,8 +57,7 @@ any dataframe library:
 - **sqlglot** is the most load-bearing dependency: parsing, qualification, type annotation,
   transpilation (31 dialects), semantic diff, and column lineage.
 - **Arrow** is the only interchange format. pandas never appears in core (optional extra only).
-- **ibis** is dropped entirely (decision July 2026; earlier drafts kept it as an optional
-  authoring frontend). Its two possible roles are both covered without it: as a data plane it
+- **ibis** is dropped entirely. Its two possible roles are both covered without it: as a data plane it
   sits on Arrow anyway, and as an expression builder it compiles to sqlglot — which *is* our
   IR, so a Python-authored logical model can simply return a sqlglot expression. Dropping it
   removes a heavyweight dependency and its governance risk (4 of 5 steering members are
@@ -156,7 +156,7 @@ class Trigger(Protocol):
 
 # Implementations: CronTrigger, IntervalTrigger, StreamTrigger (consumes the event log),
 # FreshnessTrigger (table staleness sensor), UpstreamTrigger (RunCompleted events),
-# WebhookTrigger (POST /v1/triggers/{id}/fire), ManualTrigger.
+# WebhookTrigger (POST /triggers/{id}/fire), ManualTrigger.
 
 @dataclass
 class RunRequest:
@@ -187,8 +187,7 @@ def enriched_orders(ctx, raw_orders, fx_rates):
 ```
 
 - Path A returns a sqlglot expression — already the IR — so the model **stays on the logical
-  plane**: laziness is preserved through Python models that only compose. (Earlier drafts
-  offered ibis here; dropped — see §1.)
+  plane**: laziness is preserved through Python models that only compose.
 - Path B yields a `StreamRelation`; the sink consumes the reader directly via `adapter.load()`
   (DuckDB registers it zero-copy; remote engines bulk-ingest via ADBC).
 - Path C is the only place data is eagerly pulled into Python, and the user asked for it.
@@ -209,11 +208,11 @@ SQL catalog) rather than a monolithic `.duckdb` file:
 
 A plain `.duckdb` file remains a config option for zero-dependency toy projects.
 
-**Status (implemented, July 2026).** `database: ducklake:.interlace/warehouse.ducklake` is the
-config default (catalog file + `<catalog>.files/` Parquet directory; DuckDB opens the DuckLake
-as its primary database). The full strategy surface — schemas, views, transactional
-DDL+DML (merge), `DESCRIBE`, Arrow ingest — runs on DuckLake unchanged; the whole test suite
-executes against it. Requires `duckdb>=1.5.3`.
+**Current state.** `database: ducklake:.interlace/warehouse.ducklake` is the config default
+(catalog file + `<catalog>.files/` Parquet directory; DuckDB opens the DuckLake as its primary
+database). The full strategy surface — schemas, views, transactional DDL+DML (merge),
+`DESCRIBE`, Arrow ingest — runs on DuckLake unchanged; the whole test suite executes against
+it. Requires `duckdb>=1.5.3`.
 
 **Serving the warehouse: the quack protocol.** DuckDB 1.5.3 ships **quack** (core extension,
 beta): `CALL quack_serve('quack:host:port', token := ...)` turns the process holding the
@@ -230,12 +229,13 @@ end-to-end: a second OS process ran `interlace apply` through quack while the da
 DuckLake catalog lock. When quack's catalog mapping matures (stable targeted for DuckDB 2.0),
 the adapter can switch to native `ATTACH` without touching callers.
 
-**Status (multi-engine core implemented, July 2026).** Named engines: `engines:` config +
-`default_engine` (top-level warehouse fields synthesise `default`); `engine:` on models —
-fingerprinted, so a move is a BREAKING rebuild; snapshots record their owning engine (migration
-0006) and GC drops on the right one; apply/CLI/worker/service route through a lazy
-`EngineRegistry`. Cross-engine dependencies are rejected at compile until the T2 transfer planner
-lands. Contract: docs/architecture/MULTI_ENGINE.md.
+**Current state (multi-engine).** Named engines: `engines:` config + `default_engine`
+(top-level warehouse fields synthesise `default`); `engine:` on models — fingerprinted, so a
+move is a BREAKING rebuild; snapshots record their owning engine and GC drops on the right one;
+apply/CLI/worker/service route through a lazy `EngineRegistry`. Postgres is the first native
+remote engine (ADBC; the `adbc` extra). Cross-engine dependencies become explicit transfer
+edges in the plan — Arrow `fetch → load`, upgraded to a federated `ATTACH → CTAS` fast lane
+when the source is attachable. Contract: docs/architecture/MULTI_ENGINE.md.
 
 **Role 2 — the federation/transport hub.** When a model's inputs span engines, the planner
 inserts an explicit **transfer edge**, visible in `interlace plan` output — no silent data
@@ -273,10 +273,13 @@ it later.
 double as the DuckLake catalog). Versioned schema with built-in migrations:
 
 ```
-snapshots, intervals, environments, runs, task_attempts, check_results,
-lineage_edges, event_log, work_queue, leases, trigger_state, alerts, api_keys,
-stream_meta, stream_offsets, stream_watermarks, rate_limits
+snapshots, intervals, environments, work_queue (runs, with lease columns),
+trigger_state, event_log, check_results, api_keys
 ```
+
+(The stream log keeps its own SQLite database — `stream_events`, `stream_heads`,
+`consumer_state` — and stream watermarks live in the warehouse, committed atomically with the
+data; see §9.)
 
 **Why SQLite and not the existing DuckDB.** The architecture has two planes that want opposite
 things from a database, so it uses the right engine for each rather than forcing one to do both:
@@ -311,7 +314,7 @@ transactional store separate from the analytical engine"; pointing the store at 
 day one is the only other sanctioned option. What we do **not** do is back the OLTP control plane
 with the OLAP DuckDB engine.
 
-**Environment naming (July 2026):** production (``prod``) is the *unprefixed* namespace —
+**Environment naming:** production (``prod``) is the *unprefixed* namespace —
 its views live at ``<schema>.<model>`` (``main.orders``), which is what BI tools and consumers
 connect to. Every other environment is a prefixed sandbox (``dev__main.orders``). CLI/API/daemon
 default to prod; ``--env dev`` opts into a sandbox.
@@ -337,7 +340,7 @@ Changed expression → BREAKING, but **column-impact-narrowed** (§7): only down
 actually consume the changed columns are invalidated. This is the concrete improvement over
 sqlmesh, whose invalidation is model-granular.
 
-**Status (implemented, July 2026) — the indirect non-breaking rebuild-skip.** The differ
+**The indirect non-breaking rebuild-skip.** The differ
 assigns every changed model an impact: *semantic* (pre-existing column data may differ — changed
 expressions/filters/strategy/Python source, or any semantic upstream), *additive* (existing
 columns provably identical, new ones appeared — strictly additive projections with everything
@@ -351,7 +354,7 @@ Correctness hinge: reference resolution consults recorded snapshots (a reused fi
 at an *older* physical table than its name implies), threaded through apply/resolve/runtime/
 checks as a physical-table map.
 
-**Status (implemented, July 2026) — column-pruned skip.** The §7 narrowing above is live: a
+**The column-pruned skip.** The §7 narrowing above, concretely: a
 *semantic* direct change computes its provably-**touched** output columns (projection-only edit:
 with both projection lists erased the queries are canonically identical, so the row set is
 untouched and unchanged projections stay byte-identical), and each downstream computes the
@@ -364,13 +367,13 @@ only costs a rebuild, never correctness.
 
 ### Reverse ETL & external sinks (where the snapshot+view layer stops)
 
-**Status (implemented, July 2026).** ``attach: {alias: uri}`` config wires external databases
+**Current state.** ``attach: {alias: uri}`` config wires external databases
 (Postgres/SQLite/DuckDB/...) into the warehouse engine at open; sink models declare
 ``export: {to: table, target: <alias>.<schema>.<table>, mode: ...}``. Modes: ``replace``
 (DELETE + INSERT in place — the live table is never dropped, so grants and readers survive),
 ``append``, and keyed ``merge_by_key`` / ``full_merge``, which reuse the managed-model strategy
-AST builders pointed at the external catalog. Deferred: delivery ledger, environment gating
-allow-list, SaaS/API connectors.
+AST builders pointed at the external catalog. ``export.environments`` gates the side effect
+(default: production only — see Safety below). Deferred: delivery ledger, SaaS/API connectors.
 
 The fingerprinted-snapshot-plus-view layer only works because **interlace owns those tables** —
 it can freely create `model__<fp>` shadow copies and atomically repoint a view. Reverse ETL
@@ -387,8 +390,7 @@ So delivery is separated from transformation. A reverse-ETL output is a distinct
 **`sink`** (`@sink` / `@export`) that reads an already-built, already-checked **managed** model
 and pushes deltas to a live destination. The transformation stays declarative, versioned,
 lineage-tracked, and rollback-able; only the *delivery* is side-effecting. (This mirrors how
-Census/Hightouch split "model in the warehouse" from "sync to destination," and generalises
-v0.x's `promote`/connector exports.)
+Census/Hightouch split "model in the warehouse" from "sync to destination.")
 
 ```python
 @sink(source="silver.account_summary",  # a managed model = the source of truth
@@ -417,18 +419,20 @@ v0.x's `promote`/connector exports.)
 | reverse-ETL `sink` (live/shared table or API) | keyed upsert / append via connector + delivery ledger | **forward-correction only** — replay a window + keyed upsert converges; *not* view-swap rollback |
 
 **Safety — the property that matters most:** virtual environments must never silently fan
-side-effecting writes out to production. Sinks are environment-gated: by default a sink runs only
-in environments that explicitly map it to a destination, `plan` renders sinks as a dry-run diff
-("would upsert N rows to Account"), and dev environments skip them or target a sandbox. This is
-the reverse-ETL analogue of the dev-environment isolation the snapshot layer gives for free.
+side-effecting writes out to production. Sinks are environment-gated: the export only
+*executes* when the plan's environment appears in its `environments` allow-list (default:
+production only), so a dev apply never fires reverse-ETL at a live external table. In a
+gated-off environment the sink's snapshot is still recorded so the plan settles — nothing
+leaves the warehouse. This is the reverse-ETL analogue of the dev-environment isolation the
+snapshot layer gives for free.
 
-**Implementation status.** v1 represents a sink as a **model with an `export` block** (the
-uniform approach — a sink is a DAG node that runs a query and does I/O; the `@sink(source=…)`
-form above is future sugar over it). `export` presence makes a model a sink: no snapshot table,
-no environment view, but it is still fingerprinted (change-tracking) and built (so `interlace run`
-re-exports). File destinations (`parquet`/`csv`/`json`) are implemented via DuckDB `COPY`
-(`exports.py`). Still to come: DB-table and SaaS-API destinations via `SinkConnector`,
-upsert/append `mode`, the delivery ledger, and the environment allow-list gating.
+**Representation.** A sink is a **model with an `export` block** (the uniform approach — a sink
+is a DAG node that runs a query and does I/O; the `@sink(source=…)` form above is future sugar
+over it). `export` presence makes a model a sink: no snapshot table, no environment view, but
+it is still fingerprinted (change-tracking) and built (so `interlace run` re-exports). File
+destinations (`parquet`/`csv`/`json`) go through DuckDB `COPY`; table destinations deliver into
+attached databases with `replace`/`append`/`merge_by_key`/`full_merge` (`exports.py`). Still to
+come: SaaS-API destinations via `SinkConnector` and the delivery ledger.
 
 ```sql
 /* interlace: { export: { to: parquet, path: exports/orders.parquet } } */
@@ -440,19 +444,21 @@ SELECT * FROM orders
 ## 7. Dependency graph, lineage, selective execution
 
 - **Load-time, not run-time.** After canonicalization, run `sqlglot.lineage` per output column
-  of every SQL model → a project-wide **column DAG** stored in the manifest and `lineage_edges`.
-  v0.2.1 computed a `column_lineage` table during execution and never used it; v2 inverts this:
-  lineage is computed before any execution and *drives* planning.
-- **Python models** contribute table-level edges from function parameters (the best part of the
-  v0.2.1 DX, kept). Optional column contracts
-  (`@model(columns={"order_id": "passthrough:raw_orders.order_id"})`); absent a contract, a
-  Python model is a column-lineage barrier (all-to-all) — conservative and correct.
-- **Selector syntax:** dbt's adopted verbatim — `interlace run --select +silver.orders+
-  tag:finance state:modified+`. `state:modified` is computed from fingerprints in the state
-  store, not artifact-file diffing (improvement over dbt's fragile `--defer --state` workflow).
+  of every SQL model → a project-wide **column DAG**. Lineage is computed before any execution
+  and *drives* planning (the column-pruned rebuild-skip, §6); the service computes it once at
+  startup and serves it whole (`GET /lineage`, the UI's lineage canvas).
+- **Python models** contribute table-level edges from function parameters. A Python model is a
+  column-lineage barrier (all-to-all) — conservative and correct. (`@model(columns=…)` declares
+  an *output contract* — column names/types validated after every build, before promotion —
+  not lineage.)
+- **Selector syntax:** dbt's adopted — `interlace run --select +silver.orders+ tag:finance`
+  (`model`, `+model`, `model+`, `+model+`, `tag:x`; selectors union). dbt's `state:modified`
+  needs no selector here: modified-ness is what the plan computes from fingerprints in the
+  state store (improvement over dbt's fragile `--defer --state` workflow).
 - **Impact analysis feeds plan:** changed columns → walk the column DAG → downstream models
-  partition into *invalidated* (backfill) vs *safe* (reuse existing snapshot under a new
-  fingerprint alias). Also exposed to humans: `interlace impact silver.orders.amount`.
+  partition into *invalidated* (rebuild) vs *safe* (reuse the existing snapshot table). Also
+  exposed to humans: `interlace lineage <model> --columns` (`--format dot` for Graphviz) and
+  per-change impacted columns in `GET /plan`.
 
 ---
 
@@ -488,7 +494,7 @@ dissolved structurally.
 Vocabulary deliberately mirrors Cloudflare's **Streams → Pipelines → Sinks** model; the pitch is
 "self-hosted Cloudflare Pipelines that lands in DuckDB/DuckLake/Iceberg."
 
-**Status (Phase 3 MVP implemented, July 2026).** `SqliteStreamLog` (WAL; offsets from 1,
+**Current state.** `SqliteStreamLog` (WAL; offsets from 1,
 idempotency-key dedup via partial unique index, consumer-group lease/commit with fencing
 tokens, trim, long-poll read). `@stream` declarations publish at ``POST /streams/{name}`` —
 schema-validated (``on_schema_drift: reject``; extra fields/wrong types → 400, missing → NULL),
@@ -603,7 +609,7 @@ R2 Data Catalog — plus Parquet/JSON on object storage.
 
 ### 9.4 End-to-end walkthrough: one webhook event
 
-1. `POST /v1/streams/orders_raw` with `Authorization: Bearer ilk_…`, `Idempotency-Key: order-991`.
+1. `POST /streams/orders_raw` with `Authorization: Bearer ilk_…`, `Idempotency-Key: order-991`.
 2. Guard checks key hash + scope `streams:publish:orders_raw`; GCRA rate-limit row checked;
    msgspec validates against schema v3 (unknown field + `evolve` → schema v4 recorded, ALTER
    queued).
@@ -666,47 +672,49 @@ dependency — Postgres covers every multi-node need. We match Dagster on asset-
 scheduling + partitions, beat Airflow/Dagster/Prefect on built-in durable ingestion (none have
 it), and concede their executor ecosystems.
 
-**Implementation status.** The scheduling core is in: a `TriggerEngine` ticks `Trigger`s
-(`CronTrigger` via `cronsim`, `IntervalTrigger`) against durable per-trigger state in the state
-DB; due runs enqueue (idempotency-keyed) onto a **durable run queue** (`work_queue` table); a
-`worker.drain` claims and executes them as forced runs (so they pick up new data). `interlace
-serve` ties tick → enqueue → drain in one process (`--once` for a single pass). No APScheduler —
-we own the loop; `cronsim` only parses. Models declare `schedule: {cron: …}` or `{every: …}`.
-Still to come: per-task (not per-run) queueing with leases/heartbeat/cancellation (the
-`scheduler/queue.py` protocol sketch), leader election for multi-node, SLA monitors + alerting,
-and event/sensor triggers (stream-arrival, freshness, upstream-completion).
+**Current state.** A `TriggerEngine` ticks `Trigger`s (`CronTrigger` via `cronsim`,
+`IntervalTrigger`) against durable per-trigger state in the state DB; due runs enqueue
+(idempotency-keyed) onto a **durable run queue** (`work_queue` table). `worker.drain` claims
+runs under a **lease**, heartbeats while executing (the heartbeat doubles as the cooperative
+**cancellation** channel — `interlace cancel <id>` / `POST /runs/{id}/cancel`), retries
+durably up to `max_attempts` with a per-attempt timeout, and executes them as forced runs (so
+they pick up new data). Stream flushes enqueue the consuming models with the watermark as the
+idempotency key. `interlace serve` ties tick → enqueue → drain in one process
+(`interlace scheduler --once` for a single pass). No APScheduler — we own the loop; `cronsim`
+only parses. Models declare `schedule: {cron: …}` or `{every: …}`. Still to come: leader
+election for multi-node, SLA monitors + alerting, and further sensor triggers (freshness,
+upstream-completion, webhook).
 
 ---
 
 ## 11. Service layer
 
-**Litestar + msgspec + uvicorn** (replaces aiohttp):
+**Litestar + msgspec + uvicorn** (the `service` extra):
 
-- First-class SSE with `Last-Event-ID` replay; OpenAPI 3.1 generated from typed handlers (kills
-  the hand-maintained 66 KB `openapi.yaml`); msgspec-native serialization (~10× pydantic on hot
+- First-class SSE with `Last-Event-ID` replay; OpenAPI 3.1 generated from typed handlers
+  (rendered via Scalar at `/schema/scalar`); msgspec-native serialization (~10× pydantic on hot
   paths — the publish endpoint shares msgspec structs with ingest validation); guards/DI for
   scoped auth. (FastAPI would work but drags pydantic onto the ingest hot path; APScheduler 4 is
   still pre-release in 2026 — we own the trigger loop, which is the product anyway.)
-- **Auth:** API keys with scopes (`streams:publish:{name}`, `runs:trigger`, `admin`, …), argon2
-  hashes, key format `ilk_<id>_<secret>` for O(1) lookup; optional OIDC via JWKS for UI
-  sessions; a `tenant` column on keys/streams/runs from day one (cheap), full isolation out of
-  scope for v1.
-- **Durable event spine:** the in-memory EventBus becomes a write-through facade over
-  `event_log(seq, ts, type, entity, payload)` with in-process fanout. SSE reconnect and
-  `GET /v1/events?after_seq=N` replay from the table — the UI never misses a transition across
-  restarts. The same log feeds `StreamTrigger`/`UpstreamTrigger`/`AlertRouter`: one spine.
-- **Process composition:**
-
-```python
-Supervisor([StateStore, StreamLog, StreamMaterializer, TriggerEngine,
-            Dispatcher, WorkerPool(slots=cpu*2), AlertRouter, ApiServer])
-```
-
-Ordered startup; SIGTERM graceful shutdown (stop API intake → drain workers with deadline →
-final offset commits → release leases); crashed-component restart with backoff. **The rule that
-buys scale-out: components share zero objects** — they communicate only through the State DB,
-the StreamLog, and the Warehouse. `interlace serve --components api` / `--components worker` is
-then just a different list. The SvelteKit UI carries over.
+- **Auth:** scoped API keys (`read` / `write` / `admin`; `admin` satisfies any requirement) as
+  `ilk_…` bearer tokens, sha256-hashed in the state DB. Auth enforces once at least one key
+  exists — a fresh project stays open for local development; `interlace apikey create` locks it
+  down. Routes declare their required scope; `/health` and `/schema` stay open.
+- **Durable event spine:** events are rows in `event_log(seq, ts, type, entity, payload)` with
+  in-process fanout. SSE reconnect and `GET /events?after=N` replay from the table — the UI
+  never misses a transition across restarts. The same log records apply/run/stream/gc
+  lifecycle: one spine.
+- **Process composition:** `interlace serve` runs everything as supervised background tasks
+  inside the app lifespan — the event tail (one store poller feeds every SSE client), the
+  stream flusher (micro-batch materializer), and the scheduler loop. Background loops never die
+  on an exception (log + retry); shutdown drains the stream residue and closes the store, log,
+  and engines. **The rule that buys scale-out: components share zero objects** — they
+  communicate only through the State DB, the StreamLog, and the Warehouse; `interlace serve
+  --no-scheduler` plus a separate `interlace scheduler` process is that split today.
+- **The web UI** ships inside the package (`service/ui/`, plain ES modules, zero build step),
+  served at `/ui`: overview, lineage canvas with column-level tracing, models, plan/apply with
+  SQL diffs, live runs, query console, streams, checks, environments, and system — live over
+  the SSE spine.
 
 ---
 
@@ -729,21 +737,23 @@ Forever single-node-only: local-DuckDB-file concurrency, SQLite backends,
 ```
 src/interlace/
   dsl/         # @model @stream @check decorators; SQL file loader; project discovery
-  ir/          # Relation types; canonicalize.py; fingerprint.py; schema.py
-  graph/       # dag.py (toposort, stdlib), column_lineage.py, selectors.py, impact.py
-  state/       # store.py (sqlite/postgres), snapshots.py, intervals.py, environments.py, migrations/
-  plan/        # differ.py (sqlglot.diff + classification), plan.py, apply.py
-  engines/     # base.py (EngineAdapter, EngineCaps); duckdb.py, ducklake.py, postgres.py,
-               #   snowflake.py, bigquery.py; transfer.py (ADBC extract-load + ATTACH fast path)
-  strategies/  # full.py, view.py, ephemeral.py, incremental_by_time.py, merge_by_key.py, scd2.py
-  checks/      # ported from v0.2.1 (10 types, @check decorator) — results gate promotion
-  scheduler/   # queue.py (WorkQueue), lanes.py, triggers.py, retry.py, backfill.py
-  runtime/     # context.py (ExecutionContext, RelationHandle), python_exec.py (thread/process lanes)
-  streaming/   # log.py (StreamLog + SqliteStreamLog), materializer.py, consumers.py (adapters)
-  service/     # app.py (litestar), components.py (Supervisor), auth.py
-  obs/         # events.py (durable EventBus), metrics.py, log.py (structlog)
-  config/      # pydantic models, YAML + env overlays (kept from v0.2.1)
-  cli/         # plan apply run promote restate impact backfill lineage init serve
+  ir/          # Relation types; canonicalisation; fingerprints; Arrow schema handling
+  graph/       # dag (toposort, stdlib), column_lineage, selectors
+  state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc)
+  plan/        # differ (sqlglot.diff + classification), plan, apply, run
+  engines/     # base (EngineAdapter, EngineCaps); duckdb (+ DuckLake), postgres (ADBC),
+               #   quack, registry (named engines, lazy open)
+  strategies/  # full, view, full_merge, incremental_by_time, merge_by_key, scd_type_2
+  checks/      # 10 built-in types + @check decorator — results gate promotion
+  scheduler/   # triggers (cron/interval), engine (TriggerEngine), worker (leases/retries/cancel)
+  runtime/     # execution context for Python models
+  streaming/   # log (SqliteStreamLog), materializer (flush + watermark), schema (drift modes)
+  service/     # app.py (litestar), auth.py, ui/ (the /ui web app)
+  config/      # pydantic config; ${VAR} + .env interpolation
+  cli/         # init plan apply run restate gc scheduler serve models lineage env runs
+               #   checks streams engines cancel apikey
+  exports.py   # sinks: file + table delivery, environment gating
+  project.py   # Project.load/compile; engine + state + stream-log opening
 ```
 
 **Core dependencies (2026-verified):**
@@ -760,13 +770,13 @@ src/interlace/
 | `cronsim` | Cron parsing (replaces the hand-rolled parser; APScheduler 4 rejected — still pre-release, wrong shape: triggers must be durable in *our* state DB). |
 | `tenacity` | Connector retries, DuckLake commit-conflict retries, transfers. |
 | `structlog` | Logging (+ optional opentelemetry-sdk). |
-| `httpx` | Outbound alerts/webhooks (async, HTTP/2). |
-| `argon2-cffi`, `joserfc` | API key hashing; OIDC/JWKS. |
-| `watchfiles` | Dev-server hot reload. |
+| `httpx` | (service extra) Outbound alerts/webhooks (async, HTTP/2). |
+| `argon2-cffi`, `joserfc` | (service extra) Reserved for OIDC/JWKS UI sessions. |
+| `watchfiles` | (service extra) Dev-server hot reload. |
 
-**Extras:** `adbc-driver-{postgresql,snowflake,bigquery}`, `polars` (preferred eager frame),
-`psycopg` 3 (Postgres state/log backends), `aiokafka` / `nats-py` (optional brokers),
-`pandas` (compat only). (`ibis-framework` was dropped — see §1.)
+**Extras:** `service` (Litestar/uvicorn daemon), `adbc` (Postgres engine via ADBC), `postgres`
+(psycopg 3 for future Postgres state/log backends), `polars` (preferred eager frame), `pandas`
+(compat only), `all`. (`ibis-framework` is rejected — see §1.)
 
 **Build vs buy:** the StreamLog + WorkQueue (~2–3 kLOC over `sqlite3`/`psycopg`) are built —
 they *are* the product; no off-the-shelf embeddable Python option exists (NATS isn't
@@ -799,19 +809,24 @@ the expression IR and Arrow already the data plane; see §1).
 ## 15. What ports from v0.2.1
 
 Concepts, not code: the `@model`/`@stream`/`@check` decorator DX; unified Python+SQL models;
-YAML config + env overlays; the checks subsystem (10 check types) with results now *gating
-promotion*; the EventBus concept (made durable); the SvelteKit UI; the `plan` CLI concept
-(upgraded to real plan/apply); plugin registries.
+YAML config with env interpolation; the checks subsystem (10 check types) with results now
+*gating promotion*; the event-bus concept (made durable); the `plan` CLI concept (upgraded to
+real plan/apply).
 
-## 16. Phasing (roadmap, not commitments)
+## 16. Phasing
 
-1. **Core:** `ir/`, `engines/` (DuckDB + DuckLake), `state/`, `plan/`, `strategies/`,
-   `graph/` — `interlace plan/apply/run` against local DuckLake with virtual environments.
-2. **Orchestrator + service:** work queue, triggers, workers, Litestar API, durable events,
-   supervisor; UI port.
-3. **Streaming:** StreamLog, materializer, streaming models, adapters-as-consumers, SLAs.
-4. **Remote engines:** Postgres/Snowflake/BigQuery adapters, ADBC transfers, transfer planner.
-5. **Polish:** checks port + promotion gating, selectors, impact CLI, Iceberg/R2 sink, docs.
+All five planned phases are built: **core** (`ir/`, `engines/`, `state/`, `plan/`,
+`strategies/`, `graph/` — plan/apply/run against local DuckLake with virtual environments),
+**orchestrator + service** (durable run queue with leases/retries/cancellation, cron/interval
+triggers, Litestar API, durable events, the `/ui` app), **streaming** (StreamLog,
+materializer, all three drift modes, consumer triggering, backpressure), **remote engines**
+(Postgres via ADBC, the transfer planner with the attach fast lane), and **polish** (checks
+gating promotion, selectors, sinks with environment gating).
+
+Open items live with their sections: SLA monitors/alerting, sensor triggers, and multi-node
+leader election (§10); SaaS sink connectors and the delivery ledger (§6); broker stream-log
+backends and rate limits (§9); a second cloud warehouse adapter (MULTI_ENGINE.md); the
+Iceberg/R2 interoperability sink (§9).
 
 ---
 

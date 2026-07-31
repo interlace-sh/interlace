@@ -33,6 +33,7 @@ from interlace.ir.schema import empty_schema
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
+from interlace.state.interval import Interval
 from interlace.state.store import StateStore
 from interlace.strategies import resolve_strategy
 from interlace.strategies.base import RowCounts
@@ -262,6 +263,37 @@ async def _attach_transfer(
     return True
 
 
+async def _bootstrap_window(model: CompiledModel, resolved: exp.Expression, engine: EngineAdapter) -> Interval | None:
+    """The initial backfill window for a fresh incremental table: the source's
+    time-column range (one aggregate scan over the resolved query), floored/
+    ceiled to the model's grain and filled as ONE covering interval. ``backfill:
+    <ISO date>`` pins the start instead of the derived minimum. None when the
+    source holds no rows."""
+    from datetime import datetime
+
+    from interlace.state.interval import parse_grain
+
+    grain = parse_grain(model.interval or "1d")
+    column = exp.column(model.time_column or "")
+    probe = exp.select(
+        exp.alias_(exp.func("min", column.copy()), "lo"), exp.alias_(exp.func("max", column.copy()), "hi")
+    ).from_(exp.Subquery(this=resolved.copy(), alias=exp.TableAlias(this=exp.to_identifier("src"))))
+    reader = await engine.fetch(probe)
+    row = reader.read_all().to_pylist()[0]
+    lo, hi = row["lo"], row["hi"]
+    if lo is None or hi is None:
+        return None
+    to_dt = lambda v: v if isinstance(v, datetime) else datetime(v.year, v.month, v.day)  # noqa: E731
+    lo_dt, hi_dt = to_dt(lo), to_dt(hi)
+    if model.backfill not in ("auto", "none"):
+        lo_dt = datetime.fromisoformat(model.backfill)  # pinned start
+    floor = datetime.min + ((lo_dt - datetime.min) // grain) * grain
+    ceil = datetime.min + (-(-(hi_dt - datetime.min) // grain)) * grain
+    if ceil <= floor:
+        ceil = floor + grain
+    return Interval(floor, ceil)
+
+
 async def _seed_history(engine: EngineAdapter, source: TableRef, target: TableRef) -> None:
     """Forward-only copy-on-write: seed the new fingerprint's table from the previous
     one. Idempotent (IF NOT EXISTS), so a crashed apply re-seeds harmlessly; the old
@@ -407,17 +439,20 @@ async def _run_backfill(
     await target_engine.create_schema(snapshot.physical_table.schema)
     if task.seed_from is not None:  # forward-only: history moves onto the new table first
         await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
-    statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, task.interval)
+    interval = task.interval
+    if task.bootstrap:  # incremental first build: fill the source's whole range in one window
+        interval = await _bootstrap_window(model, resolved, target_engine)
+    statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, interval)
     counts = await target_engine.execute_all(statements)
     result.record_rows(snapshot.name, strategy.row_counts(counts))
     if model.columns:  # validate the built schema against the contract before recording it
         validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
 
-    if task.interval is not None:  # incremental: accumulate the filled window in the ledger
+    if interval is not None:  # incremental: accumulate the filled window in the ledger
         filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
         for carried in snapshot.intervals:  # forward-only: the INHERITED ledger must persist too
             filled = filled.add(carried)
-        snapshot = replace(snapshot, intervals=filled.add(task.interval))
+        snapshot = replace(snapshot, intervals=filled.add(interval))
     await state.add_snapshot(snapshot)
     if snapshot.name not in result.built:  # one entry per model, however many interval windows ran
         result.built.append(snapshot.name)

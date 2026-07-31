@@ -57,6 +57,7 @@ class CompiledModel:
     description: str | None = None
     fn: ModelFn | None = None  # the Python model function (source is fingerprinted; None for SQL)
     checks: tuple[CheckSpec, ...] = ()  # metadata-fingerprinted: changing a check never rebuilds data
+    backfill: str = "auto"  # incremental first-build window policy: auto | none | <ISO start>
 
 
 @dataclass
@@ -228,6 +229,7 @@ def compile_models(
             strategy=definition.strategy,
             key=definition.key,
             time_column=definition.time_column,
+            backfill=definition.backfill,
             cursor=definition.cursor,
             interval=definition.interval,
             tags=definition.tags,

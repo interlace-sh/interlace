@@ -48,6 +48,9 @@ class BackfillTask:
 
     snapshot: Snapshot
     interval: Interval | None = None  # None = full refresh (non-incremental models)
+    # Incremental first build: apply derives the window from the source's
+    # time-column range once the upstreams exist, and fills it as one interval.
+    bootstrap: bool = False
     # Forward-only: copy this table into the snapshot's (new) physical table before
     # the strategy runs — history moves to the new fingerprint, the old table stays
     # as the rollback until gc.
@@ -137,9 +140,19 @@ def schedule_build(
         grain = parse_grain(model.interval or "1d")
         now = datetime.now()
         window = Interval(now - grain, now)
+        if seed_from is None and model.backfill != "none":
+            # fresh table (added or rebuilt fingerprint): derive the initial window
+            # from the source's time-column range AT APPLY TIME (upstreams may not
+            # exist yet) and fill it as one covering interval
+            plan.backfills.append(BackfillTask(snapshot=snapshot, bootstrap=True))
+            plan.virtual_updates.append(
+                ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
+            )
+            return
+        # forward-only inherit (history already carried) or backfill: none —
+        # the latest grain window, same default as a windowless `interlace run`;
         # scheduled even when an inherited ledger covers the window: the task is what
-        # seeds forward-only history, creates the table, and records the snapshot —
-        # and forward-only means the new logic owns the latest window anyway
+        # seeds forward-only history, creates the table, and records the snapshot
         plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
         plan.virtual_updates.append(
             ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)

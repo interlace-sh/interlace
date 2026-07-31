@@ -71,6 +71,14 @@ async def run_plan(
             grain = parse_grain(model.interval or "1d")
             filled = await state.get_intervals(model.name, model.fingerprint)
             snapshot = snapshot_of(model, ChangeCategory.BREAKING)
+            if start is None and end is None and not len(filled) and model.backfill != "none":
+                # nothing filled yet and no window given: bootstrap — apply derives
+                # the source's time-column range and fills it as one interval
+                plan.backfills.append(BackfillTask(snapshot=snapshot, bootstrap=True))
+                plan.virtual_updates.append(
+                    ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
+                )
+                continue
             if start is None and end is None:
                 window_hint = _window(start, end, grain)
                 plan.warnings.append(

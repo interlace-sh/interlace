@@ -67,26 +67,66 @@ async def test_incremental_processes_windows_and_fills_the_ledger(env: tuple[Duc
     assert intervals == [Interval(d(1), d(3))]
 
 
-async def test_apply_schedules_latest_window_for_incremental(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
-    """`interlace apply` on a project with an incremental model must work: diff
-    schedules the latest grain interval (run --start/--end covers history)."""
+async def test_apply_bootstraps_incremental_from_source_range(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """`interlace apply` on a fresh incremental model derives the initial window
+    from the source's time-column range — historical data loads without
+    --start/--end, as ONE covering ledger interval."""
     from interlace.plan.differ import diff
 
     engine, store = env
     await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
-    await engine.execute_sql("CREATE TABLE main.events AS SELECT now() AS ts, 1 AS val")
+    await engine.execute_sql(
+        "CREATE TABLE main.events AS SELECT * FROM (VALUES "
+        "(TIMESTAMP '2026-06-01 08:00:00', 1), (TIMESTAMP '2026-06-15 09:00:00', 2), "
+        "(TIMESTAMP '2026-06-29 10:00:00', 3)) AS t (ts, val)"
+    )
     project = compile_models(
         [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental_by_time", time_column="ts")]
     )
 
     plan = await diff(project, "prod", store)
     assert len(plan.backfills) == 1
-    assert plan.backfills[0].interval is not None  # windowed, not the unbuildable bare task
+    assert plan.backfills[0].bootstrap and plan.backfills[0].interval is None
 
     result = await apply(plan, compiled=project, engine=engine, state=store)
     assert result.built == ["agg"]
+    rows = await _fetch(engine, "SELECT val FROM main.agg ORDER BY val")
+    assert [r["val"] for r in rows] == [1, 2, 3]  # the WHOLE June range, not just the latest day
+
+    model = project.models["agg"]
+    ledger = list(await store.get_intervals("agg", model.fingerprint))
+    assert len(ledger) == 1  # one covering interval
+    assert ledger[0].start.strftime("%Y-%m-%d") == "2026-06-01"
+    assert ledger[0].end.strftime("%Y-%m-%d") == "2026-06-30"  # ceiled past the max day
+
+
+async def test_backfill_none_keeps_latest_window_only(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """backfill: none opts out — a fresh build fills only the most recent grain."""
+    from interlace.plan.differ import diff
+
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
+    await engine.execute_sql(
+        "CREATE TABLE main.events AS SELECT * FROM (VALUES "
+        "(TIMESTAMP '2026-06-01 08:00:00', 1), (now() + INTERVAL '-1' MINUTE, 2)) AS t (ts, val)"
+    )
+    project = compile_models(
+        [
+            ModelDef(
+                name="agg",
+                sql="SELECT ts, val FROM main.events",
+                strategy="incremental_by_time",
+                time_column="ts",
+                backfill="none",
+            )
+        ]
+    )
+
+    plan = await diff(project, "prod", store)
+    assert plan.backfills[0].interval is not None and not plan.backfills[0].bootstrap
+    await apply(plan, compiled=project, engine=engine, state=store)
     rows = await _fetch(engine, "SELECT val FROM main.agg")
-    assert [r["val"] for r in rows] == [1]  # now() falls inside the latest-day window
+    assert [r["val"] for r in rows] == [2]  # only the recent row; June needs an explicit window
 
 
 async def test_run_plan_expands_window_and_catches_up(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

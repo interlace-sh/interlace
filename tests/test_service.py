@@ -459,3 +459,29 @@ def test_apply_emits_per_model_progress_events(client: TestClient) -> None:
     started = {e["entity"] for e in events if e["type"] == "model.start"}
     finished = {e["entity"] for e in events if e["type"] == "model.done"}
     assert "raw_events" in started and started == finished  # every started model resolved
+
+
+def test_publish_backpressure_returns_429(tmp_path: Path) -> None:
+    """A durable-but-unmaterialized backlog past the limit rejects producers with
+    429 instead of growing without bound; draining clears it."""
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "clicks_stream.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream("clicks", schema={"event_id": "string", "amount": "double"})\n'
+        "def clicks(event):\n    return event\n"
+    )
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        ok = client.post("/streams/clicks", json={"event_id": "bp-1", "amount": 1.0})
+        assert ok.status_code == 201
+
+        state = client.app.state
+        state.log_heads["clicks"] = 500
+        state.flushed_heads["clicks"] = 0
+        state.stream_max_pending = 100
+        throttled = client.post("/streams/clicks", json={"event_id": "bp-2", "amount": 1.0})
+        assert throttled.status_code == 429
+        assert "behind" in throttled.json()["detail"]
+
+        state.flushed_heads["clicks"] = 500  # the flusher caught up
+        recovered = client.post("/streams/clicks", json={"event_id": "bp-3", "amount": 1.0})
+        assert recovered.status_code == 201

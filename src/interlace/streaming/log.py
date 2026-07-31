@@ -72,6 +72,10 @@ class StreamLog(Protocol):
         """Read up to ``limit`` events after ``after_offset``; optionally long-poll for ``wait`` seconds."""
         ...
 
+    async def heads(self) -> dict[str, int]:
+        """Highest assigned offset per stream (0 for streams never appended to)."""
+        ...
+
     async def lease(self, stream: str, group: str, *, ttl: float, owner: str) -> Lease | None:
         """Acquire the single active lease for ``(stream, group)``, or ``None`` if held."""
         ...
@@ -186,6 +190,14 @@ class SqliteStreamLog:
             )
             self._conn.commit()  # durable before the publisher sees 200
         return AppendResult(offsets=offsets, deduped=deduped)
+
+    async def heads(self) -> dict[str, int]:
+        return await asyncio.to_thread(self._heads_sync)
+
+    def _heads_sync(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT stream, next_offset FROM stream_heads").fetchall()
+        return {row["stream"]: int(row["next_offset"]) - 1 for row in rows}
 
     # --- consumers ----------------------------------------------------------
 

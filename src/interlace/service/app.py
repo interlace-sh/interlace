@@ -691,8 +691,24 @@ async def get_stream(name: FromPath[str], state: State) -> StreamDetail:
 
 @post("/streams/{name:str}", opt={"scope": "write"})
 async def publish(name: FromPath[str], data: dict | list, state: State) -> PublishResult:
-    """Publish one event (object) or a batch (array). Durable before this returns."""
+    """Publish one event (object) or a batch (array). Durable before this returns.
+
+    Backpressure: when the warehouse can't keep up, the durable-but-unmaterialized
+    backlog grows without bound — past ``stream_max_pending`` this returns 429 so
+    producers slow down instead of the daemon eating memory and disk. The counters
+    are maintained by the publish/flush paths themselves; nothing here queries the
+    warehouse.
+    """
     stream = _stream_or_404(state, name)
+    pending = state.log_heads.get(name, 0) - state.flushed_heads.get(name, 0)
+    if pending > state.stream_max_pending:
+        from litestar.exceptions import HTTPException
+
+        raise HTTPException(
+            status_code=429,
+            detail=f"stream {name!r} has {pending} unmaterialized events (limit {state.stream_max_pending}) — "
+            f"the warehouse is behind; retry with backoff",
+        )
     rows = data if isinstance(data, list) else [data]
     quarantined: list[tuple[object, str]] = []
     try:
@@ -715,6 +731,8 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
         await state.stream_log.append(
             shadow.name, [Event(payload={"error": error, "payload": json.dumps(row)}) for row, error in quarantined]
         )
+    if result and result.offsets:
+        state.log_heads[name] = max(state.log_heads.get(name, 0), max(result.offsets))
     if result or quarantined:  # durable: hand materialization to the flusher micro-batch
         state.flush_wanted.set()
     return PublishResult(
@@ -1165,6 +1183,12 @@ def create_app(
         app.state.stream_log = stream_log
         app.state.flush_targets = flush_targets  # streams + their quarantine shadows
         app.state.flush_wanted = asyncio.Event()
+        # Backpressure gauge: pending = log_heads - flushed_heads per stream. Seeded
+        # equal (assume caught up — the startup catch-up flush runs immediately and
+        # makes it true); maintained by publish/flush, never by warehouse queries.
+        app.state.log_heads = await stream_log.heads() if streams else {}
+        app.state.flushed_heads = dict(app.state.log_heads)
+        app.state.stream_max_pending = 100_000  # per stream; config knob when someone needs one
         app.state.sse_subscribers = set()
 
         logger = logging.getLogger("interlace.service")
@@ -1194,6 +1218,10 @@ def create_app(
             """One coalesced flush + the consumer enqueues it earns."""
             async with app.state.apply_lock:
                 flushed = await flush_streams(flush_targets, stream_log, engine)
+            # flush_stream drains: everything appended before it ran is now in the
+            # warehouse, so the backpressure gauge resets to the pre-flush head
+            for target in flush_targets:
+                app.state.flushed_heads[target.name] = app.state.log_heads.get(target.name, 0)
             for stream_name, rows in flushed.items():
                 await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})
                 if stream_name in streams:

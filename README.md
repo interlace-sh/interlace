@@ -8,7 +8,7 @@ Models are `.sql` files or Python functions; state is versioned snapshots with v
 environments and a terraform-style plan/apply; everything runs in a single daemon on
 DuckDB + DuckLake by default.
 
-> **Status: v2 pre-release (2.0.0a4).** APIs may still move. Requires Python 3.12+.
+> **Status: 1.0.** Requires Python 3.12+.
 > The package is published to PyPI as **`interlaced`**; the import name and CLI are `interlace`.
 
 ```bash

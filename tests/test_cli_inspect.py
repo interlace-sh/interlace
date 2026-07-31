@@ -133,10 +133,8 @@ def test_checks_run_fails_on_blocking_check(tmp_path: Path) -> None:
     (project / "interlace.yaml").write_text("name: gate\ndatabase: wh.duckdb\n")  # promoted tables must persist
     model = project / "models" / "m.sql"
     model.write_text("/* interlace: {checks: [{accepted_values: {column: x, values: [1]}}]} */\nSELECT 1 AS x")
-    # a sink with a declared check must be skipped, not error (it has no table to check)
     (project / "models" / "report.sql").write_text(
-        "/* interlace: {export: {to: parquet, path: out/report.parquet}, checks: [{not_null: x}]} */\n"
-        "SELECT x FROM m"
+        "/* interlace: {export: {to: parquet, path: out/report.parquet}} */\nSELECT x FROM m"
     )
     assert runner.invoke(app, ["apply", "--path", str(project)]).exit_code == 0
 
@@ -161,3 +159,18 @@ def test_run_rejects_bad_iso_window(tmp_path: Path) -> None:
     result = runner.invoke(app, ["run", "--path", str(tmp_path), "--start", "not-a-time"])
     assert result.exit_code == 2
     assert "ISO timestamp" in result.output
+
+
+def test_sink_declaring_checks_is_rejected_at_compile(tmp_path: Path) -> None:
+    """A sink has no managed table to check — declaring checks on one is a
+    definition error, not a silent skip."""
+    project = tmp_path / "proj"
+    (project / "models").mkdir(parents=True)
+    (project / "interlace.yaml").write_text("name: gate\n")
+    (project / "models" / "m.sql").write_text("SELECT 1 AS x")
+    (project / "models" / "report.sql").write_text(
+        "/* interlace: {export: {to: parquet, path: out/r.parquet}, checks: [{not_null: x}]} */\nSELECT x FROM m"
+    )
+    result = runner.invoke(app, ["plan", "--path", str(project)])
+    assert result.exit_code != 0
+    assert "declare them on the model it selects from" in str(result.exception or result.output)

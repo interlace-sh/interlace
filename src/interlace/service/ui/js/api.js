@@ -61,6 +61,7 @@ function setFeedState(next) {
 
 function startPolling() {
   if (pollTimer) return;
+  pollTimer = -1; // claimed synchronously: a second connect() in the first tick's await window must not double-start
   setFeedState("poll");
   const tick = async () => {
     try {

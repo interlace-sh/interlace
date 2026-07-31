@@ -146,6 +146,11 @@ def compile_models(
                 f"model {name!r} references unknown engine {engine!r}",
                 details={"engines": sorted(engines)},
             )
+        if definition.export is not None and definition.checks:
+            raise DefinitionError(
+                f"sink {name!r} declares checks, but a sink has no managed table to check — "
+                f"declare them on the model it selects from"
+            )
         # Authoring dialect: explicit model dialect, else the engine's, else project default.
         model_default_dialect = dialects_by_engine.get(engine, default_dialect)
         deps, ast, dialect = _resolve_dependencies(definition, names, model_default_dialect)

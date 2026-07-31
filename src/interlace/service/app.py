@@ -24,6 +24,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import msgspec
+import pyarrow as pa
 from litestar import Litestar, Request, delete, get, post
 from litestar.datastructures import CacheControlHeader, State
 from litestar.exceptions import ClientException, ImproperlyConfiguredException, NotFoundException
@@ -808,9 +809,18 @@ async def post_query(data: QueryRequest, state: State) -> QueryResponse:
     limit = max(1, min(data.limit, 10_000))
     bounded = _exp.select("*").from_(parsed.subquery("q")).limit(limit + 1)  # +1: exact truncation
     started = _time.perf_counter()
-    try:
+
+    async def _run() -> pa.Table:
         reader = await state.engine.fetch(bounded)
-        table = reader.read_all()
+        return await asyncio.to_thread(reader.read_all)
+
+    try:
+        table = await asyncio.wait_for(_run(), timeout=30.0)
+    except TimeoutError as exc:
+        interrupt = getattr(state.engine, "interrupt", None)
+        if interrupt is not None:
+            interrupt()  # free the engine thread; the cancelled fetch raises and is discarded
+        raise ClientException(detail="query timed out after 30s — narrow it down") from exc
     except Exception as exc:  # engine errors (missing table, type errors) are the user's feedback
         raise ClientException(detail=str(exc)) from exc
     elapsed = (_time.perf_counter() - started) * 1000

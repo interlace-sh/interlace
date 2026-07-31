@@ -1,112 +1,36 @@
 # Changelog
 
-## 2.0.0a4 (2026-07-29)
+## 1.0.0 (2026-07-31)
 
-Concurrency fixes in the DuckDB/DuckLake engine, all reachable from a plain
-parallel build.
+First stable release of the rebuilt platform, published to PyPI as `interlaced`
+(import and CLI: `interlace`).
 
-DuckLake's catalog is not safe against concurrent DDL on sibling cursors of one
-`DatabaseInstance`, which is exactly how the adapter drove it. Under parallel
-builds a `CREATE TABLE <schema>.<name>` intermittently lost its schema
-qualification and created the table in the catalog's default schema instead —
-silently, with no error and no transaction conflict. The snapshot then disagreed
-with what the state store recorded, and every later run failed resolving the
-table. Catalog-mutating statements now hold a write lock; reads stay unlocked, so
-concurrency is only given up where the catalog is actually being written.
+**Transformation.** SQL files and Arrow-native Python functions compile to a
+fingerprinted DAG (sqlglot IR). Terraform-style `plan` / `apply` with a
+breaking-change gate; virtual environments as views over immutable snapshot
+tables (production is the unprefixed namespace, sandboxes are prefixed);
+column-pruned rebuild skipping — a semantic change invalidates only consumers
+of the touched columns; `--forward-only` copy-on-write for history-keeping
+strategies (full, merge_by_key, full_merge, scd_type_2, incremental_by_time
+with an interval ledger). Data-quality checks gate promotion.
 
-Two more in the same path:
+**Orchestration.** Built-in scheduler (cron/interval) over a durable run queue
+with leases, retries, and cooperative cancellation; interval-aware backfill
+(`run` catches up, `restate` reprocesses).
 
-- A load no longer retries on a DuckLake commit conflict. The conflict surfaces
-  at COMMIT, after the single-pass Arrow reader has been drained, so the retry
-  re-registered an exhausted reader and wrote an **empty table while reporting
-  success**. It now fails loudly and the model re-runs.
-- `fetch` closes its cursor when the stream ends, instead of leaving the garbage
-  collector to reclaim it on whatever thread dropped the last reference while
-  sibling cursors were mid-query.
+**Streaming.** Durable ingestion log (fsync-before-ack, idempotency keys),
+exactly-once micro-batch materialization via an in-warehouse watermark, schema
+drift modes (reject / evolve / quarantine), retention, and 429 backpressure.
 
-Build concurrency is now configurable: `parallelism` in `interlace.yaml`
-(default 4, minimum 1), with a `--parallelism` override on `run`, `apply`, and
-`restate`. It is honoured by the daemon and scheduler too.
+**Multi-engine.** DuckDB + DuckLake by default; Postgres natively over ADBC;
+per-model `engine:` pinning with explicit cross-engine Arrow transfers (ATTACH
+fast lane where possible). Reverse-ETL sinks with environment gating
+(production-only by default).
 
-## 2.0.0a3 (2026-07-28)
-
-Config `${VAR}` interpolation now also reads a `.env` file next to
-`interlace.yaml` — the process environment wins, and nothing is exported into
-it, so a missing variable still surfaces as a literal `${VAR}`.
-
-## 2.0.0a2 (2026-07-28)
-
-Published to PyPI as **`interlaced`** (the `interlace` name is locked upstream);
-the import and CLI remain `interlace`: `pip install interlaced`.
-
-Hardening + throughput alpha: everything a first-principles review of a1 found,
-plus the CLI growing into a daily driver.
-
-**Performance** — backfills now build DAG-parallel within dependency levels
-(`apply(parallelism=4)`; models a check reads are ordered too); snapshot reads
-batched (2 queries per apply, not 2N); stream publishing is append-only with a
-micro-batching flusher (no warehouse write on the hot path); SSE clients share
-one event tail; startup-cached column lineage.
-
-**Correctness** — forward-only is copy-on-write: history moves to the new
-fingerprint's table and checks gate before production views move; GC decides
-and deletes in one transaction (safe against concurrent promotes from other
-processes); interval-trigger idempotency keys survive crash/restart; worker
-lease fencing + drain under the apply lock; table sinks evolve their external
-target (additive ALTERs + column-list inserts — no more positional breakage);
-`apply` works on incremental_by_time models (fills the latest grain interval);
-DuckDB secrets/extensions apply once per instance (fixes a catalog write-write
-race under parallel builds); Postgres DSNs must name their host — no silent
-localhost:5432; DuckLake attach handles are released on close (upstream
-DatabaseInstance leak worked around).
-
-**CLI** — live per-model build progress; a build-results table (output,
-strategy, engine, dependencies, +new ~updated -deleted rows, time) backed by
-strategy-interpreted affected counts, also on the HTTP ApplyResponse; `--json`
-on the inspection commands; `checks run` (validate promoted tables without
-rebuilding); `interlace list` renamed `models`; run windows + restate over
-HTTP (`POST /runs` start/end/restate); shell completion; `INTERLACE_ENV`;
-lineage `--format dot`; minimal restyled tables; self-explaining empty states.
-
-**Examples** — new `examples/benchmark` (25M rows through a concurrent fan-out
-DAG, incremental windows, Arrow streaming, a Parquet sink — with measured
-timings); platform_tour demonstrates sink evolution; stale v0.x example
-leftovers removed.
-
-## 2.0.0a1 (2026-07-27)
-
-First alpha of the ground-up v2 rebuild. The 0.x line on PyPI is unrelated to
-this codebase.
-
-**Transformation** — sqlglot-AST IR with Arrow as the only interchange format;
-fingerprinted snapshot tables with virtual environments (production is the
-unprefixed namespace, sandboxes are prefixed); terraform-style plan/apply with
-breaking / non-breaking / forward-only classification and provably-identical
-downstream models reusing their tables instead of rebuilding; strategies:
-full, view, ephemeral, merge_by_key, full_merge, incremental_by_time (interval
-ledger, backfill/restate), scd_type_2; schema contracts; column lineage;
-data-quality checks (10 built-ins + @check) gating promotion; Python models
-over Arrow with cursor/this incremental extraction and keyed strategies;
-reference-aware GC.
-
-**Orchestration** — cron/interval triggers over a durable run queue; per-task
-leases with crash reclaim, durable retries, timeouts, and cooperative
-cancellation; the combined daemon (`interlace serve`): HTTP API (Litestar,
-OpenAPI/Scalar, scoped API keys, SSE event log) + scheduler + streams in one
-process.
-
-**Streaming** — durable stream log (SQLite WAL) with idempotency-key dedup and
-consumer-group lease fencing; schema-validated ingestion with reject / evolve /
-quarantine drift modes; exactly-once materialization into `streams.<name>`;
-stream-append triggers; retention sweeps.
-
-**Storage & engines** — DuckLake default warehouse (quack-served for
-multi-process access); named engines with model pinning (fingerprinted),
-native Postgres execution via ADBC, explicit cross-engine transfers with an
-attach fast lane; `attach:` federation and table sinks (reverse ETL) with
-replace/append/merge_by_key/full_merge delivery.
-
----
+**One daemon.** `interlace serve` = HTTP API (Litestar, scoped API keys) +
+scheduler + streams + a zero-build web UI at `/ui`: lineage canvas with
+column-level tracing, live build feedback over SSE, plan/apply, runs, a
+read-only query console, checks, environments, and system administration.
 
 # 0.x line (frozen; unrelated to the v2 rebuild)
 

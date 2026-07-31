@@ -101,7 +101,7 @@ export async function render(el, { api, feed, go, toast, modal, params }) {
   function summaryLines(detail, payload) {
     const lines = [];
     if (payload.checks?.total) {
-      const warned = payload.checks.warned ?? [];
+      const warned = payload.checks.failing ?? [];
       lines.push(
         h(
           "div",

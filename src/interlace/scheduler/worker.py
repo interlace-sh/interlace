@@ -156,7 +156,7 @@ async def _execute_run(
             "checks": {
                 "passed": sum(1 for c in result.checks if c.status == "passed"),
                 "total": len(result.checks),
-                "warned": [f"{c.model}.{c.name}" for c in result.checks if c.status != "passed"],
+                "failing": [f"{c.model}.{c.name}" for c in result.checks if c.status != "passed"],
             },
         }
 

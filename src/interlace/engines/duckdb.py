@@ -156,6 +156,11 @@ class DuckDBAdapter(EngineAdapter):
         self._attached.clear()
         self._conn.close()
 
+    def interrupt(self) -> None:
+        """Cancel the currently-running statement(s) on this connection (best effort)."""
+        with contextlib.suppress(Exception):
+            self._conn.interrupt()
+
     def attach(self, alias: str, uri: str) -> None:
         """ATTACH another database (duckdb/sqlite/postgres/... URI) under ``alias``."""
         escaped = uri.replace("'", "''")

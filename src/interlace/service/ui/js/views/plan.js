@@ -101,7 +101,7 @@ export async function render(el, { api, toast, modal, go }) {
       renderResult(result);
       toast(`applied — ${result.built.length} built, ${result.promoted} promoted`, "ok");
     } catch (error) {
-      if (/breaking/.test(error.message) && !force) {
+      if (error.message.includes("resubmit with force=true") && !force) {
         modal((box, close) => {
           box.append(
             h("h2", {}, "Breaking changes"),

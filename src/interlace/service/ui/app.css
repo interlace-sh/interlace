@@ -224,6 +224,8 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .canvas-tools .in { width: 220px; }
 .canvas-legend { position: absolute; bottom: 10px; left: 12px; font-size: 10px; color: var(--tx-faint); z-index: 2; }
 
+.node { cursor: pointer; }
+.node .pin { cursor: pointer; }
 .node rect.body { fill: var(--ink-1); stroke: var(--line); rx: 6; }
 .node:hover rect.body { stroke: var(--tx-faint); }
 .node.sel rect.body { stroke: var(--violet); stroke-width: 1.5; }
@@ -235,7 +237,7 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .node .pin:hover text, .node .pin.sel text { fill: var(--cyan); }
 .node .pin.lit text { fill: var(--cyan); }
 .node .expander { cursor: pointer; }
-.node .expander .chev { fill: none; stroke: var(--tx-faint); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.node .expander .chev { fill: none; stroke: var(--tx-faint); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .node .expander:hover .chev { stroke: var(--tx); }
 .node .pin .pin-type { fill: var(--tx-faint); font: 9.5px var(--mono); }
 .node.stream rect.body { stroke: color-mix(in srgb, var(--cyan) 45%, transparent); stroke-dasharray: 5 3; }
@@ -300,6 +302,15 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .feed-row .en { color: var(--tx); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- query console --------------------------------------------------------- */
+.q-layout { display: grid; grid-template-columns: 1fr 240px; gap: 12px; align-items: start; }
+.q-layout .card { margin-top: 0; }
+.q-layout .card + .card, .q-layout > div > .card + .card, .q-layout > div > .q-grid { margin-top: 12px; }
+@media (max-width: 900px) { .q-layout { grid-template-columns: 1fr; } }
+.q-tables { max-height: 52vh; overflow-y: auto; display: flex; flex-direction: column; }
+.q-table { display: flex; justify-content: space-between; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.q-table:hover { background: var(--ink-2); }
+.q-table .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-table .ty { color: var(--tx-faint); font-size: 10.5px; flex-shrink: 0; }
 .q-editor { width: 100%; min-height: 110px; resize: vertical; font: 12.5px/1.6 var(--mono); background: var(--ink-0); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; }
 .q-editor:focus { border-color: var(--violet); outline: none; }
 .q-meta { display: flex; gap: 14px; align-items: center; color: var(--tx-dim); font-size: 11px; }

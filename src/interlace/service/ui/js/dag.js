@@ -216,19 +216,22 @@ export function createDag(container, data, { onSelect } = {}) {
       if (model.has_schedule) marks.push("⏱");
       if (model.has_checks) marks.push("✓");
       if (marks.length) {
-        const marksEl = svg("text", { class: "marks", x: NODE_W - 10 - marks.length * 12, y: 19 });
+        const marksEl = svg("text", { class: "marks", x: NODE_W - 28 - marks.length * 12, y: 19 });
         marksEl.textContent = marks.join(" ");
         group.append(marksEl);
       }
 
       if ((model.columns || []).length) {
-        // a real control: vertical chevron with a generous invisible hit target
+        // top-right double chevron (⌄⌄ expand / ⌃⌃ collapse), generous hit target
         const expander = svg("g", { class: "expander" });
-        const hit = svg("rect", { x: NODE_W - 26, y: NODE_H - 26, width: 24, height: 24, fill: "transparent" });
+        const hit = svg("rect", { x: NODE_W - 24, y: 5, width: 20, height: 20, fill: "transparent" });
         const open = expanded.has(model.name);
+        const cx = NODE_W - 19;
         const chevron = svg("path", {
           class: "chev",
-          d: open ? `M ${NODE_W - 20} ${NODE_H - 10} l 6 -6 l 6 6` : `M ${NODE_W - 20} ${NODE_H - 16} l 6 6 l 6 -6`,
+          d: open
+            ? `M ${cx} 14 l 4 -4 l 4 4 M ${cx} 19 l 4 -4 l 4 4`
+            : `M ${cx} 10 l 4 4 l 4 -4 M ${cx} 15 l 4 4 l 4 -4`,
         });
         expander.append(hit, chevron);
         expander.addEventListener("click", (event) => {

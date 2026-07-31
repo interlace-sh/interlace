@@ -28,6 +28,75 @@ export async function render(el, { api, modal, params }) {
   const editor = h("textarea", { class: "q-editor", placeholder: "SELECT … — read-only, always row-capped" });
   if (params.sql) editor.value = params.sql;
 
+  // ---- table browser: what you can FROM, per environment --------------------
+  const envSelect = h("select", { class: "in", style: "width:100%" });
+  const tableFilter = h("input", { class: "in", placeholder: "filter…", style: "width:100%" });
+  const tableList = h("div", { class: "q-tables" });
+  let models = [];
+  let streams = [];
+
+  function qualify(name, env) {
+    const qualified = name.includes(".") ? name : `main.${name}`;
+    return env === "prod" ? qualified : `${env}__${qualified}`;
+  }
+
+  function insertRef(ref) {
+    editor.setRangeText(ref, editor.selectionStart, editor.selectionEnd, "end");
+    editor.focus();
+  }
+
+  function renderTables() {
+    const env = envSelect.value || "prod";
+    const needle = tableFilter.value.trim().toLowerCase();
+    const rows = [];
+    for (const model of models) {
+      if (model.is_sink) continue; // sinks have no readable table
+      if (needle && !model.name.toLowerCase().includes(needle)) continue;
+      const ref = qualify(model.name, env);
+      rows.push(
+        h(
+          "div",
+          { class: "q-table", title: `insert ${ref}`, onclick: () => insertRef(ref) },
+          h("span", { class: "nm" }, model.name),
+          h("span", { class: "ty" }, model.output),
+        ),
+      );
+    }
+    for (const stream of streams) {
+      const ref = `streams.${stream.name}`;
+      if (needle && !ref.includes(needle)) continue;
+      rows.push(
+        h(
+          "div",
+          { class: "q-table", title: `insert ${ref}`, onclick: () => insertRef(ref) },
+          h("span", { class: "nm" }, stream.name),
+          h("span", { class: "ty", style: "color:var(--cyan)" }, "stream"),
+        ),
+      );
+    }
+    tableList.replaceChildren(...(rows.length ? rows : [h("div", { class: "empty" }, "nothing matches")]));
+  }
+
+  async function loadBrowser() {
+    try {
+      const [health, envs, modelList, streamList] = await Promise.all([
+        api.get("/health"),
+        api.get("/environments").catch(() => []),
+        api.get("/models"),
+        api.get("/streams").catch(() => []),
+      ]);
+      models = modelList;
+      streams = streamList;
+      const names = [...new Set([health.environment, ...envs.map((e) => e.name)])].filter(Boolean);
+      envSelect.replaceChildren(...names.map((name) => h("option", { value: name, selected: name === health.environment }, name)));
+      renderTables();
+    } catch {
+      tableList.replaceChildren(h("div", { class: "empty" }, "daemon unreachable"));
+    }
+  }
+  envSelect.addEventListener("change", renderTables);
+  tableFilter.addEventListener("input", renderTables);
+
   const limitSelect = h(
     "select",
     { class: "in" },
@@ -47,25 +116,46 @@ export async function render(el, { api, modal, params }) {
     ),
     h(
       "div",
-      { class: "card" },
+      { class: "q-layout" },
       h(
         "div",
-        { class: "card-body" },
-        editor,
+        {},
         h(
           "div",
-          { style: "display:flex; gap:8px; align-items:center; margin-top:10px" },
-          h("span", { style: "color:var(--tx-faint); font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em" }, "limit"),
-          limitSelect,
-          runBtn,
-          historyBtn,
-          h("span", { style: "flex:1" }),
-          meta,
+          { class: "card" },
+          h(
+            "div",
+            { class: "card-body" },
+            editor,
+            h(
+              "div",
+              { style: "display:flex; gap:8px; align-items:center; margin-top:10px" },
+              h("span", { style: "color:var(--tx-faint); font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em" }, "limit"),
+              limitSelect,
+              runBtn,
+              historyBtn,
+              h("span", { style: "flex:1" }),
+              meta,
+            ),
+          ),
+        ),
+        results,
+      ),
+      h(
+        "div",
+        { class: "card" },
+        h("div", { class: "card-head" }, "tables"),
+        h(
+          "div",
+          { class: "card-body", style: "display:flex; flex-direction:column; gap:8px" },
+          h("label", { class: "field" }, h("span", {}, "environment"), envSelect),
+          tableFilter,
+          tableList,
         ),
       ),
     ),
-    results,
   );
+  loadBrowser();
 
   function cellFor(value) {
     if (value === null || value === undefined) return h("td", { class: "null" }, "∅");

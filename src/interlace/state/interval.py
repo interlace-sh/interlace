@@ -115,6 +115,20 @@ class IntervalSet:
         return self.missing(target).is_empty
 
 
+def floor_to_grain(moment: datetime, grain: timedelta) -> datetime:
+    """Floor ``moment`` onto the grain lattice (midnight-anchored: 1d floors to
+    00:00, 1h to the top of the hour)."""
+    return datetime.min + ((moment - datetime.min) // grain) * grain
+
+
+def latest_complete_window(now: datetime, grain: timedelta) -> Interval:
+    """The most recent COMPLETE grain-aligned window — for 1d at any point on
+    Aug 1: [Jul 31 00:00, Aug 1 00:00). Complete windows keep the ledger honest:
+    a partial window recorded as done would never be refilled."""
+    floor = floor_to_grain(now, grain)
+    return Interval(floor - grain, floor)
+
+
 def parse_grain(grain: str) -> timedelta:
     """Parse a grain like ``1d``, ``6h``, ``15m`` into a timedelta. (``m`` = minutes.)"""
     match = _GRAIN_RE.fullmatch(grain.strip())

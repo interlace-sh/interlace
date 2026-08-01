@@ -108,7 +108,8 @@ async def test_backfill_none_keeps_latest_window_only(env: tuple[DuckDBAdapter, 
     await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
     await engine.execute_sql(
         "CREATE TABLE main.events AS SELECT * FROM (VALUES "
-        "(TIMESTAMP '2026-06-01 08:00:00', 1), (now() + INTERVAL '-1' MINUTE, 2)) AS t (ts, val)"
+        "(TIMESTAMP '2026-06-01 08:00:00', 1), "
+        "(date_trunc('day', now()) - INTERVAL '23' HOUR, 2)) AS t (ts, val)"  # yesterday 01:00 — inside the complete window
     )
     project = compile_models(
         [
@@ -123,10 +124,14 @@ async def test_backfill_none_keeps_latest_window_only(env: tuple[DuckDBAdapter, 
     )
 
     plan = await diff(project, "prod", store)
-    assert plan.backfills[0].interval is not None and not plan.backfills[0].bootstrap
+    task = plan.backfills[0]
+    assert task.interval is not None and not task.bootstrap
+    # the default window is the most recent COMPLETE aligned grain (all of yesterday)
+    assert task.interval.start.time().isoformat() == "00:00:00"
+    assert task.interval.end - task.interval.start == __import__("datetime").timedelta(days=1)
     await apply(plan, compiled=project, engine=engine, state=store)
     rows = await _fetch(engine, "SELECT val FROM main.agg")
-    assert [r["val"] for r in rows] == [2]  # only the recent row; June needs an explicit window
+    assert [r["val"] for r in rows] == [2]  # only yesterday's row; June needs an explicit window
 
 
 async def test_run_plan_expands_window_and_catches_up(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

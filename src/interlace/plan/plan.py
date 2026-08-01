@@ -135,11 +135,10 @@ def schedule_build(
     if model.strategy == "incremental_by_time" and model.export is None:
         from datetime import datetime
 
-        from interlace.state.interval import parse_grain
+        from interlace.state.interval import latest_complete_window, parse_grain
 
         grain = parse_grain(model.interval or "1d")
-        now = datetime.now()
-        window = Interval(now - grain, now)
+        window = latest_complete_window(datetime.now(), grain)
         if seed_from is None and model.backfill != "none":
             # fresh table (added or rebuilt fingerprint): derive the initial window
             # from the source's time-column range AT APPLY TIME (upstreams may not

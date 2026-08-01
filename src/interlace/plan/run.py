@@ -25,12 +25,16 @@ from interlace.plan.plan import (
     env_view,
     schedule_build,
 )
-from interlace.state.interval import Interval, parse_grain, slice_interval
+from interlace.state.interval import Interval, latest_complete_window, parse_grain, slice_interval
 from interlace.state.snapshot import ChangeCategory
 from interlace.state.store import StateStore
 
 
 def _window(start: datetime | None, end: datetime | None, grain: timedelta) -> Interval:
+    if start is None and end is None:
+        # no window given: the most recent COMPLETE aligned window (for 1d, all
+        # of yesterday) — never a partial or boundary-crossing one
+        return latest_complete_window(datetime.now(), grain)
     finish = end or datetime.now()
     begin = start or (finish - grain)
     return Interval(begin, finish)
@@ -82,9 +86,9 @@ async def run_plan(
             if start is None and end is None:
                 window_hint = _window(start, end, grain)
                 plan.warnings.append(
-                    f"{model.name}: no --start/--end given — only the most recent "
+                    f"{model.name}: no --start/--end given — only the most recent complete "
                     f"{model.interval or '1d'} window ({window_hint.start:%Y-%m-%d %H:%M} → "
-                    f"{window_hint.end:%Y-%m-%d %H:%M}) is considered; historical data needs an explicit window"
+                    f"{window_hint.end:%Y-%m-%d %H:%M}) is considered; other ranges need an explicit window"
                 )
             for window in slice_interval(_window(start, end, grain), grain):
                 if restate or not filled.covers(window):  # restate reprocesses; otherwise catch up

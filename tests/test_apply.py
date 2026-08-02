@@ -218,3 +218,43 @@ async def test_removed_model_demotes_and_drops_its_view(env: tuple[DuckDBAdapter
     with pytest.raises(duckdb_mod.CatalogException):
         await _rows(engine, "SELECT y FROM main.gone")  # view dropped
     assert await _rows(engine, "SELECT x FROM main.keep") == [{"x": 1}]  # survivor untouched
+
+
+async def test_removal_only_plan_prunes_the_environment_row(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A plan whose ONLY change is a removal must still settle: nothing to build,
+    but the environment row goes, so the next plan is clean. Regression for a
+    removal that reported itself forever and masked the next one."""
+    engine, store = env
+    v1 = compile_models([sql_model("keep", "SELECT 1 AS x"), sql_model("raw.gone", "SELECT 2 AS y")])
+    await apply(await diff(v1, "prod", store), compiled=v1, engine=engine, state=store)
+
+    v2 = compile_models([sql_model("keep", "SELECT 1 AS x")])  # schema-qualified model deleted
+    plan = await diff(v2, "prod", store)
+    assert not plan.backfills and not plan.reuses  # removal-only: nothing to build
+    assert [c.name for c in plan.changes] == ["raw.gone"]
+
+    await apply(plan, compiled=v2, engine=engine, state=store)
+    assert "raw.gone" not in await store.get_environment("prod")
+    assert (await diff(v2, "prod", store)).is_empty  # the next plan is clean
+
+
+async def test_unscoped_run_prunes_removals_like_apply(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A scheduler-driven project only ever calls run_plan; an unscoped run
+    promotes every model, so it must retire deleted ones too."""
+    from interlace.plan.run import run_plan
+
+    engine, store = env
+    v1 = compile_models([sql_model("keep", "SELECT 1 AS x"), sql_model("raw.gone", "SELECT 2 AS y")])
+    await apply(await diff(v1, "prod", store), compiled=v1, engine=engine, state=store)
+
+    v2 = compile_models([sql_model("keep", "SELECT 1 AS x")])
+    plan = await run_plan(v2, "prod", store)
+    assert [c.name for c in plan.changes if c.change_type is ChangeType.REMOVED] == ["raw.gone"]
+    await apply(plan, compiled=v2, engine=engine, state=store)
+    assert "raw.gone" not in await store.get_environment("prod")
+
+    # a SCOPED run must not touch unrelated environment rows
+    v3 = compile_models([sql_model("keep", "SELECT 1 AS x"), sql_model("raw.other", "SELECT 3 AS z")])
+    await apply(await diff(v3, "prod", store), compiled=v3, engine=engine, state=store)
+    scoped = await run_plan(v2, "prod", store, select={"keep"})
+    assert not [c for c in scoped.changes if c.change_type is ChangeType.REMOVED]

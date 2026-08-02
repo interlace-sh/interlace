@@ -99,6 +99,15 @@ async def run_plan(
         else:
             schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
 
+    if select is None:
+        # An unscoped run asserts the full desired set (it promotes every model),
+        # so it must also retire what the project no longer declares — otherwise a
+        # scheduler-driven project never prunes a deleted model and every later
+        # plan reports the same stale removal, masking the next real one.
+        current = await state.get_environment(environment)
+        for removed in sorted(set(current) - set(compiled.models)):
+            plan.changes.append(ModelChange(removed, ChangeType.REMOVED, None, current[removed], None))
+
     plan.promote = sorted(selected)
     plan.transfers = collect_transfers(compiled, [task.snapshot.name for task in plan.backfills])
     return plan

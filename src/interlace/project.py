@@ -217,18 +217,13 @@ class Project:
             engine.attach(alias, target)
         return engine
 
-    def _reject_unresolved_env(self, cfg: EngineConfig | None = None) -> None:
+    def _reject_unresolved_env(self, cfg: EngineConfig) -> None:
         """Fail fast when ``${VAR}`` survived config interpolation (the variable is
         unset). Left alone, DuckDB treats the literal ``${VAR}`` as a PATH — creating
         a directory of that name — before failing somewhere far less obvious."""
         refs: set[str] = set()
-        if cfg is None:
-            candidates = [self.config.database, self.config.data_path or ""]
-            secrets = self.config.secrets
-        else:
-            candidates = [cfg.database or "", cfg.data_path or ""]
-            secrets = cfg.secrets
-        for secret in secrets.values():
+        candidates = [cfg.database or "", cfg.data_path or ""]
+        for secret in cfg.secrets.values():
             candidates += [secret.key_id, secret.secret, secret.endpoint or ""]
         for value in candidates:
             refs.update(_ENV_REF.findall(value))

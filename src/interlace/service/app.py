@@ -321,6 +321,10 @@ class CreateApiKey(msgspec.Struct):
     scopes: list[str] = msgspec.field(default_factory=lambda: ["read"])
 
 
+class RollbackRequest(msgspec.Struct):
+    generation: int | None = None  # default: the generation before the latest
+
+
 class GcRequest(msgspec.Struct):
     grace: str = "7d"  # keep unreferenced snapshots younger than this
     dry_run: bool = False
@@ -485,6 +489,35 @@ async def drop_environment_endpoint(name: FromPath[str], state: State, force: Fr
         dropped = await drop_environment(state.store, engines=state.engines, environment=name)
     await state.store.append_event("environment.dropped", entity=name, payload={"views": dropped})
     return {"environment": name, "dropped_views": dropped}
+
+
+@get("/environments/{name:str}/history")
+async def get_environment_history(name: FromPath[str], state: State) -> list[dict]:
+    """Promotion generations, newest first — the rollback targets."""
+    return [dict(row) for row in await state.store.list_generations(name)]
+
+
+@post("/environments/{name:str}/rollback", opt={"scope": "admin"}, status_code=200)
+async def rollback_environment_endpoint(name: FromPath[str], state: State, data: RollbackRequest | None = None) -> dict:
+    """Repoint the environment's views at an earlier promotion generation.
+    Nothing rebuilds — the views move."""
+    from interlace.exceptions import PlanError
+    from interlace.state.janitor import rollback_environment
+
+    request = data or RollbackRequest()
+    try:
+        async with state.apply_lock:
+            result = await rollback_environment(
+                state.store,
+                state.compiled,
+                engines=state.engines,
+                environment=name,
+                to_generation=request.generation,
+            )
+    except PlanError as exc:
+        raise ClientException(detail=exc.message) from exc
+    await state.store.append_event("environment.rolled_back", entity=name, payload=result)
+    return result
 
 
 @get("/runs")
@@ -1412,6 +1445,8 @@ def create_app(
             get_plan,
             get_environments,
             drop_environment_endpoint,
+            get_environment_history,
+            rollback_environment_endpoint,
             get_runs,
             get_run,
             create_run,

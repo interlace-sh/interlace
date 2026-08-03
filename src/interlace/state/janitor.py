@@ -34,6 +34,80 @@ def _table_key(row: dict[str, str]) -> str:
     return f"{engine}:{row['physical_schema']}.{row['physical_name']}"
 
 
+async def rollback_environment(
+    state: SqliteStateStore,
+    compiled: object | None = None,  # CompiledProject when available: distinguishes ephemeral models
+    engine: EngineAdapter | None = None,
+    *,
+    engines: EngineRegistry | dict[str, EngineAdapter] | None = None,
+    environment: str,
+    to_generation: int | None = None,
+) -> dict[str, object]:
+    """Repoint an environment at an earlier promotion generation.
+
+    Every promote records the environment's full mapping as a generation;
+    rollback restores generation N (default: the one before the latest) by
+    recreating each env view on its recorded snapshot's physical table, dropping
+    views for models that did not exist then, and replacing the environment's
+    promotion rows. The snapshots must still exist — a rollback target older
+    than the gc grace window may already be reclaimed, and that is reported
+    per-model rather than half-applied.
+    """
+    from interlace.exceptions import PlanError
+    from interlace.plan.plan import env_view
+
+    registry = as_registry(engine, engines)
+    generations = await state.list_generations(environment)
+    if not generations:
+        raise PlanError(f"environment {environment!r} has no promotion history")
+    latest = int(str(generations[0]["generation"]))
+    target = latest - 1 if to_generation is None else to_generation
+    if target < 1 or target >= latest:
+        known = f"1..{latest - 1}" if latest > 1 else "none yet — only one generation recorded"
+        raise PlanError(f"cannot roll {environment!r} back to generation {target}; valid targets: {known}")
+    mapping = await state.get_generation(environment, target)
+
+    snapshots = await state.get_snapshots(mapping.items())
+    models = getattr(compiled, "models", {})
+    missing = [
+        name
+        for name, fingerprint in mapping.items()
+        if (name, fingerprint) not in snapshots
+        and getattr(models.get(name), "materialise", None) != "ephemeral"  # ephemerals never had snapshots
+    ]
+    if missing:
+        raise PlanError(
+            f"rollback target reclaimed by gc: no snapshot for {', '.join(sorted(missing))} — "
+            f"rebuild instead (apply an older git state)"
+        )
+
+    repointed: list[str] = []
+    for name, fingerprint in mapping.items():
+        snapshot = snapshots.get((name, fingerprint))
+        if snapshot is None:
+            continue  # ephemeral: promotion pointer only, no view
+        adapter = registry.require(snapshot.engine)
+        if not await adapter.table_exists(snapshot.physical_table):
+            continue  # sinks: recorded fingerprint, no physical relation to serve
+        view = env_view(environment, name)
+        await adapter.create_schema(view.schema)
+        await adapter.create_view(view, snapshot.physical_table)
+        repointed.append(name)
+
+    current = await state.get_environment(environment)
+    removed = sorted(set(current) - set(mapping))
+    if removed:
+        gone = await state.get_snapshots((name, current[name]) for name in removed)
+        for name in removed:
+            snapshot = gone.get((name, current[name]))
+            adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
+            view = env_view(environment, name)
+            await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+
+    await state.set_environment(environment, mapping)
+    return {"environment": environment, "generation": target, "repointed": repointed, "removed_views": removed}
+
+
 async def drop_environment(
     state: SqliteStateStore,
     engine: EngineAdapter | None = None,

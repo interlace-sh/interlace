@@ -707,6 +707,67 @@ async def _env_drop(name: str, path: Path, force: bool) -> None:
         engines.close()
 
 
+@env_app.command("rollback")
+def env_rollback(
+    name: str = typer.Argument("prod", help="Environment to roll back."),
+    path: Path = _PATH,
+    to: int = typer.Option(0, "--to", help="Target generation (0 = the one before the latest)."),
+    history: bool = typer.Option(False, "--list", help="Show the promotion history instead of rolling back."),
+    as_json: bool = _JSON,
+) -> None:
+    """Repoint an environment's views at an earlier promotion — the marquee benefit
+    of fingerprinted snapshots: nothing rebuilds, views move."""
+    asyncio.run(_env_rollback(name, path, to or None, history, as_json))
+
+
+async def _env_rollback(name: str, path: Path, to: int | None, history: bool, as_json: bool) -> None:
+    from interlace.exceptions import PlanError
+    from interlace.state.janitor import rollback_environment
+
+    project = Project.load(path)
+    state = await project.open_state()
+    engines = None
+    try:
+        if history:
+            generations = await state.list_generations(name)
+            if as_json:
+                _emit_json(generations)
+                return
+            if not generations:
+                console.print(f"No promotion history for {name!r}.")
+                return
+            table = _table(f"Promotions — {name}")
+            table.add_column("Generation", justify="right")
+            table.add_column("Promoted", style="dim")
+            table.add_column("Models", justify="right")
+            for row in generations:
+                marker = " (current)" if row is generations[0] else ""
+                table.add_row(f"{row['generation']}{marker}", str(row["promoted_at"]), str(row["models"]))
+            console.print(table)
+            return
+        engines = project.open_engines()
+        compiled = project.compile()
+        try:
+            result = await rollback_environment(state, compiled, engines=engines, environment=name, to_generation=to)
+        except PlanError as exc:
+            console.print(f"[red]{exc.message}[/red]")
+            raise typer.Exit(1) from exc
+        if as_json:
+            _emit_json(result)
+            return
+        console.print(
+            f"Rolled [bold]{name}[/bold] back to generation {result['generation']}: "
+            f"{len(result['repointed'])} view(s) repointed"  # type: ignore[arg-type]
+            + (f", {len(result['removed_views'])} removed" if result["removed_views"] else "")  # type: ignore[arg-type]
+            + "."
+        )
+        console.print("[dim]Nothing was rebuilt — the views moved. Apply again to return to the latest state.[/dim]")
+    finally:
+        await state.close()
+        if engines is not None:
+            engines.close()
+
+
 async def _envs(path: Path, as_json: bool = False) -> None:
     from interlace.plan.plan import PRODUCTION_ENV
 

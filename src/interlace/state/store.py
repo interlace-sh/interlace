@@ -138,6 +138,20 @@ _MIGRATIONS: list[str] = [
     """
     ALTER TABLE work_queue ADD COLUMN restate INTEGER NOT NULL DEFAULT 0;
     """,
+    # 0010 — promotion history: every promote snapshots the environment's FULL
+    # mapping as one generation, so `rollback` can repoint views to any earlier
+    # state (as long as gc hasn't reclaimed those snapshots)
+    """
+    CREATE TABLE promotion_history (
+        environment  TEXT NOT NULL,
+        generation   INTEGER NOT NULL,
+        model_name   TEXT NOT NULL,
+        fingerprint  TEXT NOT NULL,
+        promoted_at  TEXT NOT NULL,
+        PRIMARY KEY (environment, generation, model_name)
+    );
+    CREATE INDEX idx_promotion_history_env ON promotion_history (environment, generation DESC);
+    """,
 ]
 
 
@@ -444,12 +458,72 @@ class SqliteStateStore:
     def _promote_sync(self, environment: str, mapping: dict[str, str]) -> None:
         now = _now_iso()
         with self._lock:
-            self._conn.executemany(
-                "INSERT OR REPLACE INTO environments (environment, model_name, fingerprint, promoted_at) "
-                "VALUES (?, ?, ?, ?)",
-                [(environment, model, fingerprint, now) for model, fingerprint in mapping.items()],
-            )
-            self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO environments (environment, model_name, fingerprint, promoted_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(environment, model, fingerprint, now) for model, fingerprint in mapping.items()],
+                )
+                # history: the RESULTING full mapping, one generation per promote
+                resulting = self._conn.execute(
+                    "SELECT model_name, fingerprint FROM environments WHERE environment = ?", (environment,)
+                ).fetchall()
+                row = self._conn.execute(
+                    "SELECT coalesce(max(generation), 0) AS g FROM promotion_history WHERE environment = ?",
+                    (environment,),
+                ).fetchone()
+                generation = int(row["g"]) + 1
+                self._conn.executemany(
+                    "INSERT INTO promotion_history (environment, generation, model_name, fingerprint, promoted_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [(environment, generation, r["model_name"], r["fingerprint"], now) for r in resulting],
+                )
+                self._conn.commit()
+            except BaseException:  # never leave the shared connection inside an open txn
+                self._conn.rollback()
+                raise
+
+    async def list_generations(self, environment: str) -> list[dict[str, object]]:
+        """Promotion history, newest first: generation, when, how many models."""
+        return await asyncio.to_thread(self._list_generations_sync, environment)
+
+    def _list_generations_sync(self, environment: str) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT generation, max(promoted_at) AS promoted_at, count(*) AS models "
+                "FROM promotion_history WHERE environment = ? GROUP BY generation ORDER BY generation DESC",
+                (environment,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_generation(self, environment: str, generation: int) -> dict[str, str]:
+        """The full model->fingerprint mapping recorded at ``generation``."""
+        return await asyncio.to_thread(self._get_generation_sync, environment, generation)
+
+    def _get_generation_sync(self, environment: str, generation: int) -> dict[str, str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT model_name, fingerprint FROM promotion_history WHERE environment = ? AND generation = ?",
+                (environment, generation),
+            ).fetchall()
+        return {row["model_name"]: row["fingerprint"] for row in rows}
+
+    async def set_environment(self, environment: str, mapping: dict[str, str]) -> None:
+        """Replace an environment's mapping wholesale (rollback): rows not in
+        ``mapping`` are removed. Records a new history generation."""
+        await asyncio.to_thread(self._set_environment_sync, environment, mapping)
+
+    def _set_environment_sync(self, environment: str, mapping: dict[str, str]) -> None:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM environments WHERE environment = ?", (environment,))
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        self._promote_sync(environment, mapping)
 
     async def trim_logs(self, older_than: timedelta = timedelta(days=30)) -> dict[str, int]:
         """Trim ``event_log`` and ``check_results`` rows older than the cutoff.

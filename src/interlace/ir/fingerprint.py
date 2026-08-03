@@ -43,8 +43,8 @@ def data_fingerprint(
 ) -> str:
     """Fingerprint that changes whenever the model's output could change.
 
-    ``query`` is the canonical SQL for SQL models, or for Python models the
-    dedented source plus closure bytecode digest produced by the caller.
+    ``query`` is the canonical SQL for SQL models, or the dedented function
+    source for Python models (produced by the caller via ``inspect.getsource``).
     """
     sql = canonical_sql(query) if isinstance(query, exp.Expression) else query
     return _digest(sql, _stable_json(strategy_config), *sorted(upstream_fingerprints))

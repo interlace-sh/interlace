@@ -682,7 +682,7 @@ async def _enqueue_stream_consumers(state: State, stream: StreamDef) -> None:
     The idempotency key carries the watermark, so repeated flushes at the same
     position debounce into one run while new data keeps enqueuing new runs.
     """
-    consumers = stream_consumers(state.compiled, stream.name)
+    consumers = state.stream_consumer_map.get(stream.name, [])
     if not consumers:
         return
     watermark = await stream_watermark(stream, state.engine)
@@ -782,6 +782,9 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
     if result and result.offsets:
         state.log_heads[name] = max(state.log_heads.get(name, 0), max(result.offsets))
     if result or quarantined:  # durable: hand materialization to the flusher micro-batch
+        state.flush_dirty.add(name)
+        if quarantined:
+            state.flush_dirty.add(quarantine_stream(stream).name)
         state.flush_wanted.set()
     return PublishResult(
         accepted=result.deduped.count(False) if result else 0,
@@ -1201,7 +1204,7 @@ async def stream_events(state: State, request: Request, after: FromQuery[int] = 
         # Subscribe FIRST so nothing lands between the backlog read and the live
         # tail (the seq guard drops anything the replay already delivered), then
         # replay history from the store and switch to the shared broadcast.
-        queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=512)
+        queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue(maxsize=512)
         state.sse_subscribers.add(queue)
         cursor = after
         try:
@@ -1213,13 +1216,14 @@ async def stream_events(state: State, request: Request, after: FromQuery[int] = 
                     cursor = int(event["seq"])
                     yield ServerSentEventMessage(data=json.dumps(event), id=str(cursor))
             while True:
-                event = await queue.get()
-                if event is None:  # poisoned: we fell behind — end the stream, the client replays on reconnect
+                item = await queue.get()
+                if item is None:  # poisoned: we fell behind — end the stream, the client replays on reconnect
                     return
-                if int(event["seq"]) <= cursor:
+                seq, payload = item
+                if seq <= cursor:
                     continue
-                cursor = int(event["seq"])
-                yield ServerSentEventMessage(data=json.dumps(event), id=str(cursor))
+                cursor = seq
+                yield ServerSentEventMessage(data=payload, id=str(cursor))
         finally:
             state.sse_subscribers.discard(queue)
 
@@ -1230,10 +1234,12 @@ def _broadcast(subscribers: set[asyncio.Queue], event: dict) -> None:
     """Fan one event out to every SSE subscriber. A client that can't keep up is
     poisoned and dropped — its EventSource reconnects with Last-Event-ID and
     replays from the store, so nothing is lost, and one stalled TCP connection
-    can't grow a queue forever."""
+    can't grow a queue forever. The wire form is serialised ONCE here, not once
+    per client."""
+    item = (int(event["seq"]), json.dumps(event))
     for queue in list(subscribers):
         try:
-            queue.put_nowait(event)
+            queue.put_nowait(item)
         except asyncio.QueueFull:
             subscribers.discard(queue)
             with contextlib.suppress(asyncio.QueueEmpty, asyncio.QueueFull):
@@ -1301,6 +1307,15 @@ def create_app(
         app.state.stream_log = stream_log
         app.state.flush_targets = flush_targets  # streams + their quarantine shadows
         app.state.flush_wanted = asyncio.Event()
+        # dirty set: the flusher only touches streams that actually received a
+        # publish since the last flush (idle streams cost zero warehouse queries).
+        # Seeded full so the startup catch-up covers anything unflushed at shutdown.
+        app.state.flush_dirty = {target.name for target in flush_targets}
+        # stream -> consuming models, computed once: stream_consumers walks every
+        # model AST, and the answer is immutable for a compiled project
+        app.state.stream_consumer_map = {
+            stream_name: sorted(stream_consumers(compiled, stream_name)) for stream_name in streams
+        }
         # Backpressure gauge: pending = log_heads - flushed_heads per stream. Seeded
         # equal (assume caught up — the startup catch-up flush runs immediately and
         # makes it true); maintained by publish/flush, never by warehouse queries.
@@ -1333,12 +1348,21 @@ def create_app(
                 await asyncio.sleep(0.5)
 
         async def flush_once() -> None:
-            """One coalesced flush + the consumer enqueues it earns."""
-            async with app.state.apply_lock:
-                flushed = await flush_streams(flush_targets, stream_log, engine)
+            """One coalesced flush of the DIRTY streams + the consumer enqueues it earns."""
+            dirty = set(app.state.flush_dirty)
+            app.state.flush_dirty.clear()  # publishes during the flush re-dirty for the next cycle
+            targets = [target for target in flush_targets if target.name in dirty]
+            if not targets:
+                return
+            try:
+                async with app.state.apply_lock:
+                    flushed = await flush_streams(targets, stream_log, engine)
+            except BaseException:
+                app.state.flush_dirty |= dirty  # nothing confirmed: keep them dirty
+                raise
             # flush_stream drains: everything appended before it ran is now in the
             # warehouse, so the backpressure gauge resets to the pre-flush head
-            for target in flush_targets:
+            for target in targets:
                 app.state.flushed_heads[target.name] = app.state.log_heads.get(target.name, 0)
             for stream_name, rows in flushed.items():
                 await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})

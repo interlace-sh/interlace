@@ -139,7 +139,12 @@ class SqliteStreamLog:
         conn = sqlite3.connect(path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
+        # FULL, not NORMAL: the documented contract is "200-OK means fsynced",
+        # and under WAL+NORMAL a commit survives a process crash but not power
+        # loss. Batched publishes amortise the fsync (the appender commits once
+        # per batch); single-event throughput drops to disk-flush rate, which is
+        # the honest price of the guarantee.
+        conn.execute("PRAGMA synchronous = FULL")
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.executescript(_SCHEMA)
         conn.commit()

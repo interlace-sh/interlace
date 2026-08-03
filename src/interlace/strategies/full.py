@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import ClassVar
 
 from sqlglot import exp
 
@@ -15,8 +14,6 @@ from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
 class FullRefresh(Strategy):
     """``CREATE OR REPLACE TABLE target AS <query>``, with a DROP+CREATE fallback."""
-
-    name: ClassVar[str] = "full"
 
     def plan_statements(
         self,

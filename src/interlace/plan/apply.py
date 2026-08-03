@@ -29,8 +29,7 @@ from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, PlanError
 from interlace.exports import export_row_counts, export_statements, export_target_ref, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.ir.relation import EngineRef, SqlRelation, TableRef
-from interlace.ir.schema import empty_schema
+from interlace.ir.relation import SqlRelation, TableRef
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
@@ -107,9 +106,7 @@ async def _merge_python_output(
             engine, stage, target, exclude=strategy.managed_columns
         )
 
-    relation = SqlRelation(
-        ast=source, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
-    )
+    relation = SqlRelation(ast=source)
     statements = strategy.plan_statements(relation, target, engine.caps, None)
     drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
     counts = await engine.execute_all([*pre_statements, *statements, drop_stage])
@@ -180,13 +177,13 @@ async def _deliver_table_export(model: CompiledModel, engine: EngineAdapter, res
     assert model.export is not None
     target = export_target_ref(model.export.target)
     if not await engine.table_exists(target):  # first delivery: the ensure-create matches the source
-        counts = await engine.execute_all(table_export_statements(model.export, resolved, model.dialect, model.engine))
+        counts = await engine.execute_all(table_export_statements(model.export, resolved))
         return export_row_counts(model.export, counts)
     stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
     pre_statements, aligned, columns = await _align_stage_to_target(engine, stage, target)
-    statements = table_export_statements(model.export, aligned, model.dialect, model.engine, columns=columns)
+    statements = table_export_statements(model.export, aligned, columns=columns)
     # One transaction may write only ONE attached database: the delivery batch writes the
     # external target; the stage lives in the warehouse and is dropped separately (a
     # leftover is harmless — the next delivery CREATE OR REPLACEs it).
@@ -448,9 +445,7 @@ async def _run_backfill(
         result.timings[snapshot.name] = time.perf_counter() - task_started
         return
 
-    relation = SqlRelation(
-        ast=resolved, engine=EngineRef(name=model.engine, dialect=model.dialect), schema=empty_schema()
-    )
+    relation = SqlRelation(ast=resolved)
     strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
 
     await target_engine.create_schema(snapshot.physical_table.schema)

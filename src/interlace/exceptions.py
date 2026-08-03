@@ -38,14 +38,6 @@ class SelectionError(InterlaceError):
     """A model selector could not be resolved."""
 
 
-class EngineError(InterlaceError):
-    """An engine adapter failed to execute, fetch, or load."""
-
-
-class StateError(InterlaceError):
-    """The state store could not be read or written consistently."""
-
-
 class PlanError(InterlaceError):
     """A plan could not be computed or applied."""
 
@@ -56,10 +48,6 @@ class SchemaError(InterlaceError):
 
 class StreamError(InterlaceError):
     """Stream ingestion, the durable log, or a consumer failed."""
-
-
-class Backpressure(StreamError):
-    """The durable log's bounded commit queue is full; callers should retry (HTTP 429)."""
 
 
 class CheckError(InterlaceError):

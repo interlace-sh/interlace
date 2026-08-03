@@ -9,8 +9,7 @@ from sqlglot import exp
 from interlace.engines.base import EngineCaps
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.exceptions import PlanError
-from interlace.ir.relation import EngineRef, SqlRelation, TableRef
-from interlace.ir.schema import empty_schema
+from interlace.ir.relation import SqlRelation, TableRef
 from interlace.strategies import ScdType2, resolve_strategy
 
 pytestmark = pytest.mark.unit
@@ -19,9 +18,7 @@ TARGET = TableRef(schema="main", name="dim_customers")
 
 
 def _relation(sql: str) -> SqlRelation:
-    return SqlRelation(
-        ast=sqlglot.parse_one(sql), engine=EngineRef(name="default", dialect="duckdb"), schema=empty_schema()
-    )
+    return SqlRelation(ast=sqlglot.parse_one(sql))
 
 
 def _source(rows: list[tuple[int, str, str]]) -> str:
@@ -92,7 +89,6 @@ async def test_scd2_multi_column_key() -> None:
 
 def test_resolver_and_validation() -> None:
     assert isinstance(resolve_strategy("table", "scd_type_2", key=("id",)), ScdType2)
-    assert isinstance(resolve_strategy("table", "scd2", key=("id",)), ScdType2)
     with pytest.raises(PlanError, match="requires a key"):
         resolve_strategy("table", "scd_type_2")
 

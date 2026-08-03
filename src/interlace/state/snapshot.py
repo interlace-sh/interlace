@@ -41,7 +41,3 @@ class Snapshot:
     local_fingerprint: str = ""  # SQL + config only; lets the differ separate direct vs indirect changes
     definition_sql: str | None = None  # canonical SQL of the version, for change classification
     engine: str = "default"  # named engine that owns this snapshot's physical table
-
-    @property
-    def key(self) -> str:
-        return f"{self.name}@{self.fingerprint}"

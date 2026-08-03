@@ -27,8 +27,7 @@ from sqlglot import exp
 
 from interlace.engines.base import EngineCaps
 from interlace.exceptions import ConfigurationError, PlanError
-from interlace.ir.relation import EngineRef, SqlRelation, TableRef
-from interlace.ir.schema import empty_schema
+from interlace.ir.relation import SqlRelation, TableRef
 from interlace.strategies.base import RowCounts
 
 _FILE_FORMATS = frozenset({"parquet", "csv", "json"})
@@ -102,8 +101,6 @@ def export_target_ref(target: str) -> TableRef:
 def table_export_statements(
     export: ExportConfig,
     query: exp.Expression,
-    dialect: str,
-    engine: str = "default",
     columns: Sequence[str] | None = None,
 ) -> list[exp.Expression]:
     """Deliver ``query`` into the external table — never DROP it (grants/readers survive).
@@ -117,7 +114,7 @@ def table_export_statements(
 
     target = export_target_ref(export.target)
     table = target.to_expr()
-    relation = SqlRelation(ast=query, engine=EngineRef(name=engine, dialect=dialect), schema=empty_schema())
+    relation = SqlRelation(ast=query)
 
     if export.mode == "merge_by_key":
         return MergeByKey(export.key).plan_statements(relation, target, EngineCaps())

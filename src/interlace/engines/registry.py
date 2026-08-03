@@ -102,10 +102,7 @@ def as_registry(
     is registered under ``default``.
     """
     if isinstance(engines, EngineRegistry):
-        if engine is not None:
-            # Prefer the registry; a bare engine is only a fallback for default.
-            pass
-        return engines
+        return engines  # a registry wins; a bare engine= is only a fallback for `default`
 
     cache: dict[str, EngineAdapter] = dict(engines or {})
     if engine is not None:

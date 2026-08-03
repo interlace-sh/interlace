@@ -373,8 +373,6 @@ def _info(model: CompiledModel) -> ModelInfo:
 
 @get("/health")
 async def health(state: State) -> dict[str, str]:
-    from interlace import __version__
-
     return {"status": "ok", "version": __version__, "environment": state.environment}
 
 

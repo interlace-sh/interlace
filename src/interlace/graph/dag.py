@@ -30,9 +30,6 @@ class DependencyGraph:
         if node != upstream:
             self._upstreams[node].add(upstream)
 
-    def nodes(self) -> list[str]:
-        return list(self._upstreams)
-
     def upstreams(self, node: str) -> set[str]:
         return set(self._upstreams.get(node, set()))
 

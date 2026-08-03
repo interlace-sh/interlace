@@ -127,8 +127,7 @@ async def test_merge_by_key_upserts_across_runs(env: tuple[DuckDBAdapter, Sqlite
     # Drives the strategy + atomic execute_all directly (as a scheduled re-run would),
     # since the differ only re-runs a model when its definition changes.
     from interlace.engines.base import EngineCaps
-    from interlace.ir.relation import EngineRef, SqlRelation, TableRef
-    from interlace.ir.schema import empty_schema
+    from interlace.ir.relation import SqlRelation, TableRef
     from interlace.strategies import MergeByKey
 
     engine, _ = env
@@ -137,7 +136,7 @@ async def test_merge_by_key_upserts_across_runs(env: tuple[DuckDBAdapter, Sqlite
     caps = EngineCaps(supports_create_or_replace=True)
 
     def relation(sql: str) -> SqlRelation:
-        return SqlRelation(ast=sqlglot.parse_one(sql), engine=EngineRef("duckdb", "duckdb"), schema=empty_schema())
+        return SqlRelation(ast=sqlglot.parse_one(sql))
 
     await engine.execute_all(
         strategy.plan_statements(relation("SELECT * FROM (VALUES (1, 'a'), (2, 'b')) v(id, name)"), target, caps)

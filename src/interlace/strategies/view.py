@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 from sqlglot import exp
 
 from interlace.engines.base import EngineCaps
@@ -14,8 +12,6 @@ from interlace.strategies.base import Strategy, table_expr
 
 class View(Strategy):
     """``CREATE OR REPLACE VIEW target AS <query>``, with a DROP+CREATE fallback."""
-
-    name: ClassVar[str] = "view"
 
     def plan_statements(
         self,

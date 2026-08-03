@@ -21,7 +21,7 @@ apply runs the statements atomically.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import ClassVar, cast
+from typing import cast
 
 from sqlglot import exp
 
@@ -34,8 +34,6 @@ from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
 class FullMerge(Strategy):
     """``CREATE IF NOT EXISTS`` + delete changed/vanished keys + insert new versions."""
-
-    name: ClassVar[str] = "full_merge"
 
     def __init__(self, key: tuple[str, ...]) -> None:
         if not key:

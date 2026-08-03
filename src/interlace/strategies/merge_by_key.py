@@ -13,7 +13,7 @@ with column lineage.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import ClassVar, cast
+from typing import cast
 
 from sqlglot import exp
 
@@ -26,8 +26,6 @@ from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
 class MergeByKey(Strategy):
     """``CREATE IF NOT EXISTS`` + ``DELETE`` matching keys + ``INSERT`` current rows."""
-
-    name: ClassVar[str] = "merge_by_key"
 
     def __init__(self, key: tuple[str, ...]) -> None:
         if not key:

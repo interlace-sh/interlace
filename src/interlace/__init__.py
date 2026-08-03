@@ -1,24 +1,24 @@
-"""Interlace v2 — Python/SQL-first data platform.
+"""Interlace — Python/SQL-first data platform.
 
 Transformation (sqlmesh-grade snapshots, virtual environments, plan/apply),
 built-in orchestration (durable work queue + unified triggers), and durable
-streaming ingestion — in one process. See docs/architecture/v2-design.md.
+streaming ingestion — in one process. See docs/architecture/architecture.md.
 
-This package is under active greenfield construction; the public surface is the
-``@model`` / ``@stream`` / ``@check`` decorators plus the core IR types.
+The public surface is the ``@model`` / ``@stream`` / ``@check`` decorators.
 """
 
 from __future__ import annotations
 
-from interlace.dsl.decorators import check, model, stream
-from interlace.ir.relation import EngineRef, SqlRelation, TableRef
+from importlib.metadata import PackageNotFoundError, version
 
-__version__ = "1.0.0"
+from interlace.dsl.decorators import check, model, stream
+
+try:
+    __version__ = version("interlaced")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "0+unknown"
 
 __all__ = [
-    "EngineRef",
-    "SqlRelation",
-    "TableRef",
     "__version__",
     "check",
     "model",

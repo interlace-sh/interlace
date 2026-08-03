@@ -45,7 +45,6 @@ def _null_timestamp() -> exp.Cast:
 class ScdType2(Strategy):
     """``CREATE IF NOT EXISTS`` + close changed/vanished rows + insert new versions."""
 
-    name: ClassVar[str] = "scd_type_2"
     managed_columns: ClassVar[tuple[str, ...]] = (VALID_FROM, VALID_TO)
 
     def __init__(self, key: tuple[str, ...]) -> None:

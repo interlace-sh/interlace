@@ -31,12 +31,6 @@ def test_models_shows_models_and_outputs(project: Path) -> None:
     assert "view" in result.output  # recent_clicks is a view
 
 
-def test_list_is_a_hidden_alias_for_models(project: Path) -> None:
-    result = runner.invoke(app, ["list", "--path", str(project)])
-    assert result.exit_code == 0, result.output
-    assert "raw_events" in result.output
-
-
 def test_models_honours_selection(project: Path) -> None:
     result = runner.invoke(app, ["models", "--path", str(project), "--select", "raw_events"])
     assert result.exit_code == 0, result.output

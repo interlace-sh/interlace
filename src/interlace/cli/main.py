@@ -709,9 +709,6 @@ def list_models(path: Path = _PATH, select: list[str] = _SELECT, as_json: bool =
     console.print(table)
 
 
-app.command("list", hidden=True)(list_models)  # deprecated alias for `models`
-
-
 env_app = typer.Typer(no_args_is_help=True, help="Inspect and manage environments.")
 app.add_typer(env_app, name="env")
 
@@ -1038,7 +1035,7 @@ def streams(path: Path = _PATH, as_json: bool = _JSON) -> None:
 
 
 async def _streams(path: Path, as_json: bool = False) -> None:
-    from interlace.streaming.materializer import ensure_stream_tables, stream_watermark
+    from interlace.streaming.materializer import stream_watermark
 
     project = Project.load(path)
     if not project.streams:

@@ -20,8 +20,7 @@ from interlace.engines.base import EngineCaps
 from interlace.engines.registry import EngineRegistry
 from interlace.exceptions import ConfigurationError, PlanError
 from interlace.graph.project import compile_models
-from interlace.ir.relation import EngineRef, SqlRelation, TableRef
-from interlace.ir.schema import empty_schema
+from interlace.ir.relation import SqlRelation, TableRef
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
 from interlace.state.store import SqliteStateStore
@@ -48,7 +47,7 @@ requires_pg = pytest.mark.skipif(not _pg_available(), reason="no reachable Postg
 
 
 def _relation(sql: str, dialect: str = "postgres") -> SqlRelation:
-    return SqlRelation(ast=sqlglot.parse_one(sql), engine=EngineRef(name="pg", dialect=dialect), schema=empty_schema())
+    return SqlRelation(ast=sqlglot.parse_one(sql))
 
 
 @pytest.mark.unit

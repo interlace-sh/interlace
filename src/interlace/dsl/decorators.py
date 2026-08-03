@@ -18,7 +18,7 @@ from interlace.exports import ExportConfig
 
 ModelFn = Callable[..., Any]
 
-_MATERIALISATIONS = frozenset({"table", "view", "ephemeral", "incremental", "none"})
+_MATERIALISATIONS = frozenset({"table", "view", "ephemeral"})
 _DRIFT_MODES = frozenset({"evolve", "reject", "quarantine"})
 
 
@@ -79,7 +79,6 @@ class StreamDef:
     idempotency_key: str | None = None
     retention: str | None = None
     on_schema_drift: str = "reject"
-    rate_limit: str | None = None
 
 
 @dataclass
@@ -194,7 +193,6 @@ def stream(
     idempotency_key: str | None = None,
     retention: str | None = None,
     on_schema_drift: str = "reject",
-    rate_limit: str | None = None,
 ) -> Callable[[ModelFn], ModelFn]:
     """Declare a durable ingestion stream with an HTTP publish endpoint."""
     if on_schema_drift not in _DRIFT_MODES:
@@ -208,7 +206,6 @@ def stream(
                 idempotency_key=idempotency_key,
                 retention=retention,
                 on_schema_drift=on_schema_drift,
-                rate_limit=rate_limit,
             )
         )
         return fn

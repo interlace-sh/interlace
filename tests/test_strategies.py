@@ -6,8 +6,7 @@ import pytest
 import sqlglot
 
 from interlace.engines.base import EngineCaps
-from interlace.ir.relation import EngineRef, SqlRelation, TableRef
-from interlace.ir.schema import empty_schema
+from interlace.ir.relation import SqlRelation, TableRef
 from interlace.strategies import FullRefresh, IncrementalByTime, MergeByKey, View, resolve_strategy
 
 pytestmark = pytest.mark.unit
@@ -18,9 +17,7 @@ _TARGET = TableRef(schema="interlace__main", name="orders__abc")
 
 
 def _relation() -> SqlRelation:
-    return SqlRelation(
-        ast=sqlglot.parse_one("SELECT 1 AS x"), engine=EngineRef("duckdb", "duckdb"), schema=empty_schema()
-    )
+    return SqlRelation(ast=sqlglot.parse_one("SELECT 1 AS x"))
 
 
 def _sql(statements: list) -> list[str]:

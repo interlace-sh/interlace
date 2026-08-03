@@ -65,7 +65,9 @@ class StreamLog(Protocol):
     """Durable, ordered, replayable per-stream log with at-least-once delivery."""
 
     async def append(self, stream: str, events: list[Event]) -> AppendResult:
-        """Durably append events. Must fsync before returning. Raises ``Backpressure`` when full."""
+        """Durably append events; fsyncs before returning (a 200-OK means fsynced).
+        Overload is handled at the service edge (HTTP 429 past a pending-events cap),
+        not here — the log itself never rejects a durable append."""
         ...
 
     async def read(self, stream: str, after_offset: int, limit: int, wait: float | None = None) -> list[StoredEvent]:

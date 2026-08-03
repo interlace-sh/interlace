@@ -48,7 +48,6 @@ def _at(counts: Sequence[int], index: int) -> int:
 class Strategy(ABC):
     """Builds the statements that write a relation into its target table."""
 
-    name: ClassVar[str]
     # Bookkeeping columns the strategy itself adds to the target (never present in
     # the model's own output) — alignment/evolution must leave them alone.
     managed_columns: ClassVar[tuple[str, ...]] = ()

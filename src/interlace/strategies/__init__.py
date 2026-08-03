@@ -35,7 +35,7 @@ def resolve_strategy(
     """Pick the strategy for a model's ``materialise``/``strategy`` config.
 
     Supports ``view``; ``table`` + ``full`` / ``merge_by_key`` / ``full_merge`` /
-    ``incremental_by_time`` / ``scd_type_2`` (alias ``scd2``).
+    ``incremental_by_time`` / ``scd_type_2``.
     """
     if materialise == "view":
         return View()
@@ -54,7 +54,7 @@ def resolve_strategy(
             if not time_column:
                 raise PlanError("incremental_by_time requires a time_column", details={"materialise": materialise})
             return IncrementalByTime(time_column)
-        if strategy in ("scd_type_2", "scd2"):
+        if strategy == "scd_type_2":
             if not key:
                 raise PlanError("scd_type_2 requires a key", details={"materialise": materialise})
             return ScdType2(tuple(key))

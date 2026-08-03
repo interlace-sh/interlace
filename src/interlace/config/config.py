@@ -63,7 +63,6 @@ class SecretConfig(BaseModel):
     scope: str | None = None  # e.g. s3://bucket — pin the secret to one prefix
 
 
-_ENGINE_TYPES = frozenset({"duckdb", "ducklake", "quack"})
 _TYPE_DIALECT = {
     "duckdb": "duckdb",
     "ducklake": "duckdb",

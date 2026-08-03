@@ -10,7 +10,7 @@ config) lives there, not here.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import ClassVar, cast
+from typing import cast
 
 from sqlglot import exp
 
@@ -23,8 +23,6 @@ from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
 class IncrementalByTime(Strategy):
     """``CREATE IF NOT EXISTS`` + ``DELETE`` the window + ``INSERT`` the window's rows."""
-
-    name: ClassVar[str] = "incremental_by_time"
 
     def __init__(self, time_column: str) -> None:
         if not time_column:

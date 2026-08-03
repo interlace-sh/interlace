@@ -17,7 +17,7 @@ from rich.table import Table
 from interlace.exceptions import CheckError, ConfigurationError, SelectionError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledProject
-from interlace.graph.selectors import select_models
+from interlace.graph.selectors import select_models, wants_state
 from interlace.plan.apply import ApplyResult
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
@@ -211,14 +211,21 @@ async def _render_empty_incrementals(result: ApplyResult, compiled: CompiledProj
                 )
 
 
-def _selection(compiled: CompiledProject, selectors: list[str]) -> set[str] | None:
+def _selection(
+    compiled: CompiledProject, selectors: list[str], promoted: dict[str, str] | None = None
+) -> set[str] | None:
     if not selectors:
         return None
     try:
-        return select_models(selectors, compiled)
+        return select_models(selectors, compiled, promoted=promoted)
     except SelectionError as exc:
         console.print(f"[red]{exc.message}[/red]")
         raise typer.Exit(1) from exc
+
+
+async def _promoted_if_needed(state: Any, environment: str, selectors: list[str]) -> dict[str, str] | None:
+    """state:modified compares against the target environment's fingerprints."""
+    return await state.get_environment(environment) if wants_state(selectors) else None
 
 
 @app.command()
@@ -270,8 +277,9 @@ async def _plan(
     compiled = project.compile()
     state = await project.open_state()
     try:
+        promoted = await _promoted_if_needed(state, environment, select)
         result = await diff(
-            compiled, environment, state, select=_selection(compiled, select), forward_only=forward_only
+            compiled, environment, state, select=_selection(compiled, select, promoted), forward_only=forward_only
         )
         if as_json:
             _emit_json(_plan_dict(result, environment))
@@ -321,8 +329,9 @@ async def _apply(
         # declared stream tables are ensured (empty) so models reading them work.
         if project.streams:
             await ensure_stream_tables(project.streams, engines.get())
+        promoted = await _promoted_if_needed(state, environment, select)
         plan_result = await diff(
-            compiled, environment, state, select=_selection(compiled, select), forward_only=forward_only
+            compiled, environment, state, select=_selection(compiled, select, promoted), forward_only=forward_only
         )
         _render(plan_result, environment)
         if plan_result.is_empty:
@@ -429,7 +438,7 @@ async def _execute(
             state,
             start=window_start,
             end=window_end,
-            select=_selection(compiled, select),
+            select=_selection(compiled, select, await _promoted_if_needed(state, environment, select)),
             restate=restate,
         )
         progress = _build_progress(plan_result)
@@ -1077,6 +1086,70 @@ def engines(path: Path = _PATH, as_json: bool = _JSON) -> None:
         marker = " (default)" if row["default"] else ""
         table.add_row(f"{row['name']}{marker}", row["type"], row["dialect"], row["database"] or "—")
     console.print(table)
+
+
+@app.command()
+def impact(
+    target: str = typer.Argument(..., help="model.column — what would changing this column touch?"),
+    path: Path = _PATH,
+    as_json: bool = _JSON,
+) -> None:
+    """Column-level blast radius: every downstream column derived from this one,
+    transitively, plus models that consume the source whole (Python / ``*``)."""
+    project = Project.load(path)
+    compiled = project.compile()
+    dot = target.rfind(".")
+    model, column = (target[:dot], target[dot + 1 :]) if dot > 0 else (target, "")
+    # model names may themselves be dotted (schema.model.column beats schema.model)
+    while model and model not in compiled.models and "." in model:
+        dot = model.rfind(".")
+        model, column = model[:dot], f"{model[dot + 1:]}.{column}"
+    if model not in compiled.models or not column:
+        console.print(f"[red]expected <model>.<column> with a known model; got {target!r}[/red]")
+        raise typer.Exit(1)
+
+    lineage_map = column_lineage(compiled)
+    column_down: dict[str, list[tuple[str, str]]] = {}
+    for downstream, sources in lineage_map.items():
+        for down_col, refs in sources.items():
+            for up_model, up_col in refs:
+                column_down.setdefault(f"{up_model}.{up_col}", []).append((downstream, down_col))
+
+    impacted: list[dict[str, str]] = []
+    seen = {f"{model}.{column}"}
+    frontier = [f"{model}.{column}"]
+    while frontier:
+        key = frontier.pop()
+        for down_model, down_col in column_down.get(key, ()):
+            next_key = f"{down_model}.{down_col}"
+            if next_key not in seen:
+                seen.add(next_key)
+                impacted.append({"model": down_model, "column": down_col, "via": key})
+                frontier.append(next_key)
+    # opaque consumers see every column: Python models and * projections have no
+    # column map, so any direct dependant with an empty map is potentially touched
+    opaque = sorted(
+        name for name, m in compiled.models.items() if model in m.dependencies and not lineage_map.get(name)
+    )
+
+    if as_json:
+        _emit_json({"source": f"{model}.{column}", "impacted": impacted, "opaque_consumers": opaque})
+        return
+    if not impacted and not opaque:
+        console.print(f"Nothing downstream reads [bold]{model}.{column}[/bold].")
+        return
+    table = _table(f"Impact of {model}.{column}")
+    table.add_column("Model")
+    table.add_column("Column")
+    table.add_column("Via", style="dim")
+    for row in impacted:
+        table.add_row(row["model"], row["column"], row["via"])
+    console.print(table)
+    if opaque:
+        console.print(
+            f"[yellow]opaque consumers (see every column):[/yellow] {', '.join(opaque)} "
+            "[dim]— Python models or * projections[/dim]"
+        )
 
 
 @app.command()

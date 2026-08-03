@@ -39,7 +39,7 @@ from interlace.dsl.decorators import StreamDef
 from interlace.exceptions import CheckError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.graph.selectors import select_models
+from interlace.graph.selectors import select_models, wants_state
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.project import Project
@@ -428,7 +428,8 @@ async def get_plan(
     compiled: CompiledProject = state.compiled
     selectors = [part.strip() for part in select.split(",") if part.strip()] if select else []
     try:
-        selected = select_models(selectors, compiled) if selectors else None
+        promoted = await state.store.get_environment(env) if wants_state(selectors) else None
+        selected = select_models(selectors, compiled, promoted=promoted) if selectors else None
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
     plan = await diff(compiled, env, state.store, select=selected, forward_only=forward_only)
@@ -572,7 +573,10 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
     try:
-        selected = select_models(data.selectors, compiled) if data.selectors else set(compiled.models)
+        promoted = await state.store.get_environment(env) if wants_state(data.selectors) else None
+        selected = (
+            select_models(data.selectors, compiled, promoted=promoted) if data.selectors else set(compiled.models)
+        )
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
     models = sorted(selected)
@@ -614,7 +618,8 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
     try:
-        selected = select_models(data.selectors, compiled) if data.selectors else None
+        promoted = await state.store.get_environment(env) if wants_state(data.selectors) else None
+        selected = select_models(data.selectors, compiled, promoted=promoted) if data.selectors else None
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
     async with state.apply_lock:

@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.1 (2026-07-31)
+
+**Rollback.** Every promote records the environment's full mapping as a
+promotion-history generation; `interlace env rollback [--to N] [--list]` (and
+`POST /environments/{name}/rollback`) repoints the environment's views at any
+earlier generation — nothing rebuilds. The UI's environments view gained a
+history modal with one-click roll back.
+
+**CI selection.** `state:modified` selects models whose fingerprint drifted
+from the target environment (transitive; affixes compose: `state:modified+`);
+an empty match is a clean no-op. `interlace impact <model.column>` reports the
+column-level blast radius, with Python/`*` consumers called out as opaque.
+The plan view gained a "changed only" quick-pick.
+
+**Performance.** `apply` schedules the true DAG — each model starts when its
+last in-plan ancestor finishes (no level barriers); Postgres fetch streams via
+ADBC instead of materialising (large cross-engine transfers no longer spike
+RSS); the stream flusher only touches streams that received a publish;
+stream→consumer maps and SSE serialisation are computed once.
+
+**Durability.** The stream log now runs `synchronous=FULL`: "200-OK means
+fsynced" is literally true, surviving power loss, not just process crash.
+Batched publishes amortise the fsync.
+
+**Operability.** The worker logs run lifecycle (start/success/failure with
+attempt) and `apply` logs per-model failures, on stdlib logging.
+
+Also: unscoped runs retire deleted models like apply does; default incremental
+windows are complete and grain-aligned; incremental models backfill
+automatically on first build; the UI says so when an incremental model holds
+no data.
+
 ## 1.0.0 (2026-07-31)
 
 First stable release of the rebuilt platform, published to PyPI as `interlaced`

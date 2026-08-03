@@ -101,18 +101,23 @@ postgres dialect and execute over one ADBC connection; Arrow flows both ways (`f
 results, `adbc_ingest` bulk-loads Python model output). Checks, env views, contracts, and GC all
 work natively there.
 
-### Caps matrix (drives strategy fallbacks)
+### Capability flags (`EngineCaps`, drive strategy fallbacks)
+
+`EngineCaps` carries exactly two flags today; each strategy consults them and picks a
+portable path when a capability is absent:
 
 | Cap | DuckDB family | Postgres |
 |---|---|---|
-| `supports_create_or_replace` | ✓ | ✗ → FullRefresh emits DROP + CREATE |
+| `supports_create_or_replace` | ✓ | ✗ → `FullRefresh` emits DROP + CREATE |
 | `supports_star_exclude` | ✓ | ✗ → `scd_type_2` refuses with a clear error |
-| `supports_arrow_ingest` | ✓ (register) | ✓ (adbc_ingest) |
-| `supports_merge` | ✓ | ✓ (15+) — strategies use portable DELETE+INSERT today |
-| `supports_attach` | ✓ | ✗ |
+
+Everything else is portable by construction rather than gated by a flag: keyed strategies
+use DELETE+INSERT (not a native `MERGE`), Arrow ingest is `register` on DuckDB and
+`adbc_ingest` on Postgres, and cross-engine `ATTACH` is a DuckDB-only fast lane the transfer
+planner opportunistically uses (falling back to Arrow fetch→load).
 
 `full`, `view`, `merge_by_key`, `full_merge`, and `incremental_by_time` run on Postgres;
-`scd_type_2` is DuckDB-family-only until it grows a describe()-based projection.
+`scd_type_2` is DuckDB-family-only until it grows a `describe()`-based projection.
 
 ## Roadmap
 

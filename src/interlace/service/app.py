@@ -6,7 +6,7 @@ promote — guarded against breaking changes unless forced), inspect environment
 list/inspect runs, and enqueue runs onto the durable queue (a running ``interlace
 scheduler`` drains them). The project is loaded and compiled once at startup and
 held on app state; the warehouse engine and control-plane store are opened for
-the app's lifetime. msgspec structs are the wire types (Litestar serializes them
+the app's lifetime. msgspec structs are the wire types (Litestar serialises them
 natively). Scoped API-key auth is enforced once a key exists (see auth.py), and
 OpenAPI docs render via Scalar at ``/schema/scalar``.
 """

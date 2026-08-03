@@ -85,8 +85,13 @@ $ interlace plan
   freshness, expression, relationships, pattern, range, sql) plus `@check` Python functions —
   an error-severity failure blocks before the environment view moves. `interlace checks run`
   re-runs them ad hoc against any environment's promoted tables.
-- `interlace gc` removes snapshots no environment references (reference-aware: tables shared
-  through reuse survive).
+- **`--select state:modified`** scopes a plan/apply to models whose fingerprint drifted from the
+  target environment, plus everything downstream — the CI diff, one flag. **`interlace impact
+  model.column`** shows the column-level blast radius of a change.
+- **`interlace env rollback`** repoints an environment's views at any earlier promotion — nothing
+  rebuilds, the views move; every apply records a generation, so a bad deploy reverts in one
+  command. `interlace gc` removes snapshots no environment references (reference-aware: tables
+  shared through reuse survive).
 
 ## Streaming
 
@@ -180,7 +185,7 @@ other processes (CLI runs, ad-hoc DuckDB clients) then share it concurrently by 
   warehouse transaction — exactly-once without distributed coordination.
 - No Jinja, no pandas in core, no external orchestrator.
 
-The full design rationale lives in `docs/architecture/v2-design.md`.
+The full design rationale lives in `docs/architecture/architecture.md`.
 
 ## Development
 

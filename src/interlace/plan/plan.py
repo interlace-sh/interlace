@@ -64,7 +64,7 @@ class TransferEdge:
     source: EngineRef
     target: EngineRef
     table: TableRef  # the staging table on the target engine
-    via: str  # "arrow" (generic fetch->load) | "attach" (future optimisation)
+    via: str  # "arrow" (generic fetch->load) | "attach" (federated CTAS fast lane)
     model: str = ""  # the upstream model being moved
 
 

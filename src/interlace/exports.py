@@ -13,7 +13,7 @@ destination. Two families:
   ``full_merge`` — which reuse the *same strategy AST builders* as managed
   models, pointed at the external catalog.
 
-Exports are side-effecting — no view-swap rollback (see v2-design §6).
+Exports are side-effecting — no view-swap rollback (see architecture.md §6).
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class ExportConfig:
 
     ``environments`` gates the side effect: the export only *executes* when the
     plan's environment is listed. Default is production only — a dev apply must
-    never fire reverse-ETL at a live external table (v2-design §6 calls this the
+    never fire reverse-ETL at a live external table (architecture.md §6 calls this the
     property that matters most). In a gated-off environment the sink's snapshot
     is still recorded so the plan settles; nothing leaves the warehouse.
     """

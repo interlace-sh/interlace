@@ -1,13 +1,13 @@
 """The stream materializer — micro-batches from the log into the warehouse.
 
-Each flush reads events past the stream's watermark, converts them to one Arrow
-batch, stages it, and moves ``stage -> target table + watermark`` in a single
-engine transaction. Crash anywhere leaves either the old watermark (events
-re-read, stage overwritten — no duplicates) or the new one — **exactly-once
-into the warehouse** without coordinating with the log. The watermark lives in
-the warehouse (``streams._watermarks``) precisely so it commits atomically with
-the data; the log's consumer-group lease/commit machinery is for external
-consumers, not this path.
+A flush drains everything past the stream's watermark in ``batch_rows`` chunks;
+each chunk stages one Arrow batch and moves ``stage -> target table + watermark``
+in a single engine transaction. Crash anywhere leaves either the old watermark
+(events re-read, stage overwritten — no duplicates) or the new one —
+**exactly-once into the warehouse** without coordinating with the log. The
+watermark lives in the warehouse (``streams._watermarks``) precisely so it
+commits atomically with the data; the log's consumer-group lease/commit
+machinery is for external consumers, not this path.
 
 Stream tables land in the ``streams`` schema (``streams.<name>``) with the
 declared fields plus ``_offset`` and ``_ingested_at``, so SQL models simply
@@ -135,7 +135,7 @@ async def _flush_batch(
 async def flush_streams(
     streams: Iterable[StreamDef], log: StreamLog, engine: EngineAdapter, *, batch_rows: int = 5000
 ) -> dict[str, int]:
-    """Flush every stream once; returns rows materialized per stream.
+    """Drain every stream into the warehouse; returns rows materialized per stream.
 
     Failures are isolated per stream: one stream whose batch cannot materialize
     (an uncoercible durable event, a dropped column) must not freeze every

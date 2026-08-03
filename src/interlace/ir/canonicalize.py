@@ -1,9 +1,9 @@
 """Parsing and static analysis of SQL into the canonical IR.
 
-Phase 1 covers parsing (dialect-aware) and table-reference extraction for
-implicit dependency discovery. Qualification and type annotation
-(``sqlglot.optimizer.qualify`` against the project schema graph) land alongside
-column lineage in a later phase.
+Dialect-aware parsing plus table-reference extraction for implicit dependency
+discovery and reference rewriting. Column-level qualification against the project
+schema graph lives in ``graph/column_lineage`` (used by the differ's column
+pruning and the ``impact`` command).
 """
 
 from __future__ import annotations

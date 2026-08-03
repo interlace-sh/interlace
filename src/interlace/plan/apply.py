@@ -4,8 +4,9 @@ For each backfill the model's query has its upstream references rewritten to the
 upstreams' physical tables, the strategy emits the build statements, and the
 engine runs them; the new snapshot is persisted. Then the environment's virtual
 views are repointed at the new physical tables, and the environment is promoted
-to the full desired fingerprint set. Runs in the compiled topological order, so
-upstream physical tables exist before downstream models build against them.
+to the full desired fingerprint set. Builds are DAG-scheduled: each model starts
+as soon as its in-plan ancestors finish (bounded by ``parallelism``), so upstream
+physical tables always exist before a downstream model builds against them.
 """
 
 from __future__ import annotations

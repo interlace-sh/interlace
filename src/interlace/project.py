@@ -163,7 +163,7 @@ class Project:
         return uris
 
     def _open_engine_config(self, name: str, cfg: EngineConfig) -> EngineAdapter:
-        """Open a single engine from its config. DuckDB-family only for now."""
+        """Open a single engine from its config (duckdb / ducklake / quack / postgres)."""
         self._reject_unresolved_env(cfg)
         if cfg.type == "postgres":
             from interlace.engines.postgres import PostgresAdapter  # lazy: needs the adbc extra

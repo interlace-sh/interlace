@@ -1,10 +1,10 @@
 """The state store — the OLTP control-plane database.
 
-Persists snapshots, the interval ledger, and environment pointers (Phase 1; the
-orchestrator/streaming tables land in later phases). SQLite (WAL) is the default
-single-node backend; a Postgres backend implementing the same :class:`StateStore`
-protocol is the scale-out swap. See docs/architecture/v2-design.md §6 for why this
-is SQLite and not the analytical DuckDB engine.
+Owns every non-warehouse table: snapshots, the interval ledger, environment
+pointers and promotion history, the durable run queue, per-trigger state, the
+event log, API keys, and check results. SQLite (WAL) is the single-node backend.
+See docs/architecture/architecture.md §6 for why this is SQLite and not the
+analytical DuckDB engine.
 
 SQLite is synchronous, so calls run in a worker thread; a lock serialises access
 to the single shared connection (opened ``check_same_thread=False``). Schema
@@ -231,7 +231,10 @@ def _intervals_from_rows(rows: Iterable[sqlite3.Row]) -> IntervalSet:
 
 
 class StateStore(Protocol):
-    """Backend-agnostic control-plane store. Implemented by SQLite now, Postgres later."""
+    """The plan/apply slice of the control-plane store — the surface differ and
+    apply depend on. ``SqliteStateStore`` is the implementation and carries the
+    full surface (work queue, event log, api keys, ...); this Protocol is
+    deliberately narrow so the core stays decoupled from the daemon's tables."""
 
     async def add_snapshot(self, snapshot: Snapshot) -> None: ...
     async def get_snapshot(self, name: str, fingerprint: str) -> Snapshot | None: ...

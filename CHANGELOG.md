@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+**Security.** The SQL query console (`POST /query`) could read arbitrary local
+files — and reach the network on httpfs/S3 deployments — via DuckDB's
+`query()`/`query_table()` dynamic-SQL functions, which the name-based deny-list
+did not match. The console now runs with external access disabled at the engine
+level, closing every spelling of the escape hatch. `GET /engines` and
+`interlace engines` no longer leak credentials for keyword-form or query-string
+DSNs (redaction was URL-only). `interlace serve` on a non-loopback host with no
+API keys now warns that the API is open.
+
+**Correctness.** Fixed: every scheduled/stream run recorded a redundant
+promotion generation (breaking rollback's default target and growing the
+history table unbounded); `apply`'s check-edge cycle handling could let a
+downstream build before its upstream; the 1.0.1 Postgres streaming fetch
+deadlocked multi-input Python models on the postgres engine (reverted to
+materialised fetch); rollback wrongly aborted on a since-deleted ephemeral;
+`state:modified` failed in `checks run`; the stream backpressure gauge could be
+defeated by a mid-flush publish; `GET /models` misreported engine/language; and
+the standalone `interlace scheduler` never flushed streams. Promotion history is
+now capped by `trim_logs`.
+
+**Cleanup.** Removed dead code (never-raised exceptions, the unrealised
+`SqlRelation` "logical plane" and `ir/schema`, unused strategy/decorator fields,
+the `scd2` alias, the hidden `list` CLI alias); `__version__` now reads package
+metadata. Docs: the architecture doc is renamed `architecture.md` and its
+roadmap-vs-shipped split corrected.
+
 ## 1.0.1 (2026-07-31)
 
 **Rollback.** Every promote records the environment's full mapping as a

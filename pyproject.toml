@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["data", "pipeline", "orchestration", "transformation", "etl", "streaming", "dbt", "sqlmesh", "duckdb"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Build Tools",
     "Programming Language :: Python :: 3.12",
@@ -22,7 +22,7 @@ classifiers = [
 ]
 
 # Core: the IR + engine + state + plan spine (Phase 1). Everything is Arrow- and
-# sqlglot-native. See docs/architecture/v2-design.md.
+# sqlglot-native. See docs/architecture/architecture.md.
 dependencies = [
     "sqlglot>=25.0,<29.0",        # canonical IR, transpilation, semantic diff, column lineage
     "duckdb>=1.5.3",              # default engine + federation hub; DuckLake storage + quack serving

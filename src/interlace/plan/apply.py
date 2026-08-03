@@ -496,61 +496,89 @@ async def apply(
     for reuse in plan.reuses:
         physical[reuse.name] = reuse.physical_table
 
-    # Independent DAG branches build concurrently: tasks group per model (a model's
-    # interval windows stay ordered), models group into dependency levels, and each
-    # level runs as a TaskGroup — a failure cancels its level before promote.
+    # True DAG scheduling: every model starts the moment its last in-plan
+    # ancestor finishes — no level barriers, so one slow branch never stalls an
+    # independent one; wall-clock tracks the critical path. Tasks still group
+    # per model (a model's interval windows stay ordered) and a semaphore bounds
+    # concurrency. Waiting happens BEFORE the semaphore, so a blocked model
+    # never holds a build slot its own upstream needs.
     staged: set[tuple[str, str]] = set()  # (upstream, target engine) pairs moved this apply
     stage_lock = asyncio.Lock()
     per_model: dict[str, list[BackfillTask]] = {}
     for task in plan.backfills:  # differ/run emit tasks in topological order
         per_model.setdefault(task.snapshot.name, []).append(task)
-    # Depth counts in-plan ancestors and propagates through models that aren't
-    # building (ephemeral, reused): a Python model over an ephemeral view of a
-    # building table must still wait for that table. Checks that read *other*
-    # models (relationships, sql) add scheduling edges the DAG doesn't have, and
-    # may point "backwards" — so relax to a fixed point instead of one topo pass.
+    # Blocking edges project the dependency graph onto the models building now,
+    # walking THROUGH models that aren't (ephemeral, reused): a Python model over
+    # an ephemeral view of a building table must still wait for that table.
+    # Checks that read *other* models (relationships, sql) add scheduling edges
+    # the DAG doesn't have.
     scheduling_deps = {
         model.name: (set(model.dependencies) | _check_references(model, compiled)) - {model.name}
         for model in compiled.models.values()
     }
-    depth: dict[str, int] = dict.fromkeys(compiled.models, 0)
-    for _ in range(len(depth)):
-        settled = True
-        for name, deps in scheduling_deps.items():
-            required = max((depth[dep] + (1 if dep in per_model else 0) for dep in deps), default=0)
-            if required > depth[name]:
-                depth[name] = required
-                settled = False
-        if settled:
-            break
-    level = {name: depth[name] for name in per_model}
+
+    def in_plan_ancestors(name: str) -> set[str]:
+        found: set[str] = set()
+        seen = {name}
+        stack = list(scheduling_deps.get(name, ()))
+        while stack:
+            dep = stack.pop()
+            if dep in seen:
+                continue
+            seen.add(dep)
+            if dep in per_model:
+                found.add(dep)
+            else:  # not building: look through it
+                stack.extend(scheduling_deps.get(dep, ()))
+        return found
+
+    blocking = {name: in_plan_ancestors(name) for name in per_model}
+    # Check edges may point "backwards" and close a cycle the data DAG forbids;
+    # events would deadlock on it. Keep only constraints that topologically
+    # settle — inside a cycle the relative order is arbitrary either way.
+    resolved: set[str] = set()
+    remaining = set(per_model)
+    progressed = True
+    while progressed:
+        progressed = False
+        for name in sorted(remaining):
+            if blocking[name] <= resolved:
+                resolved.add(name)
+                remaining.discard(name)
+                progressed = True
+    for name in remaining:
+        blocking[name] &= resolved
+
+    finished = {name: asyncio.Event() for name in per_model}
     build_slots = asyncio.Semaphore(max(1, parallelism))
 
     async def run_model(name: str) -> None:
-        async with build_slots:
-            if on_progress is not None:
-                on_progress(name, "start")
-            try:
+        try:
+            for dep in blocking[name]:
+                await finished[dep].wait()
+            async with build_slots:
+                if on_progress is not None:
+                    on_progress(name, "start")
                 for model_task in per_model[name]:
                     await _run_backfill(
                         model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
                     )
-            except asyncio.CancelledError:  # a SIBLING failed; this model is collateral
-                if on_progress is not None:
-                    on_progress(name, "cancelled")
-                raise
-            except BaseException:
-                if on_progress is not None:
-                    on_progress(name, "failed")
-                raise
+        except asyncio.CancelledError:  # a SIBLING failed; this model is collateral
             if on_progress is not None:
-                on_progress(name, "done")
+                on_progress(name, "cancelled")
+            raise
+        except BaseException:
+            if on_progress is not None:
+                on_progress(name, "failed")
+            raise
+        finished[name].set()
+        if on_progress is not None:
+            on_progress(name, "done")
 
     try:
-        for tier in sorted(set(level.values())):
-            async with asyncio.TaskGroup() as group:
-                for name in (n for n in per_model if level[n] == tier):
-                    group.create_task(run_model(name))
+        async with asyncio.TaskGroup() as group:
+            for name in per_model:
+                group.create_task(run_model(name))
     except ExceptionGroup as failures:  # single failure keeps apply()'s plain-exception contract
         if len(failures.exceptions) == 1:
             raise failures.exceptions[0] from None
@@ -560,9 +588,12 @@ async def apply(
         await state.add_snapshot(reuse)
         result.reused.append(reuse.name)
 
+    ensured: set[tuple[str, str]] = set()  # (engine, schema): one CREATE SCHEMA per pair, not per view
     for swap in plan.virtual_updates:
         view_engine = registry.require(swap.engine)
-        await view_engine.create_schema(swap.view.schema)
+        if (swap.engine, swap.view.schema) not in ensured:
+            await view_engine.create_schema(swap.view.schema)
+            ensured.add((swap.engine, swap.view.schema))
         await view_engine.create_view(swap.view, swap.target)
 
     mapping = {name: compiled.models[name].fingerprint for name in plan.promote}

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pyarrow as pa
@@ -117,11 +117,35 @@ class PostgresAdapter(EngineAdapter):
         return counts
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
-        with self._lock, self._conn.cursor() as cur:
+        # Streaming, not materialised: a cross-engine transfer of a large table
+        # must not hold the whole result in memory. One libpq connection runs one
+        # query at a time, so the adapter lock is held for the stream's lifetime
+        # and releases when it ends (or its generator is collected). Consumers
+        # are single-pass loaders that drain immediately; a Python model that
+        # abandons a handle delays the release until GC, never corrupts.
+        self._lock.acquire()
+        try:
+            cur = self._conn.cursor()
             cur.execute(sql)
-            table = cur.fetch_arrow_table()  # materialised: keeps the reader cursor-independent
-            self._conn.commit()
-        return table.to_reader()
+            reader = cur.fetch_record_batch()
+        except BaseException:
+            self._lock.release()
+            raise
+
+        lock = self._lock
+        conn = self._conn
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            try:
+                yield from reader
+            finally:
+                try:
+                    cur.close()
+                    conn.commit()
+                finally:
+                    lock.release()
+
+        return pa.RecordBatchReader.from_batches(reader.schema, batches())
 
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
         ingest_mode = "replace" if mode == "create" else "append"  # "create" == CREATE OR REPLACE semantics

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import pyarrow as pa
@@ -117,35 +117,19 @@ class PostgresAdapter(EngineAdapter):
         return counts
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
-        # Streaming, not materialised: a cross-engine transfer of a large table
-        # must not hold the whole result in memory. One libpq connection runs one
-        # query at a time, so the adapter lock is held for the stream's lifetime
-        # and releases when it ends (or its generator is collected). Consumers
-        # are single-pass loaders that drain immediately; a Python model that
-        # abandons a handle delays the release until GC, never corrupts.
-        self._lock.acquire()
-        try:
-            cur = self._conn.cursor()
+        # Materialised, deliberately: one libpq connection runs one query at a
+        # time, so a lazily-streamed reader would have to hold the adapter lock
+        # for its whole lifetime — and `run_python_model` opens ALL of a model's
+        # upstream handles before the function runs, so two fetches on this
+        # adapter would deadlock (the second blocks on the lock the first holds
+        # un-drained). Reading the result fully under the lock keeps the reader
+        # connection-independent. Large cross-engine transfers pay the memory;
+        # true streaming needs a per-fetch connection (a future change).
+        with self._lock, self._conn.cursor() as cur:
             cur.execute(sql)
-            reader = cur.fetch_record_batch()
-        except BaseException:
-            self._lock.release()
-            raise
-
-        lock = self._lock
-        conn = self._conn
-
-        def batches() -> Iterator[pa.RecordBatch]:
-            try:
-                yield from reader
-            finally:
-                try:
-                    cur.close()
-                    conn.commit()
-                finally:
-                    lock.release()
-
-        return pa.RecordBatchReader.from_batches(reader.schema, batches())
+            table = cur.fetch_arrow_table()
+            self._conn.commit()
+        return table.to_reader()
 
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
         ingest_mode = "replace" if mode == "create" else "append"  # "create" == CREATE OR REPLACE semantics

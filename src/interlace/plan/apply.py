@@ -343,17 +343,30 @@ async def _gate_checks(
 
 def _check_references(model: CompiledModel, compiled: CompiledProject) -> set[str]:
     """Other models a check reads (``relationships`` targets, tables in ``sql``
-    checks): they must be built before this model's checks can run."""
+    checks): they must be built before this model's checks can run. Table refs
+    are matched to models by their ``db.name`` key or bare name, the same way
+    dependencies resolve — so a check reading ``raw.orders`` finds model
+    ``raw.orders`` (or ``orders``), not nothing."""
+
+    def _model_for(key: str) -> str | None:
+        if key in compiled.models:
+            return key
+        tail = key.rsplit(".", 1)[-1]
+        return tail if tail in compiled.models else None
+
     refs: set[str] = set()
     for spec in model.checks:
         if spec.type == "relationships":
-            to = str(spec.params.get("to", ""))
-            if to in compiled.models:
-                refs.add(to)
+            match = _model_for(str(spec.params.get("to", "")))
+            if match:
+                refs.add(match)
         elif spec.type == "sql":
             with contextlib.suppress(Exception):
                 parsed = sqlglot.parse_one(str(spec.params.get("query", "")))
-                refs.update(t.name for t in parsed.find_all(exp.Table) if t.name in compiled.models)
+                for table in parsed.find_all(exp.Table):
+                    match = _model_for(f"{table.db}.{table.name}" if table.db else table.name)
+                    if match:
+                        refs.add(match)
     return refs
 
 
@@ -514,17 +527,15 @@ async def apply(
     # Blocking edges project the dependency graph onto the models building now,
     # walking THROUGH models that aren't (ephemeral, reused): a Python model over
     # an ephemeral view of a building table must still wait for that table.
-    # Checks that read *other* models (relationships, sql) add scheduling edges
-    # the DAG doesn't have.
-    scheduling_deps = {
-        model.name: (set(model.dependencies) | _check_references(model, compiled)) - {model.name}
-        for model in compiled.models.values()
-    }
+    data_deps = {model.name: set(model.dependencies) - {model.name} for model in compiled.models.values()}
 
     def in_plan_ancestors(name: str) -> set[str]:
+        """The building models this model must wait for, following DATA edges only
+        (through non-building intermediaries). Data edges are acyclic, so this is
+        always safe to enforce."""
         found: set[str] = set()
         seen = {name}
-        stack = list(scheduling_deps.get(name, ()))
+        stack = list(data_deps.get(name, ()))
         while stack:
             dep = stack.pop()
             if dep in seen:
@@ -533,25 +544,22 @@ async def apply(
             if dep in per_model:
                 found.add(dep)
             else:  # not building: look through it
-                stack.extend(scheduling_deps.get(dep, ()))
+                stack.extend(data_deps.get(dep, ()))
         return found
 
-    blocking = {name: in_plan_ancestors(name) for name in per_model}
-    # Check edges may point "backwards" and close a cycle the data DAG forbids;
-    # events would deadlock on it. Keep only constraints that topologically
-    # settle — inside a cycle the relative order is arbitrary either way.
-    resolved: set[str] = set()
-    remaining = set(per_model)
-    progressed = True
-    while progressed:
-        progressed = False
-        for name in sorted(remaining):
-            if blocking[name] <= resolved:
-                resolved.add(name)
-                remaining.discard(name)
-                progressed = True
-    for name in remaining:
-        blocking[name] &= resolved
+    # Checks that read *other* models (relationships, sql) add scheduling edges the
+    # data DAG doesn't have — and may point "backwards", which would deadlock the
+    # per-model events. Keep a check edge only when it agrees with the topological
+    # order (dep built before the reader); a back edge is dropped (its check may run
+    # a beat early, far better than a hang). Data edges always agree, so they all stay.
+    topo = {name: index for index, name in enumerate(compiled.graph.topological_sort())}
+    blocking: dict[str, set[str]] = {}
+    for name in per_model:
+        deps = in_plan_ancestors(name)
+        for ref in _check_references(compiled.models[name], compiled):
+            if ref in per_model and topo.get(ref, -1) < topo.get(name, 0):
+                deps.add(ref)
+        blocking[name] = deps
 
     finished = {name: asyncio.Event() for name in per_model}
     build_slots = asyncio.Semaphore(max(1, parallelism))

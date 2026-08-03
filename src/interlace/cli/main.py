@@ -27,7 +27,7 @@ from interlace.project import Project
 from interlace.scaffold import scaffold_project
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
-from interlace.streaming import ensure_stream_tables
+from interlace.streaming import ensure_stream_tables, flush_streams
 
 app = typer.Typer(no_args_is_help=True, help="Python/SQL-first data platform.")
 console = Console()
@@ -534,23 +534,51 @@ def scheduler(
 
 
 async def _scheduler(environment: str, path: Path, interval: float, once: bool) -> None:
+    from interlace.streaming.materializer import sweep_streams
+
     project = Project.load(path)
     compiled = project.compile()
     engines = project.open_engines()
     state = await project.open_state()
+    stream_log = await project.open_stream_log() if project.streams else None
+    if project.streams:
+        await ensure_stream_tables(project.streams, engines.get())
     trigger_engine = TriggerEngine(build_triggers(compiled), state)
     try:
         while True:
             await trigger_engine.tick(datetime.now())
-            ran = await drain(state, compiled, engines=engines, environment=environment, base_path=project.root)
+            # materialize anything published since the last tick, then run models
+            # (an API-only `serve --no-scheduler` process relies on this loop to flush)
+            if stream_log is not None:
+                await flush_streams(project.streams, stream_log, engines.get())
+            ran = await drain(
+                state,
+                compiled,
+                engines=engines,
+                environment=environment,
+                base_path=project.root,
+                parallelism=project.config.parallelism,
+            )
             if ran:
                 console.print(f"[green]ran {ran} scheduled run(s) in '{environment}'[/green]")
+            if stream_log is not None:
+                await sweep_streams(project.streams, stream_log, engines.get())
             if once:
                 break
             await asyncio.sleep(interval)
     finally:
+        if stream_log is not None:
+            await stream_log.close()
         await state.close()
         engines.close()
+
+
+async def _has_api_keys(path: Path) -> bool:
+    state = await Project.load(path).open_state()
+    try:
+        return await state.count_api_keys() > 0
+    finally:
+        await state.close()
 
 
 def _free_port(host: str, start: int, attempts: int = 50) -> int:
@@ -604,6 +632,16 @@ def serve(
     if bound != port:
         console.print(f"[yellow]port {port} is in use — serving on {bound}[/yellow]")
     port = bound
+    # Auth is open until the first API key exists (see auth.py). That's fine on
+    # loopback; on a routable bind it exposes every endpoint — including the SQL
+    # console and apply/gc — to the network unauthenticated. Warn loudly.
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        keyed = asyncio.run(_has_api_keys(path))
+        if not keyed:
+            console.print(
+                f"[bold red]WARNING[/bold red] serving on [bold]{host}[/bold] with no API keys — "
+                "the API is open to the network. Create one first: [bold]interlace apikey create <name> --scope admin[/bold]"
+            )
     console.print(f"UI at [bold cyan]http://{host}:{port}/ui[/bold cyan]")
     token = quack_token
     if quack and not token:
@@ -755,9 +793,8 @@ async def _env_rollback(name: str, path: Path, to: int | None, history: bool, as
             console.print(table)
             return
         engines = project.open_engines()
-        compiled = project.compile()
         try:
-            result = await rollback_environment(state, compiled, engines=engines, environment=name, to_generation=to)
+            result = await rollback_environment(state, engines=engines, environment=name, to_generation=to)
         except PlanError as exc:
             console.print(f"[red]{exc.message}[/red]")
             raise typer.Exit(1) from exc
@@ -1057,21 +1094,20 @@ async def _streams(path: Path, as_json: bool = False) -> None:
 @app.command()
 def engines(path: Path = _PATH, as_json: bool = _JSON) -> None:
     """Configured execution engines (models pin to these with `engine:`)."""
+    from interlace.config.config import redact_dsn
+
     project = Project.load(path)
     configs = project.config.engine_configs()
     rows: list[dict[str, Any]] = []
     for name in sorted(configs):
         cfg = configs[name]
-        database = cfg.database or ""
-        if cfg.type == "postgres" and "@" in database:  # never print credentials
-            database = "postgresql://…" + database.rsplit("@", 1)[-1]
         rows.append(
             {
                 "name": name,
                 "default": name == project.config.default_engine,
                 "type": cfg.type,
                 "dialect": cfg.resolved_dialect(),
-                "database": database,
+                "database": redact_dsn(cfg.database or ""),
             }
         )
     if as_json:

@@ -81,6 +81,14 @@ class EngineAdapter(ABC):
         """Evaluate one raw SQL query written in this engine's dialect."""
         return await self.fetch(sqlglot.parse_one(sql, read=self.dialect))
 
+    async def fetch_sandboxed(self, ast: exp.Expression) -> pa.RecordBatchReader:
+        """Like :meth:`fetch`, but for untrusted queries (the HTTP query console):
+        the engine must not touch anything outside the warehouse — no local files,
+        no network. The default cannot enforce that, so it is the caller's job to
+        gate this path; adapters over an embedded engine that CAN read the host
+        filesystem (DuckDB) MUST override to lock the connection down."""
+        return await self.fetch(ast)
+
     def transpile(self, ast: exp.Expression) -> str:
         """Canonical AST -> this engine's SQL. The one place dialect leaks back in."""
         return ast.sql(dialect=self.dialect)

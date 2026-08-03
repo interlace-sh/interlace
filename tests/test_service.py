@@ -418,6 +418,21 @@ def test_query_console_selects_and_refuses_writes(client: TestClient) -> None:
     assert client.post("/query", json={"sql": "SELECT FROM WHERE"}).status_code == 400
 
 
+def test_query_console_cannot_read_local_files(client: TestClient) -> None:
+    """The console must never become a local-file reader or HTTP client, however the
+    read is spelled — including DuckDB's dynamic-SQL query()/read_csv() escape hatches."""
+    client.post("/apply", json={"environment": "prod"})
+    bypasses = [
+        "SELECT * FROM read_csv('/etc/hostname')",
+        "SELECT * FROM query('SELECT * FROM read_text(''/etc/hostname'')')",  # deny-list bypass attempt
+        "SELECT * FROM query_table('main.raw_events')",
+        "SELECT * FROM glob('/etc/*')",
+    ]
+    for sql in bypasses:
+        resp = client.post("/query", json={"sql": sql})
+        assert resp.status_code == 400, f"leak not blocked: {sql}"
+
+
 def test_engines_schedules_lineage_endpoints(client: TestClient) -> None:
     engines = client.get("/engines").json()
     assert any(e["default"] for e in engines)

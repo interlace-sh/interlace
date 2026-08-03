@@ -366,6 +366,8 @@ def _info(model: CompiledModel) -> ModelInfo:
         tags=list(model.tags),
         owner=model.owner,
         schedule=model.schedule,
+        engine=model.engine,
+        language="python" if model.ast is None else "sql",
     )
 
 
@@ -510,7 +512,6 @@ async def rollback_environment_endpoint(name: FromPath[str], state: State, data:
         async with state.apply_lock:
             result = await rollback_environment(
                 state.store,
-                state.compiled,
                 engines=state.engines,
                 environment=name,
                 to_generation=request.generation,
@@ -634,10 +635,16 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
             return ApplyResponse(environment=env, built=[], promoted=0, breaking=False)
         await state.store.append_event("apply.started", entity=env, payload={"models": plan.promote})
         loop = asyncio.get_running_loop()
+        progress_tasks: set[asyncio.Task] = set()
 
         def on_progress(model: str, event: str) -> None:
-            # fire-and-forget: build feedback is telemetry, never on the build's critical path
-            loop.create_task(state.store.append_event(f"model.{event}", entity=model, payload={"environment": env}))
+            # fire-and-forget telemetry, but hold a strong ref: an unreferenced task
+            # can be GC'd mid-write and its exception silently vanishes
+            task = loop.create_task(
+                state.store.append_event(f"model.{event}", entity=model, payload={"environment": env})
+            )
+            progress_tasks.add(task)
+            task.add_done_callback(progress_tasks.discard)
 
         try:
             result = await apply_plan(
@@ -652,6 +659,9 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         except CheckError as exc:
             await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
             raise ClientException(detail=exc.message) from exc
+        finally:
+            if progress_tasks:  # let the per-model events land before we return / raise
+                await asyncio.gather(*progress_tasks, return_exceptions=True)
         await state.store.append_event(
             "apply.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
         )
@@ -804,7 +814,8 @@ def _jsonable(value: object) -> object:
 # the console must never become a local-file reader or an HTTP client. Deny by
 # name pattern; the warehouse's own tables/views never match these shapes.
 _EXTERNAL_FN = re.compile(
-    r"^(read_|scan_|sniff_|glob$|getenv$|load_|install$|parquet_|iceberg_|delta_|st_read)|(_scan|_query)$",
+    r"^(read_|scan_|sniff_|glob$|getenv$|load_|install$|parquet_|iceberg_|delta_|st_read|query$|query_table$)"
+    r"|(_scan|_query)$",
     re.IGNORECASE,
 )
 _QUERY_MAX_CELL_BYTES = 8_000_000  # ~8 MB of rendered cells; the console inspects, never extracts
@@ -846,13 +857,15 @@ async def post_query(data: QueryRequest, state: State) -> QueryResponse:
     parsed = statements[0]
     if not isinstance(parsed, (_exp.Select, _exp.Union)):
         raise ClientException(detail="SELECT only — the console never writes")
-    _guard_console_query(parsed)
+    _guard_console_query(parsed)  # defense in depth; the sandboxed cursor is the real fence
     limit = max(1, min(data.limit, 10_000))
     bounded = _exp.select("*").from_(parsed.subquery("q")).limit(limit + 1)  # +1: exact truncation
     started = _time.perf_counter()
 
     async def _run() -> pa.Table:
-        reader = await state.engine.fetch(bounded)
+        # fetch_sandboxed runs with external access disabled: query()/read_csv()/
+        # httpfs cannot reach host files or the network however they are spelled
+        reader = await state.engine.fetch_sandboxed(bounded)
         return await asyncio.to_thread(reader.read_all)
 
     try:
@@ -890,18 +903,17 @@ async def post_query(data: QueryRequest, state: State) -> QueryResponse:
 
 @get("/engines")
 async def get_engines(state: State) -> list[EngineInfo]:
+    from interlace.config.config import redact_dsn
+
     infos: list[EngineInfo] = []
     for name in sorted(state.engine_configs):
         cfg = state.engine_configs[name]
-        database = cfg.database or ""
-        if "@" in database:  # never expose credentials
-            database = database.split("://", 1)[0] + "://…" + database.rsplit("@", 1)[-1]
         infos.append(
             EngineInfo(
                 name=name,
                 type=cfg.type,
                 dialect=cfg.resolved_dialect(),
-                database=database,
+                database=redact_dsn(cfg.database or ""),
                 default=name == state.default_engine,
             )
         )
@@ -1071,11 +1083,11 @@ async def post_checks_run(state: State, data: RunChecksRequest | None = None) ->
     request = data or RunChecksRequest()
     compiled: CompiledProject = state.compiled
     env = request.environment or state.environment
+    promoted = await state.store.get_environment(env)
     try:
-        chosen = select_models(request.selectors, compiled) if request.selectors else None
+        chosen = select_models(request.selectors, compiled, promoted=promoted) if request.selectors else None
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
-    promoted = await state.store.get_environment(env)
     if not promoted:
         raise NotFoundException(detail=f"no environment {env!r} — apply first")
     snapshots = await state.store.get_snapshots(promoted.items())
@@ -1354,16 +1366,19 @@ def create_app(
             targets = [target for target in flush_targets if target.name in dirty]
             if not targets:
                 return
+            # snapshot the heads BEFORE the flush: flush_stream drains everything
+            # appended up to now, but a publish landing mid-flush advances log_heads
+            # without being flushed — crediting that later would undercount pending
+            # and defeat the 429 backpressure gate.
+            pre_flush = {target.name: app.state.log_heads.get(target.name, 0) for target in targets}
             try:
                 async with app.state.apply_lock:
                     flushed = await flush_streams(targets, stream_log, engine)
             except BaseException:
                 app.state.flush_dirty |= dirty  # nothing confirmed: keep them dirty
                 raise
-            # flush_stream drains: everything appended before it ran is now in the
-            # warehouse, so the backpressure gauge resets to the pre-flush head
             for target in targets:
-                app.state.flushed_heads[target.name] = app.state.log_heads.get(target.name, 0)
+                app.state.flushed_heads[target.name] = pre_flush[target.name]
             for stream_name, rows in flushed.items():
                 await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})
                 if stream_name in streams:

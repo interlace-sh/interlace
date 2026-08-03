@@ -125,9 +125,7 @@ async def _execute_run(
             project, environment, store, start=start, end=end, select=set(run.flow_selector), restate=run.restate
         )
         loop = asyncio.get_running_loop()
-
-        background: set[asyncio.Task] = getattr(store, "_progress_tasks", None) or set()
-        store._progress_tasks = background  # type: ignore[attr-defined]
+        background: set[asyncio.Task] = set()
 
         def on_progress(model: str, event: str) -> None:
             # fire-and-forget telemetry — but hold a strong ref: an unreferenced
@@ -146,6 +144,8 @@ async def _execute_run(
             parallelism=parallelism,
             on_progress=on_progress,
         )
+        if background:  # let the progress events land before the run is marked done
+            await asyncio.gather(*background, return_exceptions=True)
         return {
             "built": result.built,
             "reused": result.reused,

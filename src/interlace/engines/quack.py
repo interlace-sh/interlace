@@ -63,7 +63,10 @@ class QuackAdapter(DuckDBAdapter):
         self._execute_sync(";\n".join(["BEGIN", *sqls, "COMMIT"]))
         return [0] * len(sqls)
 
-    def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
+    def _fetch_sync(self, sql: str, *, sandboxed: bool = False) -> pa.RecordBatchReader:
+        # `sandboxed` can't be honoured over the wire (the query runs on the remote
+        # quack server, its own trust boundary); the console's parse-time deny-list
+        # is the fence for quack-backed warehouses.
         cur = self._conn.cursor()
         return self._remote_sync(cur, sql).to_arrow_reader()
 

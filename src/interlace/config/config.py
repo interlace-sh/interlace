@@ -27,6 +27,26 @@ CONFIG_FILE = "interlace.yaml"
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+_SECRET_KEYWORD = re.compile(r"(?i)([a-z_]*(?:password|token|secret|key|pwd))\s*=\s*\S+")
+_SECRET_QUERY = re.compile(r"(?i)([?&][a-z_]*(?:password|token|secret|key|pwd)=)[^&\s]+")
+
+
+def redact_dsn(dsn: str) -> str:
+    """Mask credentials in a connection string for display/logging. Covers both
+    URL form (``scheme://user:pass@host/db?token=…``) and keyword form
+    (``ducklake:postgres:dbname=x host=y password=z``) — the query and engines
+    surfaces must never echo a secret back."""
+    if not dsn:
+        return dsn
+    if "://" in dsn:
+        head, sep, rest = dsn.partition("://")
+        if "@" in rest:  # scheme://user:pass@host... -> scheme://…@host...
+            rest = "…@" + rest.rsplit("@", 1)[-1]
+        rest = _SECRET_QUERY.sub(r"\1…", rest)
+        return head + sep + rest
+    dsn = _SECRET_QUERY.sub(r"\1…", dsn)  # md:db?motherduck_token=… (query form, no scheme://)
+    return _SECRET_KEYWORD.sub(lambda m: m.group(0).split("=", 1)[0] + "=…", dsn)
+
 
 class SecretConfig(BaseModel):
     """A DuckDB ``CREATE SECRET`` issued at engine open (currently ``type: s3``) —

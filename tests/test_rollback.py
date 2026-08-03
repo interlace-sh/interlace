@@ -33,7 +33,7 @@ async def test_rollback_repoints_views_without_rebuilding(env: tuple[DuckDBAdapt
     assert await _rows(engine, "SELECT x FROM main.m") == [{"x": 2}]
 
     compiled = compile_models(v2)
-    result = await rollback_environment(store, compiled, engine=engine, environment="prod")
+    result = await rollback_environment(store, engine=engine, environment="prod")
 
     assert result["generation"] == 1 and result["repointed"] == ["m"]
     assert await _rows(engine, "SELECT x FROM main.m") == [{"x": 1}]  # the view moved back
@@ -53,7 +53,7 @@ async def test_rollback_drops_views_for_models_that_did_not_exist_then(
     await _apply(env, v2)
     assert await _rows(engine, "SELECT y FROM main.late") == [{"y": 9}]
 
-    result = await rollback_environment(store, compile_models(v2), engine=engine, environment="prod")
+    result = await rollback_environment(store, engine=engine, environment="prod")
 
     assert result["removed_views"] == ["late"]
     import duckdb
@@ -70,17 +70,68 @@ async def test_rollback_targets_and_history(env: tuple[DuckDBAdapter, SqliteStat
     generations = await store.list_generations("prod")
     assert [g["generation"] for g in generations] == [3, 2, 1]
 
-    compiled = compile_models([ModelDef(name="m", sql="SELECT 3 AS x")])
-    result = await rollback_environment(store, compiled, engine=engine, environment="prod", to_generation=1)
+    result = await rollback_environment(store, engine=engine, environment="prod", to_generation=1)
     assert result["generation"] == 1
     assert await _rows(engine, "SELECT x FROM main.m") == [{"x": 1}]
 
     with pytest.raises(PlanError, match="valid targets"):
-        await rollback_environment(store, compiled, engine=engine, environment="prod", to_generation=99)
+        await rollback_environment(store, engine=engine, environment="prod", to_generation=99)
+
+
+async def test_rollback_to_generation_with_since_deleted_ephemeral(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """A past generation may hold an ephemeral model (promotion pointer, no
+    snapshot) that has since been deleted. Rollback must not mistake its absent
+    snapshot for a gc-reclaimed table and abort."""
+    engine, store = env
+    gen1 = [
+        ModelDef(name="base", sql="SELECT 1 AS x"),
+        ModelDef(name="helper", sql="SELECT x FROM base", materialise="ephemeral"),
+    ]
+    await _apply(env, gen1)
+    await _apply(env, [ModelDef(name="base", sql="SELECT 2 AS x")])  # helper deleted, base changed
+
+    result = await rollback_environment(store, engine=engine, environment="prod")  # -> gen 1
+    assert result["generation"] == 1
+    assert await _rows(engine, "SELECT x FROM main.base") == [{"x": 1}]
 
 
 async def test_rollback_with_single_generation_refuses(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     await _apply(env, [ModelDef(name="m", sql="SELECT 1 AS x")])
     with pytest.raises(PlanError, match="valid targets"):
-        await rollback_environment(store, None, engine=engine, environment="prod")
+        await rollback_environment(store, engine=engine, environment="prod")
+
+
+async def test_reapplying_identical_plan_records_no_new_generation(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """A busy scheduler promoting the same fingerprints every run must not bury the
+    real rollback target under identical generations (nor grow the table)."""
+    engine, store = env
+    models = [ModelDef(name="m", sql="SELECT 1 AS x")]
+    await _apply(env, models)
+    await _apply(env, models)  # no-op plan, but apply always promotes
+    await _apply(env, models)
+    assert [g["generation"] for g in await store.list_generations("prod")] == [1]
+
+    await _apply(env, [ModelDef(name="m", sql="SELECT 2 AS x")])  # real change
+    assert [g["generation"] for g in await store.list_generations("prod")] == [2, 1]
+    # rollback's default target (latest - 1) is the genuine previous state
+    result = await rollback_environment(store, engine=engine, environment="prod")
+    assert result["generation"] == 1
+    assert await _rows(engine, "SELECT x FROM main.m") == [{"x": 1}]
+
+
+async def test_trim_logs_caps_promotion_history(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    from datetime import timedelta
+
+    engine, store = env
+    for value in range(5):
+        await _apply(env, [ModelDef(name="m", sql=f"SELECT {value} AS x")])
+    assert len(await store.list_generations("prod")) == 5
+
+    trimmed = await store.trim_logs(timedelta(days=30), keep_generations=2)
+    assert trimmed["generations"] == 3  # 5 recorded, 2 kept
+    assert [g["generation"] for g in await store.list_generations("prod")] == [5, 4]

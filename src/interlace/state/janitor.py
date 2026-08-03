@@ -36,7 +36,6 @@ def _table_key(row: dict[str, str]) -> str:
 
 async def rollback_environment(
     state: SqliteStateStore,
-    compiled: object | None = None,  # CompiledProject when available: distinguishes ephemeral models
     engine: EngineAdapter | None = None,
     *,
     engines: EngineRegistry | dict[str, EngineAdapter] | None = None,
@@ -68,13 +67,17 @@ async def rollback_environment(
     mapping = await state.get_generation(environment, target)
 
     snapshots = await state.get_snapshots(mapping.items())
-    models = getattr(compiled, "models", {})
-    missing = [
-        name
-        for name, fingerprint in mapping.items()
-        if (name, fingerprint) not in snapshots
-        and getattr(models.get(name), "materialise", None) != "ephemeral"  # ephemerals never had snapshots
-    ]
+    # A mapping entry with no snapshot for its fingerprint is either an ephemeral
+    # (promotion pointer only, never had a snapshot — fine) or a table/view whose
+    # snapshot gc reclaimed (can't rebuild the view — fail). Tell them apart by
+    # whether the model has ANY snapshot recorded, not by the CURRENT project's
+    # materialise (the model may since have been deleted or converted).
+    missing: list[str] = []
+    for name, fingerprint in mapping.items():
+        if (name, fingerprint) in snapshots:
+            continue
+        if await state.list_snapshots(name):  # has other versions -> this one was reclaimed
+            missing.append(name)
     if missing:
         raise PlanError(
             f"rollback target reclaimed by gc: no snapshot for {', '.join(sorted(missing))} — "

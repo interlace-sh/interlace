@@ -456,29 +456,65 @@ class SqliteStateStore:
         await asyncio.to_thread(self._promote_sync, environment, mapping)
 
     def _promote_sync(self, environment: str, mapping: dict[str, str]) -> None:
+        self._apply_promotion(environment, mapping, replace=False)
+
+    def _latest_generation_mapping(self, environment: str) -> dict[str, str]:
+        """The most recent promotion generation's full mapping (caller holds the lock)."""
+        row = self._conn.execute(
+            "SELECT coalesce(max(generation), 0) AS g FROM promotion_history WHERE environment = ?",
+            (environment,),
+        ).fetchone()
+        if int(row["g"]) == 0:
+            return {}
+        return {
+            r["model_name"]: r["fingerprint"]
+            for r in self._conn.execute(
+                "SELECT model_name, fingerprint FROM promotion_history WHERE environment = ? AND generation = ?",
+                (environment, int(row["g"])),
+            ).fetchall()
+        }
+
+    def _apply_promotion(self, environment: str, mapping: dict[str, str], *, replace: bool) -> None:
+        """Move an environment's promotion pointers and record a history generation
+        — all in ONE transaction. ``replace`` (rollback) also removes models not in
+        ``mapping``; otherwise ``mapping`` is merged over the current pointers.
+
+        A new generation is recorded ONLY when the resulting mapping differs from
+        the latest one: a busy scheduler promoting the same fingerprints every run
+        must not bury the real rollback target under identical generations, nor
+        grow ``promotion_history`` without bound."""
         now = _now_iso()
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO environments (environment, model_name, fingerprint, promoted_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(environment, model, fingerprint, now) for model, fingerprint in mapping.items()],
-                )
-                # history: the RESULTING full mapping, one generation per promote
-                resulting = self._conn.execute(
-                    "SELECT model_name, fingerprint FROM environments WHERE environment = ?", (environment,)
-                ).fetchall()
-                row = self._conn.execute(
-                    "SELECT coalesce(max(generation), 0) AS g FROM promotion_history WHERE environment = ?",
-                    (environment,),
-                ).fetchone()
-                generation = int(row["g"]) + 1
-                self._conn.executemany(
-                    "INSERT INTO promotion_history (environment, generation, model_name, fingerprint, promoted_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    [(environment, generation, r["model_name"], r["fingerprint"], now) for r in resulting],
-                )
+                current = {
+                    r["model_name"]: r["fingerprint"]
+                    for r in self._conn.execute(
+                        "SELECT model_name, fingerprint FROM environments WHERE environment = ?", (environment,)
+                    ).fetchall()
+                }
+                if replace:
+                    stale = [(environment, name) for name in current if name not in mapping]
+                    self._conn.executemany("DELETE FROM environments WHERE environment = ? AND model_name = ?", stale)
+                changed = [(environment, m, fp, now) for m, fp in mapping.items() if current.get(m) != fp]
+                if changed:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO environments (environment, model_name, fingerprint, promoted_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        changed,
+                    )
+                resulting = dict(mapping) if replace else {**current, **mapping}
+                if resulting != self._latest_generation_mapping(environment):
+                    row = self._conn.execute(
+                        "SELECT coalesce(max(generation), 0) AS g FROM promotion_history WHERE environment = ?",
+                        (environment,),
+                    ).fetchone()
+                    generation = int(row["g"]) + 1
+                    self._conn.executemany(
+                        "INSERT INTO promotion_history (environment, generation, model_name, fingerprint, promoted_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        [(environment, generation, m, fp, now) for m, fp in resulting.items()],
+                    )
                 self._conn.commit()
             except BaseException:  # never leave the shared connection inside an open txn
                 self._conn.rollback()
@@ -511,27 +547,19 @@ class SqliteStateStore:
 
     async def set_environment(self, environment: str, mapping: dict[str, str]) -> None:
         """Replace an environment's mapping wholesale (rollback): rows not in
-        ``mapping`` are removed. Records a new history generation."""
-        await asyncio.to_thread(self._set_environment_sync, environment, mapping)
+        ``mapping`` are removed. One transaction; records a new history generation."""
+        await asyncio.to_thread(self._apply_promotion, environment, mapping, replace=True)
 
-    def _set_environment_sync(self, environment: str, mapping: dict[str, str]) -> None:
-        with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._conn.execute("DELETE FROM environments WHERE environment = ?", (environment,))
-                self._conn.commit()
-            except BaseException:
-                self._conn.rollback()
-                raise
-        self._promote_sync(environment, mapping)
+    async def trim_logs(
+        self, older_than: timedelta = timedelta(days=30), *, keep_generations: int = 50
+    ) -> dict[str, int]:
+        """Trim ``event_log`` and ``check_results`` rows older than the cutoff, drop
+        terminal ``work_queue`` rows of the same age, and keep only the most recent
+        ``keep_generations`` promotion generations per environment. Each of these
+        grows with every apply/flush/run and has no other reclamation path."""
+        return await asyncio.to_thread(self._trim_logs_sync, older_than, keep_generations)
 
-    async def trim_logs(self, older_than: timedelta = timedelta(days=30)) -> dict[str, int]:
-        """Trim ``event_log`` and ``check_results`` rows older than the cutoff.
-        Also drops terminal ``work_queue`` rows of the same age. Both logs grow
-        with every apply/flush/run and have no other reclamation path."""
-        return await asyncio.to_thread(self._trim_logs_sync, older_than)
-
-    def _trim_logs_sync(self, older_than: timedelta) -> dict[str, int]:
+    def _trim_logs_sync(self, older_than: timedelta, keep_generations: int) -> dict[str, int]:
         cutoff = (datetime.now(UTC) - older_than).isoformat()
         with self._lock:
             events = self._conn.execute("DELETE FROM event_log WHERE ts < ?", (cutoff,)).rowcount
@@ -540,8 +568,18 @@ class SqliteStateStore:
                 "DELETE FROM work_queue WHERE enqueued_at < ? AND state IN ('succeeded', 'failed', 'cancelled')",
                 (cutoff,),
             ).rowcount
+            # keep the newest N generations per env; older rollback targets age out
+            generations = self._conn.execute(
+                "DELETE FROM promotion_history WHERE (environment, generation) IN ("
+                "  SELECT environment, generation FROM ("
+                "    SELECT environment, generation, "
+                "           row_number() OVER (PARTITION BY environment ORDER BY generation DESC) AS rn "
+                "    FROM (SELECT DISTINCT environment, generation FROM promotion_history)"
+                "  ) WHERE rn > ?)",
+                (keep_generations,),
+            ).rowcount
             self._conn.commit()
-        return {"events": events, "check_results": checks, "runs": runs}
+        return {"events": events, "check_results": checks, "runs": runs, "generations": generations}
 
     async def demote(self, environment: str, names: Iterable[str]) -> None:
         """Remove models from an environment's promotion map (model deletion)."""

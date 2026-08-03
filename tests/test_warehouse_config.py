@@ -279,3 +279,18 @@ def test_parallelism_must_be_at_least_one(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError) as caught:
         Project.load(tmp_path)
     assert "parallelism" in caught.value.details["error"]
+
+
+def test_redact_dsn_masks_credentials_in_all_dsn_shapes() -> None:
+    from interlace.config.config import redact_dsn
+
+    # URL userinfo
+    assert redact_dsn("postgresql://admin:s3cret@db/wh") == "postgresql://…@db/wh"
+    # keyword form (the DuckLake-on-Postgres shape the config docstring recommends)
+    assert "s3cret" not in redact_dsn("ducklake:postgres:dbname=wh host=db password=s3cret user=admin")
+    # query-string creds, URL and non-URL
+    assert "leak" not in redact_dsn("postgresql://u@h/db?password=leak&sslmode=require")
+    assert "tok_secret" not in redact_dsn("md:mydb?motherduck_token=tok_secret")
+    # no credentials -> unchanged
+    assert redact_dsn("ducklake:.interlace/wh.ducklake") == "ducklake:.interlace/wh.ducklake"
+    assert redact_dsn("quack:host:4200") == "quack:host:4200"

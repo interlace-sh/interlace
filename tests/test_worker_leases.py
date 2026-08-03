@@ -197,7 +197,7 @@ async def test_trim_logs_reclaims_old_rows(store: SqliteStateStore) -> None:
     assert await store.finish_run(run.id, success=True, owner="w")
 
     kept = await store.trim_logs(timedelta(days=30))
-    assert kept == {"events": 0, "check_results": 0, "runs": 0}  # everything is fresh
+    assert kept == {"events": 0, "check_results": 0, "runs": 0, "generations": 0}  # everything is fresh
 
     trimmed = await store.trim_logs(timedelta(seconds=-1))  # cutoff in the future: all rows are older
     assert trimmed["events"] == 1 and trimmed["runs"] == 1

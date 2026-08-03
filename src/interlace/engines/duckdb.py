@@ -202,6 +202,9 @@ class DuckDBAdapter(EngineAdapter):
     async def fetch_sql(self, sql: str) -> pa.RecordBatchReader:
         return await asyncio.to_thread(self._fetch_sync, sql)
 
+    async def fetch_sandboxed(self, ast: exp.Expression) -> pa.RecordBatchReader:
+        return await asyncio.to_thread(self._fetch_sync, self.transpile(ast), sandboxed=True)
+
     async def create_schema(self, name: str) -> None:
         await self.execute_sql(f"CREATE SCHEMA IF NOT EXISTS {exp.to_identifier(name).sql(dialect=self.dialect)}")
 
@@ -240,12 +243,19 @@ class DuckDBAdapter(EngineAdapter):
                 cur.close()
         return counts
 
-    def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
+    def _fetch_sync(self, sql: str, *, sandboxed: bool = False) -> pa.RecordBatchReader:
         # Read-only: deliberately not locked, so scans run concurrently (DuckDB MVCC).
         # The cursor must outlive the stream that reads from it, so it is closed when
         # that stream ends rather than left for the garbage collector to reclaim on
         # whatever thread happens to drop the last reference.
         cur = self._cursor()
+        if sandboxed:
+            # Untrusted query (the HTTP console). enable_external_access is
+            # connection-local, so this cursor can neither read host files nor
+            # open network connections — closing the query()/read_csv()/httpfs
+            # escape hatches at the engine level, not by name-matching. The build
+            # path (other cursors) keeps external access for exports and ATTACH.
+            cur.execute("SET enable_external_access = false")
         cur.execute(sql)
         reader = cur.to_arrow_reader()
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -66,6 +67,9 @@ def _widens(current: str, incoming: str) -> bool:
     return (
         current in _NUMERIC_WIDTH and incoming in _NUMERIC_WIDTH and _NUMERIC_WIDTH[incoming] > _NUMERIC_WIDTH[current]
     )
+
+
+logger = logging.getLogger("interlace.apply")
 
 
 def _resolve_export_path(base_path: Path | None, path: str) -> str:
@@ -567,7 +571,8 @@ async def apply(
             if on_progress is not None:
                 on_progress(name, "cancelled")
             raise
-        except BaseException:
+        except BaseException as exc:
+            logger.warning("model %s failed: %s", name, exc)
             if on_progress is not None:
                 on_progress(name, "failed")
             raise

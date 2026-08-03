@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import socket
 from datetime import datetime
@@ -26,6 +27,8 @@ from interlace.graph.project import CompiledProject
 from interlace.plan.apply import apply
 from interlace.plan.run import run_plan
 from interlace.state.store import QueuedRun, SqliteStateStore
+
+logger = logging.getLogger("interlace.worker")
 
 
 def default_owner() -> str:
@@ -103,6 +106,7 @@ async def _execute_run(
     await store.append_event(
         "run.started", entity=str(run.id), payload={"models": run.flow_selector, "attempt": run.attempts}
     )
+    logger.info("run %s started (attempt %s): %s", run.id, run.attempts, ", ".join(run.flow_selector) or "all")
     cancelled = asyncio.Event()
 
     async def heartbeat() -> None:
@@ -169,6 +173,7 @@ async def _execute_run(
             payload = work.result()  # raises the run's own error if it failed
             if await store.finish_run(run.id, success=True, owner=owner):
                 await store.append_event("run.succeeded", entity=str(run.id), payload=payload)
+                logger.info("run %s succeeded: built %s", run.id, ", ".join(payload["built"]) or "nothing")  # type: ignore[arg-type]
         elif watcher in done:  # cooperative cancellation (or lost lease)
             work.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -192,6 +197,7 @@ async def _execute_run(
 
 async def _fail_or_retry(store: SqliteStateStore, run: QueuedRun, error: str, max_attempts: int, owner: str) -> None:
     # fenced: if another worker reclaimed the lease, its outcome wins — stay silent
+    logger.warning("run %s attempt %s failed: %s", run.id, run.attempts, error)
     if run.attempts < max_attempts:
         if await store.requeue_run(run.id, error=error, owner=owner):
             await store.append_event(

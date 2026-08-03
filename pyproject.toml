@@ -24,7 +24,7 @@ classifiers = [
 # Core: the IR + engine + state + plan spine (Phase 1). Everything is Arrow- and
 # sqlglot-native. See docs/architecture/v2-design.md.
 dependencies = [
-    "sqlglot>=25.0,<31.0",        # canonical IR, transpilation, semantic diff, column lineage
+    "sqlglot>=25.0,<29.0",        # canonical IR, transpilation, semantic diff, column lineage
     "duckdb>=1.5.3",              # default engine + federation hub; DuckLake storage + quack serving
     "pyarrow>=17.0",              # the wire format: RecordBatchReader everywhere
     "pydantic>=2.5,<3.0",         # config + manifest validation (cold paths only)

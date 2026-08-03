@@ -7,7 +7,23 @@ import { diffBlock, h, pill, rowsDelta, seconds, sqlBlock, table } from "../ui.j
 const CATEGORY_TONE = { breaking: "red", non_breaking: "green", forward_only: "amber" };
 
 export async function render(el, { api, toast, modal, go }) {
-  const selectInput = h("input", { class: "in", placeholder: "selectors: name, +name, name+, tag:x", style: "width:280px" });
+  const selectInput = h("input", {
+    class: "in",
+    placeholder: "selectors: name, +name, name+, tag:x, state:modified",
+    style: "width:300px",
+  });
+  const modifiedBtn = h(
+    "button",
+    {
+      class: "btn small",
+      title: "scope to models whose fingerprint drifted from this environment, plus everything downstream",
+      onclick: () => {
+        selectInput.value = "state:modified+";
+        preview();
+      },
+    },
+    "changed only",
+  );
   const forwardOnly = h("input", { type: "checkbox" });
   const previewBtn = h("button", { class: "btn" }, "preview");
   const applyBtn = h("button", { class: "btn primary" }, "apply");
@@ -21,6 +37,7 @@ export async function render(el, { api, toast, modal, go }) {
       h("span", { class: "sub" }, "what would change, and why"),
       h("span", { class: "spread" }),
       selectInput,
+      modifiedBtn,
       h("label", { class: "check" }, forwardOnly, "forward-only"),
       previewBtn,
       applyBtn,

@@ -106,6 +106,7 @@ export async function render(el, { api, go, toast, modal }) {
                   "span",
                   { style: "display:inline-flex; gap:6px" },
                   h("button", { class: "btn small", onclick: () => go("plan") }, "plan"),
+                  h("button", { class: "btn small", onclick: () => historyModal(env.name) }, "history…"),
                   h("button", { class: "btn small danger", onclick: () => dropModal(env.name) }, "drop"),
                 ),
             },
@@ -115,6 +116,78 @@ export async function render(el, { api, go, toast, modal }) {
         ),
       ),
     );
+  }
+
+  function historyModal(name) {
+    modal(async (box, close) => {
+      box.append(h("h2", {}, `Promotions — ${name}`), h("div", { class: "empty" }, "loading…"));
+      let generations;
+      try {
+        generations = await api.get(`/environments/${encodeURIComponent(name)}/history`);
+      } catch (error) {
+        box.lastChild.replaceWith(h("div", { class: "empty" }, error.message));
+        return;
+      }
+      const latest = generations[0]?.generation;
+      const rows = table(
+        [
+          {
+            k: "generation",
+            label: "gen",
+            num: true,
+            render: (g) =>
+              g.generation === latest
+                ? h("span", {}, String(g.generation), " ", pill("current", "violet"))
+                : String(g.generation),
+          },
+          { k: "promoted_at", label: "promoted", render: (g) => h("span", { class: "dim" }, relTime(g.promoted_at)) },
+          { k: "models", label: "models", num: true },
+          {
+            k: "_act",
+            label: "",
+            render: (g) =>
+              g.generation === latest
+                ? h("span", {}, "")
+                : h(
+                    "button",
+                    {
+                      class: "btn small",
+                      onclick: async (event) => {
+                        event.target.disabled = true;
+                        try {
+                          const result = await api.post(`/environments/${encodeURIComponent(name)}/rollback`, {
+                            generation: g.generation,
+                          });
+                          toast(
+                            `rolled ${name} back to generation ${result.generation} — ` +
+                              `${result.repointed.length} view(s) repointed, nothing rebuilt`,
+                            "ok",
+                          );
+                          close();
+                          refresh();
+                        } catch (error) {
+                          toast(error.message, "err");
+                          event.target.disabled = false;
+                        }
+                      },
+                    },
+                    "roll back",
+                  ),
+          },
+        ],
+        generations,
+        { empty: "no promotion history yet", hint: "every apply that promotes records a generation" },
+      );
+      box.lastChild.replaceWith(
+        h(
+          "p",
+          { class: "sub", style: "margin-bottom:10px" },
+          "rolling back repoints the views at that generation's snapshots — nothing rebuilds, and applying again returns to the latest state.",
+        ),
+        rows,
+        h("div", { class: "actions" }, h("button", { class: "btn", onclick: close }, "close")),
+      );
+    });
   }
 
   function dropModal(name) {

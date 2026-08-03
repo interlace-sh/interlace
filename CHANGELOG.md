@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.2 (2026-08-03)
 
 **Security.** The SQL query console (`POST /query`) could read arbitrary local
 files — and reach the network on httpfs/S3 deployments — via DuckDB's

@@ -98,6 +98,16 @@ def test_model_detail_with_lineage(client: TestClient) -> None:
     assert "from raw_events" in body["sql"].lower()
 
 
+def test_column_impact_endpoint(client: TestClient) -> None:
+    """GET /models/{name}/impact mirrors the CLI `interlace impact` — the column
+    blast radius, previously CLI-only."""
+    body = client.get("/models/raw_events/impact", params={"column": "amount"}).json()
+    assert body["source"] == "raw_events.amount"
+    hits = {(row["model"], row["column"]) for row in body["impacted"]}
+    assert ("event_totals", "total_amount") in hits  # total_amount = sum(amount)
+    assert client.get("/models/nope/impact", params={"column": "x"}).status_code == 404
+
+
 def test_unknown_model_is_404(client: TestClient) -> None:
     assert client.get("/models/nope").status_code == 404
 
@@ -253,6 +263,10 @@ def test_stream_publish_and_inspect(tmp_path: Path) -> None:
     with TestClient(app=create_app(project_dir, "dev")) as client:
         streams = client.get("/streams").json()
         assert [(s["name"], s["head"], s["watermark"]) for s in streams] == [("clicks", 0, 0)]
+
+        # retention + pending are on the wire (parity with `interlace streams`)
+        info = client.get("/streams").json()[0]
+        assert info["pending"] == 0 and "retention" in info
 
         one = client.post("/streams/clicks", json={"event_id": "e1", "amount": 5.0}).json()
         assert one == {"accepted": 1, "deduplicated": 0, "last_offset": 1, "quarantined": 0}

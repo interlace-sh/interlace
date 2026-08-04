@@ -15,7 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElaps
 from rich.table import Table
 
 from interlace.exceptions import CheckError, ConfigurationError, SelectionError
-from interlace.graph.column_lineage import column_lineage
+from interlace.graph.column_lineage import column_impact, column_lineage, split_target
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
 from interlace.plan.apply import ApplyResult
@@ -1131,42 +1131,17 @@ def impact(
     transitively, plus models that consume the source whole (Python / ``*``)."""
     project = Project.load(path)
     compiled = project.compile()
-    dot = target.rfind(".")
-    model, column = (target[:dot], target[dot + 1 :]) if dot > 0 else (target, "")
-    # model names may themselves be dotted (schema.model.column beats schema.model)
-    while model and model not in compiled.models and "." in model:
-        dot = model.rfind(".")
-        model, column = model[:dot], f"{model[dot + 1:]}.{column}"
-    if model not in compiled.models or not column:
+    parsed = split_target(target, compiled)
+    if parsed is None:
         console.print(f"[red]expected <model>.<column> with a known model; got {target!r}[/red]")
         raise typer.Exit(1)
-
-    lineage_map = column_lineage(compiled)
-    column_down: dict[str, list[tuple[str, str]]] = {}
-    for downstream, sources in lineage_map.items():
-        for down_col, refs in sources.items():
-            for up_model, up_col in refs:
-                column_down.setdefault(f"{up_model}.{up_col}", []).append((downstream, down_col))
-
-    impacted: list[dict[str, str]] = []
-    seen = {f"{model}.{column}"}
-    frontier = [f"{model}.{column}"]
-    while frontier:
-        key = frontier.pop()
-        for down_model, down_col in column_down.get(key, ()):
-            next_key = f"{down_model}.{down_col}"
-            if next_key not in seen:
-                seen.add(next_key)
-                impacted.append({"model": down_model, "column": down_col, "via": key})
-                frontier.append(next_key)
-    # opaque consumers see every column: Python models and * projections have no
-    # column map, so any direct dependant with an empty map is potentially touched
-    opaque = sorted(
-        name for name, m in compiled.models.items() if model in m.dependencies and not lineage_map.get(name)
-    )
+    model, column = parsed
+    result = column_impact(compiled, model, column)
+    impacted = result["impacted"]
+    opaque = result["opaque_consumers"]
 
     if as_json:
-        _emit_json({"source": f"{model}.{column}", "impacted": impacted, "opaque_consumers": opaque})
+        _emit_json(result)
         return
     if not impacted and not opaque:
         console.print(f"Nothing downstream reads [bold]{model}.{column}[/bold].")

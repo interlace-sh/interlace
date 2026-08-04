@@ -6,7 +6,7 @@ import { copy, debounce, h, pill, pythonBlock, relTime, sqlBlock, statusPill, ta
 
 const OUTPUT_TONE = { sink: "cyan", view: "violet" };
 
-export async function render(el, { api, go, toast, params }) {
+export async function render(el, { api, go, toast, modal, params }) {
   const filter = h("input", { class: "in", placeholder: "filter by name or tag", style: "width:240px" });
   const countLabel = h("span", { class: "sub" });
   const tableWrap = h("div", {});
@@ -119,6 +119,45 @@ export async function render(el, { api, go, toast, params }) {
     return wrap;
   }
 
+  function impactModal(model, column) {
+    modal(async (box, close) => {
+      box.append(h("h2", {}, `Impact of ${model}.${column}`), h("div", { class: "empty" }, "tracing…"));
+      let result;
+      try {
+        result = await api.get(`/models/${encodeURIComponent(model)}/impact?column=${encodeURIComponent(column)}`);
+      } catch (error) {
+        box.lastChild.replaceWith(h("div", { class: "empty" }, error.message));
+        return;
+      }
+      const nodes = [];
+      nodes.push(
+        h("p", { class: "sub", style: "margin-bottom:10px" }, "every downstream column derived from this one, transitively"),
+        result.impacted.length
+          ? table(
+              [
+                { k: "model", label: "model", render: (r) => modelLink(r.model) },
+                { k: "column", label: "column" },
+                { k: "via", label: "via", render: (r) => h("span", { class: "dim" }, r.via) },
+              ],
+              result.impacted,
+            )
+          : h("div", { class: "empty" }, "nothing downstream reads this column"),
+      );
+      if (result.opaque_consumers.length) {
+        nodes.push(
+          h(
+            "p",
+            { class: "sub", style: "margin-top:10px; color:var(--amber)" },
+            "opaque consumers (see every column): ",
+            result.opaque_consumers.join(", "),
+          ),
+        );
+      }
+      nodes.push(h("div", { class: "actions" }, h("button", { class: "btn", onclick: close }, "close")));
+      box.replaceChildren(h("h2", {}, `Impact of ${model}.${column}`), ...nodes);
+    });
+  }
+
   async function enqueue(name) {
     try {
       const created = await api.post("/runs", { selectors: [name] });
@@ -158,7 +197,7 @@ export async function render(el, { api, go, toast, params }) {
       ),
     );
 
-    // columns + their upstream sources
+    // columns + their upstream sources + a per-column impact (blast-radius) action
     const columnRows = Object.entries(detail.columns).map(([column, sources]) => ({ column, sources }));
     const columnsTable = table(
       [
@@ -183,6 +222,16 @@ export async function render(el, { api, go, toast, params }) {
             });
             return cell;
           },
+        },
+        {
+          k: "impact",
+          label: "",
+          render: (row) =>
+            h(
+              "button",
+              { class: "btn small", onclick: () => impactModal(detail.name, row.column) },
+              "impact",
+            ),
         },
       ],
       columnRows,

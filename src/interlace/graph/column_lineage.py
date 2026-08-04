@@ -67,3 +67,46 @@ def column_lineage(project: CompiledProject) -> dict[str, ColumnSources]:
         if lineage is not None:
             _insert_schema(schema, name, dict.fromkeys(lineage, "UNKNOWN"))
     return result
+
+
+def split_target(target: str, project: CompiledProject) -> tuple[str, str] | None:
+    """Parse a ``model.column`` string into ``(model, column)``, tolerating dotted
+    model names (``schema.model.column``). Returns None if no known model matches."""
+    dot = target.rfind(".")
+    if dot <= 0:
+        return None
+    model, column = target[:dot], target[dot + 1 :]
+    while model and model not in project.models and "." in model:
+        dot = model.rfind(".")
+        model, column = model[:dot], f"{model[dot + 1 :]}.{column}"
+    return (model, column) if model in project.models and column else None
+
+
+def column_impact(project: CompiledProject, model: str, column: str) -> dict[str, Any]:
+    """Column-level blast radius of ``model.column``: every downstream column
+    transitively derived from it, plus *opaque* consumers (Python models or ``*``
+    projections) that read the source model whole and so may touch every column.
+
+    Returns ``{"source": "model.column", "impacted": [{model, column, via}, ...],
+    "opaque_consumers": [model, ...]}``.
+    """
+    lineage_map = column_lineage(project)
+    column_down: dict[str, list[tuple[str, str]]] = {}
+    for downstream, sources in lineage_map.items():
+        for down_col, refs in sources.items():
+            for up_model, up_col in refs:
+                column_down.setdefault(f"{up_model}.{up_col}", []).append((downstream, down_col))
+
+    impacted: list[dict[str, str]] = []
+    seen = {f"{model}.{column}"}
+    frontier = [f"{model}.{column}"]
+    while frontier:
+        key = frontier.pop()
+        for down_model, down_col in column_down.get(key, ()):
+            next_key = f"{down_model}.{down_col}"
+            if next_key not in seen:
+                seen.add(next_key)
+                impacted.append({"model": down_model, "column": down_col, "via": key})
+                frontier.append(next_key)
+    opaque = sorted(name for name, m in project.models.items() if model in m.dependencies and not lineage_map.get(name))
+    return {"source": f"{model}.{column}", "impacted": impacted, "opaque_consumers": opaque}

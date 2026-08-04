@@ -7,6 +7,12 @@ import { diffBlock, h, pill, rowsDelta, seconds, sqlBlock, table } from "../ui.j
 const CATEGORY_TONE = { breaking: "red", non_breaking: "green", forward_only: "amber" };
 
 export async function render(el, { api, toast, modal, go }) {
+  const envInput = h("input", {
+    class: "in",
+    placeholder: "environment",
+    title: "target environment (blank = the daemon's default; prod = the unprefixed namespace)",
+    style: "width:110px",
+  });
   const selectInput = h("input", {
     class: "in",
     placeholder: "selectors: name, +name, name+, tag:x, state:modified",
@@ -36,6 +42,7 @@ export async function render(el, { api, toast, modal, go }) {
       h("h1", {}, "Plan"),
       h("span", { class: "sub" }, "what would change, and why"),
       h("span", { class: "spread" }),
+      envInput,
       selectInput,
       modifiedBtn,
       h("label", { class: "check" }, forwardOnly, "forward-only"),
@@ -50,6 +57,7 @@ export async function render(el, { api, toast, modal, go }) {
   async function preview() {
     body.replaceChildren(h("div", { class: "empty" }, "planning…"));
     const query = new URLSearchParams();
+    if (envInput.value.trim()) query.set("environment", envInput.value.trim());
     if (selectInput.value.trim()) query.set("select", selectInput.value.trim());
     if (forwardOnly.checked) query.set("forward_only", "true");
     try {
@@ -112,6 +120,7 @@ export async function render(el, { api, toast, modal, go }) {
     applyBtn.disabled = true;
     applyBtn.textContent = "applying…";
     const payload = { force, forward_only: forwardOnly.checked };
+    if (envInput.value.trim()) payload.environment = envInput.value.trim();
     if (selectInput.value.trim()) payload.selectors = selectInput.value.split(",").map((s) => s.trim()).filter(Boolean);
     try {
       const result = await api.post("/apply", payload);

@@ -70,6 +70,10 @@ export async function render(el, { api, feed, toast, modal }) {
             { style: "display:flex; gap:18px; align-items:baseline" },
             h("span", {}, h("span", { class: "sub" }, "head "), headEl),
             h("span", {}, h("span", { class: "sub" }, "watermark "), wmEl),
+            h("span", {}, h("span", { class: "sub" }, "pending "), h("span", {}, count(stream.pending))),
+            stream.retention
+              ? h("span", {}, h("span", { class: "sub" }, "retention "), h("span", {}, stream.retention))
+              : null,
             h("span", { class: "spread" }),
             h("button", { class: "btn small", onclick: () => peek(stream.name) }, "peek"),
             h("button", { class: "btn small primary", onclick: () => publishModal(stream.name) }, "publish…"),

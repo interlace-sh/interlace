@@ -205,7 +205,9 @@ class StreamInfo(msgspec.Struct):
     table: str
     head: int  # highest offset accepted into the log
     watermark: int  # highest offset materialized into the warehouse
+    pending: int  # head - watermark: durable events not yet in the warehouse
     on_schema_drift: str = "reject"
+    retention: str | None = None  # age after which materialized events are swept
 
 
 class StreamDetail(msgspec.Struct):
@@ -214,8 +216,11 @@ class StreamDetail(msgspec.Struct):
     table: str
     head: int
     watermark: int
+    pending: int
     idempotency_key: str | None
     recent: list[dict]  # latest payloads, newest last
+    on_schema_drift: str = "reject"
+    retention: str | None = None
 
 
 class PublishResult(msgspec.Struct):
@@ -257,6 +262,18 @@ class ScheduleInfo(msgspec.Struct):
     expression: str
     next_fire: str | None
     last_fired: str | None
+
+
+class ImpactColumn(msgspec.Struct):
+    model: str
+    column: str
+    via: str  # the upstream column it was derived from, one hop up
+
+
+class ImpactResponse(msgspec.Struct):
+    source: str  # "model.column"
+    impacted: list[ImpactColumn]  # downstream columns transitively derived from it
+    opaque_consumers: list[str]  # models reading the source whole (Python / * projections)
 
 
 class LineageModel(msgspec.Struct):
@@ -411,6 +428,23 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
         sql=model.definition_sql,
         language="python" if model.ast is None else "sql",
         source=_python_source(model),
+    )
+
+
+@get("/models/{name:str}/impact")
+async def get_model_impact(name: FromPath[str], state: State, column: FromQuery[str]) -> ImpactResponse:
+    """Column-level blast radius of ``{name}.{column}``: every downstream column
+    transitively derived from it, plus opaque consumers (Python / ``*`` models)."""
+    from interlace.graph.column_lineage import column_impact
+
+    compiled: CompiledProject = state.compiled
+    if name not in compiled.models:
+        raise NotFoundException(detail=f"unknown model: {name}")
+    result = column_impact(compiled, name, column)
+    return ImpactResponse(
+        source=result["source"],
+        impacted=[ImpactColumn(**row) for row in result["impacted"]],
+        opaque_consumers=result["opaque_consumers"],
     )
 
 
@@ -710,14 +744,18 @@ def _stream_or_404(state: State, name: str) -> StreamDef:
 async def get_streams(state: State) -> list[StreamInfo]:
     out = []
     for stream in state.streams.values():
+        head = await state.stream_log.head(stream.name)
+        watermark = await stream_watermark(stream, state.engine)
         out.append(
             StreamInfo(
                 name=stream.name,
                 schema=stream.schema,
                 table=f"streams.{stream.name}",
-                head=await state.stream_log.head(stream.name),
-                watermark=await stream_watermark(stream, state.engine),
+                head=head,
+                watermark=watermark,
+                pending=max(0, head - watermark),
                 on_schema_drift=stream.on_schema_drift,
+                retention=stream.retention,
             )
         )
     return out
@@ -727,15 +765,19 @@ async def get_streams(state: State) -> list[StreamInfo]:
 async def get_stream(name: FromPath[str], state: State) -> StreamDetail:
     stream = _stream_or_404(state, name)
     head = await state.stream_log.head(name)
+    watermark = await stream_watermark(stream, state.engine)
     events = await state.stream_log.read(name, max(0, head - 20), 20)
     return StreamDetail(
         name=stream.name,
         schema=stream.schema,
         table=f"streams.{stream.name}",
         head=head,
-        watermark=await stream_watermark(stream, state.engine),
+        watermark=watermark,
+        pending=max(0, head - watermark),
         idempotency_key=stream.idempotency_key,
         recent=[dict(event.payload, _offset=event.offset) for event in events],
+        on_schema_drift=stream.on_schema_drift,
+        retention=stream.retention,
     )
 
 
@@ -1484,6 +1526,7 @@ def create_app(
             health,
             get_models,
             get_model,
+            get_model_impact,
             get_plan,
             get_environments,
             drop_environment_endpoint,

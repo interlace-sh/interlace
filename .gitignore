@@ -81,6 +81,7 @@ examples/*/out/
 # Private architectural docs
 docs/*
 !docs/architecture/
+!docs/generated/
 
 # Docker data
 

@@ -51,6 +51,73 @@ Sync functions run in a worker thread; async functions run on the event loop. A 
 must materialise as a `table` and can't be a sink or use `incremental_by_time` (use `cursor`
 + a keyed strategy instead).
 
+## Dynamic / programmatic models
+
+Model `.py` files are **imported and their top-level code runs** every time the project loads
+(discovery executes each module), and `@model` registers a model the instant it runs. So a
+plain Python loop *is* the mechanism for generating many models from data — e.g. the same
+logic per tenant, region, or source, each with its own filter. There is no separate templating
+DSL; it's just Python.
+
+**Per-tenant SQL models** — register a `ModelDef` directly for each item in a list:
+
+```python
+# models/per_tenant.py
+from interlace.dsl.decorators import REGISTRY, ModelDef
+
+def get_tenants():                      # any Python: a DB query, a file, an env var…
+    return ["acme", "globex"]
+
+for tenant in get_tenants():
+    REGISTRY.register_model(ModelDef(
+        name=f"orders_{tenant}",
+        sql=f"SELECT order_id, amount FROM raw WHERE tenant_id = '{tenant}'",
+        strategy="merge_by_key", key=("order_id",),
+    ))
+```
+
+This produces one snapshot table and environment view per tenant (`orders_acme`,
+`orders_globex`, …), each with an independent fingerprint, plan/apply, checks, and incremental
+ledger — full isolation between tenants.
+
+**Per-tenant Python models** — use a *factory* so each closure captures its own value (the one
+thing to get right):
+
+```python
+from interlace import model
+import pyarrow.compute as pc
+
+def make(tenant):
+    @model(name=f"orders_{tenant}", depends_on=("raw",), strategy="merge_by_key", key=("order_id",))
+    def _orders(raw, tenant=tenant):          # bind tenant HERE, not via the loop variable
+        t = raw.table()
+        return t.filter(pc.equal(t["tenant_id"], tenant))
+    return _orders
+
+for t in get_tenants():
+    make(t)
+```
+
+Things to know:
+
+- **Names must be unique** — `register_model` raises on a duplicate, so put the tenant in the
+  name.
+- **Closure late-binding** — the classic Python trap; bind the loop variable via a factory or
+  a default argument (as above), or every generated function filters on the *last* value.
+- **`depends_on` for Python models** — a function's parameters must each be a declared
+  dependency (SQL models auto-discover dependencies from their table references; Python models
+  don't).
+- **The generator runs on every command** — `get_tenants()` is called each time `interlace`
+  loads the project (plan, apply, models, serve). Keep it fast and deterministic; if it queries
+  a database, every CLI call pays that cost. **`interlace serve` compiles once at startup**, so
+  a tenant added while the daemon is running only appears after it re-compiles/restarts.
+- **Quote interpolated values** — for a trusted internal list, string interpolation into SQL is
+  fine; for untrusted input, quote via sqlglot or parameterise.
+
+If instead you want a *single* model carrying a `tenant` column (no per-tenant tables), that's
+just an ordinary model — but for the same logic applied per tenant with isolation, the loop
+above is the right shape.
+
 ## Materialisations
 
 | `materialise` | Produces | Notes |

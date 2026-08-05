@@ -29,6 +29,38 @@ DuckDB can ATTACH other databases for cross-engine reads. The remote ADBC engine
 backend is a dialect, a capability set, and a `connect`. Spark is its own transport
 (`SparkSession`, not ADBC).
 
+## Feature support
+
+Every [strategy](strategies.md) runs on every engine, with two exceptions on Spark
+(`scd`/`full_merge`). ✓ = supported · ✗ = not supported.
+
+| Engine | Status | `replace` | `view` | `append` | `merge` | `full_merge` | `incremental_by_time` | `scd` |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `duckdb` / `ducklake` | stable | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `quack` | stable | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `postgres` | stable | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ¹ |
+| `spark` | beta | ✓ | ✓ | ✓ | ✓ ² | ✗ ³ | ✓ ² | ✗ ³ |
+| `motherduck` | alpha | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `redshift` | alpha | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ ¹ |
+| `snowflake` | alpha | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `bigquery` | alpha | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+¹ `scd` enumerates the model's columns (no `SELECT * EXCLUDE`), so the model needs an explicit
+projection — not `SELECT *`.
+² Needs a Delta Lake / Iceberg catalog for row-level `MERGE`/`DELETE`; plain Hive/parquet Spark has neither.
+³ Delta rejects subqueries in `UPDATE`/`DELETE` conditions (`DELTA_UNSUPPORTED_SUBQUERY`), which
+`scd`'s close and `full_merge`'s delete rely on — they'd need a MERGE-based rewrite.
+
+**Status:** *stable* = tested in CI (and locally). *beta* = tested against a local Spark + Delta
+session, with the caveats above. *alpha* = wired and dialect-correct, unit-tested for SQL shape,
+but **not yet run against a live account** (no local target). Not built: **Databricks** (its
+connector is Arrow-native but has no `adbc_ingest` bulk-load path).
+
+Notes: `replace` and `view` are always available; `append` requires `materialise: table` (an
+external table). Every engine above does `merge` with a native `MERGE`; the portable
+`DELETE`+`INSERT` fallback only runs when the target's column list isn't known yet (a first
+delivery into a fresh table).
+
 ## Capabilities
 
 Strategies adapt to capability flags (`EngineCaps`):

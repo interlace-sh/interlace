@@ -59,11 +59,16 @@ async def _upstream_reader(
     engine: EngineAdapter,
     physical: Mapping[str, TableRef] | None,
 ) -> pa.RecordBatchReader:
-    if upstream.is_terminal:
-        raise PlanError(f"model {upstream.name!r} materialises as {upstream.materialise!r}; it has no readable output")
+    if upstream.materialise == "file":
+        raise PlanError(f"model {upstream.name!r} materialises as a file; it has no readable table")
     if upstream.materialise == "ephemeral":  # no physical table: run its (inlined) query
         return await engine.fetch(resolve_model_query(upstream, compiled, physical))
-    table = (physical or {}).get(upstream.name, upstream.physical_table)
+    if upstream.materialise == "table":  # read the delivered external target
+        from interlace.sinks import target_ref
+
+        table = target_ref(upstream.target or "")
+    else:
+        table = (physical or {}).get(upstream.name, upstream.physical_table)
     return await engine.fetch(exp.select("*").from_(table.to_expr()))
 
 

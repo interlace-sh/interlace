@@ -54,13 +54,33 @@ def test_python_model_export_kwarg_raises_migration_error() -> None:
         def _p() -> None: ...
 
 
-async def test_depending_on_a_terminal_is_rejected() -> None:
-    with pytest.raises(DefinitionError, match="has no readable output"):
+async def test_depending_on_a_table_is_allowed_but_a_file_is_not() -> None:
+    # a file isn't a readable table
+    with pytest.raises(DefinitionError, match="a file isn't a readable"):
         compile_models(
             [
-                ModelDef(name="push", sql="SELECT 1 AS id", materialise="table", target="ext.main.t"),
-                ModelDef(name="downstream", sql="SELECT id FROM push"),
+                ModelDef(name="dump", sql="SELECT 1 AS id", materialise="file", format="csv", path="o.csv"),
+                ModelDef(name="downstream", sql="SELECT id FROM dump"),
             ]
+        )
+    # depending on a table is fine — it's read via its delivered external target
+    compiled = compile_models(
+        [
+            ModelDef(name="push", sql="SELECT 1 AS id", materialise="table", target="ext.main.t"),
+            ModelDef(name="downstream", sql="SELECT id FROM push"),
+        ]
+    )
+    assert "push" in compiled.models["downstream"].dependencies
+
+
+async def test_cross_engine_table_dependency_is_rejected() -> None:
+    with pytest.raises(DefinitionError, match="cross-engine"):
+        compile_models(
+            [
+                ModelDef(name="push", sql="SELECT 1 AS id", materialise="table", target="ext.main.t", engine="other"),
+                ModelDef(name="downstream", sql="SELECT id FROM push"),
+            ],
+            known_engines={"default", "other"},
         )
 
 

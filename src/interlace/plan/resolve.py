@@ -17,6 +17,7 @@ from interlace.exceptions import PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.canonicalize import resolve_references
 from interlace.ir.relation import TableRef
+from interlace.sinks import target_ref
 
 
 def _cte_name(model_name: str) -> str:
@@ -36,6 +37,9 @@ def _ref_mapping(
         upstream = project.models[dep]
         if upstream.materialise == "ephemeral":
             mapping[dep] = TableRef(schema="", name=_cte_name(dep))
+        elif upstream.materialise == "table":
+            # a table model is read by its delivered external target, not a snapshot
+            mapping[dep] = target_ref(upstream.target or "")
         else:
             mapping[dep] = (physical or {}).get(dep, upstream.physical_table)
     return mapping

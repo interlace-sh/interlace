@@ -309,3 +309,19 @@ async def test_table_checks_gate_delivery(env: tuple[DuckDBAdapter, SqliteStateS
     )
     with pytest.raises(CheckError):  # failing check gates: apply raises, environment not promoted
         await apply(await diff(bad, "prod", store), compiled=bad, engine=engine, state=store)
+
+
+async def test_downstream_reads_a_table_models_external_output(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A table model is a normal DAG node: a downstream can depend on it and reads its
+    delivered external table (built after it, by the dependency edge)."""
+    engine, store = env
+    models = [
+        ModelDef(name="push", sql=_values("(1, 'a'), (2, 'b')"), materialise="table", target="ext.main.pushed"),
+        ModelDef(name="derived", sql="SELECT id, v FROM push WHERE id = 2"),  # virtual, reads the external table
+    ]
+    compiled = compile_models(models)
+    assert "push" in compiled.models["derived"].dependencies
+    await apply(await diff(compiled, "prod", store), compiled=compiled, engine=engine, state=store)
+
+    # derived (a normal virtual snapshot + prod view) reflects push's delivered rows
+    assert await _rows(engine, "SELECT id, v FROM main.derived ORDER BY id") == [{"id": 2, "v": "b"}]

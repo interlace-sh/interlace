@@ -181,10 +181,18 @@ def compile_models(
         definition = definitions[name]
         deps, ast, dialect, engine = resolved[name]
         for dep in deps:  # topo order: deps already compiled
-            if compiled[dep].is_terminal:
+            if compiled[dep].materialise == "file":
                 raise DefinitionError(
-                    f"model {name!r} depends on {dep!r}, which materialises as {compiled[dep].materialise!r} — "
-                    f"a terminal table/file has no readable output; depend on the model it selects from"
+                    f"model {name!r} depends on {dep!r}, which materialises as a file — a file isn't a readable "
+                    f"table; depend on the model it selects from instead"
+                )
+            if compiled[dep].materialise == "table" and compiled[dep].engine != engine:
+                # a table model is read directly by its external target; the target's attach
+                # alias lives on its own engine, so a cross-engine read can't reach it
+                raise DefinitionError(
+                    f"model {name!r} on engine {engine!r} depends on table {dep!r} on engine "
+                    f"{compiled[dep].engine!r} — a reverse-ETL table is read by its external target, which isn't "
+                    f"reachable cross-engine; put them on the same engine"
                 )
             if compiled[dep].engine != engine and compiled[dep].materialise == "ephemeral":
                 raise DefinitionError(

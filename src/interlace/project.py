@@ -228,8 +228,9 @@ class Project:
         for value in candidates:
             refs.update(_ENV_REF.findall(value))
         if refs:
+            named = ", ".join(f"${{{var}}}" for var in sorted(refs))
             raise ConfigurationError(
-                "unresolved ${VAR} in warehouse config — set the environment variable(s)",
+                f"unresolved {named} in warehouse config — set the environment variable(s), or add them to .env",
                 details={"variables": sorted(refs)},
             )
 

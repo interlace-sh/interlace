@@ -53,6 +53,9 @@ adbc = [
 ]
 adbc-snowflake = ["interlaced[adbc]", "adbc-driver-snowflake>=1.2,<2.0"]
 adbc-bigquery = ["interlaced[adbc]", "adbc-driver-bigquery>=1.2,<2.0"]
+# Spark engine: PySpark session transport (Arrow-native), Delta for mutating strategies.
+# Pinned to the Spark 4.0 / Delta 4.0 pair (Delta lags the latest Spark minor).
+spark = ["pyspark>=4.0,<4.1", "delta-spark>=4.0,<4.1"]
 postgres = ["psycopg[binary]>=3.1,<4.0"]
 polars = ["polars>=1.0,<2.0"]
 pandas = ["pandas>=2.0,<4.0"]
@@ -117,6 +120,8 @@ module = [
     "yaml",
     "adbc_driver_snowflake.*",  # optional 'adbc-snowflake' extra — absent in the base env
     "adbc_driver_bigquery.*",  # optional 'adbc-bigquery' extra — absent in the base env
+    "pyspark.*",  # optional 'spark' extra — absent in the base env
+    "delta.*",  # optional 'spark' extra (delta-spark) — absent in the base env
 ]
 ignore_missing_imports = true
 

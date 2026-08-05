@@ -37,9 +37,10 @@ engines:
 ```
 
 Engine types without an adapter fail at open with a pointer here. Adapters today: the DuckDB
-family (`duckdb`/`ducklake`/`quack`/`motherduck`) and the ADBC engines (`postgres`, plus the
-alpha `redshift`/`snowflake`/`bigquery`, which share one `AdbcAdapter` base). Engines open
-lazily — a declared-but-unused remote engine is never contacted.
+family (`duckdb`/`ducklake`/`quack`/`motherduck`), the ADBC engines (`postgres`, plus the alpha
+`redshift`/`snowflake`/`bigquery`, which share one `AdbcAdapter` base), and `spark` (beta, a
+`SparkSession` transport — `scd`/`full_merge` unsupported on Delta). Engines open lazily — a
+declared-but-unused remote engine is never contacted.
 
 ## Binding models
 
@@ -117,9 +118,12 @@ Everything else is portable by construction: Arrow ingest is `register` on DuckD
 `adbc_ingest` on the ADBC engines, and cross-engine `ATTACH` is a DuckDB-only fast lane the
 transfer planner opportunistically uses (falling back to Arrow fetch→load).
 
-**Every strategy now runs on every engine** — `merge` upserts natively where `MERGE` exists,
-and `scd` enumerates its columns where `SELECT * EXCLUDE` is missing (so on Postgres/Redshift
-an `scd` model needs an explicit projection, not `SELECT *`).
+Every strategy runs on every SQL engine — `merge` upserts natively where `MERGE` exists, and
+`scd` enumerates its columns where `SELECT * EXCLUDE` is missing (so on Postgres/Redshift an
+`scd` model needs an explicit projection, not `SELECT *`). The one exception is **Spark**,
+where `scd`/`full_merge` don't work: Delta forbids subqueries in `UPDATE`/`DELETE` conditions,
+which those strategies' close/delete steps rely on (`merge`, `incremental_by_time`, `replace`,
+`append` do run on Spark).
 
 ## Roadmap
 

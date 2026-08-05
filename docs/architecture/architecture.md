@@ -663,7 +663,7 @@ src/interlace/
   state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc)
   plan/        # differ (sqlglot.diff + classification), plan, apply, run
   engines/     # base (EngineAdapter, EngineCaps); adbc (shared ADBC base); duckdb (+ DuckLake),
-               #   postgres, redshift/snowflake/bigquery (alpha), quack, registry (lazy open)
+               #   postgres, redshift/snowflake/bigquery (alpha), spark (beta), quack, registry
   strategies/  # replace, view, full_merge, incremental_by_time, merge, scd
   checks/      # built-in check types + @check decorator — results gate promotion
   scheduler/   # triggers (cron/interval), engine (TriggerEngine), worker (leases/retries/cancel)
@@ -700,6 +700,8 @@ Logging is the **standard library `logging`** — there is no `structlog` depend
 - **`adbc`** — the Postgres and Redshift engines via Arrow-native ADBC
   (`adbc-driver-manager`, `adbc-driver-postgresql`). **`adbc-snowflake`** / **`adbc-bigquery`**
   add those (alpha) drivers.
+- **`spark`** — the Spark engine (beta): `pyspark` + `delta-spark` (Spark 4.0 / Delta 4.0),
+  a `SparkSession` transport rather than ADBC.
 - **`postgres`** — `psycopg[binary]`, reserved for the *future* Postgres state/log
   backends (§12); no such backend ships today.
 - **`polars`** — `polars`, the preferred eager frame a user can build from
@@ -741,9 +743,13 @@ only shipped behaviour:
   `EngineAdapter`s now ship (ADBC is Arrow-native end-to-end; they share one `AdbcAdapter`
   base), unlocking "author in Snowflake SQL, run it in Snowflake in prod" (§4, §5). They are
   wired and dialect-correct but **not yet run against a live account** — promoting them out of
-  alpha needs live validation (connection strings, metadata probes). Databricks is still open:
-  its connector is Arrow-native but lacks an `adbc_ingest` bulk-load, so `load()` needs a
-  bespoke staged-COPY path.
+  alpha needs live validation (connection strings, metadata probes).
+- **Spark (beta)** — a `SparkSession` transport (Arrow via `toArrow`/`createDataFrame`),
+  tested against a local Spark + Delta Lake session. `merge` and `incremental_by_time` run
+  natively; `scd`/`full_merge` need a MERGE-based rewrite to work on Delta (which forbids
+  subqueries in `UPDATE`/`DELETE` conditions). Databricks is still open: its connector is
+  Arrow-native but lacks an `adbc_ingest` bulk-load, so `load()` needs a bespoke staged-COPY
+  path.
 - **Reverse-ETL SaaS connectors + delivery ledger** — a `SinkConnector` (batch HTTP) for
   API/SaaS destinations (a third terminal plane beyond `table`/`file`), a per-target
   delivery ledger (cursor / last-synced hash per key) for change-only pushes (§6).

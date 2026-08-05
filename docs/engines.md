@@ -5,9 +5,10 @@ one engine; the strategy AST is transpiled to that engine's dialect at execution
 
 ## Types
 
-The DuckDB family and Postgres are fully tested. The cloud warehouses are **alpha** — wired
-and dialect-correct, but not yet exercised against a live account (there's no local target to
-test them on), so treat them as ready-to-try, not production-blessed.
+The DuckDB family and Postgres are fully tested. Spark is tested against a local Spark+Delta
+session (with a strategy caveat, below). The cloud warehouses are **alpha** — wired and
+dialect-correct, but not yet exercised against a live account (there's no local target to test
+them on), so treat them as ready-to-try, not production-blessed.
 
 | `type` | Backed by | Status | Role |
 |---|---|---|---|
@@ -16,14 +17,17 @@ test them on), so treat them as ready-to-try, not production-blessed.
 | `motherduck` | MotherDuck (`md:` cloud DuckDB) | alpha | DuckDB dialect over a cloud catalog. Set `database: md:<db>` (token via `motherduck_token`). |
 | `quack` | a remote quack-served warehouse (`quack:host:port`) | stable | SQL routed over the quack protocol; Arrow loads stream over an attached catalog. |
 | `postgres` | Postgres over ADBC | stable | Strategies execute *inside* Postgres; Arrow in/out via `adbc_ingest`. Needs the `adbc` extra. |
+| `spark` | a PySpark `SparkSession` (local or Spark Connect) | beta | SQL runs in Spark; Arrow via `toArrow`/`createDataFrame` (no ADBC). Mutations need a Delta/Iceberg catalog. Needs the `spark` extra. **`scd`/`full_merge` unsupported** (below). |
 | `redshift` | Redshift over the Postgres ADBC driver (PG wire) | alpha | Reuses the Postgres transport; Redshift dialect + a native `MERGE`. Needs the `adbc` extra. |
 | `snowflake` | Snowflake over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-snowflake` extra. |
 | `bigquery` | BigQuery over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-bigquery` extra. |
 
 The default warehouse is `ducklake:.interlace/warehouse.ducklake`. DuckDB is also the
 **federation hub**: everything crosses the Python boundary as Arrow `RecordBatchReader`, and
-DuckDB can ATTACH other databases for cross-engine reads. Remote engines share one ADBC base
-(`engines/adbc.py`): a new ADBC backend is a dialect, a capability set, and a `connect`.
+DuckDB can ATTACH other databases for cross-engine reads. The remote ADBC engines
+(`postgres`/`redshift`/`snowflake`/`bigquery`) share one base (`engines/adbc.py`): a new ADBC
+backend is a dialect, a capability set, and a `connect`. Spark is its own transport
+(`SparkSession`, not ADBC).
 
 ## Capabilities
 
@@ -62,6 +66,21 @@ Streams always live on the default warehouse engine.
 External databases are wired in with `attach: {alias: uri}`. A terminal model
 (`materialise: table, target: alias.schema.table, ...`) then delivers into that attached
 database (Postgres, SQLite, another DuckDB) — see [streaming § reverse ETL](streaming.md#reverse-etl-terminal-table--file).
+
+## Spark
+
+`spark` runs canonical ASTs inside a PySpark `SparkSession` (local, or remote via Spark
+Connect), moving data as Arrow with `DataFrame.toArrow()` / `SparkSession.createDataFrame` —
+no ADBC. `replace`, `append`, `view`, `merge` (native `MERGE`) and `incremental_by_time`
+(windowed `DELETE` + `INSERT`) are verified against a local **Spark + Delta Lake** session;
+the mutating strategies need a Delta or Iceberg catalog (plain Hive/parquet has no row-level
+`DELETE`/`MERGE`), configured on the session you hand the adapter.
+
+**`scd` and `full_merge` are not supported on Spark.** Their close/delete conditions use a
+subquery (`key IN (SELECT ...)`), and Delta rejects subqueries in `UPDATE`/`DELETE`
+conditions (`DELTA_UNSUPPORTED_SUBQUERY`); making them work would need a MERGE-based rewrite of
+those strategies. `execute_all` is also not one transaction on Spark (no multi-statement
+transactions), and affected-row counts aren't surfaced (reported as 0).
 
 ## Alpha engines
 

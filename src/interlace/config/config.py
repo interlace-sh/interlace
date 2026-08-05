@@ -72,6 +72,7 @@ _TYPE_DIALECT = {
     "redshift": "redshift",
     "snowflake": "snowflake",
     "bigquery": "bigquery",
+    "spark": "spark",
 }
 
 

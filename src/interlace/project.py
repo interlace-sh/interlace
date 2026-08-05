@@ -167,10 +167,14 @@ class Project:
         self._reject_unresolved_env(cfg)
         if cfg.type in ("postgres", "redshift", "snowflake", "bigquery"):
             return self._open_adbc_engine(name, cfg)
+        if cfg.type == "spark":
+            from interlace.engines.spark import SparkAdapter  # lazy: needs the spark extra
+
+            return SparkAdapter.connect(cfg.database or "local[*]")
         if cfg.type not in ("duckdb", "ducklake", "quack", "motherduck"):
             raise ConfigurationError(
                 f"engine {name!r}: type {cfg.type!r} is not implemented yet (supported: duckdb, ducklake, "
-                f"quack, motherduck, postgres, redshift, snowflake, bigquery). See docs/architecture/MULTI_ENGINE.md",
+                f"quack, motherduck, postgres, redshift, snowflake, bigquery, spark). See docs/architecture/MULTI_ENGINE.md",
                 details={"engine": name, "type": cfg.type},
             )
         if cfg.type == "motherduck":  # MotherDuck is DuckDB over a cloud catalog (md: DSN)

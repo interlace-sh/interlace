@@ -179,15 +179,20 @@ async def _deliver_table(
     """Deliver ``resolved`` into an external table (``materialise: table``) via
     ``strategy`` (replace / append / merge_by_key / full_merge / incremental_by_time).
 
-    The external target is never dropped (grants and readers survive). On the first
-    delivery the strategy's ensure-create matches the source; afterwards the source is
-    staged in the warehouse and aligned to the target (additive ALTERs, widening,
-    NULL-fill, casts) so a model that grows or reorders columns evolves the
-    destination instead of breaking it or positionally corrupting it. The insert
-    binds positionally against the aligned source, which reproduces the target's
-    column order exactly."""
+    The external target is never dropped (grants and readers survive). When it already
+    exists the source is staged in the warehouse and aligned to the target (additive
+    ALTERs, widening, NULL-fill, casts) so a model that grows or reorders columns evolves
+    the destination instead of breaking it or positionally corrupting it. The insert
+    binds positionally against the aligned source, which reproduces the target's column
+    order exactly.
+
+    Two cases skip staging and run the strategy directly against the target: the first
+    delivery (the ensure-create matches the source), and any windowed ``incremental_by_time``
+    delivery (``interval`` set). An incremental window is grain-scoped and stays
+    schema-stable within a fingerprint, so staging the *whole* source once per window
+    would make a wide backfill/restate O(windows × source) — the pathological case."""
     target = target_ref(model.target or "")
-    if not await engine.table_exists(target):  # first delivery: the ensure-create matches the source
+    if interval is not None or not await engine.table_exists(target):
         counts = await engine.execute_all(
             strategy.plan_statements(SqlRelation(ast=resolved), target, engine.caps, interval)
         )

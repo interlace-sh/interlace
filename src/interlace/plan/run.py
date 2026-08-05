@@ -92,9 +92,18 @@ async def run_plan(
                     f"{model.interval or '1d'} window ({window_hint.start:%Y-%m-%d %H:%M} → "
                     f"{window_hint.end:%Y-%m-%d %H:%M}) is considered; other ranges need an explicit window"
                 )
+            scheduled = 0
             for window in slice_interval(_window(start, end, grain), grain):
                 if restate or not filled.covers(window):  # restate reprocesses; otherwise catch up
                     plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window))
+                    scheduled += 1
+            if scheduled > 366:  # more than a year of daily windows: probably a wider range than meant
+                span = _window(start, end, grain)
+                plan.warnings.append(
+                    f"{model.name}: {scheduled} {model.interval or '1d'} windows "
+                    f"({span.start:%Y-%m-%d} → {span.end:%Y-%m-%d}) — one build task each. "
+                    f"Pass --end (it defaults to now) to bound the range if that's wider than intended."
+                )
             if wants_view:
                 plan.virtual_updates.append(
                     ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)

@@ -238,3 +238,43 @@ async def test_environments_opt_in(env: tuple[DuckDBAdapter, SqliteStateStore]) 
 
     assert result.built == ["push"] and result.gated == []
     assert await _rows(engine, "SELECT id FROM ext.main.dev_ok") == [{"id": 7}]
+
+
+def _incr(target: str) -> ModelDef:
+    src = "SELECT * FROM (VALUES (1, TIMESTAMP '2024-01-01 09:00'), (2, TIMESTAMP '2024-01-02 09:00')) AS t (id, day)"
+    return ModelDef(
+        name="push",
+        sql=src,
+        materialise="table",
+        target=target,
+        strategy="incremental_by_time",
+        time_column="day",
+        interval="1d",
+    )
+
+
+async def test_incremental_restate_does_not_stage_per_window(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A windowed incremental delivery runs straight against the target — it must NOT
+    re-stage the whole source per window (that made a wide restate O(windows × source))."""
+    engine, store = env
+    compiled = compile_models([_incr("ext.main.evt")])
+    await apply(await diff(compiled, "prod", store), compiled=compiled, engine=engine, state=store)  # bootstrap
+    # restate several windows with the target already existing — the direct path
+    plan = await run_plan(compiled, "prod", store, start=datetime(2024, 1, 1), end=datetime(2024, 1, 3), restate=True)
+    assert len(plan.backfills) == 2  # two 1d windows
+    await apply(plan, compiled=compiled, engine=engine, state=store)
+
+    assert [r["id"] for r in await _rows(engine, "SELECT id FROM ext.main.evt ORDER BY id")] == [1, 2]
+    # no per-window stage table was ever left behind (the staging path is skipped for incrementals)
+    staged = await _rows(
+        engine, "SELECT table_name FROM information_schema.tables WHERE table_name LIKE '%sink_stage%'"
+    )
+    assert staged == []
+
+
+async def test_wide_window_range_warns(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A restate spanning far more windows than intended surfaces a heads-up warning."""
+    _, store = env
+    compiled = compile_models([_incr("ext.main.wide")])
+    plan = await run_plan(compiled, "prod", store, start=datetime(2020, 1, 1), end=datetime(2024, 1, 1), restate=True)
+    assert any("push" in w and "windows" in w for w in plan.warnings)

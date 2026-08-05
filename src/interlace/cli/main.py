@@ -97,7 +97,7 @@ _END = typer.Option("", "--end", help="Window end (ISO), for incremental models.
 _FORWARD_ONLY = typer.Option(
     False,
     "--forward-only",
-    help="Modified history-keeping models (merge/full_merge/scd2/incremental) carry their history "
+    help="Modified history-keeping models (merge_by_key/full_merge/scd_type_2/incremental_by_time) carry their history "
     "forward: it is copied to the new version, the new logic applies to the copy, and checks gate "
     "before views move. Requires a shape-compatible change.",
 )

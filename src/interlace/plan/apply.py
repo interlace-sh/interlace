@@ -339,11 +339,13 @@ async def _gate_checks(
     environment: str,
     result: ApplyResult,
     physical: Mapping[str, TableRef] | None = None,
+    target: TableRef | None = None,
 ) -> None:
-    """Run the model's checks against its built snapshot table; an error-severity
-    failure raises before the environment is promoted."""
+    """Run the model's checks against its built table; an error-severity failure raises
+    before the environment is promoted. ``target`` defaults to the model's own snapshot
+    table (virtual/Python); a terminal ``table`` passes its delivered external target."""
     outcomes = await run_checks(
-        model, compiled, engine, model.physical_table, compiled.python_checks.get(model.name, ()), physical
+        model, compiled, engine, target or model.physical_table, compiled.python_checks.get(model.name, ()), physical
     )
     if not outcomes:
         return
@@ -477,6 +479,17 @@ async def _run_backfill(
         await state.add_snapshot(snapshot)
         if snapshot.name not in result.built:  # one entry per model, however many interval windows ran
             result.built.append(snapshot.name)
+        if model.materialise == "table":  # checks run against the delivered external table (gate promotion)
+            await _gate_checks(
+                model,
+                compiled,
+                target_engine,
+                state,
+                plan.environment,
+                result,
+                resolution,
+                target=target_ref(model.target or ""),
+            )
         result.timings[snapshot.name] = result.timings.get(snapshot.name, 0.0) + (time.perf_counter() - task_started)
         return
 

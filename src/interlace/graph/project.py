@@ -19,7 +19,7 @@ from sqlglot import exp
 
 from interlace.checks.spec import CheckSpec
 from interlace.dsl.decorators import CheckDef, ModelDef, ModelFn
-from interlace.exceptions import DefinitionError
+from interlace.exceptions import CompilationError, DefinitionError
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import parse, table_references
 from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint
@@ -109,7 +109,12 @@ def _resolve_dependencies(
 
     ast: exp.Expression | None = None
     if model.sql is not None:
-        ast = parse(model.sql, dialect)
+        try:
+            ast = parse(model.sql, dialect)
+        except CompilationError as exc:  # name the offending model so the error is actionable
+            raise CompilationError(
+                f"model {model.name!r}: {exc.message}", details={**exc.details, "model": model.name}
+            ) from exc
         for ref in table_references(ast):
             if ref in names:
                 add(ref)
@@ -157,10 +162,11 @@ def compile_models(
                 f"model {name!r} references unknown engine {engine!r}",
                 details={"engines": sorted(engines)},
             )
-        if definition.is_terminal and definition.checks:
+        if definition.materialise == "file" and definition.checks:
             raise DefinitionError(
-                f"{name!r} materialises as {definition.materialise!r} but declares checks, and a terminal "
-                f"table/file has no managed table to check — declare them on the model it selects from"
+                f"{name!r} materialises as a file, which has no queryable table to check — declare checks on "
+                f"the model it selects from (a materialise: table can carry checks; they run against the "
+                f"delivered external table)"
             )
         # Authoring dialect: explicit model dialect, else the engine's, else project default.
         model_default_dialect = dialects_by_engine.get(engine, default_dialect)

@@ -64,21 +64,20 @@ async def test_depending_on_a_terminal_is_rejected() -> None:
         )
 
 
-async def test_terminal_rejects_checks() -> None:
+async def test_file_rejects_checks_but_table_allows_them() -> None:
     from interlace.checks.spec import CheckSpec
 
-    with pytest.raises(DefinitionError, match="no managed table to check"):
+    check = (CheckSpec(type="not_null", columns=("id",), severity="error", params={}),)
+    # a file has no queryable relation to check
+    with pytest.raises(DefinitionError, match="no queryable table to check"):
         compile_models(
-            [
-                ModelDef(
-                    name="push",
-                    sql="SELECT 1 AS id",
-                    materialise="table",
-                    target="ext.main.t",
-                    checks=(CheckSpec(type="not_null", columns=("id",), severity="error", params={}),),
-                )
-            ]
+            [ModelDef(name="dump", sql="SELECT 1 AS id", materialise="file", format="csv", path="o.csv", checks=check)]
         )
+    # a table delivers into a real external table, so it CAN carry checks
+    compiled = compile_models(
+        [ModelDef(name="push", sql="SELECT 1 AS id", materialise="table", target="ext.main.t", checks=check)]
+    )
+    assert compiled.models["push"].checks == check
 
 
 async def test_terminal_table_contract_validated(tmp_path: Path) -> None:

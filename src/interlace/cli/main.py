@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from interlace.exceptions import CheckError, ConfigurationError, SelectionError
+from interlace.exceptions import CheckError, ConfigurationError, InterlaceError, SelectionError
 from interlace.graph.column_lineage import column_impact, column_lineage, split_target
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
@@ -27,10 +27,15 @@ from interlace.project import Project
 from interlace.scaffold import scaffold_project
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
+from interlace.sinks import target_ref
 from interlace.streaming import ensure_stream_tables, flush_streams
 
-app = typer.Typer(no_args_is_help=True, help="Python/SQL-first data platform.")
+# pretty_exceptions_enable=False: let InterlaceError propagate out of app() so main()
+# can render it as one clean line instead of a Rich traceback through interlace internals.
+# Unexpected (non-Interlace) errors still surface a normal traceback for debugging.
+app = typer.Typer(no_args_is_help=True, help="Python/SQL-first data platform.", pretty_exceptions_enable=False)
 console = Console()
+err_console = Console(stderr=True)
 
 
 class _BuildProgress:
@@ -955,8 +960,8 @@ async def _checks_run(environment: str, path: Path, select: list[str], as_json: 
                 continue
             if not model.checks and not compiled.python_checks.get(name):
                 continue
-            if model.is_terminal:  # terminal table/file has no managed table to check
-                continue
+            if model.materialise == "file" or (model.is_terminal and environment not in model.environments):
+                continue  # a file has no queryable table; a table not delivered in this env has nothing to re-check
             snapshot = snapshots.get((name, promoted.get(name, "")))
             if snapshot is None:  # declared but never promoted here: nothing to check against
                 skipped.append(name)
@@ -964,8 +969,9 @@ async def _checks_run(environment: str, path: Path, select: list[str], as_json: 
             # the SNAPSHOT's engine, not the compiled model's: an engine re-pin since
             # the last promote means the promoted table still lives on the old engine
             engine = engines_registry.require(snapshot.engine, model=name)
+            check_table = target_ref(model.target or "") if model.materialise == "table" else snapshot.physical_table
             results = await run_checks(
-                model, compiled, engine, snapshot.physical_table, compiled.python_checks.get(name, ()), physical
+                model, compiled, engine, check_table, compiled.python_checks.get(name, ()), physical
             )
             if results:
                 await state.record_check_results(environment, snapshot.fingerprint, results)
@@ -1338,4 +1344,8 @@ def _render(plan: Plan, environment: str) -> None:
 
 
 def main() -> None:
-    app()
+    try:
+        app()
+    except InterlaceError as exc:  # expected, user-facing errors: one clean line, no traceback
+        err_console.print(f"[red]error:[/red] {exc.message}")
+        raise SystemExit(1) from None

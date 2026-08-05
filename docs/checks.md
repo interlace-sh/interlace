@@ -5,6 +5,10 @@ error-severity failure blocks promotion; a warning is recorded but doesn't block
 are stored in the state store (`check_results`) and surfaced by `interlace checks list`,
 `GET /checks`, and the UI Checks view.
 
+Checks apply to `virtual`/`view` models (against the snapshot) and to a terminal `table`
+(against the delivered external table — they're skipped in an environment the model doesn't
+deliver to). A `materialise: file` has no queryable relation, so it can't carry checks.
+
 Each check compiles to a SQL query returning a single `failures` count; `failures = 0` is a
 pass. Two families:
 

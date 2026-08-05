@@ -155,9 +155,9 @@ def test_run_rejects_bad_iso_window(tmp_path: Path) -> None:
     assert "ISO timestamp" in result.output
 
 
-def test_sink_declaring_checks_is_rejected_at_compile(tmp_path: Path) -> None:
-    """A terminal table/file has no managed table to check — declaring checks on one
-    is a definition error, not a silent skip."""
+def test_file_declaring_checks_is_rejected_at_compile(tmp_path: Path) -> None:
+    """A materialise: file has no queryable table to check — declaring checks on one
+    is a definition error, not a silent skip (a materialise: table can carry checks)."""
     project = tmp_path / "proj"
     (project / "models").mkdir(parents=True)
     (project / "interlace.yaml").write_text("name: gate\n")
@@ -168,4 +168,4 @@ def test_sink_declaring_checks_is_rejected_at_compile(tmp_path: Path) -> None:
     )
     result = runner.invoke(app, ["plan", "--path", str(project)])
     assert result.exit_code != 0
-    assert "declare them on the model it selects from" in str(result.exception or result.output)
+    assert "no queryable table to check" in str(result.exception or result.output)

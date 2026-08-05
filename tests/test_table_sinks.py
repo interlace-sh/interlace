@@ -278,3 +278,34 @@ async def test_wide_window_range_warns(env: tuple[DuckDBAdapter, SqliteStateStor
     compiled = compile_models([_incr("ext.main.wide")])
     plan = await run_plan(compiled, "prod", store, start=datetime(2020, 1, 1), end=datetime(2024, 1, 1), restate=True)
     assert any("push" in w and "windows" in w for w in plan.warnings)
+
+
+async def test_table_checks_gate_delivery(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A materialise: table model can carry checks — they run against the delivered
+    external table and gate promotion (a failing error-severity check fails the apply)."""
+    from interlace.checks.spec import CheckSpec
+    from interlace.exceptions import CheckError
+
+    engine, store = env
+    check = (CheckSpec(type="not_null", columns=("id",), severity="error", params={}),)
+
+    good = compile_models(
+        [ModelDef(name="push", sql="SELECT 1 AS id", materialise="table", target="ext.main.checked", checks=check)]
+    )
+    result = await apply(await diff(good, "prod", store), compiled=good, engine=engine, state=store)
+    assert result.built == ["push"]
+    assert result.checks and all(not o.blocking for o in result.checks)  # ran + passed against the external table
+
+    bad = compile_models(
+        [
+            ModelDef(
+                name="push2",
+                sql="SELECT CAST(NULL AS INTEGER) AS id",
+                materialise="table",
+                target="ext.main.badcheck",
+                checks=check,
+            )
+        ]
+    )
+    with pytest.raises(CheckError):  # failing check gates: apply raises, environment not promoted
+        await apply(await diff(bad, "prod", store), compiled=bad, engine=engine, state=store)

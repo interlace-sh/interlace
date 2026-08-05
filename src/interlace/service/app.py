@@ -44,6 +44,7 @@ from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.project import Project
 from interlace.service.auth import auth_guard
+from interlace.sinks import target_ref
 from interlace.state.snapshot import ChangeCategory
 from interlace.streaming.log import Event
 from interlace.streaming.materializer import (
@@ -1137,7 +1138,9 @@ async def post_checks_run(state: State, data: RunChecksRequest | None = None) ->
     for name, model in compiled.models.items():
         if chosen is not None and name not in chosen:
             continue
-        if (not model.checks and not compiled.python_checks.get(name)) or model.is_terminal:
+        if (not model.checks and not compiled.python_checks.get(name)) or model.materialise == "file":
+            continue
+        if model.is_terminal and env not in model.environments:  # a table not delivered here has nothing to re-check
             continue
         snapshot = snapshots.get((name, promoted.get(name, "")))
         if snapshot is None:
@@ -1146,9 +1149,8 @@ async def post_checks_run(state: State, data: RunChecksRequest | None = None) ->
         # the SNAPSHOT's engine, not the compiled model's: an engine re-pin since
         # the last promote means the promoted table still lives on the old engine
         engine = state.engines.require(snapshot.engine, model=name)
-        results = await run_checks(
-            model, compiled, engine, snapshot.physical_table, compiled.python_checks.get(name, ()), physical
-        )
+        check_table = target_ref(model.target or "") if model.materialise == "table" else snapshot.physical_table
+        results = await run_checks(model, compiled, engine, check_table, compiled.python_checks.get(name, ()), physical)
         if results:
             await state.store.record_check_results(env, snapshot.fingerprint, results)
         for outcome in results:

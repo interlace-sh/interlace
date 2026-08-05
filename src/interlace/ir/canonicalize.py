@@ -20,7 +20,13 @@ def parse(sql: str, dialect: str = "duckdb") -> exp.Expression:
     try:
         parsed = sqlglot.parse_one(sql, dialect=dialect)
     except Exception as exc:  # sqlglot raises ParseError and friends
-        raise CompilationError(f"failed to parse SQL ({dialect})", details={"sql": sql, "error": str(exc)}) from exc
+        # sqlglot's str() is a multi-line, ANSI-highlighted snippet; the first line
+        # ("Expecting ). Line 7, Col: 56.") is the actionable summary. Keep the full
+        # text in details for the API/event log; surface the summary in the message.
+        summary = next((line for line in str(exc).splitlines() if line.strip()), exc.__class__.__name__)
+        raise CompilationError(
+            f"failed to parse SQL ({dialect}): {summary}", details={"sql": sql, "error": str(exc)}
+        ) from exc
     if parsed is None:
         raise CompilationError("empty SQL statement", details={"sql": sql})
     return parsed

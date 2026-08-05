@@ -43,6 +43,7 @@ from interlace.ir.relation import TableRef
 _DUCKDB_CAPS = EngineCaps(
     supports_create_or_replace=True,
     supports_star_exclude=True,
+    supports_merge=True,  # MERGE INTO ... (DuckDB >= 1.3)
 )
 
 

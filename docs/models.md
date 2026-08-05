@@ -14,7 +14,7 @@ becomes an edge). Config rides in a leading comment block:
 ```sql
 /* interlace:
   materialise: table
-  strategy: merge_by_key
+  strategy: merge
   key: order_id
   checks:
     - not_null: order_id
@@ -32,7 +32,7 @@ Arrow); a schema-qualified upstream `raw.orders` is also addressable as `raw_ord
 ```python
 from interlace import model
 
-@model(depends_on=("raw.orders",), strategy="merge_by_key", key=("order_id",))
+@model(depends_on=("raw.orders",), strategy="merge", key=("order_id",))
 def orders(raw_orders):
     table = raw_orders.table()
     return table  # pyarrow.Table
@@ -73,7 +73,7 @@ for tenant in get_tenants():
     REGISTRY.register_model(ModelDef(
         name=f"orders_{tenant}",
         sql=f"SELECT order_id, amount FROM raw WHERE tenant_id = '{tenant}'",
-        strategy="merge_by_key", key=("order_id",),
+        strategy="merge", key=("order_id",),
     ))
 ```
 
@@ -89,7 +89,7 @@ from interlace import model
 import pyarrow.compute as pc
 
 def make(tenant):
-    @model(name=f"orders_{tenant}", depends_on=("raw",), strategy="merge_by_key", key=("order_id",))
+    @model(name=f"orders_{tenant}", depends_on=("raw",), strategy="merge", key=("order_id",))
     def _orders(raw, tenant=tenant):          # bind tenant HERE, not via the loop variable
         t = raw.table()
         return t.filter(pc.equal(t["tenant_id"], tenant))
@@ -145,7 +145,7 @@ Every key below is settable in the SQL comment block or as a `@model(...)` argum
 |---|---|---|---|
 | `name` | str | filename / fn name | Model identifier. |
 | `materialise` | str | `virtual` | `virtual` \| `view` \| `ephemeral` (interlace-owned) \| `table` \| `file` (terminal). |
-| `strategy` | str | `full` | For `virtual`/`table`: `full` \| `merge_by_key` \| `full_merge` \| `incremental_by_time` \| `scd_type_2`; `append` is `table`-only. `file` is overwrite (`full`). |
+| `strategy` | str | `full` | For `virtual`/`table`: `full` \| `merge` \| `full_merge` \| `incremental_by_time` \| `scd`; `append` is `table`-only. `file` is overwrite (`full`). |
 | `key` | str \| list | — | Key column(s) for keyed strategies. |
 | `time_column` | str | — | Partition column for `incremental_by_time`. |
 | `interval` | str | — | Grain for `incremental_by_time` (e.g. `1d`, `1h`). |

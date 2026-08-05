@@ -141,7 +141,7 @@ async def test_python_model_supports_keyed_strategies(env: tuple[DuckDBAdapter, 
     def keyed(raw: RelationHandle) -> pa.Table:
         return raw.table()
 
-    keyed_model = ModelDef(name="keyed", fn=keyed, depends_on=("raw",), strategy="merge_by_key", key=("id",))
+    keyed_model = ModelDef(name="keyed", fn=keyed, depends_on=("raw",), strategy="merge", key=("id",))
     await _build(env, [RAW, keyed_model])
     rows = await _rows(env[0], "SELECT id FROM dev__main.keyed ORDER BY id")
     assert [row["id"] for row in rows] == [1, 2, 3]
@@ -158,7 +158,7 @@ async def test_python_scd2_model_survives_reruns(env: tuple[DuckDBAdapter, Sqlit
         table = raw.table()
         return table.append_column("tier", pa.array([state["tier"]] * table.num_rows))
 
-    model = ModelDef(name="dim", fn=dim, depends_on=("raw",), strategy="scd_type_2", key=("id",))
+    model = ModelDef(name="dim", fn=dim, depends_on=("raw",), strategy="scd", key=("id",))
     await _build(env, [RAW, model])
 
     state["tier"] = "silver"  # every key changes: old versions close, new ones open

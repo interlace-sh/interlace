@@ -12,10 +12,21 @@ plane, and the old `export:` block is gone. Two planes:
   `target: <alias>.<schema>.<table>`) and `file` (`path:` + `format:`). No snapshot table,
   no environment view; environment-gated; additive schema evolution only, never dropped.
 
-Strategies now apply across both planes. `full` rewrites an owned table
+Strategies now apply across both planes, and carry short, plain names: `replace` (was
+`full`), `merge` (was `merge_by_key`), `scd` (was `scd_type_2`); `full_merge`, `append`,
+`incremental_by_time` and `view` unchanged. `replace` rewrites an owned table
 (`CREATE OR REPLACE`) but replaces an external one in place (DELETE all + INSERT, never
 drops); new `append` strategy (external `table`); `incremental_by_time` now works **into an
 external table** (windowed DELETE + INSERT), which the old `export:` sink could not do.
+
+- **`merge` upserts with a native `MERGE`** on engines that support it (DuckDB ≥ 1.3,
+  Postgres ≥ 15) when the target's column list is known — rows update in place, so surrogate
+  ids, out-of-query columns and row identity survive and `UPDATE` triggers fire. Falls back
+  to the portable `DELETE`+`INSERT` (which keeps the exact insert/update split) otherwise. The
+  source is not deduplicated: a duplicate key surfaces the engine's cardinality error.
+- **`scd` takes an optional `time_column`** — validity windows then use the event timestamp
+  (a new version's `_valid_from`, and the closed version's `_valid_to`, abut on the event
+  time) instead of processing time. `scd` keys may be composite.
 
 **Migration.**
 
@@ -103,7 +114,7 @@ breaking-change gate; virtual environments as views over immutable snapshot
 tables (production is the unprefixed namespace, sandboxes are prefixed);
 column-pruned rebuild skipping — a semantic change invalidates only consumers
 of the touched columns; `--forward-only` copy-on-write for history-keeping
-strategies (full, merge_by_key, full_merge, scd_type_2, incremental_by_time
+strategies (full, merge, full_merge, scd, incremental_by_time
 with an interval ledger). Data-quality checks gate promotion.
 
 **Orchestration.** Built-in scheduler (cron/interval) over a durable run queue
@@ -184,7 +195,7 @@ Initial release of Interlace — a Python/SQL-first data pipeline framework.
 - Dynamic parallel execution engine with per-task DuckDB connections
 - Cursor-based backfill with `--since` / `--until` CLI flags
 
-**Strategies:** replace, append, merge_by_key, scd_type_2, none
+**Strategies:** replace, append, merge, scd, none
 
 **Materialisation:** table, view, ephemeral
 

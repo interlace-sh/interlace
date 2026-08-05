@@ -28,12 +28,12 @@ def test_model_registers_with_function_name_by_default() -> None:
 
 
 def test_model_explicit_name_and_key_normalisation() -> None:
-    @model(name="silver.orders", strategy="merge_by_key", key="order_id")
+    @model(name="silver.orders", strategy="merge", key="order_id")
     def _build() -> None: ...
 
     definition = REGISTRY.models["silver.orders"]
     assert definition.key == ("order_id",)
-    assert definition.strategy == "merge_by_key"
+    assert definition.strategy == "merge"
 
 
 def test_duplicate_model_raises() -> None:

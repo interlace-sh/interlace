@@ -38,8 +38,10 @@ async def test_apply_builds_dependency_chain_and_env_views(env: tuple[DuckDBAdap
 
 
 async def test_apply_reports_row_counts(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
-    """Each strategy interprets the engine's affected-row counts: full = inserted,
-    merge_by_key = updated (re-keyed) vs inserted (new), scd2 = closed vs new versions."""
+    """Each strategy interprets the engine's affected-row counts: replace = inserted,
+    merge = a single combined written count on the native-MERGE path (DuckDB), scd =
+    closed vs new versions. The merge insert/update split lives on the DELETE+INSERT
+    fallback (see test_strategies)."""
     from dataclasses import replace as dc_replace
 
     from interlace.plan.run import run_plan
@@ -50,8 +52,8 @@ async def test_apply_reports_row_counts(env: tuple[DuckDBAdapter, SqliteStateSto
     await engine.execute_sql("CREATE TABLE raw.src AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, v)")
     models = [
         sql_model("plain", "SELECT id, v FROM raw.src"),
-        sql_model("merged", "SELECT id, v FROM raw.src", strategy="merge_by_key", key=("id",)),
-        sql_model("dim", "SELECT id, v FROM raw.src", strategy="scd_type_2", key=("id",)),
+        sql_model("merged", "SELECT id, v FROM raw.src", strategy="merge", key=("id",)),
+        sql_model("dim", "SELECT id, v FROM raw.src", strategy="scd", key=("id",)),
     ]
     project = compile_models(models)
     result = await apply(await diff(project, "dev", store), compiled=project, engine=engine, state=store)
@@ -64,7 +66,7 @@ async def test_apply_reports_row_counts(env: tuple[DuckDBAdapter, SqliteStateSto
     await engine.execute_sql("INSERT INTO raw.src VALUES (3, 'c')")
     rerun = await apply(await run_plan(project, "dev", store), compiled=project, engine=engine, state=store)
     assert rerun.rows["plain"] == RowCounts(inserted=3)  # full refresh rewrites everything
-    assert rerun.rows["merged"] == RowCounts(inserted=1, updated=2)  # keys 1+2 re-merged, 3 new
+    assert rerun.rows["merged"] == RowCounts(inserted=3)  # native MERGE: one combined written count (2 upsert + 1 new)
     assert rerun.rows["dim"] == RowCounts(inserted=2, updated=1)  # id=2 closed + reopened, id=3 new
     assert dc_replace(rerun.rows["dim"], updated=0)  # smoke: RowCounts is a plain dataclass
 
@@ -123,16 +125,16 @@ async def test_view_materialisation(env: tuple[DuckDBAdapter, SqliteStateStore])
     assert await _rows(engine, "SELECT n FROM main.answer") == [{"n": 42}]
 
 
-async def test_merge_by_key_upserts_across_runs(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+async def test_merge_upserts_across_runs(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     # Drives the strategy + atomic execute_all directly (as a scheduled re-run would),
     # since the differ only re-runs a model when its definition changes.
     from interlace.engines.base import EngineCaps
     from interlace.ir.relation import SqlRelation, TableRef
-    from interlace.strategies import MergeByKey
+    from interlace.strategies import Merge
 
     engine, _ = env
     target = TableRef(schema="main", name="dim")
-    strategy = MergeByKey(("id",))
+    strategy = Merge(("id",))
     caps = EngineCaps(supports_create_or_replace=True)
 
     def relation(sql: str) -> SqlRelation:
@@ -159,7 +161,7 @@ async def test_merge_by_key_upserts_across_runs(env: tuple[DuckDBAdapter, Sqlite
 async def test_apply_merge_model_first_build(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     project = compile_models(
-        [sql_model("dim", "SELECT * FROM (VALUES (1, 'a')) v(id, name)", strategy="merge_by_key", key=("id",))]
+        [sql_model("dim", "SELECT * FROM (VALUES (1, 'a')) v(id, name)", strategy="merge", key=("id",))]
     )
     await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
     assert await _rows(engine, "SELECT id, name FROM main.dim") == [{"id": 1, "name": "a"}]

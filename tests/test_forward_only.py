@@ -34,7 +34,7 @@ async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateS
 
 
 def _dim(sql: str) -> ModelDef:
-    return ModelDef(name="dim", sql=sql, strategy="scd_type_2", key=("id",))
+    return ModelDef(name="dim", sql=sql, strategy="scd", key=("id",))
 
 
 async def _apply(env: tuple[DuckDBAdapter, SqliteStateStore], model: ModelDef, *, forward_only: bool = False):
@@ -192,7 +192,7 @@ async def test_forward_only_check_failure_leaves_production_untouched(
     v2 = ModelDef(
         name="dim",
         sql="SELECT id, name, 'banned' AS tier FROM raw.customers",  # every tier changes...
-        strategy="scd_type_2",
+        strategy="scd",
         key=("id",),
         checks=parse_checks([{"accepted_values": {"column": "tier", "values": ["gold", "silver"]}}], "dim"),
     )

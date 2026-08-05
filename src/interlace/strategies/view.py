@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from sqlglot import exp
 
 from interlace.engines.base import EngineCaps
@@ -19,6 +21,7 @@ class View(Strategy):
         target: TableRef,
         caps: EngineCaps,
         interval: Interval | None = None,
+        columns: Sequence[str] | None = None,
     ) -> list[exp.Expression]:
         view = table_expr(target)
         if caps.supports_create_or_replace:

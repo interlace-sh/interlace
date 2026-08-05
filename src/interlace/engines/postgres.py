@@ -5,9 +5,9 @@ dialect and run over one ADBC connection; results come back as Arrow and bulk
 loads go in via ``adbc_ingest`` — columnar end to end, no row-format hop.
 
 Capability honesty drives the strategy fallbacks: Postgres has no
-``CREATE OR REPLACE TABLE`` (FullRefresh falls back to DROP+CREATE) and no
-star-EXCLUDE projection (scd_type_2 refuses with a clear error). ``merge_by_key``
-and ``full_merge`` are portable by construction (DELETE+INSERT / set difference).
+``CREATE OR REPLACE TABLE`` (Replace falls back to DROP+CREATE) and no
+star-EXCLUDE projection (scd refuses with a clear error). ``merge`` upserts with a
+native ``MERGE``; ``full_merge`` is portable by construction (set difference).
 
 The ADBC connection is synchronous: calls run in a worker thread behind a lock
 (one statement at a time per engine — remote engines parallelise internally).
@@ -30,7 +30,8 @@ from interlace.ir.relation import TableRef
 
 _POSTGRES_CAPS = EngineCaps(
     supports_create_or_replace=False,  # no CREATE OR REPLACE TABLE -> DROP+CREATE fallback
-    supports_star_exclude=False,  # no SELECT * EXCLUDE -> scd_type_2 unsupported for now
+    supports_star_exclude=False,  # no SELECT * EXCLUDE -> scd unsupported for now
+    supports_merge=True,  # MERGE ... (PostgreSQL >= 15)
 )
 
 

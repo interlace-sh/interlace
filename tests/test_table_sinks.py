@@ -1,5 +1,5 @@
 """Terminal `materialise: table` (reverse ETL): deliver a model's result into an
-attached database with full(replace) / append / merge_by_key / full_merge /
+attached database with full(replace) / append / merge / full_merge /
 incremental_by_time — never dropping the live table."""
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ async def env(tmp_path: Path) -> AsyncIterator[tuple[DuckDBAdapter, SqliteStateS
     engine.close()
 
 
-def _table(sql: str, target: str, strategy: str = "full", key: tuple[str, ...] = ()) -> ModelDef:
+def _table(sql: str, target: str, strategy: str = "replace", key: tuple[str, ...] = ()) -> ModelDef:
     return ModelDef(name="push", sql=sql, materialise="table", target=target, strategy=strategy, key=key)
 
 
@@ -42,7 +42,7 @@ async def _apply(
     env: tuple[DuckDBAdapter, SqliteStateStore],
     sql: str,
     target: str,
-    strategy: str = "full",
+    strategy: str = "replace",
     key: tuple[str, ...] = (),
 ) -> None:
     engine, store = env
@@ -56,11 +56,9 @@ def _values(rows: str) -> str:
 
 def test_config_validation() -> None:
     with pytest.raises(DefinitionError, match="did you mean materialise: virtual"):
-        validate_materialise("m", materialise="table", strategy="full", target=None, path=None, format=None, key=())
+        validate_materialise("m", materialise="table", strategy="replace", target=None, path=None, format=None, key=())
     with pytest.raises(DefinitionError, match="requires key"):
-        validate_materialise(
-            "m", materialise="table", strategy="merge_by_key", target="ext.t", path=None, format=None, key=()
-        )
+        validate_materialise("m", materialise="table", strategy="merge", target="ext.t", path=None, format=None, key=())
     with pytest.raises(DefinitionError, match="append requires materialise: table"):
         validate_materialise("m", materialise="virtual", strategy="append", target=None, path=None, format=None, key=())
 
@@ -90,10 +88,10 @@ async def test_append_accumulates(env: tuple[DuckDBAdapter, SqliteStateStore]) -
     assert [r["id"] for r in await _rows(engine, "SELECT id FROM ext.main.log ORDER BY id")] == [1, 2]
 
 
-async def test_merge_by_key_upserts(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+async def test_merge_upserts(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, _ = env
-    await _apply(env, _values("(1, 'a'), (2, 'b')"), "ext.main.accounts", "merge_by_key", ("id",))
-    await _apply(env, _values("(2, 'B'), (3, 'c')"), "ext.main.accounts", "merge_by_key", ("id",))
+    await _apply(env, _values("(1, 'a'), (2, 'b')"), "ext.main.accounts", "merge", ("id",))
+    await _apply(env, _values("(2, 'B'), (3, 'c')"), "ext.main.accounts", "merge", ("id",))
 
     assert await _rows(engine, "SELECT id, v FROM ext.main.accounts ORDER BY id") == [
         {"id": 1, "v": "a"},
@@ -171,8 +169,8 @@ async def test_reordered_columns_land_by_name(env: tuple[DuckDBAdapter, SqliteSt
 
 async def test_merge_evolves_added_column(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, _ = env
-    await _apply(env, _values("(1, 'a'), (2, 'b')"), "ext.main.members", "merge_by_key", ("id",))
-    await _apply(env, "SELECT 2 AS id, 'B' AS v, 'gold' AS tier", "ext.main.members", "merge_by_key", ("id",))
+    await _apply(env, _values("(1, 'a'), (2, 'b')"), "ext.main.members", "merge", ("id",))
+    await _apply(env, "SELECT 2 AS id, 'B' AS v, 'gold' AS tier", "ext.main.members", "merge", ("id",))
 
     assert await _rows(engine, "SELECT id, v, tier FROM ext.main.members ORDER BY id") == [
         {"id": 1, "v": "a", "tier": None},
@@ -190,7 +188,7 @@ async def test_project_attach_reaches_external_database(tmp_path: Path) -> None:
     (project_dir / "models").mkdir(parents=True)
     (project_dir / "interlace.yaml").write_text("name: attach_demo\ndatabase: ':memory:'\nattach:\n  crm: crm.duckdb\n")
     (project_dir / "models" / "push.sql").write_text(
-        "/* interlace: {materialise: table, target: crm.main.contacts, strategy: merge_by_key, key: id} */\n"
+        "/* interlace: {materialise: table, target: crm.main.contacts, strategy: merge, key: id} */\n"
         "SELECT 1 AS id, 'ada' AS name"
     )
 

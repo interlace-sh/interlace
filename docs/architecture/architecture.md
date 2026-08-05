@@ -70,10 +70,10 @@ class EngineAdapter(ABC):
 ```
 
 `EngineCaps` carries only the flags strategies actually branch on today —
-`supports_create_or_replace` and `supports_star_exclude` (the latter for `scd_type_2`'s
+`supports_create_or_replace` and `supports_star_exclude` (the latter for `scd`'s
 `SELECT * EXCLUDE`). Both default off (conservative). Adapters set what their engine
 supports; strategies degrade accordingly. (Broader capability flags — e.g. native
-`MERGE` detection — are not modelled: `merge_by_key` currently emits its statement
+`MERGE` detection — are not modelled: `merge` currently emits its statement
 sequence unconditionally.)
 
 ### 2.3 `Snapshot` — versioned model state (sqlmesh, adopted)
@@ -113,10 +113,10 @@ class Strategy(ABC):
         """Return canonical-dialect ASTs. The adapter transpiles. NEVER returns strings."""
 ```
 
-Built-ins: `full`, `view`, `ephemeral` (AST-spliced as a CTE into consumers at compile
+Built-ins: `replace`, `view`, `ephemeral` (AST-spliced as a CTE into consumers at compile
 time), `incremental_by_time` (interval predicate injected as an AST filter),
-`merge_by_key` and `full_merge` (keyed upsert built from `exp` constructors), and
-`scd_type_2` (update-expire + insert-new sequence). Strategies build canonical ASTs and
+`merge` and `full_merge` (keyed upsert built from `exp` constructors), and
+`scd` (update-expire + insert-new sequence). Strategies build canonical ASTs and
 consult `EngineCaps` for the fallbacks they actually need; the adapter transpiles.
 
 ### 2.6 `Trigger` — scheduling
@@ -151,7 +151,7 @@ A Python model's function parameters name its upstream models; each is passed a 
 exactly two accessors:
 
 ```python
-@model(strategy="merge_by_key", key="order_id")  # materialise defaults to virtual
+@model(strategy="merge", key="order_id")  # materialise defaults to virtual
 def enriched_orders(raw_orders, fx_rates, cursor=None, this=None):
     for batch in raw_orders.reader():      # bounded-memory single-pass Arrow batches
         yield transform(batch)
@@ -164,7 +164,7 @@ def enriched_orders(raw_orders, fx_rates, cursor=None, this=None):
   frames are opt-in extras a user pulls from `handle.table()` themselves.
 - **Return value:** a `pyarrow.Table`, `RecordBatchReader`, `RecordBatch`, or an
   iterable/generator of `RecordBatch` (generators stream with bounded memory). The sink
-  loads it via `adapter.load()` — directly for `full`, or via a stage table for keyed
+  loads it via `adapter.load()` — directly for `replace`, or via a stage table for keyed
   strategies. Returning a sqlglot expression is **not** supported: to stay on the
   logical plane, write an SQL model. Sync functions run in a worker thread
   (`asyncio.to_thread`); async functions run on the event loop.
@@ -354,10 +354,10 @@ to `strategy` (*how* it is written):
   environment view** — it is a side-effecting delivery.
 
 **Strategies are destination-agnostic.** The accumulating strategies
-(`merge_by_key`/`full_merge`/`incremental_by_time`/`scd_type_2`) are `CREATE IF NOT EXISTS` +
+(`merge`/`full_merge`/`incremental_by_time`/`scd`) are `CREATE IF NOT EXISTS` +
 surgical `DELETE`/`UPDATE`/`INSERT` and run identically against an owned `virtual` table or an
-external `table`. Only `full` differs by ownership: it rewrites the owned table
-(`CREATE OR REPLACE` → `FullRefresh`) but empties an external one in place (DELETE all +
+external `table`. Only `replace` differs by ownership: it rewrites the owned table
+(`CREATE OR REPLACE` → `Replace`) but empties an external one in place (DELETE all +
 INSERT → `ReplaceInPlace`), which **never drops it**, so grants and readers survive. `append`
 is external-only. `view` is virtual-only. `resolve_strategy(materialise, strategy, …)` is the
 single dispatch; `plan.apply` routes a terminal build to `_deliver_table` (stage → align →
@@ -665,7 +665,7 @@ src/interlace/
   plan/        # differ (sqlglot.diff + classification), plan, apply, run
   engines/     # base (EngineAdapter, EngineCaps); duckdb (+ DuckLake), postgres (ADBC),
                #   quack, registry (named engines, lazy open)
-  strategies/  # full, view, full_merge, incremental_by_time, merge_by_key, scd_type_2
+  strategies/  # full, view, full_merge, incremental_by_time, merge, scd
   checks/      # built-in check types + @check decorator — results gate promotion
   scheduler/   # triggers (cron/interval), engine (TriggerEngine), worker (leases/retries/cancel)
   runtime/     # execution context for Python models (Arrow handles)

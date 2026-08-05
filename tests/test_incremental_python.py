@@ -88,7 +88,7 @@ async def test_full_merge_rerun_over_identical_data_is_a_noop(env: Env) -> None:
 # --- Python models with keyed strategies ----------------------------------------
 
 
-async def test_python_merge_by_key_accumulates_across_runs(env: Env) -> None:
+async def test_python_merge_accumulates_across_runs(env: Env) -> None:
     engine, _ = env
     batches = iter(
         [
@@ -100,7 +100,7 @@ async def test_python_merge_by_key_accumulates_across_runs(env: Env) -> None:
     def extract() -> pa.Table:
         return next(batches)
 
-    events = ModelDef(name="events", fn=extract, strategy="merge_by_key", key=("id",))
+    events = ModelDef(name="events", fn=extract, strategy="merge", key=("id",))
     compiled = await _initial(env, [events])
     await _rerun(env, compiled, "events")
     assert await _rows(engine, "SELECT * FROM dev__main.events ORDER BY id") == [
@@ -132,7 +132,7 @@ async def test_python_merge_evolves_additive_columns(env: Env) -> None:
             pa.table({"id": [2], "val": ["b"], "extra": [42]}),  # API grew a field
         ]
     )
-    events = ModelDef(name="events", fn=lambda: next(batches), strategy="merge_by_key", key=("id",))
+    events = ModelDef(name="events", fn=lambda: next(batches), strategy="merge", key=("id",))
     compiled = await _initial(env, [events])
     await _rerun(env, compiled, "events")
     assert await _rows(engine, "SELECT * FROM dev__main.events ORDER BY id") == [
@@ -149,7 +149,7 @@ async def test_python_merge_null_fills_vanished_columns(env: Env) -> None:
             pa.table({"id": [2], "val": ["b"]}),  # API dropped a field
         ]
     )
-    events = ModelDef(name="events", fn=lambda: next(batches), strategy="merge_by_key", key=("id",))
+    events = ModelDef(name="events", fn=lambda: next(batches), strategy="merge", key=("id",))
     compiled = await _initial(env, [events])
     await _rerun(env, compiled, "events")
     assert await _rows(engine, "SELECT * FROM dev__main.events ORDER BY id") == [
@@ -171,7 +171,7 @@ async def test_cursor_is_none_then_resumes_from_the_warehouse_max(env: Env) -> N
             return pa.table({"id": [1, 2], "ts": [10, 20]})
         return pa.table({"id": [3], "ts": [cursor + 10]})
 
-    events = ModelDef(name="events", fn=extract, strategy="merge_by_key", key=("id",), cursor="ts")
+    events = ModelDef(name="events", fn=extract, strategy="merge", key=("id",), cursor="ts")
     compiled = await _initial(env, [events])
     await _rerun(env, compiled, "events")
     assert seen == [None, 20]
@@ -187,7 +187,7 @@ async def test_cursor_param_requires_declaration(env: Env) -> None:
         return pa.table({"id": [1]})
 
     with pytest.raises(DefinitionError, match="cursor"):
-        await _initial(env, [ModelDef(name="events", fn=extract, strategy="merge_by_key", key=("id",))])
+        await _initial(env, [ModelDef(name="events", fn=extract, strategy="merge", key=("id",))])
 
 
 async def test_this_exposes_the_previous_materialisation(env: Env) -> None:
@@ -199,7 +199,7 @@ async def test_this_exposes_the_previous_materialisation(env: Env) -> None:
         done = this.table().column("id").to_pylist()
         return pa.table({"id": [max(done) + 1]})
 
-    backfill = ModelDef(name="backfill", fn=extract, strategy="merge_by_key", key=("id",))
+    backfill = ModelDef(name="backfill", fn=extract, strategy="merge", key=("id",))
     compiled = await _initial(env, [backfill])
     await _rerun(env, compiled, "backfill")
     await _rerun(env, compiled, "backfill")
@@ -210,7 +210,7 @@ async def test_this_exposes_the_previous_materialisation(env: Env) -> None:
     ]
 
 
-async def test_cursor_works_with_full_strategy_too(env: Env) -> None:
+async def test_cursor_works_with_replace_strategy_too(env: Env) -> None:
     engine, _ = env
     seen: list[Any] = []
 
@@ -218,7 +218,7 @@ async def test_cursor_works_with_full_strategy_too(env: Env) -> None:
         seen.append(cursor)
         return pa.table({"id": [1], "ts": [99]})
 
-    events = ModelDef(name="events", fn=extract, cursor="ts")  # strategy=full
+    events = ModelDef(name="events", fn=extract, cursor="ts")  # strategy=replace
     compiled = await _initial(env, [events])
     await _rerun(env, compiled, "events")
     assert seen == [None, 99]

@@ -1,7 +1,7 @@
 /* interlace:
   materialise: table
   target: crm.main.customer_scores
-  strategy: merge_by_key
+  strategy: merge
   key: customer_id
   environments: [dev, prod]
 */

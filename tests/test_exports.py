@@ -27,12 +27,12 @@ def file_model(name: str, sql: str, fmt: str, path: str) -> ModelDef:
 
 
 def test_file_requires_path_and_format() -> None:
-    validate_materialise("m", materialise="file", strategy="full", target=None, path="x.csv", format="csv", key=())
+    validate_materialise("m", materialise="file", strategy="replace", target=None, path="x.csv", format="csv", key=())
     with pytest.raises(DefinitionError, match="needs a path"):
-        validate_materialise("m", materialise="file", strategy="full", target=None, path=None, format="csv", key=())
+        validate_materialise("m", materialise="file", strategy="replace", target=None, path=None, format="csv", key=())
     with pytest.raises(DefinitionError, match="needs format"):
-        validate_materialise("m", materialise="file", strategy="full", target=None, path="x", format=None, key=())
-    with pytest.raises(DefinitionError, match="only strategy: full"):
+        validate_materialise("m", materialise="file", strategy="replace", target=None, path="x", format=None, key=())
+    with pytest.raises(DefinitionError, match="only strategy: replace"):
         validate_materialise("m", materialise="file", strategy="append", target=None, path="x", format="csv", key=())
 
 

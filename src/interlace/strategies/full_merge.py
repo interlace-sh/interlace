@@ -14,7 +14,7 @@ no column list or row hash needed (EXCEPT *is* the hash):
 An unchanged row appears in no difference, so a run over identical data writes
 nothing — on snapshotting stores (DuckLake) that means no new files. Keys must
 be non-NULL (a NULL key never compares equal, so it would churn every run).
-Duplicate source rows collapse via EXCEPT's distinct semantics, like scd_type_2.
+Duplicate source rows collapse via EXCEPT's distinct semantics, like scd.
 apply runs the statements atomically.
 """
 
@@ -46,6 +46,7 @@ class FullMerge(Strategy):
         target: TableRef,
         caps: EngineCaps,
         interval: Interval | None = None,
+        columns: Sequence[str] | None = None,
     ) -> list[exp.Expression]:
         query = relation.ast
         table = table_expr(target)

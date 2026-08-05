@@ -70,18 +70,18 @@ snapshot table and no environment view. Terminal models are **environment-gated*
 /* interlace:
   materialise: table
   target: crm.main.customer_scores
-  strategy: merge_by_key
+  strategy: merge
   key: customer_id
 */
 SELECT customer_id, score FROM customer_value
 ```
 
 - **`materialise: file`** — `format: parquet | csv | json` + `path`, written via DuckDB
-  `COPY` (overwrite; `strategy: full`).
+  `COPY` (overwrite; `strategy: replace`).
 - **`materialise: table` (reverse ETL)** — `target: <alias>.<schema>.<table>` where `alias`
   is a database wired in via the project's `attach:` config (Postgres, SQLite, another
   DuckDB). `strategy` picks the delivery — the **same strategies as virtual models**, pointed
-  at the external table: `full` (DELETE all + INSERT — the live table is never dropped, so
-  grants and readers survive), `append`, `merge_by_key`, `full_merge`, `incremental_by_time`
-  (windowed DELETE + INSERT), and `scd_type_2`. The external table is only ever created,
+  at the external table: `replace` (DELETE all + INSERT — the live table is never dropped, so
+  grants and readers survive), `append`, `merge`, `full_merge`, `incremental_by_time`
+  (windowed DELETE + INSERT), and `scd`. The external table is only ever created,
   appended, or evolved additively — never dropped, and never mutated by a breaking change.

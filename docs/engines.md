@@ -19,16 +19,18 @@ DuckDB can ATTACH other databases for cross-engine reads.
 
 ## Capabilities
 
-Strategies adapt to two capability flags (`EngineCaps`):
+Strategies adapt to capability flags (`EngineCaps`):
 
 | Cap | DuckDB family | Postgres | Effect when absent |
 |---|---|---|---|
-| `supports_create_or_replace` | ✓ | ✗ | `full` falls back to `DROP` + `CREATE TABLE AS`. |
-| `supports_star_exclude` | ✓ | ✗ | `scd_type_2` is refused (it needs `SELECT * EXCLUDE(...)`). |
+| `supports_create_or_replace` | ✓ | ✗ | `replace` falls back to `DROP` + `CREATE TABLE AS`. |
+| `supports_star_exclude` | ✓ | ✗ | `scd` is refused (it needs `SELECT * EXCLUDE(...)`). |
+| `supports_merge` | ✓ | ✓ | `merge` uses a portable `DELETE`+`INSERT` instead of a native `MERGE`. |
 
-Everything else is portable by construction: keyed strategies use `DELETE`+`INSERT` (not a
-native `MERGE`), so `merge_by_key`, `full_merge`, and `incremental_by_time` run on Postgres
-too; `full` and `view` run everywhere. `scd_type_2` is DuckDB-family only.
+Everything else is portable by construction. `merge` upserts with a native `MERGE` on both
+DuckDB and Postgres (falling back to `DELETE`+`INSERT` when the column list isn't known or the
+engine lacks `MERGE`); `full_merge` and `incremental_by_time` run on Postgres too; `replace`
+and `view` run everywhere. `scd` is DuckDB-family only.
 
 ## Multi-engine and cross-engine transfers
 

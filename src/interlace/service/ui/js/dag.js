@@ -211,7 +211,7 @@ export function createDag(container, data, { onSelect } = {}) {
       const name = svg("text", { class: "name", x: 10, y: 19 });
       name.textContent = label.length > 21 ? label.slice(0, 20) + "…" : label;
       const meta = svg("text", { class: "meta", x: 10, y: 34 });
-      meta.textContent = `${model.output}${model.strategy && model.strategy !== "full" ? " · " + model.strategy : ""}${model.engine && model.engine !== "default" ? " · " + model.engine : ""}`;
+      meta.textContent = `${model.output}${model.strategy && model.strategy !== "replace" ? " · " + model.strategy : ""}${model.engine && model.engine !== "default" ? " · " + model.engine : ""}`;
       group.append(name, meta);
 
       const marks = [];

@@ -10,7 +10,7 @@ from interlace.engines.base import EngineCaps
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef
-from interlace.strategies import ScdType2, resolve_strategy
+from interlace.strategies import Scd, resolve_strategy
 
 pytestmark = pytest.mark.unit
 
@@ -26,7 +26,7 @@ def _source(rows: list[tuple[int, str, str]]) -> str:
     return f"SELECT * FROM (VALUES {values}) AS t (id, name, tier)"
 
 
-async def _run(engine: DuckDBAdapter, strategy: ScdType2, rows: list[tuple[int, str, str]]) -> None:
+async def _run(engine: DuckDBAdapter, strategy: Scd, rows: list[tuple[int, str, str]]) -> None:
     statements = strategy.plan_statements(_relation(_source(rows)), TARGET, engine.caps)
     await engine.execute_all(statements)
 
@@ -40,7 +40,7 @@ async def _state(engine: DuckDBAdapter) -> list[tuple]:
 
 async def test_scd2_lifecycle() -> None:
     engine = DuckDBAdapter.in_memory()
-    strategy = ScdType2(("id",))
+    strategy = Scd(("id",))
 
     # initial load: everything open
     await _run(engine, strategy, [(1, "ada", "gold"), (2, "bob", "silver")])
@@ -76,7 +76,7 @@ async def test_scd2_lifecycle() -> None:
 
 async def test_scd2_multi_column_key() -> None:
     engine = DuckDBAdapter.in_memory()
-    strategy = ScdType2(("id", "name"))
+    strategy = Scd(("id", "name"))
     await _run(engine, strategy, [(1, "ada", "gold"), (1, "ada2", "gold")])  # same id, distinct key
     await _run(engine, strategy, [(1, "ada", "platinum"), (1, "ada2", "gold")])
 
@@ -87,14 +87,55 @@ async def test_scd2_multi_column_key() -> None:
     engine.close()
 
 
+async def test_scd_event_time_windows_follow_the_data() -> None:
+    engine = DuckDBAdapter.in_memory()
+    strategy = Scd(("id",), time_column="ts")
+
+    def src(rows: list[tuple[int, str, str]]) -> SqlRelation:
+        values = ", ".join(f"({i}, '{tier}', '{ts}')" for i, tier, ts in rows)
+        return SqlRelation(ast=sqlglot.parse_one(f"SELECT * FROM (VALUES {values}) AS t (id, tier, ts)"))
+
+    await engine.execute_all(
+        strategy.plan_statements(src([(1, "gold", "2024-01-01"), (2, "silver", "2024-01-02")]), TARGET, engine.caps)
+    )
+    # id1 changes (event time 2024-02-01); id2 vanishes upstream; id3 is new (2024-02-03)
+    await engine.execute_all(
+        strategy.plan_statements(src([(1, "platinum", "2024-02-01"), (3, "bronze", "2024-02-03")]), TARGET, engine.caps)
+    )
+
+    reader = await engine.fetch_sql(
+        "SELECT id, tier, CAST(_valid_from AS VARCHAR) vf, CAST(_valid_to AS VARCHAR) vt "
+        "FROM main.dim_customers ORDER BY id, _valid_from"
+    )
+    rows = [tuple(r.values()) for r in reader.read_all().to_pylist()]
+    # a changed key's old version closes at exactly the succeeding version's event time; windows abut
+    assert (1, "gold", "2024-01-01 00:00:00", "2024-02-01 00:00:00") in rows
+    assert (1, "platinum", "2024-02-01 00:00:00", None) in rows
+    # id3 new + open, stamped with its own event time
+    assert (3, "bronze", "2024-02-03 00:00:00", None) in rows
+    # id2 vanished: no succeeding event, so closed at processing time (not a 2024 event time)
+    (id2,) = [r for r in rows if r[0] == 2]
+    assert id2[3] is not None and not id2[3].startswith("2024")
+    engine.close()
+
+
+def test_scd_event_time_statement_shape() -> None:
+    statements = Scd(("id",), time_column="ts").plan_statements(
+        _relation("SELECT 1 AS id, TIMESTAMP '2024-01-01' AS ts"), TARGET, EngineCaps(supports_star_exclude=True)
+    )
+    kinds = [type(s) for s in statements]
+    assert kinds == [exp.Create, exp.Update, exp.Update, exp.Insert]  # ensure, close_changed, close_vanished, insert
+    assert "_valid_to = CAST(_f.ts AS TIMESTAMP)" in statements[1].sql(dialect="duckdb")
+
+
 def test_resolver_and_validation() -> None:
-    assert isinstance(resolve_strategy("table", "scd_type_2", key=("id",)), ScdType2)
+    assert isinstance(resolve_strategy("table", "scd", key=("id",)), Scd)
     with pytest.raises(PlanError, match="requires a key"):
-        resolve_strategy("table", "scd_type_2")
+        resolve_strategy("table", "scd")
 
 
 def test_statements_shape() -> None:
-    statements = ScdType2(("id",)).plan_statements(
+    statements = Scd(("id",)).plan_statements(
         _relation("SELECT 1 AS id"), TARGET, EngineCaps(supports_star_exclude=True)
     )
     kinds = [type(s) for s in statements]

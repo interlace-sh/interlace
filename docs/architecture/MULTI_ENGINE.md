@@ -43,12 +43,12 @@ contacted.
 ## Binding models
 
 ```sql
-/* interlace: {engine: analytics, strategy: merge_by_key, key: id} */
+/* interlace: {engine: analytics, strategy: merge, key: id} */
 SELECT ...
 ```
 
 ```python
-@model(engine="pg", strategy="full")
+@model(engine="pg", strategy="replace")
 def dim_customers(...): ...
 ```
 
@@ -108,16 +108,16 @@ portable path when a capability is absent:
 
 | Cap | DuckDB family | Postgres |
 |---|---|---|
-| `supports_create_or_replace` | ✓ | ✗ → `FullRefresh` emits DROP + CREATE |
-| `supports_star_exclude` | ✓ | ✗ → `scd_type_2` refuses with a clear error |
+| `supports_create_or_replace` | ✓ | ✗ → `Replace` emits DROP + CREATE |
+| `supports_star_exclude` | ✓ | ✗ → `scd` refuses with a clear error |
 
 Everything else is portable by construction rather than gated by a flag: keyed strategies
 use DELETE+INSERT (not a native `MERGE`), Arrow ingest is `register` on DuckDB and
 `adbc_ingest` on Postgres, and cross-engine `ATTACH` is a DuckDB-only fast lane the transfer
 planner opportunistically uses (falling back to Arrow fetch→load).
 
-`full`, `view`, `merge_by_key`, `full_merge`, and `incremental_by_time` run on Postgres;
-`scd_type_2` is DuckDB-family-only until it grows a `describe()`-based projection.
+`replace`, `view`, `merge`, `full_merge`, and `incremental_by_time` run on Postgres;
+`scd` is DuckDB-family-only until it grows a `describe()`-based projection.
 
 ## Roadmap
 

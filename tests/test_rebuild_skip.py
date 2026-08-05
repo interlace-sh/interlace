@@ -304,7 +304,7 @@ async def test_strategy_change_with_same_sql_rebuilds_downstream(
     sql = "SELECT * FROM (VALUES (1, 10)) AS t (id, v)"
     v1 = [sql_model("up", sql), sql_model("down", "SELECT id FROM up")]
     await _apply(env, v1)
-    v2 = [sql_model("up", sql, strategy="merge_by_key", key=("id",)), sql_model("down", "SELECT id FROM up")]
+    v2 = [sql_model("up", sql, strategy="merge", key=("id",)), sql_model("down", "SELECT id FROM up")]
     _, result = await _apply(env, v2)
 
     assert set(result.built) == {"up", "down"}

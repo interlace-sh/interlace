@@ -43,7 +43,7 @@ class CompiledModel:
     physical_table: TableRef
     materialise: str
     strategy: str
-    key: tuple[str, ...]  # business key for keyed strategies (merge_by_key)
+    key: tuple[str, ...]  # business key for keyed strategies (merge)
     time_column: str | None  # partition column for incremental_by_time
     cursor: str | None  # column whose max is injected into a Python model's `cursor` param
     interval: str | None  # grain for incremental_by_time (e.g. "1d")

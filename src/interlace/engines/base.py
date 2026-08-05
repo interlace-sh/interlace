@@ -28,7 +28,8 @@ class EngineCaps:
     """Feature flags that drive strategy fallbacks. Conservative defaults (all off)."""
 
     supports_create_or_replace: bool = False
-    supports_star_exclude: bool = False  # SELECT * EXCLUDE (...) — scd_type_2 needs it
+    supports_star_exclude: bool = False  # SELECT * EXCLUDE (...) — scd needs it
+    supports_merge: bool = False  # native single-statement MERGE — merge upserts in place
 
 
 class EngineAdapter(ABC):

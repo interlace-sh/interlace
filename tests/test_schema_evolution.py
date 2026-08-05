@@ -42,7 +42,7 @@ def _model(batches: list[pa.Table]) -> ModelDef:
     def extract() -> pa.Table:
         return next(feed)
 
-    return ModelDef(name="events", fn=extract, strategy="merge_by_key", key=("id",))
+    return ModelDef(name="events", fn=extract, strategy="merge", key=("id",))
 
 
 async def _run_twice(env: Env, batches: list[pa.Table]) -> Any:

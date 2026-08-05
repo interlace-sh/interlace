@@ -3,25 +3,27 @@
 A model's `materialise` and `strategy` config decide **how its query result becomes a
 table**. Every strategy is an *AST builder*: given the model's resolved query, the target
 table, and the engine's capabilities, it emits a short list of SQL statements that `apply`
-runs **atomically** (one transaction, via `execute_all`). No strategy needs the model's
-column list — they are all column-agnostic, which is why a model's schema can change
-without hand-written migrations (a definition change simply mints a new snapshot table).
+runs **atomically** (one transaction, via `execute_all`). Strategies are column-agnostic —
+a model's schema can change without hand-written migrations (a definition change simply
+mints a new snapshot table). The one exception is `merge`'s native `MERGE`, which uses the
+target's column list (which `apply` already knows on the delivery paths) to build its `SET`
+clause, and falls back to a column-agnostic `DELETE`+`INSERT` when that list isn't available.
 
 The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strategy:
 
 | `materialise` | `strategy` | Strategy class | Requires |
 |---|---|---|---|
 | `view` | — | `View` | — |
-| `virtual` | `full` (default) | `FullRefresh` (`CREATE OR REPLACE`) | — |
-| `virtual` \| `table` | `merge_by_key` | `MergeByKey` | `key` |
+| `virtual` | `replace` (default) | `Replace` (`CREATE OR REPLACE`) | — |
+| `virtual` \| `table` | `merge` | `Merge` | `key` |
 | `virtual` \| `table` | `full_merge` | `FullMerge` | `key` |
 | `virtual` \| `table` | `incremental_by_time` | `IncrementalByTime` | `time_column` (+ an interval) |
-| `virtual` \| `table` | `scd_type_2` | `ScdType2` | `key`, engine `supports_star_exclude` |
-| `table` | `full` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
+| `virtual` \| `table` | `scd` | `Scd` | `key`, engine `supports_star_exclude` |
+| `table` | `replace` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
 | `table` | `append` | `Append` | — |
 
 Strategies are **destination-agnostic**: the accumulating strategies run identically against
-the interlace-owned `virtual` table and an external `table`. `full` is the exception — it
+the interlace-owned `virtual` table and an external `table`. `replace` is the exception — it
 rewrites the owned table (`CREATE OR REPLACE`) but empties an external one in place
 (`ReplaceInPlace`), which never drops it. `materialise: ephemeral` produces no table (see
 [models](models.md)); `materialise: file` bypasses strategies (overwrite via `COPY`, see
@@ -39,10 +41,10 @@ re-evaluated on every read. Cheapest to build, always fresh, but pushes compute 
 time. Use for thin projections and passthroughs. Views can't carry history and are never
 incremental.
 
-## `full` — replace the whole table
+## `replace` — replace the whole table
 
 The default for `materialise: virtual`. Rebuilds the entire table from the query each run
-(`FullRefresh`):
+(`Replace`):
 
 ```
 CREATE OR REPLACE TABLE target AS <query>
@@ -56,7 +58,7 @@ DROP TABLE IF EXISTS target;
 CREATE TABLE target AS <query>
 ```
 
-On an external `table` (`materialise: table`), `full` resolves to **`ReplaceInPlace`** instead —
+On an external `table` (`materialise: table`), `replace` resolves to **`ReplaceInPlace`** instead —
 `DELETE FROM target` + `INSERT`, **never a drop**, so grants and readers on the live table
 survive:
 
@@ -80,20 +82,40 @@ CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)
 INSERT INTO target SELECT * FROM (<query>)
 ```
 
-## `merge_by_key` (MergeByKey) — keyed upsert
+## `merge` (Merge) — keyed upsert
 
-Requires `key`. Upserts the query's rows by key without deleting untouched rows. Statements:
+Requires `key`. Upserts the query's rows by key without deleting untouched rows. Keys present
+in the target but *absent* from this run are **left untouched** (a partial upsert, not a full
+sync). Use when each run supplies a slice of changed/new rows (e.g. a `cursor`-filtered
+incremental extract). Multi-column keys are supported.
+
+**Native `MERGE`** — when the engine advertises `supports_merge` (DuckDB ≥ 1.3, Postgres ≥ 15)
+*and* `apply` knows the target's column list (the delivery paths `describe` it to align the
+source), the upsert is a single statement:
+
+```
+MERGE INTO target AS _t USING (<query>) AS _s
+    ON _t.<key> = _s.<key>
+    WHEN MATCHED THEN UPDATE SET <non-key col> = _s.<non-key col>, ...
+    WHEN NOT MATCHED THEN INSERT (<cols>) VALUES (_s.<cols>)
+```
+
+Matched rows are **updated in place**, so surrogate ids, columns not in the query, and row
+identity survive, and the engine fires `UPDATE` triggers (not `DELETE`+`INSERT`). The source
+is **not** deduplicated: two source rows matching one target row is a real "your key isn't
+unique" bug, and native `MERGE` surfaces it as a cardinality error rather than paying for a
+`DISTINCT` on every run. A `MERGE` returns one combined affected-row count, so the native path
+reports rows as `+written` without an insert/update split.
+
+**Fallback** — with no column list (a first delivery into a fresh table) or an engine without
+`MERGE`, the portable, column-agnostic path runs instead, and keeps the exact insert/update
+split (`~` = a re-supplied key, `+` = a new one):
 
 ```
 CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)   -- ensure shape
 DELETE FROM target WHERE <key> IN (SELECT <key> FROM (<query>) _s)          -- clear re-supplied keys
 INSERT INTO target SELECT * FROM (<query>)                                   -- insert current rows
 ```
-
-A re-supplied key's old row is deleted then re-inserted, so it reads as an **update**; keys
-present in the target but *absent* from this run are **left untouched** (this is a partial
-upsert, not a full sync). Use when each run supplies a slice of changed/new rows (e.g. a
-`cursor`-filtered incremental extract). Multi-column keys use a tuple `IN` predicate.
 
 ## `full_merge` (FullMerge) — full-state source, minimal diff
 
@@ -114,7 +136,7 @@ column list needed). Because the source is the full state, a key that vanished f
 DuckLake files). Keys must be non-NULL (a NULL key never compares equal and would churn
 every run). Duplicate source rows collapse via `EXCEPT`'s distinct semantics.
 
-`full_merge` vs `merge_by_key`: both are keyed, but `merge_by_key` only touches the keys in
+`full_merge` vs `merge`: both are keyed, but `merge` only touches the keys in
 this run (no deletes), while `full_merge` treats the query as the whole world and deletes
 what's missing.
 
@@ -142,7 +164,7 @@ backfill and restatement safe. The window is driven explicitly:
 
 The interval ledger lives in the state store, keyed by `(model, fingerprint)`.
 
-## `scd_type_2` (ScdType2) — slowly-changing dimension, history
+## `scd` (Scd) — slowly-changing dimension, history
 
 Requires `key` and an engine with `supports_star_exclude` (DuckDB family / Snowflake /
 BigQuery — **not** Postgres). The target carries the query's columns plus `_valid_from` /
@@ -168,8 +190,26 @@ INSERT INTO target
 
 An unchanged row appears in neither difference, so re-running is a no-op. A changed key gets
 its old version *closed* (`_valid_to` stamped) and its new version *inserted* as current —
-full history is preserved. The `EXCLUDE(_valid_from, _valid_to)` projection is why the
-engine must support star-exclude; on Postgres, `scd_type_2` raises a clear `PlanError`.
+full history is preserved. The key may be composite (a tuple `IN` predicate). The
+`EXCLUDE(_valid_from, _valid_to)` projection is why the engine must support star-exclude; on
+Postgres, `scd` raises a clear `PlanError`.
+
+### Event-time windows (`time_column`)
+
+By default the windows are stamped with **processing time** (`CURRENT_TIMESTAMP`). Pass a
+`time_column` — an event timestamp carried in the source — and the windows follow the data
+instead:
+
+- a new version's `_valid_from` is its own event time (`CAST(<time_column> AS TIMESTAMP)`);
+- the version it supersedes is closed at *that same* event time (found by joining the open
+  rows to the fresh set on `key`), so the windows **abut on when the change actually
+  happened** rather than when interlace saw it;
+- a key that **vanished** upstream has no succeeding event, so it is still closed at
+  processing time.
+
+This adds a second close statement (changed keys via the event-time join, vanished keys at
+`now()`) but keeps the re-run-is-a-no-op property: the event time is part of the row, so an
+unchanged row still matches and nothing moves.
 
 ### History and definition changes
 
@@ -180,4 +220,4 @@ on the old table) — *unless* you apply with **`--forward-only`**, which copies
 history onto the new version (copy-on-write) so the new logic applies going forward while
 history survives; checks still gate before the view moves, and the old table remains the
 rollback target until `gc`. This applies to every history-keeping strategy
-(`merge_by_key`, `full_merge`, `scd_type_2`, `incremental_by_time`).
+(`merge`, `full_merge`, `scd`, `incremental_by_time`).

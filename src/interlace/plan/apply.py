@@ -102,13 +102,14 @@ async def _merge_python_output(
     strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
     source: exp.Query = exp.select("*").from_(stage_table.copy())
     pre_statements: list[exp.Expression] = []
+    columns: list[str] | None = None
     if exists:
-        pre_statements, source, _ = await _align_stage_to_target(
+        pre_statements, source, columns = await _align_stage_to_target(
             engine, stage, target, exclude=strategy.managed_columns
         )
 
     relation = SqlRelation(ast=source)
-    statements = strategy.plan_statements(relation, target, engine.caps, None)
+    statements = strategy.plan_statements(relation, target, engine.caps, None, columns)
     drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
     counts = await engine.execute_all([*pre_statements, *statements, drop_stage])
     return strategy.row_counts(counts[len(pre_statements) : len(pre_statements) + len(statements)])
@@ -177,7 +178,7 @@ async def _deliver_table(
     interval: Interval | None,
 ) -> RowCounts:
     """Deliver ``resolved`` into an external table (``materialise: table``) via
-    ``strategy`` (replace / append / merge_by_key / full_merge / incremental_by_time).
+    ``strategy`` (replace / append / merge / full_merge / incremental_by_time).
 
     The external target is never dropped (grants and readers survive). When it already
     exists the source is staged in the warehouse and aligned to the target (additive
@@ -200,10 +201,10 @@ async def _deliver_table(
     stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
-    pre_statements, aligned, _columns = await _align_stage_to_target(
+    pre_statements, aligned, columns = await _align_stage_to_target(
         engine, stage, target, exclude=strategy.managed_columns
     )
-    statements = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval)
+    statements = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval, columns)
     # One transaction may write only ONE attached database: the delivery batch writes the
     # external target; the stage lives in the warehouse and is dropped separately (a
     # leftover is harmless — the next delivery CREATE OR REPLACEs it).
@@ -416,8 +417,7 @@ async def _run_backfill(
             )
         if model.strategy == "incremental_by_time":
             raise PlanError(
-                f"Python model {snapshot.name!r} cannot use incremental_by_time; "
-                f"use cursor= with merge_by_key instead"
+                f"Python model {snapshot.name!r} cannot use incremental_by_time; " f"use cursor= with merge instead"
             )
         recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
         previous = recorded_self.physical_table if recorded_self is not None else None
@@ -425,7 +425,7 @@ async def _run_backfill(
         if task.seed_from is not None:  # forward-only: the seeded copy IS the history
             await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
             previous = previous or snapshot.physical_table
-        if model.strategy == "full":
+        if model.strategy == "replace":
             loaded = await build_python_model(
                 model, compiled, target_engine, snapshot.physical_table, physical=resolution, previous=previous
             )
@@ -502,7 +502,10 @@ async def _run_backfill(
     interval = task.interval
     if task.bootstrap:  # incremental first build: fill the source's whole range in one window
         interval = await _bootstrap_window(model, resolved, target_engine)
-    statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, interval)
+    columns: list[str] | None = None
+    if model.strategy == "merge":  # native MERGE needs the target's column list; describe it if it exists
+        columns = list(await target_engine.describe(snapshot.physical_table)) or None
+    statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, interval, columns)
     counts = await target_engine.execute_all(statements)
     result.record_rows(snapshot.name, strategy.row_counts(counts))
     if model.columns:  # validate the built schema against the contract before recording it

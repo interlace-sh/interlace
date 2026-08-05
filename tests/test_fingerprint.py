@@ -13,7 +13,7 @@ pytestmark = pytest.mark.unit
 def fp(query: str, *, strategy: dict | None = None, upstreams: list[str] | None = None) -> str:
     return data_fingerprint(
         query=sqlglot.parse_one(query),
-        strategy_config=strategy or {"strategy": "full"},
+        strategy_config=strategy or {"strategy": "replace"},
         upstream_fingerprints=upstreams or [],
     )
 
@@ -27,7 +27,7 @@ def test_query_change_changes_fingerprint() -> None:
 
 
 def test_strategy_config_change_changes_fingerprint() -> None:
-    assert fp("SELECT 1", strategy={"strategy": "full"}) != fp("SELECT 1", strategy={"strategy": "merge"})
+    assert fp("SELECT 1", strategy={"strategy": "replace"}) != fp("SELECT 1", strategy={"strategy": "merge"})
 
 
 def test_upstream_change_propagates() -> None:

@@ -45,7 +45,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
             details={"model": name},
         )
     materialise = config.get("materialise", "virtual")
-    strategy = config.get("strategy", "full")
+    strategy = config.get("strategy", "replace")
     key = _as_tuple(config.get("key") or ())
     target = config.get("target")
     path = config.get("path")

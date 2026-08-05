@@ -6,7 +6,7 @@ DAG that exercises the pieces that matter for throughput —
 
 ```
 events (25M rows) ── enriched (ephemeral: inlined into every consumer)
-                      ├─ by_user ──── user_ltv (Python, Arrow batches, merge_by_key)
+                      ├─ by_user ──── user_ltv (Python, Arrow batches, merge)
                       ├─ by_product ─ top_products (view)
                       ├─ by_device
                       └─ by_day
@@ -64,6 +64,6 @@ wall ≪ cpu is the point: independent DAG branches build in parallel
 - `materialise: ephemeral` (CTE inlining), views, contracts-by-checks
 - `incremental_by_time` + the interval ledger: catchup vs `restate`
 - a Python model streaming Arrow `RecordBatch`es with bounded memory,
-  upserted via `merge_by_key`
+  upserted via `merge`
 - a Parquet file materialisation (`materialise: file, format: parquet`)
 - `row_count` / `not_null` checks gating promotion at volume

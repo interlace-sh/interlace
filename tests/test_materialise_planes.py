@@ -16,20 +16,20 @@ from interlace.graph.project import compile_models
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
 from interlace.state.store import SqliteStateStore
-from interlace.strategies import Append, FullRefresh, MergeByKey, ReplaceInPlace, View, resolve_strategy
+from interlace.strategies import Append, Merge, Replace, ReplaceInPlace, View, resolve_strategy
 
 pytestmark = pytest.mark.unit
 
 
 def test_resolve_strategy_plane_matrix() -> None:
     # full differs by ownership: virtual rewrites the whole table, table replaces in place
-    assert isinstance(resolve_strategy("virtual", "full"), FullRefresh)
-    assert isinstance(resolve_strategy("table", "full"), ReplaceInPlace)
-    assert isinstance(resolve_strategy("view", "full"), View)
+    assert isinstance(resolve_strategy("virtual", "replace"), Replace)
+    assert isinstance(resolve_strategy("table", "replace"), ReplaceInPlace)
+    assert isinstance(resolve_strategy("view", "replace"), View)
     # append is external-only; keyed builders are shared across virtual/table
     assert isinstance(resolve_strategy("table", "append"), Append)
-    assert isinstance(resolve_strategy("table", "merge_by_key", ("id",)), MergeByKey)
-    assert isinstance(resolve_strategy("virtual", "merge_by_key", ("id",)), MergeByKey)
+    assert isinstance(resolve_strategy("table", "merge", ("id",)), Merge)
+    assert isinstance(resolve_strategy("virtual", "merge", ("id",)), Merge)
     with pytest.raises(PlanError, match="append requires materialise: table"):
         resolve_strategy("virtual", "append")
 
@@ -140,8 +140,8 @@ async def test_terminal_table_contract_validated(tmp_path: Path) -> None:
 
 
 def test_validate_materialise_accepts_valid_configs() -> None:
-    validate_materialise("m", materialise="virtual", strategy="full", target=None, path=None, format=None, key=())
+    validate_materialise("m", materialise="virtual", strategy="replace", target=None, path=None, format=None, key=())
     validate_materialise(
-        "m", materialise="table", strategy="merge_by_key", target="ext.t", path=None, format=None, key=("id",)
+        "m", materialise="table", strategy="merge", target="ext.t", path=None, format=None, key=("id",)
     )
-    validate_materialise("m", materialise="file", strategy="full", target=None, path="o.csv", format="csv", key=())
+    validate_materialise("m", materialise="file", strategy="replace", target=None, path="o.csv", format="csv", key=())

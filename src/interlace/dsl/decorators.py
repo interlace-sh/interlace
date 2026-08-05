@@ -22,7 +22,7 @@ ModelFn = Callable[..., Any]
 # (a fingerprinted snapshot read through an environment view); `table`/`file` are
 # terminal deliveries into a destination interlace does not own.
 _MATERIALISATIONS = frozenset({"virtual", "view", "ephemeral", "table", "file"})
-_KEYED_STRATEGIES = frozenset({"merge_by_key", "full_merge", "scd_type_2"})
+_KEYED_STRATEGIES = frozenset({"merge", "full_merge", "scd"})
 _DRIFT_MODES = frozenset({"evolve", "reject", "quarantine"})
 
 
@@ -70,9 +70,9 @@ def validate_materialise(
             raise DefinitionError(
                 f"model {name!r}: materialise: file needs format: one of {sorted(FILE_FORMATS)} (got {format!r})"
             )
-        if strategy != "full":
+        if strategy != "replace":
             raise DefinitionError(
-                f"model {name!r}: materialise: file supports only strategy: full (overwrite); got {strategy!r} — "
+                f"model {name!r}: materialise: file supports only strategy: replace (overwrite); got {strategy!r} — "
                 f"append/merge into a single file isn't supported, use materialise: table"
             )
     if strategy == "append" and materialise != "table":
@@ -89,7 +89,7 @@ class ModelDef:
     fn: ModelFn | None = None
     sql: str | None = None
     materialise: str = "virtual"
-    strategy: str = "full"
+    strategy: str = "replace"
     key: tuple[str, ...] = ()
     dialect: str | None = None
     engine: str | None = None  # named engine from config (None → project default_engine)
@@ -176,7 +176,7 @@ def model(
     name: str | None = None,
     *,
     materialise: str = "virtual",
-    strategy: str = "full",
+    strategy: str = "replace",
     key: str | Sequence[str] = (),
     dialect: str | None = None,
     engine: str | None = None,

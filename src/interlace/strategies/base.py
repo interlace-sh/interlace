@@ -59,8 +59,14 @@ class Strategy(ABC):
         target: TableRef,
         caps: EngineCaps,
         interval: Interval | None = None,
+        columns: Sequence[str] | None = None,
     ) -> list[exp.Expression]:
-        """Return canonical-dialect ASTs; the engine adapter transpiles them."""
+        """Return canonical-dialect ASTs; the engine adapter transpiles them.
+
+        ``columns`` is the target's aligned column order when apply already knows it
+        (the staged delivery paths ``describe`` the target); ``None`` otherwise. Only
+        strategies that need a column list — ``merge``'s native ``MERGE`` — use it;
+        the rest ignore it and stay column-agnostic."""
 
     def row_counts(self, counts: Sequence[int]) -> RowCounts:
         """Interpret the engine's per-statement affected-row counts (index-aligned

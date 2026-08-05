@@ -1,5 +1,5 @@
 /* interlace:
-  strategy: scd_type_2
+  strategy: scd
   key: customer_id
   checks:
     - not_null: customer_id

@@ -35,6 +35,7 @@ class IncrementalByTime(Strategy):
         target: TableRef,
         caps: EngineCaps,
         interval: Interval | None = None,
+        columns: Sequence[str] | None = None,
     ) -> list[exp.Expression]:
         if interval is None:
             raise PlanError("incremental_by_time requires an interval to process")

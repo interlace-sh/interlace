@@ -53,7 +53,7 @@ async def test_run_merge_picks_up_new_source_data(env: tuple[DuckDBAdapter, Sqli
     await engine.execute_sql("CREATE TABLE main.src AS SELECT * FROM (VALUES (1, 'a')) v(id, name)")
 
     # dim is a merge model reading an external (non-model) source table
-    project = compile_models([sql_model("dim", "SELECT id, name FROM main.src", strategy="merge_by_key", key=("id",))])
+    project = compile_models([sql_model("dim", "SELECT id, name FROM main.src", strategy="merge", key=("id",))])
 
     await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
     assert sorted(await _fetch(engine, "SELECT id, name FROM main.dim"), key=lambda r: r["id"]) == [

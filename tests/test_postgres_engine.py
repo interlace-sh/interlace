@@ -24,7 +24,7 @@ from interlace.ir.relation import SqlRelation, TableRef
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
 from interlace.state.store import SqliteStateStore
-from interlace.strategies import FullRefresh, ScdType2
+from interlace.strategies import Replace, Scd
 
 DSN = os.environ.get("INTERLACE_TEST_PG_DSN", "postgresql://postgres:pg@localhost:5455/postgres")
 
@@ -53,7 +53,7 @@ def _relation(sql: str, dialect: str = "postgres") -> SqlRelation:
 @pytest.mark.unit
 def test_full_refresh_falls_back_without_create_or_replace() -> None:
     target = TableRef(schema="interlace__main", name="t__abc")
-    statements = FullRefresh().plan_statements(_relation("SELECT 1 AS x"), target, EngineCaps())
+    statements = Replace().plan_statements(_relation("SELECT 1 AS x"), target, EngineCaps())
     sqls = [s.sql(dialect="postgres") for s in statements]
     assert sqls[0].startswith("DROP TABLE IF EXISTS")
     assert sqls[1].startswith("CREATE TABLE") and "OR REPLACE" not in sqls[1]
@@ -63,7 +63,7 @@ def test_full_refresh_falls_back_without_create_or_replace() -> None:
 def test_scd2_refuses_engines_without_star_exclude() -> None:
     target = TableRef(schema="interlace__main", name="dim__abc")
     with pytest.raises(PlanError, match="star-EXCLUDE"):
-        ScdType2(("id",)).plan_statements(_relation("SELECT 1 AS id"), target, EngineCaps())
+        Scd(("id",)).plan_statements(_relation("SELECT 1 AS id"), target, EngineCaps())
 
 
 @pytest.mark.unit
@@ -119,7 +119,7 @@ async def test_full_and_merge_apply_natively_in_postgres(
             name="people",
             sql="SELECT id, name FROM seed",
             engine="pg",
-            strategy="merge_by_key",
+            strategy="merge",
             key=("id",),
             checks=(),
         ),

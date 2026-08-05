@@ -37,7 +37,7 @@ prod; pass `--env dev` while developing.
 
 ```sql
 /* interlace:
-  strategy: scd_type_2
+  strategy: scd
   key: customer_id
   schedule: {cron: "0 * * * *"}
   checks:
@@ -53,7 +53,7 @@ SELECT customer_id, name, tier FROM raw_customers
 ```python
 from interlace import model
 
-@model(strategy="merge_by_key", key="order_id", cursor="updated_at")
+@model(strategy="merge", key="order_id", cursor="updated_at")
 def orders(cursor, this):
     """Incremental API extract: `cursor` is max(updated_at) already in the
     warehouse (None on first run); `this` is the previous materialisation."""
@@ -61,9 +61,9 @@ def orders(cursor, this):
     return pyarrow.Table.from_pylist(rows)     # or RecordBatchReader / generator of batches
 ```
 
-**Strategies:** `full`, `view`, `ephemeral` (CTE-inlined), `merge_by_key` (upsert),
+**Strategies:** `replace`, `view`, `ephemeral` (CTE-inlined), `merge` (upsert),
 `full_merge` (full-state source applied as a minimal diff), `incremental_by_time`
-(windowed, interval-ledger backfill/catchup), `scd_type_2` (history with validity windows).
+(windowed, interval-ledger backfill/catchup), `scd` (history with validity windows).
 
 ## Plan / apply
 
@@ -128,7 +128,7 @@ attach:
 ```
 
 ```sql
-/* interlace: {export: {to: table, target: crm.public.accounts, mode: merge_by_key, key: id}} */
+/* interlace: {export: {to: table, target: crm.public.accounts, mode: merge, key: id}} */
 SELECT id, tier, lifetime_value FROM account_summary
 ```
 
@@ -147,7 +147,7 @@ engines:
 ```
 
 ```sql
-/* interlace: {engine: pg, strategy: merge_by_key, key: id} */
+/* interlace: {engine: pg, strategy: merge, key: id} */
 ```
 
 Strategies execute *inside* the pinned engine (no DuckDB middleman); cross-engine dependencies

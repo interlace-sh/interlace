@@ -16,7 +16,7 @@ reserved for incremental extraction and never name an upstream:
 
 The return value — a ``pyarrow.Table``, ``RecordBatchReader``, ``RecordBatch``,
 or an iterable of batches (generators stream with bounded memory) — is loaded
-at the sink by the caller (``plan.apply``): directly for ``full``, or via a
+at the sink by the caller (``plan.apply``): directly for ``replace``, or via a
 stage table for keyed strategies. Sync functions run in a worker thread; async
 functions run on the event loop.
 """

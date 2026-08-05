@@ -1,6 +1,6 @@
 """Replace-in-place strategy — for an externally-owned table (``materialise: table``).
 
-The equivalent of ``full`` for a table interlace does *not* own: the live table is
+The equivalent of ``replace`` for a table interlace does *not* own: the live table is
 emptied and re-filled, but **never dropped**, so grants, indexes, RLS and readers
 survive. ``CREATE IF NOT EXISTS`` (first delivery), ``DELETE`` all rows, then
 ``INSERT`` the current query. The insert binds positionally — safe because apply
@@ -29,6 +29,7 @@ class ReplaceInPlace(Strategy):
         target: TableRef,
         caps: EngineCaps,
         interval: Interval | None = None,
+        columns: Sequence[str] | None = None,
     ) -> list[exp.Expression]:
         query = relation.ast
         table = table_expr(target)

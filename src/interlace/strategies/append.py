@@ -28,6 +28,7 @@ class Append(Strategy):
         target: TableRef,
         caps: EngineCaps,
         interval: Interval | None = None,
+        columns: Sequence[str] | None = None,
     ) -> list[exp.Expression]:
         query = relation.ast
         table = table_expr(target)

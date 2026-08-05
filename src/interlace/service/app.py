@@ -59,10 +59,10 @@ from interlace.streaming.schema import partition_rows, validate_rows, validate_r
 
 class ModelInfo(msgspec.Struct):
     name: str
-    output: str  # back-compat: "sink" or the materialisation value
+    output: str  # the materialisation value (virtual/view/ephemeral/table/file)
     materialise: str
     strategy: str
-    is_sink: bool
+    is_terminal: bool  # materialise: table/file — delivered to an external destination
     fingerprint: str
     depends_on: list[str]
     tags: list[str]
@@ -77,7 +77,7 @@ class ModelDetail(msgspec.Struct):
     output: str
     materialise: str
     strategy: str
-    is_sink: bool
+    is_terminal: bool
     fingerprint: str
     depends_on: list[str]
     upstream: list[str]
@@ -367,7 +367,7 @@ def _python_source(model: CompiledModel) -> str | None:
 
 
 def _output(model: CompiledModel) -> str:
-    return "sink" if model.export is not None else model.materialise
+    return model.materialise
 
 
 def _info(model: CompiledModel) -> ModelInfo:
@@ -375,9 +375,8 @@ def _info(model: CompiledModel) -> ModelInfo:
         name=model.name,
         output=_output(model),
         materialise=model.materialise,
-        # sinks: the delivery mode is the strategy people reason about (CLI parity)
-        strategy=model.export.mode if model.export is not None else model.strategy,
-        is_sink=model.export is not None,
+        strategy=model.strategy,
+        is_terminal=model.is_terminal,
         fingerprint=model.fingerprint,
         depends_on=list(model.dependencies),
         tags=list(model.tags),
@@ -416,7 +415,7 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
         output=_output(model),
         materialise=model.materialise,
         strategy=model.strategy,
-        is_sink=model.export is not None,
+        is_terminal=model.is_terminal,
         fingerprint=model.fingerprint,
         depends_on=list(model.dependencies),
         upstream=sorted(compiled.graph.ancestors(name)),
@@ -1138,7 +1137,7 @@ async def post_checks_run(state: State, data: RunChecksRequest | None = None) ->
     for name, model in compiled.models.items():
         if chosen is not None and name not in chosen:
             continue
-        if (not model.checks and not compiled.python_checks.get(name)) or model.export is not None:
+        if (not model.checks and not compiled.python_checks.get(name)) or model.is_terminal:
             continue
         snapshot = snapshots.get((name, promoted.get(name, "")))
         if snapshot is None:

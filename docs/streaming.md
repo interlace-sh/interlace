@@ -58,24 +58,30 @@ The policy for fields that don't match the declared schema:
   (durable, with the error + raw payload) while the good rows proceed; the publish reports
   `quarantined: N`.
 
-## Reverse-ETL sinks
+## Reverse-ETL: terminal `table` / `file`
 
-A model with an `export:` block is a **sink** — it produces no managed table and no
-environment view; instead its (resolved) query result is written to a destination. Sinks are
-**environment-gated** (default: `prod` only) so a dev apply never fires reverse-ETL at a live
-destination; widen with `environments: [dev, prod]`.
+A `materialise: table` or `materialise: file` model is **terminal** — it delivers its
+(resolved) query result to a destination interlace does *not* own, producing no managed
+snapshot table and no environment view. Terminal models are **environment-gated** (default:
+`prod` only) so a dev apply never fires a side effect at a live destination; widen with
+`environments: [dev, prod]`.
 
 ```sql
 /* interlace:
-  export: {to: table, target: crm.main.customer_scores, mode: merge_by_key, key: customer_id}
+  materialise: table
+  target: crm.main.customer_scores
+  strategy: merge_by_key
+  key: customer_id
 */
 SELECT customer_id, score FROM customer_value
 ```
 
-- **File exports** — `to: parquet | csv | json` + `path`, written via DuckDB `COPY`.
-- **Table exports (reverse ETL)** — `to: table` + `target: <alias>.<schema>.<table>` where
-  `alias` is a database wired in via the project's `attach:` config (Postgres, SQLite,
-  another DuckDB). `mode` picks delivery: `replace` (DELETE all + INSERT — the live table is
-  never dropped, so grants and readers survive), `append`, or the keyed `merge_by_key` /
-  `full_merge` (which reuse the same strategy builders as managed models, pointed at the
-  external catalog).
+- **`materialise: file`** — `format: parquet | csv | json` + `path`, written via DuckDB
+  `COPY` (overwrite; `strategy: full`).
+- **`materialise: table` (reverse ETL)** — `target: <alias>.<schema>.<table>` where `alias`
+  is a database wired in via the project's `attach:` config (Postgres, SQLite, another
+  DuckDB). `strategy` picks the delivery — the **same strategies as virtual models**, pointed
+  at the external table: `full` (DELETE all + INSERT — the live table is never dropped, so
+  grants and readers survive), `append`, `merge_by_key`, `full_merge`, `incremental_by_time`
+  (windowed DELETE + INSERT), and `scd_type_2`. The external table is only ever created,
+  appended, or evolved additively — never dropped, and never mutated by a breaking change.

@@ -123,16 +123,27 @@ def env_view(environment: str, model_name: str) -> TableRef:
 def schedule_build(
     plan: Plan, model: CompiledModel, snapshot: Snapshot, environment: str, *, seed_from: TableRef | None = None
 ) -> None:
-    """Add the right tasks for a model: ephemeral builds nothing; a sink builds but
-    gets no view; a table/view builds and is repointed by an environment view.
+    """Add the right tasks for a model: ephemeral builds nothing; a terminal
+    table/file builds (delivers) but gets no environment view; a virtual/view model
+    builds and is repointed by an environment view.
 
-    An incremental_by_time model cannot build without a window, so an apply fills
-    the latest grain interval — the same default as ``interlace run`` — leaving
-    history to ``run --start/--end``.
+    An incremental_by_time model (virtual, or a terminal ``table``) cannot build
+    without a window, so an apply fills the latest grain interval — the same default
+    as ``interlace run`` — leaving history to ``run --start/--end``.
     """
     if model.materialise == "ephemeral":  # inlined into consumers, never built
         return
-    if model.strategy == "incremental_by_time" and model.export is None:
+    wants_view = model.materialise in ("virtual", "view")  # terminal table/file has no env view
+
+    def add_view() -> None:
+        # the snapshot's table, not the fingerprint-derived one: a forward-only
+        # snapshot builds into (and the view must point at) its inherited table
+        if wants_view:
+            plan.virtual_updates.append(
+                ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
+            )
+
+    if model.strategy == "incremental_by_time":  # virtual or terminal table: windowed delete+insert
         from datetime import datetime
 
         from interlace.state.interval import latest_complete_window, parse_grain
@@ -144,26 +155,17 @@ def schedule_build(
             # from the source's time-column range AT APPLY TIME (upstreams may not
             # exist yet) and fill it as one covering interval
             plan.backfills.append(BackfillTask(snapshot=snapshot, bootstrap=True))
-            plan.virtual_updates.append(
-                ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
-            )
+            add_view()
             return
         # forward-only inherit (history already carried) or backfill: none —
         # the latest grain window, same default as a windowless `interlace run`;
         # scheduled even when an inherited ledger covers the window: the task is what
         # seeds forward-only history, creates the table, and records the snapshot
         plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
-        plan.virtual_updates.append(
-            ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
-        )
+        add_view()
         return
     plan.backfills.append(BackfillTask(snapshot=snapshot, seed_from=seed_from))
-    if model.export is None and model.materialise in ("table", "view"):  # sinks have no view
-        # the snapshot's table, not the fingerprint-derived one: a forward-only
-        # snapshot builds into (and the view must point at) its inherited table
-        plan.virtual_updates.append(
-            ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
-        )
+    add_view()
 
 
 @dataclass

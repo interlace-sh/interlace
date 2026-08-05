@@ -10,7 +10,7 @@ interlace ships four engine types.
 |---|---|---|
 | `ducklake` (default) | DuckDB + the DuckLake extension | Snapshot storage as DuckLake tables over a catalog DB (SQLite or Postgres) with data in local files or object storage. Catalog writes are serialised (DuckLake isn't safe against concurrent DDL on sibling cursors). |
 | `duckdb` | a DuckDB file or `:memory:` | Plain DuckDB. Builds run genuinely in parallel (no catalog-write lock). |
-| `quack` | a remote quack-served warehouse (`quack:host:port`) | SQL is routed to the remote over the quack protocol; Arrow loads stream over an attached catalog. Needs a `quack_token`. |
+| `quack` | a remote quack-served warehouse (`quack:host:port`) | SQL is routed to the remote over the quack protocol; Arrow loads stream over an attached catalog. A `quack_token` is used when supplied (a served warehouse typically requires one). |
 | `postgres` | Postgres over ADBC | A native remote engine. Strategies execute *inside* Postgres; Arrow in/out via `adbc_ingest`. Needs the `adbc` extra. |
 
 The default warehouse is `ducklake:.interlace/warehouse.ducklake`. DuckDB is also the
@@ -47,9 +47,9 @@ Streams always live on the default warehouse engine.
 
 ## Reverse-ETL targets
 
-External databases are wired in with `attach: {alias: uri}`. A sink model's
-`export: {to: table, target: alias.schema.table, ...}` then delivers into that attached
-database (Postgres, SQLite, another DuckDB) — see [streaming § reverse ETL](streaming.md#reverse-etl-sinks).
+External databases are wired in with `attach: {alias: uri}`. A terminal model
+(`materialise: table, target: alias.schema.table, ...`) then delivers into that attached
+database (Postgres, SQLite, another DuckDB) — see [streaming § reverse ETL](streaming.md#reverse-etl-terminal-table--file).
 
 ## Not yet built
 

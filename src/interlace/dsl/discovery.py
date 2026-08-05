@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from interlace.checks.spec import parse_checks
-from interlace.dsl.decorators import _MATERIALISATIONS, REGISTRY, ModelDef, _as_columns, _as_export, _as_tuple
+from interlace.dsl.decorators import REGISTRY, ModelDef, _as_columns, _as_tuple, validate_materialise
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError
 
@@ -37,15 +37,28 @@ def discover_models(root: Path, model_paths: list[str], default_dialect: str) ->
 
 
 def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dialect: str) -> ModelDef:
-    materialise = config.get("materialise", "table")
-    if materialise not in _MATERIALISATIONS:
-        raise DefinitionError(f"unknown materialise {materialise!r}", details={"model": default_name})
+    name = config.get("name", default_name)
+    if "export" in config:
+        raise DefinitionError(
+            f"model {name!r}: export: was removed in 2.0 — use materialise: table (with target:) for reverse "
+            f"ETL, or materialise: file (with path:/format:) for a file",
+            details={"model": name},
+        )
+    materialise = config.get("materialise", "virtual")
+    strategy = config.get("strategy", "full")
+    key = _as_tuple(config.get("key") or ())
+    target = config.get("target")
+    path = config.get("path")
+    format = config.get("format")
+    validate_materialise(
+        name, materialise=materialise, strategy=strategy, target=target, path=path, format=format, key=key
+    )
     return ModelDef(
-        name=config.get("name", default_name),
+        name=name,
         sql=sql,
         materialise=materialise,
-        strategy=config.get("strategy", "full"),
-        key=_as_tuple(config.get("key") or ()),
+        strategy=strategy,
+        key=key,
         dialect=config.get("dialect"),  # None → compile fills from engine dialect
         engine=config.get("engine"),
         depends_on=_as_tuple(config.get("depends_on") or ()),
@@ -56,7 +69,10 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         owner=config.get("owner"),
         description=config.get("description"),
         columns=_as_columns(config.get("columns")),
-        export=_as_export(config.get("export")),
+        target=target,
+        path=path,
+        format=format,
+        environments=_as_tuple(config.get("environments") or ("prod",)),
         schedule=config.get("schedule"),
         checks=parse_checks(config.get("checks"), default_name),
     )

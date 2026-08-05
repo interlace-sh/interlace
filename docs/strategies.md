@@ -12,14 +12,20 @@ The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strat
 | `materialise` | `strategy` | Strategy class | Requires |
 |---|---|---|---|
 | `view` | — | `View` | — |
-| `table` | `full` (default) | `FullRefresh` | — |
-| `table` | `merge_by_key` | `MergeByKey` | `key` |
-| `table` | `full_merge` | `FullMerge` | `key` |
-| `table` | `incremental_by_time` | `IncrementalByTime` | `time_column` (+ an interval) |
-| `table` | `scd_type_2` | `ScdType2` | `key`, engine `supports_star_exclude` |
+| `virtual` | `full` (default) | `FullRefresh` (`CREATE OR REPLACE`) | — |
+| `virtual` \| `table` | `merge_by_key` | `MergeByKey` | `key` |
+| `virtual` \| `table` | `full_merge` | `FullMerge` | `key` |
+| `virtual` \| `table` | `incremental_by_time` | `IncrementalByTime` | `time_column` (+ an interval) |
+| `virtual` \| `table` | `scd_type_2` | `ScdType2` | `key`, engine `supports_star_exclude` |
+| `table` | `full` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
+| `table` | `append` | `Append` | — |
 
-`materialise: ephemeral` produces no table at all (see [models](models.md)); a model with
-an `export:` block is a **sink** and bypasses strategies entirely (see [reverse ETL](streaming.md#reverse-etl-sinks)).
+Strategies are **destination-agnostic**: the accumulating strategies run identically against
+the interlace-owned `virtual` table and an external `table`. `full` is the exception — it
+rewrites the owned table (`CREATE OR REPLACE`) but empties an external one in place
+(`ReplaceInPlace`), which never drops it. `materialise: ephemeral` produces no table (see
+[models](models.md)); `materialise: file` bypasses strategies (overwrite via `COPY`, see
+[reverse ETL](streaming.md#reverse-etl-terminal-table--file)).
 
 Row movement is reported per model as `+inserted ~updated -deleted`, derived from each
 statement's affected-row count (`row_counts`).
@@ -33,9 +39,10 @@ re-evaluated on every read. Cheapest to build, always fresh, but pushes compute 
 time. Use for thin projections and passthroughs. Views can't carry history and are never
 incremental.
 
-## `full` (FullRefresh) — replace the whole table
+## `full` — replace the whole table
 
-The default for `materialise: table`. Rebuilds the entire table from the query each run.
+The default for `materialise: virtual`. Rebuilds the entire table from the query each run
+(`FullRefresh`):
 
 ```
 CREATE OR REPLACE TABLE target AS <query>
@@ -49,9 +56,29 @@ DROP TABLE IF EXISTS target;
 CREATE TABLE target AS <query>
 ```
 
+On an external `table` (`materialise: table`), `full` resolves to **`ReplaceInPlace`** instead —
+`DELETE FROM target` + `INSERT`, **never a drop**, so grants and readers on the live table
+survive:
+
+```
+CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)
+DELETE FROM target;                       -- empty in place
+INSERT INTO target SELECT * FROM (<query>)
+```
+
 Simple and correct for any source; rewrites every row every run (on DuckLake that means new
 files each run even if nothing changed — prefer `full_merge` when the source is a full
 snapshot and you want change-only writes).
+
+## `append` — insert only (external `table`)
+
+Terminal-only (`materialise: table`). Adds the query's rows to the target, deleting nothing —
+a growing log or event table:
+
+```
+CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)
+INSERT INTO target SELECT * FROM (<query>)
+```
 
 ## `merge_by_key` (MergeByKey) — keyed upsert
 

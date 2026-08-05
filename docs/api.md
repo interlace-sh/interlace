@@ -17,8 +17,9 @@ requires `read`.
 
 ## Errors
 
-`InterlaceError` → 404 if the message begins with "unknown", else 400. `ClientException` =
-400, `NotFoundException` = 404, missing/invalid token (once keyed) = 401, wrong scope = 403.
+`InterlaceError` → 404 if "unknown" appears in the first 40 characters of the message, else 400.
+`ClientException` = 400, `NotFoundException` = 404, missing/invalid token (once keyed) = 401,
+wrong scope = 403.
 
 ## Endpoints
 
@@ -28,7 +29,7 @@ requires `read`.
 
 ### Models & lineage (read)
 - **`GET /models`** → `[ModelInfo]` (topo-sorted). `ModelInfo`: `name, output, materialise,
-  strategy, is_sink, fingerprint, depends_on[], tags[], owner, schedule, engine, language`.
+  strategy, is_terminal, fingerprint, depends_on[], tags[], owner, schedule, engine, language`.
 - **`GET /models/{name}`** → `ModelDetail` (404 if unknown): adds `upstream[], downstream[],
   columns{col: [sources]}, sql, source` (Python source).
 - **`GET /models/{name}/impact?column=COL`** → `ImpactResponse` `{source, impacted:

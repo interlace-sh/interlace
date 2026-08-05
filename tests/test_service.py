@@ -168,7 +168,7 @@ def test_models_enriched(client: TestClient) -> None:
     body = client.get("/models").json()
     recent = next(m for m in body if m["name"] == "recent_clicks")
     assert recent["materialise"] == "view"
-    assert recent["is_sink"] is False
+    assert recent["is_terminal"] is False
     assert recent["fingerprint"]  # compiled fingerprint surfaced for the catalog
     assert {"owner", "schedule", "tags"} <= recent.keys()
 

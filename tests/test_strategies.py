@@ -77,28 +77,28 @@ def test_incremental_by_time_requires_an_interval() -> None:
 
 
 def test_resolve_strategy_picks_implementations() -> None:
-    assert isinstance(resolve_strategy("table", "full"), FullRefresh)
+    assert isinstance(resolve_strategy("virtual", "full"), FullRefresh)
     assert isinstance(resolve_strategy("view", "full"), View)
-    assert isinstance(resolve_strategy("table", "merge_by_key", ("id",)), MergeByKey)
-    assert isinstance(resolve_strategy("table", "incremental_by_time", time_column="ts"), IncrementalByTime)
+    assert isinstance(resolve_strategy("virtual", "merge_by_key", ("id",)), MergeByKey)
+    assert isinstance(resolve_strategy("virtual", "incremental_by_time", time_column="ts"), IncrementalByTime)
 
 
 def test_resolve_strategy_incremental_requires_time_column() -> None:
     from interlace.exceptions import PlanError
 
     with pytest.raises(PlanError):
-        resolve_strategy("table", "incremental_by_time")
+        resolve_strategy("virtual", "incremental_by_time")
 
 
 def test_resolve_strategy_merge_requires_key() -> None:
     from interlace.exceptions import PlanError
 
     with pytest.raises(PlanError):
-        resolve_strategy("table", "merge_by_key")  # no key
+        resolve_strategy("virtual", "merge_by_key")  # no key
 
 
 def test_resolve_strategy_rejects_unsupported() -> None:
     from interlace.exceptions import PlanError
 
     with pytest.raises(PlanError):
-        resolve_strategy("table", "scd2")
+        resolve_strategy("virtual", "scd2")

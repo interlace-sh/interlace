@@ -28,15 +28,15 @@ from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, PlanError
-from interlace.exports import export_row_counts, export_statements, export_target_ref, table_export_statements
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
+from interlace.sinks import file_statements, target_ref
 from interlace.state.interval import Interval
 from interlace.state.store import StateStore
-from interlace.strategies import resolve_strategy
+from interlace.strategies import Strategy, resolve_strategy
 from interlace.strategies.base import RowCounts
 
 
@@ -44,7 +44,7 @@ from interlace.strategies.base import RowCounts
 class ApplyResult:
     built: list[str] = field(default_factory=list)
     reused: list[str] = field(default_factory=list)  # recorded over their previous physical table
-    gated: list[str] = field(default_factory=list)  # sinks recorded but not delivered (environment gate)
+    gated: list[str] = field(default_factory=list)  # terminals recorded but not delivered (environment gate)
     transfers: list[str] = field(default_factory=list)  # executed cross-engine transfers
     promoted: int = 0
     checks: list[CheckOutcome] = field(default_factory=list)
@@ -169,28 +169,42 @@ async def _align_stage_to_target(
     return pre_statements, source, list(target_columns)
 
 
-async def _deliver_table_export(model: CompiledModel, engine: EngineAdapter, resolved: exp.Expression) -> RowCounts:
-    """Reverse ETL with schema evolution. The external target is never dropped (grants
-    and readers survive), so when it already exists the source is staged in the
-    warehouse, aligned to the target (additive ALTERs, NULL-fill, casts), and delivered
-    with an explicit column list — a sink model growing or reordering columns must
-    evolve the destination, never break it or positionally corrupt it."""
-    assert model.export is not None
-    target = export_target_ref(model.export.target)
+async def _deliver_table(
+    model: CompiledModel,
+    engine: EngineAdapter,
+    resolved: exp.Expression,
+    strategy: Strategy,
+    interval: Interval | None,
+) -> RowCounts:
+    """Deliver ``resolved`` into an external table (``materialise: table``) via
+    ``strategy`` (replace / append / merge_by_key / full_merge / incremental_by_time).
+
+    The external target is never dropped (grants and readers survive). On the first
+    delivery the strategy's ensure-create matches the source; afterwards the source is
+    staged in the warehouse and aligned to the target (additive ALTERs, widening,
+    NULL-fill, casts) so a model that grows or reorders columns evolves the
+    destination instead of breaking it or positionally corrupting it. The insert
+    binds positionally against the aligned source, which reproduces the target's
+    column order exactly."""
+    target = target_ref(model.target or "")
     if not await engine.table_exists(target):  # first delivery: the ensure-create matches the source
-        counts = await engine.execute_all(table_export_statements(model.export, resolved))
-        return export_row_counts(model.export, counts)
+        counts = await engine.execute_all(
+            strategy.plan_statements(SqlRelation(ast=resolved), target, engine.caps, interval)
+        )
+        return strategy.row_counts(counts)
     stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
-    pre_statements, aligned, columns = await _align_stage_to_target(engine, stage, target)
-    statements = table_export_statements(model.export, aligned, columns=columns)
+    pre_statements, aligned, _columns = await _align_stage_to_target(
+        engine, stage, target, exclude=strategy.managed_columns
+    )
+    statements = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval)
     # One transaction may write only ONE attached database: the delivery batch writes the
     # external target; the stage lives in the warehouse and is dropped separately (a
     # leftover is harmless — the next delivery CREATE OR REPLACEs it).
     counts = await engine.execute_all([*pre_statements, *statements])
     await engine.execute(exp.Drop(this=stage.to_expr(), kind="TABLE", exists=True))
-    return export_row_counts(model.export, counts[len(pre_statements) :])
+    return strategy.row_counts(counts[len(pre_statements) :])
 
 
 async def _stage_cross_engine_inputs(
@@ -388,10 +402,11 @@ async def _run_backfill(
     resolution = await _stage_cross_engine_inputs(model, compiled, registry, physical, staged, stage_lock, result)
 
     if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
-        if model.export is not None:
-            raise PlanError(f"Python model {snapshot.name!r} cannot be a sink yet; write SQL over its output")
-        if model.materialise != "table":
-            raise PlanError(f"Python model {snapshot.name!r} must materialise as a table")
+        if model.materialise != "virtual":
+            raise PlanError(
+                f"Python model {snapshot.name!r} must materialise as virtual; table/file (write a SQL model "
+                f"over its output), view and ephemeral are not supported for Python models"
+            )
         if model.strategy == "incremental_by_time":
             raise PlanError(
                 f"Python model {snapshot.name!r} cannot use incremental_by_time; "
@@ -424,26 +439,40 @@ async def _run_backfill(
 
     resolved = resolve_model_query(model, compiled, resolution)
 
-    if model.export is not None:  # sink: push the result to a destination, no table/view
-        if plan.environment not in model.export.environments:
+    if model.is_terminal:  # deliver into an external table/file — no snapshot table, no env view
+        if plan.environment not in model.environments:
             # environment-gated: a dev apply must never fire a side effect at a live
             # destination. Record the snapshot so the plan settles; deliver nothing.
             await state.add_snapshot(snapshot)
             result.gated.append(snapshot.name)
             result.timings[snapshot.name] = time.perf_counter() - task_started
             return
-        if model.export.to == "table":  # reverse ETL into an attached database
-            result.record_rows(snapshot.name, await _deliver_table_export(model, target_engine, resolved))
-        else:
-            export_path = _resolve_export_path(base_path, model.export.path)
+        if model.materialise == "file":  # overwrite a file via COPY
+            export_path = _resolve_export_path(base_path, model.path or "")
             Path(export_path).parent.mkdir(parents=True, exist_ok=True)
             copied = await target_engine.execute_all(
-                export_statements(model.export, resolved, export_path, model.dialect)
+                file_statements(model.format or "", resolved, export_path, model.dialect)
             )
             result.record_rows(snapshot.name, RowCounts(inserted=copied[0] if copied else 0))
+        else:  # materialise: table — reverse ETL into an attached database via the strategy
+            strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
+            interval = task.interval
+            if task.bootstrap:  # incremental first delivery: fill the source's whole range in one window
+                interval = await _bootstrap_window(model, resolved, target_engine)
+            result.record_rows(snapshot.name, await _deliver_table(model, target_engine, resolved, strategy, interval))
+            if interval is not None:  # incremental terminal: accumulate the filled window in the ledger
+                filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
+                for carried in snapshot.intervals:  # forward-only N/A, but keep the ledger contract uniform
+                    filled = filled.add(carried)
+                snapshot = replace(snapshot, intervals=filled.add(interval))
+            if model.columns:  # validate the delivered external table against the contract
+                validate_contract(
+                    model.name, await target_engine.describe(target_ref(model.target or "")), model.columns
+                )
         await state.add_snapshot(snapshot)
-        result.built.append(snapshot.name)
-        result.timings[snapshot.name] = time.perf_counter() - task_started
+        if snapshot.name not in result.built:  # one entry per model, however many interval windows ran
+            result.built.append(snapshot.name)
+        result.timings[snapshot.name] = result.timings.get(snapshot.name, 0.0) + (time.perf_counter() - task_started)
         return
 
     relation = SqlRelation(ast=resolved)

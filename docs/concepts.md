@@ -9,15 +9,19 @@ and **durable streaming ingestion** — one binary, one state store, one warehou
 - **Model** — one node in the DAG: a SQL file or a Python function that produces a relation.
   See [models](models.md).
 - **Snapshot** — an immutable, fingerprinted physical table for one version of a model
-  (`interlace__<schema>.<model>__<fingerprint>`). A model's definition change mints a new
-  fingerprint and a new snapshot; the old one survives until `gc`.
+  (`interlace__<schema>.<base>__<fingerprint>`, `<base>` = the schema-stripped model name). A
+  model's definition change mints a new fingerprint and a new snapshot; the old one survives
+  until `gc`. (Owned planes only — terminal `table`/`file` models deliver externally instead.)
 - **Environment** — a named set of views over snapshots. `prod` is the unprefixed namespace;
   everything else is a prefixed sandbox. Promotion is an atomic view swap. See
   [environments](environments.md).
 - **Plan / apply** — `plan` diffs the compiled project against an environment and previews
   what would change; `apply` builds the changed snapshots, runs checks, and promotes.
-- **Strategy** — how a model's query becomes a table (`full`, `merge_by_key`,
-  `incremental_by_time`, `scd_type_2`, `full_merge`, or `view`). See [strategies](strategies.md).
+- **Strategy** — how a model's query becomes a table (`full`, `merge_by_key`, `full_merge`,
+  `incremental_by_time`, `scd_type_2`; `append` for an external `table`). See
+  [strategies](strategies.md).
+- **Materialise** — *where* the result lands: `virtual`/`view`/`ephemeral` (interlace-owned) or
+  `table`/`file` (terminal, external — reverse ETL). See [models](models.md#materialisations).
 - **Check** — a data-quality assertion that gates promotion. See [checks](checks.md).
 - **Stream** — a durable ingestion endpoint; publishes land in a WAL log and materialise
   exactly-once into a warehouse table. See [streaming](streaming.md).
@@ -37,6 +41,10 @@ fingerprint against the one promoted in the target environment and classifies th
   previous physical table and the environment view repoints. **Column pruning** extends this
   to semantic upstream changes: a downstream that provably consumes none of the columns a
   change touched is clean. Both proofs are conservative — any ambiguity rebuilds.
+
+These are the differ's internal labels; the `category` shown in `interlace plan` is only
+`breaking` / `non_breaking` / `forward_only` (additive and clean both surface as `non_breaking`
+— the rebuild-vs-reuse distinction shows in the plan's Build column).
 
 `apply` then, under a lock so one writer touches the warehouse at a time: builds the changed
 snapshots (DAG-scheduled — each model starts when its in-plan ancestors finish, bounded by

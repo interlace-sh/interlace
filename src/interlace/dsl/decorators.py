@@ -14,11 +14,15 @@ from typing import Any
 
 from interlace.checks.spec import CheckSpec, parse_checks
 from interlace.exceptions import DefinitionError
-from interlace.exports import ExportConfig
+from interlace.sinks import FILE_FORMATS
 
 ModelFn = Callable[..., Any]
 
-_MATERIALISATIONS = frozenset({"table", "view", "ephemeral"})
+# The materialisation planes: `virtual`/`view`/`ephemeral` are interlace-owned
+# (a fingerprinted snapshot read through an environment view); `table`/`file` are
+# terminal deliveries into a destination interlace does not own.
+_MATERIALISATIONS = frozenset({"virtual", "view", "ephemeral", "table", "file"})
+_KEYED_STRATEGIES = frozenset({"merge_by_key", "full_merge", "scd_type_2"})
 _DRIFT_MODES = frozenset({"evolve", "reject", "quarantine"})
 
 
@@ -35,10 +39,46 @@ def _as_columns(value: dict[str, str | None] | Sequence[str] | None) -> dict[str
     return {str(name): None for name in value}
 
 
-def _as_export(value: ExportConfig | dict[str, Any] | None) -> ExportConfig | None:
-    if value is None or isinstance(value, ExportConfig):
-        return value
-    return ExportConfig.from_dict(value)
+def validate_materialise(
+    name: str,
+    *,
+    materialise: str,
+    strategy: str,
+    target: str | None,
+    path: str | None,
+    format: str | None,
+    key: tuple[str, ...],
+) -> None:
+    """Validate a model's materialise/strategy/params, with migration-aware errors.
+
+    Shared by the ``@model`` decorator and SQL discovery so both surfaces reject the
+    same bad configs (and point ``materialise: table`` without a target back at
+    ``virtual``)."""
+    if materialise not in _MATERIALISATIONS:
+        raise DefinitionError(
+            f"model {name!r}: unknown materialise {materialise!r}; expected one of {sorted(_MATERIALISATIONS)}"
+        )
+    if materialise == "table" and not target:
+        raise DefinitionError(
+            f"model {name!r}: materialise: table needs a target: (<alias>.<schema>.<table>); "
+            f"did you mean materialise: virtual?"
+        )
+    if materialise == "file":
+        if not path:
+            raise DefinitionError(f"model {name!r}: materialise: file needs a path:")
+        if format not in FILE_FORMATS:
+            raise DefinitionError(
+                f"model {name!r}: materialise: file needs format: one of {sorted(FILE_FORMATS)} (got {format!r})"
+            )
+        if strategy != "full":
+            raise DefinitionError(
+                f"model {name!r}: materialise: file supports only strategy: full (overwrite); got {strategy!r} — "
+                f"append/merge into a single file isn't supported, use materialise: table"
+            )
+    if strategy == "append" and materialise != "table":
+        raise DefinitionError(f"model {name!r}: strategy: append requires materialise: table")
+    if strategy in _KEYED_STRATEGIES and not key:
+        raise DefinitionError(f"model {name!r}: strategy: {strategy} requires key:")
 
 
 @dataclass
@@ -48,7 +88,7 @@ class ModelDef:
     name: str
     fn: ModelFn | None = None
     sql: str | None = None
-    materialise: str = "table"
+    materialise: str = "virtual"
     strategy: str = "full"
     key: tuple[str, ...] = ()
     dialect: str | None = None
@@ -65,9 +105,20 @@ class ModelDef:
     owner: str | None = None
     description: str | None = None
     columns: dict[str, str | None] | None = None  # output contract: column -> type (None = any)
-    export: ExportConfig | None = None  # presence makes this model a sink (no table/view)
+    # Terminal materialisation (materialise: table/file) params — a destination
+    # interlace does not own. `target` for a table, `path` + `format` for a file.
+    target: str | None = None  # <alias>.<schema>.<table> for materialise: table
+    path: str | None = None  # output path for materialise: file
+    format: str | None = None  # csv | parquet | json for materialise: file
+    environments: tuple[str, ...] = ("prod",)  # which environments actually deliver a terminal model
     schedule: dict[str, str] | None = None  # {"cron": "0 * * * *"} or {"every": "5m"} for `interlace serve`
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
+
+    @property
+    def is_terminal(self) -> bool:
+        """A terminal model delivers into an external destination (table/file):
+        no managed snapshot table, no environment view, environment-gated."""
+        return self.materialise in ("table", "file")
 
 
 @dataclass
@@ -124,7 +175,7 @@ REGISTRY = Registry()
 def model(
     name: str | None = None,
     *,
-    materialise: str = "table",
+    materialise: str = "virtual",
     strategy: str = "full",
     key: str | Sequence[str] = (),
     dialect: str | None = None,
@@ -137,9 +188,9 @@ def model(
     owner: str | None = None,
     description: str | None = None,
     columns: dict[str, str | None] | Sequence[str] | None = None,
-    export: ExportConfig | dict[str, Any] | None = None,
     schedule: dict[str, str] | None = None,
     checks: Sequence[dict[str, Any] | CheckSpec] | None = None,
+    export: Any = None,  # removed in 2.0 — kept only to raise a migration error
 ) -> Callable[[ModelFn], ModelFn]:
     """Declare a Python model. The function returns a ``Relation`` (or composes one).
 
@@ -151,12 +202,26 @@ def model(
     ``engine`` pins the model to a named engine from ``interlace.yaml`` (defaults
     to the project's ``default_engine``).
     """
+    model_name = name or "<model>"
+    if export is not None:
+        raise DefinitionError(
+            f"model {model_name!r}: export= was removed in 2.0 — a Python model cannot deliver to a "
+            f"table/file directly; write a SQL model (materialise: table/file) over the function's output"
+        )
     if materialise not in _MATERIALISATIONS:
         raise DefinitionError(f"unknown materialise {materialise!r}; expected one of {sorted(_MATERIALISATIONS)}")
     if materialise == "ephemeral":
         raise DefinitionError("Python models cannot be ephemeral; ephemeral requires SQL (it is inlined as a CTE)")
     if materialise == "view":
         raise DefinitionError("Python models cannot be views; a view requires SQL the engine can evaluate")
+    if materialise in ("table", "file"):
+        raise DefinitionError(
+            f"Python models cannot materialise as {materialise!r} yet; write a SQL model "
+            f"(materialise: {materialise}) that selects from this model's output"
+        )
+    validate_materialise(
+        model_name, materialise=materialise, strategy=strategy, target=None, path=None, format=None, key=_as_tuple(key)
+    )
 
     def decorator(fn: ModelFn) -> ModelFn:
         REGISTRY.register_model(
@@ -176,7 +241,6 @@ def model(
                 owner=owner,
                 description=description,
                 columns=_as_columns(columns),
-                export=_as_export(export),
                 schedule=schedule,
                 checks=parse_checks(checks, name or fn.__name__),
             )

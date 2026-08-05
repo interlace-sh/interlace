@@ -59,8 +59,8 @@ async def _upstream_reader(
     engine: EngineAdapter,
     physical: Mapping[str, TableRef] | None,
 ) -> pa.RecordBatchReader:
-    if upstream.export is not None:
-        raise PlanError(f"model {upstream.name!r} is a sink; it has no readable output")
+    if upstream.is_terminal:
+        raise PlanError(f"model {upstream.name!r} materialises as {upstream.materialise!r}; it has no readable output")
     if upstream.materialise == "ephemeral":  # no physical table: run its (inlined) query
         return await engine.fetch(resolve_model_query(upstream, compiled, physical))
     table = (physical or {}).get(upstream.name, upstream.physical_table)

@@ -1,0 +1,4 @@
+.interlace/
+*.duckdb
+*.duckdb.wal
+out/

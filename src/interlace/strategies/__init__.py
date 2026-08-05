@@ -5,19 +5,23 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from interlace.exceptions import PlanError
+from interlace.strategies.append import Append
 from interlace.strategies.base import Strategy, table_expr
 from interlace.strategies.full import FullRefresh
 from interlace.strategies.full_merge import FullMerge
 from interlace.strategies.incremental_by_time import IncrementalByTime
 from interlace.strategies.merge_by_key import MergeByKey
+from interlace.strategies.replace_in_place import ReplaceInPlace
 from interlace.strategies.scd_type_2 import ScdType2
 from interlace.strategies.view import View
 
 __all__ = [
+    "Append",
     "FullMerge",
     "FullRefresh",
     "IncrementalByTime",
     "MergeByKey",
+    "ReplaceInPlace",
     "ScdType2",
     "Strategy",
     "View",
@@ -34,14 +38,25 @@ def resolve_strategy(
 ) -> Strategy:
     """Pick the strategy for a model's ``materialise``/``strategy`` config.
 
-    Supports ``view``; ``table`` + ``full`` / ``merge_by_key`` / ``full_merge`` /
-    ``incremental_by_time`` / ``scd_type_2``.
+    Two planes carry data strategies. ``virtual`` (interlace owns a fresh
+    fingerprinted table it may replace) and ``table`` (an external table interlace
+    delivers into but never drops) share the keyed and windowed strategies; they
+    differ only in ``full``: ``virtual`` rewrites the whole table (``FullRefresh``,
+    ``CREATE OR REPLACE``), ``table`` empties and re-fills it in place
+    (``ReplaceInPlace``). ``append`` is external-only. ``view`` is virtual-plane
+    only. ``file`` is delivered by a COPY, not a :class:`Strategy` (see
+    ``sinks.file_statements``).
     """
     if materialise == "view":
         return View()
-    if materialise == "table":
+    if materialise in ("virtual", "table"):
+        owned = materialise == "virtual"
         if strategy == "full":
-            return FullRefresh()
+            return FullRefresh() if owned else ReplaceInPlace()
+        if strategy == "append":
+            if owned:
+                raise PlanError("append requires materialise: table (an external table)")
+            return Append()
         if strategy == "merge_by_key":
             if not key:
                 raise PlanError("merge_by_key requires a key", details={"materialise": materialise})

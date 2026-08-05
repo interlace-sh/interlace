@@ -68,9 +68,10 @@ async def run_plan(
             continue
         plan.changes.append(ModelChange(model.name, ChangeType.MODIFIED, None, None, model.fingerprint))
 
-        is_incremental = (
-            model.strategy == "incremental_by_time" and model.export is None and model.materialise != "ephemeral"
-        )
+        # incremental into the interlace-owned virtual plane, or into a terminal
+        # `table` (windowed delete+insert against the external target)
+        is_incremental = model.strategy == "incremental_by_time" and model.materialise != "ephemeral"
+        wants_view = model.materialise in ("virtual", "view")  # terminal table has no env view
         if is_incremental:
             grain = parse_grain(model.interval or "1d")
             filled = await state.get_intervals(model.name, model.fingerprint)
@@ -79,9 +80,10 @@ async def run_plan(
                 # nothing filled yet and no window given: bootstrap — apply derives
                 # the source's time-column range and fills it as one interval
                 plan.backfills.append(BackfillTask(snapshot=snapshot, bootstrap=True))
-                plan.virtual_updates.append(
-                    ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
-                )
+                if wants_view:
+                    plan.virtual_updates.append(
+                        ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
+                    )
                 continue
             if start is None and end is None:
                 window_hint = _window(start, end, grain)
@@ -93,9 +95,10 @@ async def run_plan(
             for window in slice_interval(_window(start, end, grain), grain):
                 if restate or not filled.covers(window):  # restate reprocesses; otherwise catch up
                     plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window))
-            plan.virtual_updates.append(
-                ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
-            )
+            if wants_view:
+                plan.virtual_updates.append(
+                    ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
+                )
         else:
             schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
 

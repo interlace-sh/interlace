@@ -151,7 +151,7 @@ A Python model's function parameters name its upstream models; each is passed a 
 exactly two accessors:
 
 ```python
-@model(materialise="table", strategy="merge_by_key", key="order_id")
+@model(strategy="merge_by_key", key="order_id")  # materialise defaults to virtual
 def enriched_orders(raw_orders, fx_rates, cursor=None, this=None):
     for batch in raw_orders.reader():      # bounded-memory single-pass Arrow batches
         yield transform(batch)
@@ -337,57 +337,62 @@ positional/computed GROUP BY, a changed alias referenced from other clauses or s
 projections, CTE indirection, duplicate output names. Conservative by construction — a
 false "touched"/"consumed" only costs a rebuild, never correctness.
 
-### Reverse ETL & external sinks (where the snapshot+view layer stops)
+### Two materialisation planes: virtual (owned) vs terminal (table / file)
 
-**Current state.** `attach: {alias: uri}` config wires external databases
-(Postgres/SQLite/DuckDB/…) into the warehouse engine at open; a **sink is an ordinary
-model with an `export:` block** — `export: {to: table, target: <alias>.<schema>.<table>,
-mode: …}`. Table modes: `replace` (DELETE all + INSERT in place — the live table is
-never dropped, so grants and readers survive), `append`, and the keyed `merge_by_key` /
-`full_merge`, which reuse the managed-model strategy AST builders pointed at the external
-catalog. File destinations (`parquet`/`csv`/`json` + `path`) go through DuckDB `COPY`.
-`export.environments` gates the side effect (default: production only — see Safety
-below). **There is no `@sink` decorator** — the export block is the only surface — and no
-delivery ledger or SaaS/API connectors; those are roadmap (§14).
+`materialise` names **where a model's result lands and who owns it** — one axis, orthogonal
+to `strategy` (*how* it is written):
 
-The fingerprinted-snapshot-plus-view layer only works because **interlace owns those
-tables** — it can freely create `model__<fp>` shadow copies and atomically repoint a
-view. Reverse ETL breaks every one of those assumptions, so it does **not** go through
-that machinery: the target is owned by an external system (you can't shadow-and-swap a
-hardcoded table, and an API isn't a table at all); writes are side-effecting and
-non-recreatable (you can't roll back a Salesforce upsert by repointing a view); the
-natural semantics are upsert/merge or append, not create-and-replace. So delivery is
-separated from transformation: a sink reads an already-built, already-checked managed
-model and pushes its result to a live destination. The transformation stays declarative,
-versioned, lineage-tracked, and rollback-able; only the *delivery* is side-effecting.
-(This mirrors how Census/Hightouch split "model in the warehouse" from "sync to
-destination.")
+- **virtual plane** (`virtual`, `view`, `ephemeral`) — interlace owns the target. A `virtual`
+  model builds an immutable fingerprinted snapshot table `interlace__<schema>.<base>__<fp>`
+  that consumers read through an *environment view*. Because the build target is decoupled
+  from the read target, this plane gets the full machinery: breaking-change-via-new-table,
+  rebuild-skip, sandboxed environments, view-swap promotion, rollback, and gc.
+- **terminal plane** (`table`, `file`) — a destination interlace does *not* own. `table`
+  delivers into an external, attached table (`target: <alias>.<schema>.<table>`); `file`
+  writes a `path` (`format: parquet|csv|json`) via DuckDB `COPY`. A terminal model is still
+  fingerprinted (change-tracking) and DAG-scheduled, but produces **no snapshot table and no
+  environment view** — it is a side-effecting delivery.
 
-**Representation.** A sink is a model whose `export` presence means: no snapshot table,
-no environment view — but it is still fingerprinted (change-tracking) and built (so
-`interlace run` re-exports). `compile_models` assigns physical snapshot tables only to
-managed materialisations (`table`/`view`/`ephemeral`); a sink bypasses the physical
-layer. Idempotency comes from the key (`merge_by_key`/`full_merge` make re-runs safe),
-not from recreation.
+**Strategies are destination-agnostic.** The accumulating strategies
+(`merge_by_key`/`full_merge`/`incremental_by_time`/`scd_type_2`) are `CREATE IF NOT EXISTS` +
+surgical `DELETE`/`UPDATE`/`INSERT` and run identically against an owned `virtual` table or an
+external `table`. Only `full` differs by ownership: it rewrites the owned table
+(`CREATE OR REPLACE` → `FullRefresh`) but empties an external one in place (DELETE all +
+INSERT → `ReplaceInPlace`), which **never drops it**, so grants and readers survive. `append`
+is external-only. `view` is virtual-only. `resolve_strategy(materialise, strategy, …)` is the
+single dispatch; `plan.apply` routes a terminal build to `_deliver_table` (stage → align →
+strategy) or the file COPY instead of a snapshot build + view swap.
+
+**Why the six virtual-plane powers can't apply to a terminal.** The snapshot+view layer works
+only because interlace owns its tables — it shadow-builds `model__<fp>` beside the live one
+and atomically repoints a view. A terminal target conflates the build target with the read
+target, so a **breaking change cannot apply to a `table`**: there is no old version to serve
+during the build and no atomic cutover. A terminal table therefore evolves **additively only**
+(new columns via `ALTER … ADD COLUMN`, widening, NULL-fill/cast in `_align_stage_to_target`)
+and is never dropped; a definition change simply re-delivers. Reuse-skip, sandboxes, rollback,
+gc, and forward-only are likewise inherent to content-addressing and do not exist for a
+terminal (its phantom snapshot row exists only so an unchanged fingerprint isn't re-delivered).
+This mirrors how Census/Hightouch split "model in the warehouse" from "sync to destination".
 
 **Spectrum of output kinds and their rollback story:**
 
-| Output kind | Physical model | Rollback |
+| `materialise` | Physical model | Rollback |
 |---|---|---|
-| managed `table`/`view`/`incremental` | snapshot table + env view | instant view-swap, zero-copy dev envs |
-| external SQL table interlace solely owns | fixed-name table, transactional replace/merge in place | atomic within that DB, no cross-env views |
-| reverse-ETL delivery (live/shared table or API) | keyed upsert / append via connector + delivery ledger *(roadmap)* | **forward-correction only** — replay a window + keyed upsert converges; *not* view-swap rollback |
+| `virtual` / `view` / `incremental` | snapshot table + env view | instant view-swap, zero-copy dev envs |
+| `table` (external, interlace delivers) | fixed-name table; replace/append/merge/incremental in place, never dropped; additive schema evolution | none (never dropped); re-deliver to correct — keyed strategies make it idempotent |
+| `file` | overwrite via `COPY` | none; re-deliver overwrites |
+| reverse-ETL to an API + delivery ledger *(roadmap)* | keyed upsert via connector | **forward-correction only** |
 
-**Safety — the property that matters most:** virtual environments must never silently
-fan side-effecting writes out to production. Sinks are environment-gated: the export only
-*executes* when the plan's environment appears in its `environments` allow-list (default:
-production only), so a dev apply never fires reverse-ETL at a live external table. In a
-gated-off environment the sink's snapshot is still recorded so the plan settles — nothing
-leaves the warehouse. (The gating list is part of the fingerprint, so widening it
-re-plans the sink rather than classifying it UNCHANGED and never delivering.)
+**Safety — the property that matters most:** virtual environments must never silently fan
+side-effecting writes out to production. Terminal models are environment-gated: delivery only
+*executes* when the plan's environment appears in the model's `environments` allow-list
+(default: production only), so a dev apply never fires reverse-ETL at a live external table. In
+a gated-off environment the terminal's snapshot is still recorded so the plan settles — nothing
+leaves the warehouse. (The gating list is part of the fingerprint, so widening it re-plans the
+model rather than classifying it UNCHANGED and never delivering.)
 
 ```sql
-/* interlace: { export: { to: parquet, path: exports/orders.parquet } } */
+/* interlace: { materialise: file, format: parquet, path: exports/orders.parquet } */
 SELECT * FROM orders
 ```
 
@@ -669,7 +674,7 @@ src/interlace/
   config/      # config load; ${VAR} + .env interpolation
   cli/         # init plan apply run restate gc scheduler serve models lineage env runs
                #   checks streams engines cancel apikey
-  exports.py   # sinks: file + table delivery, environment gating
+  sinks.py     # terminal delivery helpers: external table target + file COPY
   project.py   # Project.load/compile; engine + state + stream-log opening
 ```
 
@@ -736,9 +741,8 @@ only shipped behaviour:
   Arrow-native end-to-end), which unlock "author in Snowflake SQL, run it in Snowflake in
   prod" (§4, §5).
 - **Reverse-ETL SaaS connectors + delivery ledger** — a `SinkConnector` (batch HTTP) for
-  API/SaaS destinations, a per-sink delivery ledger (cursor / last-synced hash per key)
-  for change-only pushes, and `@sink(source=…)` decorator sugar over the export block
-  (§6).
+  API/SaaS destinations (a third terminal plane beyond `table`/`file`), a per-target
+  delivery ledger (cursor / last-synced hash per key) for change-only pushes (§6).
 - **First-class streaming models & outbound consumers** — a `kind="incremental_stream"`
   model with `on_stream(...)` triggers and a `ctx.stream_batch(...)` accessor; outbound
   consumer groups (webhook, RabbitMQ, …) with read→process→ack, `<stream>__dlq`

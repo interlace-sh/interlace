@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.0.0 (2026-08-05)
+
+**Breaking: materialisation reframe.** `materialise` is now the destination/ownership
+plane, and the old `export:` block is gone. Two planes:
+
+- **virtual** (interlace-owned) — `virtual` (was `table`; **now the default**), `view`,
+  `ephemeral`. Full snapshot machinery: rebuild-skip, sandboxes, view-swap promotion,
+  rollback, gc, forward-only.
+- **terminal** (external, interlace delivers) — `table` (**new meaning**: an external
+  `target: <alias>.<schema>.<table>`) and `file` (`path:` + `format:`). No snapshot table,
+  no environment view; environment-gated; additive schema evolution only, never dropped.
+
+Strategies now apply across both planes. `full` rewrites an owned table
+(`CREATE OR REPLACE`) but replaces an external one in place (DELETE all + INSERT, never
+drops); new `append` strategy (external `table`); `incremental_by_time` now works **into an
+external table** (windowed DELETE + INSERT), which the old `export:` sink could not do.
+
+**Migration.**
+
+- `materialise: table` (the old interlace-owned snapshot) → `materialise: virtual` (or drop
+  it — `virtual` is the default). A bare `materialise: table` without a `target:` now fails
+  loudly ("did you mean materialise: virtual?").
+- `export: {to: table, target: T, mode: M, key: K}` → `materialise: table, target: T,
+  strategy: M, key: K`.
+- `export: {to: parquet|csv|json, path: P}` → `materialise: file, format: <fmt>, path: P`.
+- A lingering `export:` key (SQL header) or `export=` kwarg (`@model`) raises a migration
+  error pointing at the replacement.
+
+The API `ModelInfo`/`ModelDetail` field `is_sink` is renamed `is_terminal`. `exports.py` is
+removed (helpers moved to `sinks.py`); the delivery mode lives on `strategy`, not a separate
+`export.mode`.
+
 ## 1.0.2 (2026-08-03)
 
 **Security.** The SQL query console (`POST /query`) could read arbitrary local

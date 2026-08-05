@@ -128,7 +128,7 @@ def test_checks_run_fails_on_blocking_check(tmp_path: Path) -> None:
     model = project / "models" / "m.sql"
     model.write_text("/* interlace: {checks: [{accepted_values: {column: x, values: [1]}}]} */\nSELECT 1 AS x")
     (project / "models" / "report.sql").write_text(
-        "/* interlace: {export: {to: parquet, path: out/report.parquet}} */\nSELECT x FROM m"
+        "/* interlace: {materialise: file, format: parquet, path: out/report.parquet} */\nSELECT x FROM m"
     )
     assert runner.invoke(app, ["apply", "--path", str(project)]).exit_code == 0
 
@@ -156,14 +156,15 @@ def test_run_rejects_bad_iso_window(tmp_path: Path) -> None:
 
 
 def test_sink_declaring_checks_is_rejected_at_compile(tmp_path: Path) -> None:
-    """A sink has no managed table to check — declaring checks on one is a
-    definition error, not a silent skip."""
+    """A terminal table/file has no managed table to check — declaring checks on one
+    is a definition error, not a silent skip."""
     project = tmp_path / "proj"
     (project / "models").mkdir(parents=True)
     (project / "interlace.yaml").write_text("name: gate\n")
     (project / "models" / "m.sql").write_text("SELECT 1 AS x")
     (project / "models" / "report.sql").write_text(
-        "/* interlace: {export: {to: parquet, path: out/r.parquet}, checks: [{not_null: x}]} */\nSELECT x FROM m"
+        "/* interlace: {materialise: file, format: parquet, path: out/r.parquet, checks: [{not_null: x}]} */\n"
+        "SELECT x FROM m"
     )
     result = runner.invoke(app, ["plan", "--path", str(project)])
     assert result.exit_code != 0

@@ -48,8 +48,9 @@ Two parameter names are **reserved** for incremental extraction and never name a
   first build), for anti-join backfills against what the model already produced.
 
 Sync functions run in a worker thread; async functions run on the event loop. A Python model
-must materialise as a `table` and can't be a sink or use `incremental_by_time` (use `cursor`
-+ a keyed strategy instead).
+must materialise as `virtual` and can't be terminal (`table`/`file`) or use
+`incremental_by_time` (use `cursor` + a keyed strategy instead). To deliver a Python model's
+output to an external table/file, write a SQL `materialise: table`/`file` model over it.
 
 ## Dynamic / programmatic models
 
@@ -120,13 +121,20 @@ above is the right shape.
 
 ## Materialisations
 
-| `materialise` | Produces | Notes |
-|---|---|---|
-| `table` (default) | a physical snapshot table | built by the configured `strategy` |
-| `view` | a `CREATE OR REPLACE VIEW` | no data; re-evaluated on read |
-| `ephemeral` | nothing | the query is inlined (as a CTE) into downstream models; no table, no view, no snapshot |
+`materialise` is the destination/ownership plane. **Owned** planes (`virtual`/`view`/`ephemeral`)
+produce an interlace-managed snapshot read through an environment view; **terminal** planes
+(`table`/`file`) deliver to a destination interlace doesn't own (reverse ETL), with no view,
+environment-gated, additively evolved but never dropped.
 
-For `table`, the `strategy` decides *how* the table is written — see
+| `materialise` | Plane | Produces | Notes |
+|---|---|---|---|
+| `virtual` (default) | owned | a physical snapshot table | built by the configured `strategy` |
+| `view` | owned | a `CREATE OR REPLACE VIEW` | no data; re-evaluated on read |
+| `ephemeral` | owned | nothing | the query is inlined (as a CTE) into downstream models; no table/view/snapshot |
+| `table` | terminal | rows in an external table (`target:`) | reverse ETL into an attached DB; `strategy` picks the delivery |
+| `file` | terminal | a file (`path:` + `format:`) | overwrite via `COPY`; `parquet`/`csv`/`json` |
+
+For `virtual` (and an external `table`), the `strategy` decides *how* the table is written — see
 [strategies](strategies.md).
 
 ## `@model` / config keys
@@ -136,8 +144,8 @@ Every key below is settable in the SQL comment block or as a `@model(...)` argum
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `name` | str | filename / fn name | Model identifier. |
-| `materialise` | str | `table` | `table` \| `view` \| `ephemeral`. |
-| `strategy` | str | `full` | For `table`: `full` \| `merge_by_key` \| `full_merge` \| `incremental_by_time` \| `scd_type_2`. |
+| `materialise` | str | `virtual` | `virtual` \| `view` \| `ephemeral` (interlace-owned) \| `table` \| `file` (terminal). |
+| `strategy` | str | `full` | For `virtual`/`table`: `full` \| `merge_by_key` \| `full_merge` \| `incremental_by_time` \| `scd_type_2`; `append` is `table`-only. `file` is overwrite (`full`). |
 | `key` | str \| list | — | Key column(s) for keyed strategies. |
 | `time_column` | str | — | Partition column for `incremental_by_time`. |
 | `interval` | str | — | Grain for `incremental_by_time` (e.g. `1d`, `1h`). |
@@ -152,19 +160,25 @@ Every key below is settable in the SQL comment block or as a `@model(...)` argum
 | `columns` | map | — | Output contract `{column: type|null}`; a built table violating it blocks promotion (`SchemaError`). |
 | `schedule` | map | — | `{cron: "0 * * * *"}` or `{every: "5m"}` for the scheduler. |
 | `checks` | list | — | Data-quality [checks](checks.md). |
-| `export` | map | — | Makes the model a [sink](streaming.md#reverse-etl-sinks) (no table/view). |
+| `target` | str | — | `materialise: table`: external `<alias>.<schema>.<table>` to deliver into. |
+| `path` | str | — | `materialise: file`: output path. |
+| `format` | str | — | `materialise: file`: `parquet` \| `csv` \| `json`. |
+| `environments` | list | `[prod]` | Terminal models: which environments actually deliver (the side-effect gate). |
 
 ## Fingerprints and rebuild-skip
 
 Each model gets a **data fingerprint** — a hash of its canonical SQL (or Python source), its
 strategy config, and the sorted fingerprints of its upstreams. Any change that could affect
 output changes the fingerprint, which changes the physical table name
-(`interlace__<schema>.<model>__<fp>`). This is how `plan` knows what to rebuild.
+(`interlace__<schema>.<base>__<fp>`, where `<base>` is the schema-stripped model name). This is
+how `plan` knows what to rebuild.
 
-The differ classifies each changed model as `breaking` (data may differ — rebuild),
-`additive` (only new columns appeared — rebuild, downstream stays non-breaking), or `clean`
-(output provably identical — **not rebuilt**, the new snapshot reuses the previous physical
-table and the view repoints). **Column pruning** extends `clean` to semantic upstream
-changes: if a change provably touched only certain output columns and a downstream provably
-consumes none of them, the downstream is clean too. Both proofs are conservative — any
-ambiguity falls back to "rebuild".
+The differ classifies each changed model internally as **breaking** (data may differ — rebuild),
+**additive** (only new columns appeared — rebuild, downstream stays non-breaking), or **clean**
+(output provably identical — **not rebuilt**, the new snapshot reuses the previous physical table
+and the view repoints). Note these are the differ's internal labels: a change's `category` on the
+wire and in `interlace plan` is only `breaking` / `non_breaking` / `forward_only` (additive and
+clean both surface as `non_breaking`; the rebuild-vs-reuse distinction shows in the plan's Build
+column). **Column pruning** extends `clean` to semantic upstream changes: if a change provably
+touched only certain output columns and a downstream provably consumes none of them, the
+downstream is clean too. Both proofs are conservative — any ambiguity falls back to "rebuild".

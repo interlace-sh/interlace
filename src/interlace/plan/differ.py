@@ -237,7 +237,7 @@ def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, enviro
         intervals=previous.intervals,
     )
     plan.reuses.append(snapshot)
-    if model.export is None and model.materialise in ("table", "view"):
+    if model.materialise in ("virtual", "view"):  # terminal table/file has no env view to repoint
         plan.virtual_updates.append(
             ViewSwap(env_view(environment, model.name), previous.physical_table, engine=model.engine)
         )
@@ -357,6 +357,7 @@ async def diff(
             forward_only
             and rebuild
             and model.strategy in _HISTORY_STRATEGIES
+            and not model.is_terminal  # a terminal table is never dropped: inherently forward-only, nothing to seed
             and previous is not None
             and previous.engine == model.engine  # history can't be copied across engines
         )

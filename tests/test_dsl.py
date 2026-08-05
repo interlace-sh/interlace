@@ -24,7 +24,7 @@ def test_model_registers_with_function_name_by_default() -> None:
     def orders() -> None: ...
 
     assert "orders" in REGISTRY.models
-    assert REGISTRY.models["orders"].materialise == "table"
+    assert REGISTRY.models["orders"].materialise == "virtual"
 
 
 def test_model_explicit_name_and_key_normalisation() -> None:

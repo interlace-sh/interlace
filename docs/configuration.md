@@ -64,9 +64,10 @@ engines:
     database: "${REPORTING_DSN}"      # postgresql://user@host:5432/db
 
 attach:
-  crm: "postgresql://etl@crm.internal:5432/crm"   # a reverse-ETL sink target
+  crm: "postgresql://etl@crm.internal:5432/crm"   # a reverse-ETL (materialise: table) target
 ```
 
-Models then pin `engine: reporting` to build in Postgres, or export to `crm.<schema>.<table>`.
+Models then pin `engine: reporting` to build in Postgres, or deliver into
+`crm.<schema>.<table>` with `materialise: table, target: crm.<schema>.<table>`.
 Anything that dials a database must name its host explicitly — a Postgres DSN without a host
 is rejected (libpq would silently default to a local socket).

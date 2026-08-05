@@ -65,5 +65,5 @@ wall ≪ cpu is the point: independent DAG branches build in parallel
 - `incremental_by_time` + the interval ledger: catchup vs `restate`
 - a Python model streaming Arrow `RecordBatch`es with bounded memory,
   upserted via `merge_by_key`
-- a Parquet file sink (`export: {to: parquet, ...}`)
+- a Parquet file materialisation (`materialise: file, format: parquet`)
 - `row_count` / `not_null` checks gating promotion at volume

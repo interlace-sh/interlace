@@ -1,0 +1,6 @@
+name: materialisations
+default_dialect: duckdb
+# The "external, interlace-doesn't-own" database that the terminal `table` models
+# deliver into (reverse ETL). interlace never drops these tables.
+attach:
+  ext: external.duckdb

@@ -73,7 +73,7 @@ export async function render(el, { api, feed, go, toast, modal, params }) {
       return {
         name,
         output: info.output ?? "—",
-        strategy: info.is_sink ? (info.strategy ?? "—") : (info.strategy ?? "—"),
+        strategy: info.strategy ?? "—",
         engine: info.engine ?? "default",
         deps: (info.depends_on ?? []).join(", "),
         rows: payload.rows?.[name],

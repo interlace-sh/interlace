@@ -1,0 +1,128 @@
+"""The materialisation reframe: virtual / view / ephemeral (interlace-owned) vs
+table / file (terminal). Covers the plane-aware resolver, the compile-time guards,
+and terminal contract validation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from conftest import fetch_rows as _rows
+
+from interlace.dsl.decorators import ModelDef, model, validate_materialise
+from interlace.engines.duckdb import DuckDBAdapter
+from interlace.exceptions import DefinitionError, PlanError, SchemaError
+from interlace.graph.project import compile_models
+from interlace.plan.apply import apply
+from interlace.plan.differ import diff
+from interlace.state.store import SqliteStateStore
+from interlace.strategies import Append, FullRefresh, MergeByKey, ReplaceInPlace, View, resolve_strategy
+
+pytestmark = pytest.mark.unit
+
+
+def test_resolve_strategy_plane_matrix() -> None:
+    # full differs by ownership: virtual rewrites the whole table, table replaces in place
+    assert isinstance(resolve_strategy("virtual", "full"), FullRefresh)
+    assert isinstance(resolve_strategy("table", "full"), ReplaceInPlace)
+    assert isinstance(resolve_strategy("view", "full"), View)
+    # append is external-only; keyed builders are shared across virtual/table
+    assert isinstance(resolve_strategy("table", "append"), Append)
+    assert isinstance(resolve_strategy("table", "merge_by_key", ("id",)), MergeByKey)
+    assert isinstance(resolve_strategy("virtual", "merge_by_key", ("id",)), MergeByKey)
+    with pytest.raises(PlanError, match="append requires materialise: table"):
+        resolve_strategy("virtual", "append")
+
+
+def test_default_materialise_is_virtual() -> None:
+    assert ModelDef(name="m", sql="SELECT 1 AS id").materialise == "virtual"
+    assert ModelDef(name="m", sql="SELECT 1 AS id").is_terminal is False
+    assert ModelDef(name="m", sql="SELECT 1", materialise="table", target="ext.t").is_terminal is True
+
+
+def test_python_model_cannot_be_terminal() -> None:
+    with pytest.raises(DefinitionError, match="cannot materialise as 'table'"):
+
+        @model(name="p", materialise="table")
+        def _p() -> None: ...
+
+
+def test_python_model_export_kwarg_raises_migration_error() -> None:
+    with pytest.raises(DefinitionError, match="export= was removed in 2.0"):
+
+        @model(name="p", export={"to": "table", "target": "ext.t"})
+        def _p() -> None: ...
+
+
+async def test_depending_on_a_terminal_is_rejected() -> None:
+    with pytest.raises(DefinitionError, match="has no readable output"):
+        compile_models(
+            [
+                ModelDef(name="push", sql="SELECT 1 AS id", materialise="table", target="ext.main.t"),
+                ModelDef(name="downstream", sql="SELECT id FROM push"),
+            ]
+        )
+
+
+async def test_terminal_rejects_checks() -> None:
+    from interlace.checks.spec import CheckSpec
+
+    with pytest.raises(DefinitionError, match="no managed table to check"):
+        compile_models(
+            [
+                ModelDef(
+                    name="push",
+                    sql="SELECT 1 AS id",
+                    materialise="table",
+                    target="ext.main.t",
+                    checks=(CheckSpec(type="not_null", columns=("id",), severity="error", params={}),),
+                )
+            ]
+        )
+
+
+async def test_terminal_table_contract_validated(tmp_path: Path) -> None:
+    """A columns: contract on a terminal table is validated against the delivered
+    external table; a type it can't satisfy fails the apply."""
+    engine = DuckDBAdapter.in_memory()
+    engine.attach("ext", ":memory:")
+    store = await SqliteStateStore.open(tmp_path / "s.db")
+    try:
+        ok = compile_models(
+            [
+                ModelDef(
+                    name="push",
+                    sql="SELECT 1 AS id",
+                    materialise="table",
+                    target="ext.main.contracted",
+                    columns={"id": "INTEGER"},
+                )
+            ]
+        )
+        await apply(await diff(ok, "prod", store), compiled=ok, engine=engine, state=store)
+        assert await _rows(engine, "SELECT id FROM ext.main.contracted") == [{"id": 1}]
+
+        bad = compile_models(
+            [
+                ModelDef(
+                    name="push2",
+                    sql="SELECT 'x' AS id",
+                    materialise="table",
+                    target="ext.main.bad",
+                    columns={"id": "INTEGER"},
+                )
+            ]
+        )
+        with pytest.raises(SchemaError):
+            await apply(await diff(bad, "prod", store), compiled=bad, engine=engine, state=store)
+    finally:
+        await store.close()
+        engine.close()
+
+
+def test_validate_materialise_accepts_valid_configs() -> None:
+    validate_materialise("m", materialise="virtual", strategy="full", target=None, path=None, format=None, key=())
+    validate_materialise(
+        "m", materialise="table", strategy="merge_by_key", target="ext.t", path=None, format=None, key=("id",)
+    )
+    validate_materialise("m", materialise="file", strategy="full", target=None, path="o.csv", format="csv", key=())

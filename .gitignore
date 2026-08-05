@@ -78,10 +78,9 @@ examples/*/out/
 
 # Built UI (generated from interlace.ui build)
 
-# Private architectural docs
-docs/*
-!docs/architecture/
-!docs/generated/
+# Docs: the reference set (docs/*.md) and design docs (docs/architecture/) are public;
+# the v0 archive and local working notes under docs/archive/ stay private.
+docs/archive/
 
 # Docker data
 

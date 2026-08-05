@@ -161,8 +161,8 @@ def _render_build_results(result: ApplyResult, compiled: CompiledProject) -> Non
         seconds = result.timings.get(model.name)
         table.add_row(
             model.name,
-            "sink" if model.export is not None else model.materialise,
-            model.export.mode if model.export is not None else model.strategy,  # sinks: the delivery mode
+            model.materialise,
+            model.strategy,
             model.engine,
             ", ".join(model.dependencies) or "—",
             " ".join(parts) or "[dim]—[/]",
@@ -195,7 +195,7 @@ async def _render_empty_incrementals(result: ApplyResult, compiled: CompiledProj
 
     for name in result.built:
         model = compiled.models[name]
-        if model.strategy != "incremental_by_time" or model.export is not None:
+        if model.strategy != "incremental_by_time" or model.is_terminal:
             continue
         counts = result.rows.get(name)
         if counts is not None and (counts.inserted or counts.updated):
@@ -678,12 +678,8 @@ def list_models(path: Path = _PATH, select: list[str] = _SELECT, as_json: bool =
     rows: list[dict[str, Any]] = [
         {
             "name": name,
-            "output": "sink" if compiled.models[name].export is not None else compiled.models[name].materialise,
-            "strategy": (
-                compiled.models[name].export.mode  # type: ignore[union-attr]
-                if compiled.models[name].export is not None
-                else compiled.models[name].strategy
-            ),
+            "output": compiled.models[name].materialise,
+            "strategy": compiled.models[name].strategy,
             "engine": compiled.models[name].engine,
             "depends_on": list(compiled.models[name].dependencies),
         }
@@ -959,7 +955,7 @@ async def _checks_run(environment: str, path: Path, select: list[str], as_json: 
                 continue
             if not model.checks and not compiled.python_checks.get(name):
                 continue
-            if model.export is not None:  # sinks have no physical table to check
+            if model.is_terminal:  # terminal table/file has no managed table to check
                 continue
             snapshot = snapshots.get((name, promoted.get(name, "")))
             if snapshot is None:  # declared but never promoted here: nothing to check against

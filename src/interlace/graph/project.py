@@ -20,7 +20,6 @@ from sqlglot import exp
 from interlace.checks.spec import CheckSpec
 from interlace.dsl.decorators import CheckDef, ModelDef, ModelFn
 from interlace.exceptions import DefinitionError
-from interlace.exports import ExportConfig
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import parse, table_references
 from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint
@@ -51,13 +50,24 @@ class CompiledModel:
     tags: tuple[str, ...]  # for tag: selection
     schedule: dict[str, str] | None  # cron/interval schedule for the trigger engine
     columns: dict[str, str | None] | None  # output contract validated at apply time
-    export: ExportConfig | None  # presence makes this a sink (no physical table/view)
+    # Terminal materialisation (materialise: table/file) — a destination interlace
+    # does not own; empty/None for the interlace-owned virtual/view/ephemeral planes.
+    target: str | None  # <alias>.<schema>.<table> for materialise: table
+    path: str | None  # output path for materialise: file
+    format: str | None  # csv | parquet | json for materialise: file
+    environments: tuple[str, ...]  # which environments actually deliver a terminal model
     ast: exp.Expression | None  # parsed SQL, or None for Python models
     owner: str | None = None  # surfaced in the catalog/API (metadata, not fingerprinted into data)
     description: str | None = None
     fn: ModelFn | None = None  # the Python model function (source is fingerprinted; None for SQL)
     checks: tuple[CheckSpec, ...] = ()  # metadata-fingerprinted: changing a check never rebuilds data
     backfill: str = "auto"  # incremental first-build window policy: auto | none | <ISO start>
+
+    @property
+    def is_terminal(self) -> bool:
+        """A terminal model delivers into an external destination (table/file): no
+        managed snapshot table, no environment view, environment-gated side effects."""
+        return self.materialise in ("table", "file")
 
 
 @dataclass
@@ -147,10 +157,10 @@ def compile_models(
                 f"model {name!r} references unknown engine {engine!r}",
                 details={"engines": sorted(engines)},
             )
-        if definition.export is not None and definition.checks:
+        if definition.is_terminal and definition.checks:
             raise DefinitionError(
-                f"sink {name!r} declares checks, but a sink has no managed table to check — "
-                f"declare them on the model it selects from"
+                f"{name!r} materialises as {definition.materialise!r} but declares checks, and a terminal "
+                f"table/file has no managed table to check — declare them on the model it selects from"
             )
         # Authoring dialect: explicit model dialect, else the engine's, else project default.
         model_default_dialect = dialects_by_engine.get(engine, default_dialect)
@@ -165,6 +175,11 @@ def compile_models(
         definition = definitions[name]
         deps, ast, dialect, engine = resolved[name]
         for dep in deps:  # topo order: deps already compiled
+            if compiled[dep].is_terminal:
+                raise DefinitionError(
+                    f"model {name!r} depends on {dep!r}, which materialises as {compiled[dep].materialise!r} — "
+                    f"a terminal table/file has no readable output; depend on the model it selects from"
+                )
             if compiled[dep].engine != engine and compiled[dep].materialise == "ephemeral":
                 raise DefinitionError(
                     f"model {name!r} on engine {engine!r} inlines ephemeral {dep!r} declared on engine "
@@ -179,20 +194,13 @@ def compile_models(
             "time_column": definition.time_column,
             "cursor": definition.cursor,
             "engine": engine,
-            "export": (
-                {
-                    "to": definition.export.to,
-                    "path": definition.export.path,
-                    "target": definition.export.target,
-                    "mode": definition.export.mode,
-                    "key": list(definition.export.key),
-                    # gating is behavioural: widening it must re-plan the sink, or a
-                    # newly-allowed environment would classify UNCHANGED and never deliver
-                    "environments": sorted(definition.export.environments),
-                }
-                if definition.export
-                else None
-            ),
+            # Terminal params are behavioural and must fold into the fingerprint: a
+            # retargeted delivery, or a widened `environments` gate, must re-plan or a
+            # newly-allowed environment would classify UNCHANGED and never deliver.
+            "target": definition.target,
+            "path": definition.path,
+            "format": definition.format,
+            "environments": sorted(definition.environments),
             "dialect": dialect,
         }
         query = _fingerprint_query(definition, ast)
@@ -235,7 +243,10 @@ def compile_models(
             tags=definition.tags,
             schedule=definition.schedule,
             columns=definition.columns,
-            export=definition.export,
+            target=definition.target,
+            path=definition.path,
+            format=definition.format,
+            environments=definition.environments,
             ast=ast,
             owner=definition.owner,
             description=definition.description,

@@ -50,7 +50,7 @@ export async function render(el, { api, modal, params }) {
     const needle = tableFilter.value.trim().toLowerCase();
     const rows = [];
     for (const model of models) {
-      if (model.is_sink) continue; // sinks have no readable table
+      if (model.is_terminal) continue; // terminal table/file has no readable table
       if (needle && !model.name.toLowerCase().includes(needle)) continue;
       const ref = qualify(model.name, env);
       rows.push(

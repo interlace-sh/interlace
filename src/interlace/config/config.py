@@ -67,7 +67,9 @@ _TYPE_DIALECT = {
     "duckdb": "duckdb",
     "ducklake": "duckdb",
     "quack": "duckdb",
+    "motherduck": "duckdb",
     "postgres": "postgres",
+    "redshift": "redshift",
     "snowflake": "snowflake",
     "bigquery": "bigquery",
 }

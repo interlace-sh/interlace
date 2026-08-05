@@ -2,35 +2,45 @@
 
 An **engine** is where a model's SQL executes and where its table lives. Every model runs on
 one engine; the strategy AST is transpiled to that engine's dialect at execution time.
-interlace ships four engine types.
 
 ## Types
 
-| `type` | Backed by | Role |
-|---|---|---|
-| `ducklake` (default) | DuckDB + the DuckLake extension | Snapshot storage as DuckLake tables over a catalog DB (SQLite or Postgres) with data in local files or object storage. Catalog writes are serialised (DuckLake isn't safe against concurrent DDL on sibling cursors). |
-| `duckdb` | a DuckDB file or `:memory:` | Plain DuckDB. Builds run genuinely in parallel (no catalog-write lock). |
-| `quack` | a remote quack-served warehouse (`quack:host:port`) | SQL is routed to the remote over the quack protocol; Arrow loads stream over an attached catalog. A `quack_token` is used when supplied (a served warehouse typically requires one). |
-| `postgres` | Postgres over ADBC | A native remote engine. Strategies execute *inside* Postgres; Arrow in/out via `adbc_ingest`. Needs the `adbc` extra. |
+The DuckDB family and Postgres are fully tested. The cloud warehouses are **alpha** — wired
+and dialect-correct, but not yet exercised against a live account (there's no local target to
+test them on), so treat them as ready-to-try, not production-blessed.
+
+| `type` | Backed by | Status | Role |
+|---|---|---|---|
+| `ducklake` (default) | DuckDB + the DuckLake extension | stable | Snapshot storage as DuckLake tables over a catalog DB (SQLite or Postgres), data in local files or object storage. Catalog writes are serialised. |
+| `duckdb` | a DuckDB file or `:memory:` | stable | Plain DuckDB. Builds run genuinely in parallel (no catalog-write lock). |
+| `motherduck` | MotherDuck (`md:` cloud DuckDB) | alpha | DuckDB dialect over a cloud catalog. Set `database: md:<db>` (token via `motherduck_token`). |
+| `quack` | a remote quack-served warehouse (`quack:host:port`) | stable | SQL routed over the quack protocol; Arrow loads stream over an attached catalog. |
+| `postgres` | Postgres over ADBC | stable | Strategies execute *inside* Postgres; Arrow in/out via `adbc_ingest`. Needs the `adbc` extra. |
+| `redshift` | Redshift over the Postgres ADBC driver (PG wire) | alpha | Reuses the Postgres transport; Redshift dialect + a native `MERGE`. Needs the `adbc` extra. |
+| `snowflake` | Snowflake over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-snowflake` extra. |
+| `bigquery` | BigQuery over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-bigquery` extra. |
 
 The default warehouse is `ducklake:.interlace/warehouse.ducklake`. DuckDB is also the
 **federation hub**: everything crosses the Python boundary as Arrow `RecordBatchReader`, and
-DuckDB can ATTACH other databases for cross-engine reads.
+DuckDB can ATTACH other databases for cross-engine reads. Remote engines share one ADBC base
+(`engines/adbc.py`): a new ADBC backend is a dialect, a capability set, and a `connect`.
 
 ## Capabilities
 
 Strategies adapt to capability flags (`EngineCaps`):
 
-| Cap | DuckDB family | Postgres | Effect when absent |
+| Cap | DuckDB family / Snowflake / BigQuery | Postgres / Redshift | Effect when absent |
 |---|---|---|---|
 | `supports_create_or_replace` | ✓ | ✗ | `replace` falls back to `DROP` + `CREATE TABLE AS`. |
-| `supports_star_exclude` | ✓ | ✗ | `scd` is refused (it needs `SELECT * EXCLUDE(...)`). |
+| `supports_star_exclude` | ✓ | ✗ | `scd` enumerates the model's columns instead of `SELECT * EXCLUDE(...)` (so a `scd` model needs an explicit projection, not `SELECT *`). |
 | `supports_merge` | ✓ | ✓ | `merge` uses a portable `DELETE`+`INSERT` instead of a native `MERGE`. |
 
-Everything else is portable by construction. `merge` upserts with a native `MERGE` on both
-DuckDB and Postgres (falling back to `DELETE`+`INSERT` when the column list isn't known or the
-engine lacks `MERGE`); `full_merge` and `incremental_by_time` run on Postgres too; `replace`
-and `view` run everywhere. `scd` is DuckDB-family only.
+Everything is portable by construction. `merge` upserts with a native `MERGE` where available
+(DuckDB, Postgres, Redshift, Snowflake, BigQuery), falling back to `DELETE`+`INSERT` when the
+column list isn't known or the engine lacks `MERGE`. **`scd` now runs everywhere** — engines
+without `SELECT * EXCLUDE` (Postgres, Redshift) enumerate the model's own columns to compare
+open rows, so history tracking is no longer DuckDB-only; it just needs an explicit projection.
+`replace`, `view`, `full_merge` and `incremental_by_time` run on every engine.
 
 ## Multi-engine and cross-engine transfers
 
@@ -53,7 +63,13 @@ External databases are wired in with `attach: {alias: uri}`. A terminal model
 (`materialise: table, target: alias.schema.table, ...`) then delivers into that attached
 database (Postgres, SQLite, another DuckDB) — see [streaming § reverse ETL](streaming.md#reverse-etl-terminal-table--file).
 
-## Not yet built
+## Alpha engines
 
-Snowflake and BigQuery adapters are designed-for but not implemented — see the roadmap in
-`docs/architecture/architecture.md`.
+`motherduck`, `redshift`, `snowflake` and `bigquery` are wired, dialect-correct, and share the
+tested ADBC/DuckDB transport, but none is exercised against a live account in CI (no local
+target). SQL generation and capabilities are unit-tested; the connection string and metadata
+probes are the parts to confirm against a real account. Redshift is the safest bet — it rides
+the same Postgres wire and driver that the test suite already covers. Databricks is not built:
+its Python connector is Arrow-native (so the transport would fit) but there's no ADBC bulk-load
+(`adbc_ingest`) path, so `load()` needs a bespoke staged-COPY implementation — deferred until a
+user needs it.

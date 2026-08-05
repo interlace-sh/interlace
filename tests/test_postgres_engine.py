@@ -2,7 +2,7 @@
 
 Live tests need a reachable Postgres — INTERLACE_TEST_PG_DSN, or the local
 disposable container (docker run --name interlace-pg -e POSTGRES_PASSWORD=pg
--p 5455:5432 postgres:16). They skip cleanly when nothing answers.
+-p 5455:5432 postgres:18). They skip cleanly when nothing answers.
 """
 
 from __future__ import annotations
@@ -60,10 +60,21 @@ def test_full_refresh_falls_back_without_create_or_replace() -> None:
 
 
 @pytest.mark.unit
-def test_scd2_refuses_engines_without_star_exclude() -> None:
+def test_scd_enumerates_columns_without_star_exclude() -> None:
+    # No SELECT * EXCLUDE on this engine -> scd spells the model's columns out instead.
     target = TableRef(schema="interlace__main", name="dim__abc")
-    with pytest.raises(PlanError, match="star-EXCLUDE"):
-        Scd(("id",)).plan_statements(_relation("SELECT 1 AS id"), target, EngineCaps())
+    statements = Scd(("id",)).plan_statements(_relation("SELECT id, tier FROM raw"), target, EngineCaps())
+    close = statements[1].sql(dialect="postgres")
+    assert "EXCLUDE" not in close
+    assert "SELECT id, tier FROM" in close  # open rows projected by explicit column list
+
+
+@pytest.mark.unit
+def test_scd_needs_explicit_columns_without_star_exclude() -> None:
+    # A SELECT * model can't be enumerated on an engine lacking star-EXCLUDE.
+    target = TableRef(schema="interlace__main", name="dim__abc")
+    with pytest.raises(PlanError, match="explicit projection instead of SELECT"):
+        Scd(("id",)).plan_statements(_relation("SELECT * FROM raw"), target, EngineCaps())
 
 
 @pytest.mark.unit
@@ -133,6 +144,25 @@ async def test_full_and_merge_apply_natively_in_postgres(
 
     rows = {r["name"]: r["engine"] for r in await store.list_snapshot_rows()}
     assert rows == {"seed": "pg", "people": "pg"}
+
+
+@requires_pg
+@pytest.mark.requires_db
+async def test_scd_applies_natively_in_postgres(pg_env: tuple[EngineRegistry, SqliteStateStore, str]) -> None:
+    # scd on Postgres (no star-EXCLUDE): the strategy enumerates the model's columns,
+    # so the full ensure/close/insert pipeline runs natively.
+    registry, store, marker = pg_env
+    env_name = f"dev_{marker}"
+    models = [
+        ModelDef(name="seed", sql="SELECT 1 AS id, 'ada' AS name", engine="pg"),
+        ModelDef(name="dim", sql="SELECT id, name FROM seed", engine="pg", strategy="scd", key=("id",)),
+    ]
+    compiled = _compile(models)
+    await apply(await diff(compiled, env_name, store), compiled=compiled, engines=registry, state=store)
+
+    pg = registry.get("pg")
+    reader = await pg.fetch_sql(f'SELECT id, name, _valid_to IS NULL AS is_open FROM "{env_name}__main".dim')
+    assert reader.read_all().to_pylist() == [{"id": 1, "name": "ada", "is_open": True}]
 
 
 @requires_pg

@@ -139,7 +139,9 @@ table (opt in with `environments: [dev, prod]`).
 ## Multi-engine
 
 Models run on **named engines**: DuckDB/DuckLake by default, Postgres natively over ADBC
-(`pip install 'interlaced[adbc]'`), with per-model pinning:
+(`pip install 'interlaced[adbc]'`), plus alpha adapters for MotherDuck, Redshift, Snowflake
+and BigQuery (wired and dialect-correct, not yet run against a live account), with per-model
+pinning:
 
 ```yaml
 engines:

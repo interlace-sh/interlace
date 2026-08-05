@@ -18,7 +18,7 @@ The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strat
 | `virtual` \| `table` | `merge` | `Merge` | `key` |
 | `virtual` \| `table` | `full_merge` | `FullMerge` | `key` |
 | `virtual` \| `table` | `incremental_by_time` | `IncrementalByTime` | `time_column` (+ an interval) |
-| `virtual` \| `table` | `scd` | `Scd` | `key`, engine `supports_star_exclude` |
+| `virtual` \| `table` | `scd` | `Scd` | `key` (explicit projection on engines without `supports_star_exclude`) |
 | `table` | `replace` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
 | `table` | `append` | `Append` | — |
 
@@ -166,10 +166,12 @@ The interval ledger lives in the state store, keyed by `(model, fingerprint)`.
 
 ## `scd` (Scd) — slowly-changing dimension, history
 
-Requires `key` and an engine with `supports_star_exclude` (DuckDB family / Snowflake /
-BigQuery — **not** Postgres). The target carries the query's columns plus `_valid_from` /
-`_valid_to` (`_valid_to IS NULL` = the current version). Each run compares the source
-against the *open* rows using set difference:
+Requires `key`. Runs on **every engine**: on DuckDB-family/Snowflake/BigQuery it projects open
+rows with `SELECT * EXCLUDE(...)`; on engines without that (Postgres, Redshift) it enumerates
+the model's own columns instead — so an `scd` model there needs an explicit projection, not
+`SELECT *`. The target carries the query's columns plus `_valid_from` / `_valid_to`
+(`_valid_to IS NULL` = the current version). Each run compares the source against the *open*
+rows using set difference:
 
 ```
 CREATE TABLE IF NOT EXISTS target AS
@@ -191,8 +193,9 @@ INSERT INTO target
 An unchanged row appears in neither difference, so re-running is a no-op. A changed key gets
 its old version *closed* (`_valid_to` stamped) and its new version *inserted* as current —
 full history is preserved. The key may be composite (a tuple `IN` predicate). The
-`EXCLUDE(_valid_from, _valid_to)` projection is why the engine must support star-exclude; on
-Postgres, `scd` raises a clear `PlanError`.
+`EXCLUDE(_valid_from, _valid_to)` projection shown above is used where the engine supports it;
+on engines without it (Postgres, Redshift) the strategy enumerates the model's columns instead,
+so `scd` runs there too — it just needs an explicit projection rather than `SELECT *`.
 
 ### Event-time windows (`time_column`)
 

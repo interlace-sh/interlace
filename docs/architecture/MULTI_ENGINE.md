@@ -36,9 +36,10 @@ engines:
     database: ${PG_DSN}        # ${VAR} interpolation; unresolved vars fail at open
 ```
 
-Engine types without an adapter (anything beyond the DuckDB family and Postgres) fail at open
-with a pointer here. Engines open lazily — a declared-but-unused remote engine is never
-contacted.
+Engine types without an adapter fail at open with a pointer here. Adapters today: the DuckDB
+family (`duckdb`/`ducklake`/`quack`/`motherduck`) and the ADBC engines (`postgres`, plus the
+alpha `redshift`/`snowflake`/`bigquery`, which share one `AdbcAdapter` base). Engines open
+lazily — a declared-but-unused remote engine is never contacted.
 
 ## Binding models
 
@@ -103,21 +104,22 @@ work natively there.
 
 ### Capability flags (`EngineCaps`, drive strategy fallbacks)
 
-`EngineCaps` carries exactly two flags today; each strategy consults them and picks a
-portable path when a capability is absent:
+`EngineCaps` carries three flags; each strategy consults them and picks a portable path when
+a capability is absent:
 
-| Cap | DuckDB family | Postgres |
+| Cap | DuckDB family / Snowflake / BigQuery | Postgres / Redshift |
 |---|---|---|
 | `supports_create_or_replace` | ✓ | ✗ → `Replace` emits DROP + CREATE |
-| `supports_star_exclude` | ✓ | ✗ → `scd` refuses with a clear error |
+| `supports_star_exclude` | ✓ | ✗ → `scd` enumerates the model's columns instead of `SELECT * EXCLUDE` |
+| `supports_merge` | ✓ | ✓ → `merge` uses a native `MERGE` (else DELETE+INSERT) |
 
-Everything else is portable by construction rather than gated by a flag: keyed strategies
-use DELETE+INSERT (not a native `MERGE`), Arrow ingest is `register` on DuckDB and
-`adbc_ingest` on Postgres, and cross-engine `ATTACH` is a DuckDB-only fast lane the transfer
-planner opportunistically uses (falling back to Arrow fetch→load).
+Everything else is portable by construction: Arrow ingest is `register` on DuckDB and
+`adbc_ingest` on the ADBC engines, and cross-engine `ATTACH` is a DuckDB-only fast lane the
+transfer planner opportunistically uses (falling back to Arrow fetch→load).
 
-`replace`, `view`, `merge`, `full_merge`, and `incremental_by_time` run on Postgres;
-`scd` is DuckDB-family-only until it grows a `describe()`-based projection.
+**Every strategy now runs on every engine** — `merge` upserts natively where `MERGE` exists,
+and `scd` enumerates its columns where `SELECT * EXCLUDE` is missing (so on Postgres/Redshift
+an `scd` model needs an explicit projection, not `SELECT *`).
 
 ## Roadmap
 

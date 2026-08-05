@@ -165,22 +165,19 @@ class Project:
     def _open_engine_config(self, name: str, cfg: EngineConfig) -> EngineAdapter:
         """Open a single engine from its config (duckdb / ducklake / quack / postgres)."""
         self._reject_unresolved_env(cfg)
-        if cfg.type == "postgres":
-            from interlace.engines.postgres import PostgresAdapter  # lazy: needs the adbc extra
-
-            if not cfg.database:
-                raise ConfigurationError(
-                    f"engine {name!r}: postgres needs a DSN in 'database' (postgresql://...)",
-                    details={"engine": name},
-                )
-            _require_explicit_pg_host(cfg.database, f"engine {name!r}")
-            return PostgresAdapter.connect(cfg.database)
-        if cfg.type not in ("duckdb", "ducklake", "quack"):
+        if cfg.type in ("postgres", "redshift", "snowflake", "bigquery"):
+            return self._open_adbc_engine(name, cfg)
+        if cfg.type not in ("duckdb", "ducklake", "quack", "motherduck"):
             raise ConfigurationError(
-                f"engine {name!r}: type {cfg.type!r} is not implemented yet "
-                f"(supported: duckdb, ducklake, quack, postgres). See docs/architecture/MULTI_ENGINE.md",
+                f"engine {name!r}: type {cfg.type!r} is not implemented yet (supported: duckdb, ducklake, "
+                f"quack, motherduck, postgres, redshift, snowflake, bigquery). See docs/architecture/MULTI_ENGINE.md",
                 details={"engine": name, "type": cfg.type},
             )
+        if cfg.type == "motherduck":  # MotherDuck is DuckDB over a cloud catalog (md: DSN)
+            database = cfg.database or "md:"
+            if not database.startswith("md:"):
+                database = f"md:{database}"
+            return DuckDBAdapter.connect(database)
         database = cfg.database or "ducklake:.interlace/warehouse.ducklake"
         if cfg.type == "quack" or database.startswith("quack:"):
             from interlace.engines.quack import QuackAdapter
@@ -216,6 +213,33 @@ class Project:
                 target = str(self.root / uri)
             engine.attach(alias, target)
         return engine
+
+    def _open_adbc_engine(self, name: str, cfg: EngineConfig) -> EngineAdapter:
+        """Open a remote ADBC engine (postgres / redshift / snowflake / bigquery) from its DSN.
+
+        redshift/snowflake/bigquery are ALPHA — wired and dialect-correct, but not
+        exercised against a live cluster (no local test target)."""
+        if not cfg.database:
+            raise ConfigurationError(
+                f"engine {name!r}: {cfg.type} needs a DSN in 'database'",
+                details={"engine": name},
+            )
+        if cfg.type in ("postgres", "redshift"):
+            _require_explicit_pg_host(cfg.database, f"engine {name!r}")  # both speak the PG wire
+            if cfg.type == "redshift":
+                from interlace.engines.redshift import RedshiftAdapter  # lazy: needs the adbc extra
+
+                return RedshiftAdapter.connect(cfg.database)
+            from interlace.engines.postgres import PostgresAdapter  # lazy: needs the adbc extra
+
+            return PostgresAdapter.connect(cfg.database)
+        if cfg.type == "snowflake":
+            from interlace.engines.snowflake import SnowflakeAdapter  # lazy: needs the adbc-snowflake extra
+
+            return SnowflakeAdapter.connect(cfg.database)
+        from interlace.engines.bigquery import BigQueryAdapter  # lazy: needs the adbc-bigquery extra
+
+        return BigQueryAdapter.connect(cfg.database)
 
     def _reject_unresolved_env(self, cfg: EngineConfig) -> None:
         """Fail fast when ``${VAR}`` survived config interpolation (the variable is

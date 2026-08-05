@@ -45,11 +45,14 @@ service = [
     "uvicorn>=0.30,<1.0",
     "msgspec>=0.18,<1.0",  # the wire types (litestar serialises msgspec structs natively)
 ]
-# Remote engines via Arrow-native transfer (Phase 4).
+# Remote engines via Arrow-native ADBC transfer. postgres (+ redshift, same wire)
+# are the tested transport; snowflake/bigquery are ALPHA (wired, not run live).
 adbc = [
     "adbc-driver-manager>=1.2,<2.0",
     "adbc-driver-postgresql>=1.2,<2.0",
 ]
+adbc-snowflake = ["interlaced[adbc]", "adbc-driver-snowflake>=1.2,<2.0"]
+adbc-bigquery = ["interlaced[adbc]", "adbc-driver-bigquery>=1.2,<2.0"]
 postgres = ["psycopg[binary]>=3.1,<4.0"]
 polars = ["polars>=1.0,<2.0"]
 pandas = ["pandas>=2.0,<4.0"]
@@ -112,6 +115,8 @@ module = [
     "sqlglot.*",
     "pyarrow.*",
     "yaml",
+    "adbc_driver_snowflake.*",  # optional 'adbc-snowflake' extra — absent in the base env
+    "adbc_driver_bigquery.*",  # optional 'adbc-bigquery' extra — absent in the base env
 ]
 ignore_missing_imports = true
 

@@ -68,6 +68,24 @@ class Scd(Strategy):
             return exp.cast(exp.column(self.time_column), "TIMESTAMP")
         return exp.CurrentTimestamp()
 
+    def _open_columns(self, query: exp.Expression, caps: EngineCaps) -> list[str] | None:
+        """The model's own output columns, for projecting open rows without star-EXCLUDE.
+
+        ``None`` when the engine has ``SELECT * EXCLUDE`` (we use it — and it copes with
+        ``SELECT *`` models). Otherwise the columns are read off the query's projections
+        so the same open-row comparison works on Postgres/Redshift; a ``SELECT *`` model
+        can't be enumerated there and raises a clear error."""
+        if caps.supports_star_exclude:
+            return None
+        projections = cast("exp.Query", query).selects
+        names = [projection.alias_or_name for projection in projections]
+        if not names or any(isinstance(p, exp.Star) or not n for p, n in zip(projections, names, strict=True)):
+            raise PlanError(
+                "scd on an engine without SELECT * EXCLUDE (e.g. Postgres/Redshift) needs the model's "
+                "columns spelled out — give it an explicit projection instead of SELECT *"
+            )
+        return names
+
     def plan_statements(
         self,
         relation: SqlRelation,
@@ -76,20 +94,22 @@ class Scd(Strategy):
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
     ) -> list[exp.Expression]:
-        if not caps.supports_star_exclude:
-            raise PlanError(
-                "scd needs star-EXCLUDE projections, which this engine lacks "
-                "(DuckDB-family/Snowflake/BigQuery only for now)"
-            )
         query = relation.ast
         table = table_expr(target)
+        open_cols = self._open_columns(query, caps)  # None -> use SELECT * EXCLUDE
 
         def source() -> exp.Select:  # fresh nodes each use
             return exp.select("*").from_(cast("exp.Query", query.copy()).subquery("_s"))
 
         def open_rows() -> exp.Select:  # current rows, projected to the source's shape
-            star = exp.Star(except_=[exp.column(VALID_FROM), exp.column(VALID_TO)])
-            return exp.select(star).from_(table.copy()).where(exp.column(VALID_TO).is_(exp.Null()))
+            # SELECT * EXCLUDE(validity) where the engine has it; otherwise enumerate the
+            # model's own columns explicitly — same projection, no star-exclude needed.
+            selection: list[exp.Expression] = (
+                [exp.Star(except_=[exp.column(VALID_FROM), exp.column(VALID_TO)])]
+                if open_cols is None
+                else [exp.column(c) for c in open_cols]
+            )
+            return exp.select(*selection).from_(table.copy()).where(exp.column(VALID_TO).is_(exp.Null()))
 
         def fresh_subquery() -> exp.Subquery:  # source rows with no exact open match
             fresh = exp.Except(this=source(), expression=open_rows(), distinct=True)

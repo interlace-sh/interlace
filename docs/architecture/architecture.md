@@ -69,12 +69,11 @@ class EngineAdapter(ABC):
         return ast.sql(dialect=self.dialect)  # canonical AST → engine SQL, one line
 ```
 
-`EngineCaps` carries only the flags strategies actually branch on today —
-`supports_create_or_replace` and `supports_star_exclude` (the latter for `scd`'s
-`SELECT * EXCLUDE`). Both default off (conservative). Adapters set what their engine
-supports; strategies degrade accordingly. (Broader capability flags — e.g. native
-`MERGE` detection — are not modelled: `merge` currently emits its statement
-sequence unconditionally.)
+`EngineCaps` carries the flags strategies branch on: `supports_create_or_replace`,
+`supports_star_exclude` (for `scd`'s `SELECT * EXCLUDE` — absent, `scd` enumerates the
+model's columns instead), and `supports_merge` (present, `merge` emits a native single
+`MERGE`; absent, it falls back to `DELETE`+`INSERT`). All default off (conservative);
+adapters set what their engine supports and strategies degrade accordingly.
 
 ### 2.3 `Snapshot` — versioned model state (sqlmesh, adopted)
 
@@ -663,9 +662,9 @@ src/interlace/
   graph/       # dag (toposort, stdlib), column_lineage, selectors
   state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc)
   plan/        # differ (sqlglot.diff + classification), plan, apply, run
-  engines/     # base (EngineAdapter, EngineCaps); duckdb (+ DuckLake), postgres (ADBC),
-               #   quack, registry (named engines, lazy open)
-  strategies/  # full, view, full_merge, incremental_by_time, merge, scd
+  engines/     # base (EngineAdapter, EngineCaps); adbc (shared ADBC base); duckdb (+ DuckLake),
+               #   postgres, redshift/snowflake/bigquery (alpha), quack, registry (lazy open)
+  strategies/  # replace, view, full_merge, incremental_by_time, merge, scd
   checks/      # built-in check types + @check decorator — results gate promotion
   scheduler/   # triggers (cron/interval), engine (TriggerEngine), worker (leases/retries/cancel)
   runtime/     # execution context for Python models (Arrow handles)
@@ -698,8 +697,9 @@ Logging is the **standard library `logging`** — there is no `structlog` depend
 
 - **`service`** — the Litestar/uvicorn daemon: `litestar`, `uvicorn`, and **`msgspec`**
   (the wire types; msgspec is a service-extra dep, not core).
-- **`adbc`** — the Postgres engine via Arrow-native ADBC (`adbc-driver-manager`,
-  `adbc-driver-postgresql`).
+- **`adbc`** — the Postgres and Redshift engines via Arrow-native ADBC
+  (`adbc-driver-manager`, `adbc-driver-postgresql`). **`adbc-snowflake`** / **`adbc-bigquery`**
+  add those (alpha) drivers.
 - **`postgres`** — `psycopg[binary]`, reserved for the *future* Postgres state/log
   backends (§12); no such backend ships today.
 - **`polars`** — `polars`, the preferred eager frame a user can build from
@@ -737,9 +737,13 @@ only shipped behaviour:
   SQLite→Postgres and the cross-backend test suite that would guarantee identical
   claim/lease semantics (§6, §12). The `postgres` extra ships the driver; the backend
   does not.
-- **Cloud-warehouse adapters** — Snowflake and BigQuery `EngineAdapter`s (ADBC is
-  Arrow-native end-to-end), which unlock "author in Snowflake SQL, run it in Snowflake in
-  prod" (§4, §5).
+- **Cloud-warehouse adapters (alpha)** — Redshift, Snowflake, BigQuery and MotherDuck
+  `EngineAdapter`s now ship (ADBC is Arrow-native end-to-end; they share one `AdbcAdapter`
+  base), unlocking "author in Snowflake SQL, run it in Snowflake in prod" (§4, §5). They are
+  wired and dialect-correct but **not yet run against a live account** — promoting them out of
+  alpha needs live validation (connection strings, metadata probes). Databricks is still open:
+  its connector is Arrow-native but lacks an `adbc_ingest` bulk-load, so `load()` needs a
+  bespoke staged-COPY path.
 - **Reverse-ETL SaaS connectors + delivery ledger** — a `SinkConnector` (batch HTTP) for
   API/SaaS destinations (a third terminal plane beyond `table`/`file`), a per-target
   delivery ledger (cursor / last-synced hash per key) for change-only pushes (§6).

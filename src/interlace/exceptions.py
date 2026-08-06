@@ -42,6 +42,10 @@ class PlanError(InterlaceError):
     """A plan could not be computed or applied."""
 
 
+class QueryError(InterlaceError):
+    """A read-only query (the console / `interlace query`) was rejected or failed."""
+
+
 class SchemaError(InterlaceError):
     """A model's built schema violates its declared column contract."""
 

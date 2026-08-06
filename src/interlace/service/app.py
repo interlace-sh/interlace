@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -36,7 +35,7 @@ from litestar.static_files import create_static_files_router
 
 from interlace import __version__
 from interlace.dsl.decorators import StreamDef
-from interlace.exceptions import CheckError, SelectionError, StreamError
+from interlace.exceptions import CheckError, QueryError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models, wants_state
@@ -853,63 +852,7 @@ def _jsonable(value: object) -> object:
 # DuckDB table functions and scalar functions that read OUTSIDE the warehouse —
 # the console must never become a local-file reader or an HTTP client. Deny by
 # name pattern; the warehouse's own tables/views never match these shapes.
-_EXTERNAL_FN = re.compile(
-    r"^(read_|scan_|sniff_|glob$|getenv$|load_|install$|parquet_|iceberg_|delta_|st_read|query$|query_table$)"
-    r"|(_scan|_query)$",
-    re.IGNORECASE,
-)
-# Table functions the console may use: pure in-memory row generators, no I/O.
-# `range(...)` normalises to generate_series in the sqlglot AST. Anything else in
-# table position (read_csv / read_parquet / query / query_table / glob / …) is
-# rejected, named or not — the allowlist is the robust part.
-_SAFE_TABLE_FUNCTIONS = frozenset({"generate_series"})
-
-
-def _console_fn_name(node: object) -> str | None:
-    from sqlglot import exp as _exp
-
-    if isinstance(node, _exp.Anonymous):
-        return str(node.this).lower()
-    if isinstance(node, _exp.Func):
-        return str(node.sql_name()).lower()
-    return None
-
-
 _QUERY_MAX_CELL_BYTES = 8_000_000  # ~8 MB of rendered cells; the console inspects, never extracts
-
-
-def _guard_console_query(parsed: object) -> None:
-    """Reject anything the read-only console must never run. This is the *fence*, not
-    merely defence in depth: an engine-level lockdown is not available to us. On a
-    DuckLake warehouse the console shares the writer's DuckDB connection (a process
-    can hold the catalog file only once), and ``enable_external_access`` is
-    instance-wide and one-way — flipping it off to sandbox a query would permanently
-    disable the writer's own file writes (the flusher, apply, exports).
-
-    So the SELECT is validated structurally. The key rule: every table source must be
-    a real table/view identifier, never a table function. ``read_csv`` / ``read_parquet``
-    / ``query`` / ``query_table`` / ``glob`` / … all parse as a *function* in table
-    position (``Table.this`` is a function node, not an ``Identifier``), so this
-    rejects every one of them — including any not yet named. A function-name denylist
-    and a file-path check backstop it for the rare scalar-position reader."""
-    from sqlglot import exp as _exp
-
-    parsed_expr: _exp.Expression = parsed  # type: ignore[assignment]
-    for table in parsed_expr.find_all(_exp.Table):
-        if isinstance(table.this, _exp.Identifier):  # a real table/view reference
-            raw = table.name or ""
-            if "/" in raw or "\\" in raw or "://" in raw:
-                raise ClientException(detail="file paths are not queryable from the console")
-            continue
-        name = _console_fn_name(table.this)  # a table function in FROM/JOIN position
-        if name not in _SAFE_TABLE_FUNCTIONS:
-            raise ClientException(
-                detail=f"table function {name or 'call'!r} is not queryable from the console — read tables only"
-            )
-    for node in parsed_expr.walk():  # backstop: file/network readers in scalar position
-        name = _console_fn_name(node)
-        if name and _EXTERNAL_FN.search(name):
-            raise ClientException(detail=f"function {name!r} reads outside the warehouse — not in the console")
 
 
 @post("/query", opt={"scope": "read"})
@@ -919,25 +862,16 @@ async def post_query(data: QueryRequest, state: State) -> QueryResponse:
     and a byte cap are always applied."""
     import time as _time
 
-    import sqlglot
-    from sqlglot import exp as _exp
+    from interlace.query import prepare_readonly
 
     try:
-        statements = sqlglot.parse(data.sql, read=state.engine.dialect)
-    except Exception as exc:
-        raise ClientException(detail=f"could not parse query: {exc}") from exc
-    if len(statements) != 1 or statements[0] is None:
-        raise ClientException(detail="exactly one statement, please")
-    parsed = statements[0]
-    if not isinstance(parsed, (_exp.Select, _exp.Union)):
-        raise ClientException(detail="SELECT only — the console never writes")
-    _guard_console_query(parsed)  # the fence: SELECT-only, tables (not table functions), no file paths
-    limit = max(1, min(data.limit, 10_000))
-    bounded = _exp.select("*").from_(parsed.subquery("q")).limit(limit + 1)  # +1: exact truncation
+        bounded, limit = prepare_readonly(data.sql, state.engine.dialect, data.limit)
+    except QueryError as exc:
+        raise ClientException(detail=exc.message) from exc
     started = _time.perf_counter()
 
     async def _run() -> pa.Table:
-        # The query was already fenced by _guard_console_query (SELECT-only, no table
+        # prepare_readonly already fenced the query (SELECT-only, real tables not table
         # functions, no file paths), so no host file or network read can be expressed.
         reader = await state.engine.fetch_sandboxed(bounded)
         return await asyncio.to_thread(reader.read_all)

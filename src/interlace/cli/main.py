@@ -15,7 +15,7 @@ from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from interlace.exceptions import CheckError, ConfigurationError, InterlaceError, SelectionError
+from interlace.exceptions import CheckError, ConfigurationError, InterlaceError, QueryError, SelectionError
 from interlace.graph.column_lineage import column_impact, column_lineage, split_target
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
@@ -682,6 +682,56 @@ def serve(
     server = uvicorn.Server(config)
     app.state.uvicorn_server = server  # let the app release SSE streams as shutdown begins
     server.run()
+
+
+@app.command()
+def query(
+    sql: str = typer.Argument(..., help="A read-only SELECT to run against the warehouse."),
+    path: Path = _PATH,
+    limit: int = typer.Option(100, "--limit", "-n", help="Maximum rows to display (max 10,000)."),
+) -> None:
+    """Run a read-only SELECT against the warehouse and print the result.
+
+    SELECT only — real tables and views, not table functions or files (the same fence
+    as the web console). Unqualified names resolve to the promoted (prod) views:
+
+        interlace query "SELECT * FROM raw_events"
+    """
+    asyncio.run(_query(sql, path, limit))
+
+
+async def _query(sql: str, path: Path, limit: int) -> None:
+    from interlace.query import prepare_readonly
+
+    project = Project.load(path)
+    engines = project.open_engines()
+    try:
+        engine = engines.get()
+        bounded, cap = prepare_readonly(sql, engine.dialect, limit)
+        try:
+            reader = await engine.fetch(bounded)
+            columns = list(reader.schema.names)
+            records = await asyncio.to_thread(lambda: reader.read_all().to_pylist())
+        except QueryError:
+            raise
+        except Exception as exc:  # engine errors (missing table, bad column) are the user's feedback
+            raise QueryError(str(exc)) from exc
+    finally:
+        engines.close()
+    _render_query(columns, records, cap)
+
+
+def _render_query(columns: list[str], records: list[dict], cap: int) -> None:
+    truncated = len(records) > cap
+    shown = records[:cap]
+    table = _table("")
+    for name in columns:
+        table.add_column(name)
+    for record in shown:
+        table.add_row(*("[dim]NULL[/dim]" if record[name] is None else escape(str(record[name])) for name in columns))
+    console.print(table)
+    note = f"{len(shown)} row(s)" + (" — truncated; raise --limit for more" if truncated else "")
+    console.print(f"[dim]{note}[/dim]")
 
 
 @app.command("models")

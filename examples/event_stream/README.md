@@ -30,13 +30,12 @@ python generate.py
 #   python generate.py --total 20000    # a small burst to start with
 ```
 
-Watch it land:
+Watch it land — the watermark climbs, `pending` drains, and recent events show up;
+then rebuild the rollups and read the row counts off the apply:
 
 ```bash
-curl -s localhost:8000/streams/events            # watermark climbs as events materialize
-curl -s -X POST localhost:8000/apply -d '{}'     # rebuild the rollups on demand
-curl -s localhost:8000/query -H 'content-type: application/json' \
-  -d '{"sql": "SELECT * FROM events_by_type"}'   # or read a rollup straight out
+curl -s localhost:8000/streams/events         # head / watermark / pending + recent events
+curl -s -X POST localhost:8000/apply -d '{}'  # rebuild the rollups (JSON: built models + row deltas)
 ```
 
 Without the daemon it still plans and builds — the rollups just read an empty

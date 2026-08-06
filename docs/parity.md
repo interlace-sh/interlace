@@ -33,9 +33,10 @@ limited to one surface, the reason is given.
 - **CLI-only** — `init` (scaffolds files on disk), `serve`/`scheduler` (they *are* the process
   that hosts the API), and `lineage --format dot` (a Graphviz export; the API returns lineage
   as JSON via `GET /lineage`, which the UI renders as an interactive canvas).
-- **API/UI-only** — stream **publish** (`POST /streams/{name}`) and the **query console**
-  (`POST /query`) are HTTP operations against a running daemon; there's no `interlace publish`
-  or `interlace query`. Live **events** (`GET /events`) are an API/UI concern.
+- **API/UI-only** — stream **publish** (`POST /streams/{name}`) is an HTTP operation against a
+  running daemon; there's no `interlace publish`. Live **events** (`GET /events`) are an API/UI
+  concern. (Ad-hoc read-only SQL is on **both** surfaces — `interlace query "SELECT …"` and the
+  `POST /query` console share one parse-and-fence path.)
 - **Enqueue vs immediate** — `interlace run`/`restate` build **immediately** in the CLI
   process; `POST /runs` (and the UI "run…") **enqueue** onto the durable queue for a running
   scheduler to drain. `POST /apply` (and the UI apply) build immediately in the daemon.

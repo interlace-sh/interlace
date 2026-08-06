@@ -1,7 +1,7 @@
 # Interlace — Architecture & Design
 
 *Written during the 2026 rebuild of the 0.x line. This is the design rationale and
-the contract for the platform now shipping as **v1.0** (`interlaced` on PyPI). Short
+the contract for the platform now shipping as **v2.0** (`interlaced` on PyPI). Short
 *current state* notes in each section record where the implementation actually stands;
 a consolidated **Roadmap** section (§14) lists what is designed but not yet built. When
 this document says "we do X", read it as the shipped behaviour unless a note says
@@ -723,7 +723,7 @@ dozen lines), APScheduler, Celery, Redis, Airflow-anything, ibis.
 
 ## 14. Roadmap — not yet built
 
-Everything above (unless a note says otherwise) is shipped in v1.0. The following are
+Everything above (unless a note says otherwise) is shipped in v2.0. The following are
 *designed for* but **not implemented**; they are collected here so the body can describe
 only shipped behaviour:
 

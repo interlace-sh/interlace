@@ -35,6 +35,15 @@ dependencies = [
     "pyyaml>=6.0,<7.0",           # project config (config + env overlays)
 ]
 
+# PyPI renders these as the project-page sidebar links. Without them the page is
+# a dead end — no route from a search result to the docs or the source.
+[project.urls]
+Homepage = "https://interlace.sh"
+Documentation = "https://interlace.sh/docs"
+Source = "https://github.com/interlace-sh/interlace"
+Changelog = "https://github.com/interlace-sh/interlace/blob/master/CHANGELOG.md"
+Issues = "https://github.com/interlace-sh/interlace/issues"
+
 [project.scripts]
 interlace = "interlace.cli.main:main"
 

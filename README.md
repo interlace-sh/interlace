@@ -8,7 +8,7 @@ Models are `.sql` files or Python functions; state is versioned snapshots with v
 environments and a terraform-style plan/apply; everything runs in a single daemon on
 DuckDB + DuckLake by default.
 
-> **Status: 1.0.** Requires Python 3.12+.
+> **Status: 2.0.** Requires Python 3.12+.
 > The package is published to PyPI as **`interlaced`**; the import name and CLI are `interlace`.
 
 ```bash
@@ -129,13 +129,19 @@ attach:
 ```
 
 ```sql
-/* interlace: {export: {to: table, target: crm.public.accounts, mode: merge, key: id}} */
+/* interlace:
+  materialise: table
+  target: crm.public.accounts
+  strategy: merge
+  key: id
+*/
 SELECT id, tier, lifetime_value FROM account_summary
 ```
 
-File exports (`to: parquet|csv|json`) work the same way. Sinks are **environment-gated**: by
-default the side effect fires only from prod — a dev apply never writes to a live external
-table (opt in with `environments: [dev, prod]`).
+Files work the same way — `materialise: file` with `format: parquet | csv | json` and a
+`path`. Terminal models are **environment-gated**: by default the side effect fires only from
+prod, so a dev apply never writes to a live external table (opt in with
+`environments: [dev, prod]`).
 
 ## Multi-engine
 

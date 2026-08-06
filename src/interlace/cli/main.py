@@ -11,6 +11,7 @@ from typing import Any
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
@@ -224,7 +225,7 @@ def _selection(
     try:
         return select_models(selectors, compiled, promoted=promoted)
     except SelectionError as exc:
-        console.print(f"[red]{exc.message}[/red]")
+        console.print(f"[red]{escape(exc.message)}[/red]")
         raise typer.Exit(1) from exc
 
 
@@ -242,7 +243,7 @@ def init(
     try:
         written = scaffold_project(path, name or None)
     except ConfigurationError as exc:
-        console.print(f"[red]{exc.message}[/red] ({exc.details.get('path', '')})")
+        console.print(f"[red]{escape(exc.message)}[/red] ({exc.details.get('path', '')})")
         raise typer.Exit(1) from exc
     console.print(f"[green]Initialised interlace project in {path}[/green]")
     for written_path in written:
@@ -360,7 +361,7 @@ async def _apply(
                     parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
                 )
         except CheckError as exc:
-            console.print(f"[red]{exc.message}[/red]")
+            console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
         _render_build_results(result, compiled)
         _render_checks(result)
@@ -459,7 +460,7 @@ async def _execute(
                     parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
                 )
         except CheckError as exc:
-            console.print(f"[red]{exc.message}[/red]")
+            console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
         _render_build_results(result, compiled)
         _render_checks(result)
@@ -631,7 +632,7 @@ def serve(
 
         from interlace.service.app import create_app
     except ImportError as exc:
-        console.print("[red]The HTTP API needs the 'service' extra: pip install 'interlaced[service]'[/red]")
+        console.print(r"[red]The HTTP API needs the 'service' extra: pip install 'interlaced\[service]'[/red]")
         raise typer.Exit(1) from exc
     bound = _free_port(host, port)
     if bound != port:
@@ -799,7 +800,7 @@ async def _env_rollback(name: str, path: Path, to: int | None, history: bool, as
         try:
             result = await rollback_environment(state, engines=engines, environment=name, to_generation=to)
         except PlanError as exc:
-            console.print(f"[red]{exc.message}[/red]")
+            console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
         if as_json:
             _emit_json(result)
@@ -1352,5 +1353,5 @@ def main() -> None:
     try:
         app()
     except InterlaceError as exc:  # expected, user-facing errors: one clean line, no traceback
-        err_console.print(f"[red]error:[/red] {exc.message}")
+        err_console.print(f"[red]error:[/red] {escape(exc.message)}")
         raise SystemExit(1) from None

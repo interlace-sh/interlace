@@ -40,6 +40,20 @@ async def test_sync_function_returning_table(env: tuple[DuckDBAdapter, SqliteSta
     assert rows == [{"id": 1, "amount": 20}, {"id": 2, "amount": 40}, {"id": 3, "amount": 10}]
 
 
+async def test_parameter_named_after_a_model_links_without_depends_on(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    # No depends_on: the `raw` parameter matches the `raw` model, so the edge is inferred
+    # (the same reference-implies-dependency rule SQL models get).
+    def doubled(raw: RelationHandle) -> pa.Table:
+        table = raw.table()
+        return table.set_column(1, "amount", pc.multiply(table["amount"], 2))
+
+    await _build(env, [RAW, ModelDef(name="doubled", fn=doubled)])
+    rows = await _rows(env[0], "SELECT * FROM dev__main.doubled ORDER BY id")
+    assert rows == [{"id": 1, "amount": 20}, {"id": 2, "amount": 40}, {"id": 3, "amount": 10}]
+
+
 async def test_async_function_returning_reader(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     async def passthrough(raw: RelationHandle) -> pa.RecordBatchReader:
         return raw.reader()
@@ -100,7 +114,7 @@ async def test_unknown_parameter_is_rejected(env: tuple[DuckDBAdapter, SqliteSta
     def broken(nonexistent: RelationHandle) -> pa.Table:
         return nonexistent.table()
 
-    with pytest.raises(DefinitionError, match="not declared dependencies"):
+    with pytest.raises(DefinitionError, match="match no upstream model or declared dependency"):
         await _build(env, [RAW, ModelDef(name="broken", fn=broken, depends_on=("raw",))])
 
 

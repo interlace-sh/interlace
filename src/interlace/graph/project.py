@@ -121,6 +121,14 @@ def _resolve_dependencies(
             else:
                 add(ref.rsplit(".", 1)[-1])  # match a qualified ref to a model by its tail
 
+    if model.fn is not None:
+        # A Python model's parameter named after a known model is an inferred
+        # dependency — the same "reference implies edge" rule SQL models get, so
+        # depends_on is only needed for names a parameter can't spell: schema- or
+        # connection-qualified upstreams (`raw.accounts`), or deps that aren't models.
+        for parameter in inspect.signature(model.fn).parameters:
+            add(parameter)
+
     return tuple(deps), ast, dialect
 
 

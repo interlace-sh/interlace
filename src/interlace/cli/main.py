@@ -59,12 +59,16 @@ class _BuildProgress:
     def __call__(self, model: str, event: str) -> None:
         if event == "start":
             self._rows[model] = self.progress.add_task(model, total=1, status="")
-        elif event == "done":
-            self.progress.update(self._rows[model], completed=1, status="[green]✓[/green]")
+            return
+        task = self._rows.get(model)
+        if task is None:  # a model cancelled by a sibling's failure before it ever started has no row
+            return
+        if event == "done":
+            self.progress.update(task, completed=1, status="[green]✓[/green]")
         elif event == "cancelled":  # collateral of a sibling's failure, not a failure itself
-            self.progress.update(self._rows[model], completed=1, status="[dim]⊘[/dim]")
+            self.progress.update(task, completed=1, status="[dim]⊘[/dim]")
         else:  # failed
-            self.progress.update(self._rows[model], completed=1, status="[red]✗[/red]")
+            self.progress.update(task, completed=1, status="[red]✗[/red]")
 
 
 def _build_progress(plan_result: Plan) -> _BuildProgress | None:
@@ -1349,9 +1353,28 @@ def _render(plan: Plan, environment: str) -> None:
         )
 
 
+def _flatten_exceptions(exc: BaseException) -> list[BaseException]:
+    """Leaf exceptions of a (possibly nested) ExceptionGroup — a parallel apply
+    reports its failures as one."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for sub in exc.exceptions for leaf in _flatten_exceptions(sub)]
+    return [exc]
+
+
 def main() -> None:
     try:
         app()
     except InterlaceError as exc:  # expected, user-facing errors: one clean line, no traceback
         err_console.print(f"[red]error:[/red] {escape(exc.message)}")
         raise SystemExit(1) from None
+    except BaseExceptionGroup as group:
+        # A parallel apply surfaces failures as an ExceptionGroup. When every leaf is a
+        # user-facing InterlaceError (e.g. several models failed their definition/checks),
+        # print one clean line each instead of dumping the group traceback; a genuine
+        # internal error in the mix still propagates with its trace.
+        leaves = _flatten_exceptions(group)
+        if leaves and all(isinstance(leaf, InterlaceError) for leaf in leaves):
+            for message in dict.fromkeys(leaf.message for leaf in leaves if isinstance(leaf, InterlaceError)):
+                err_console.print(f"[red]error:[/red] {escape(message)}")
+            raise SystemExit(1) from None
+        raise

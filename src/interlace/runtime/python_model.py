@@ -138,11 +138,17 @@ async def run_python_model(
     spellings = _param_spellings(model.dependencies)
     unknown = [p for p in parameters if p not in spellings and p not in RESERVED_PARAMS]
     if unknown:
+        available = sorted(spelling for spelling in spellings if spelling.isidentifier())
+        hint = (
+            f"available dependency parameters: {available}"
+            if available
+            else "this model has no declared dependencies yet — add them with depends_on"
+        )
         raise DefinitionError(
-            f"Python model {model.name!r} takes parameters {unknown} that are not declared dependencies; "
-            f"declare them with depends_on or name them after upstream models "
-            f"(a qualified dependency `raw.accounts` is also spelled `raw_accounts`; "
-            f"`cursor` and `this` are reserved for incremental state)"
+            f"Python model {model.name!r} has parameter(s) {unknown} that match no upstream model or "
+            f"declared dependency. A parameter named after a model is linked automatically; otherwise "
+            f"declare it with depends_on; {hint}. (`cursor` and `this` are reserved for incremental state; "
+            f"a schema-qualified upstream like `raw.accounts` is spelled `raw_accounts`.)"
         )
 
     arguments: dict[str, Any] = {}

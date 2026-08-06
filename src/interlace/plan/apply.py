@@ -626,7 +626,9 @@ async def apply(
                 on_progress(name, "cancelled")
             raise
         except BaseException as exc:
-            logger.warning("model %s failed: %s", name, exc)
+            # Name the failing model as live feedback; the full message is surfaced once
+            # by the caller (the CLI prints it, the API returns it) — don't duplicate it here.
+            logger.warning("model %s failed (%s)", name, type(exc).__name__)
             if on_progress is not None:
                 on_progress(name, "failed")
             raise

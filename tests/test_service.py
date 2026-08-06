@@ -438,13 +438,26 @@ def test_query_console_cannot_read_local_files(client: TestClient) -> None:
     client.post("/apply", json={"environment": "prod"})
     bypasses = [
         "SELECT * FROM read_csv('/etc/hostname')",
+        "SELECT * FROM read_parquet('/etc/hostname')",
         "SELECT * FROM query('SELECT * FROM read_text(''/etc/hostname'')')",  # deny-list bypass attempt
         "SELECT * FROM query_table('main.raw_events')",
         "SELECT * FROM glob('/etc/*')",
+        "SELECT * FROM some_future_reader('/etc/hostname')",  # unknown table fn: the allowlist still blocks it
     ]
     for sql in bypasses:
         resp = client.post("/query", json={"sql": sql})
         assert resp.status_code == 400, f"leak not blocked: {sql}"
+
+
+def test_query_console_does_not_poison_writes(client: TestClient) -> None:
+    """Regression: a console query must not disable the warehouse's own file writes.
+    The old sandbox set DuckDB's instance-wide, one-way enable_external_access on the
+    shared connection, so the first /query bricked the flusher and every later apply."""
+    client.post("/apply", json={"environment": "prod"})
+    assert client.post("/query", json={"sql": "SELECT 1 AS x"}).status_code == 201  # the old trigger
+    # a subsequent write path (apply builds/promotes over the file warehouse) still works
+    assert client.post("/apply", json={"environment": "prod"}).status_code in (200, 201)
+    assert client.post("/query", json={"sql": "SELECT count(*) FROM main.raw_events"}).status_code == 201
 
 
 def test_engines_schedules_lineage_endpoints(client: TestClient) -> None:

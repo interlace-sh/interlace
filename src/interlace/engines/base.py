@@ -85,9 +85,13 @@ class EngineAdapter(ABC):
     async def fetch_sandboxed(self, ast: exp.Expression) -> pa.RecordBatchReader:
         """Like :meth:`fetch`, but for untrusted queries (the HTTP query console):
         the engine must not touch anything outside the warehouse — no local files,
-        no network. The default cannot enforce that, so it is the caller's job to
-        gate this path; adapters over an embedded engine that CAN read the host
-        filesystem (DuckDB) MUST override to lock the connection down."""
+        no network. The engine cannot always enforce that itself (DuckDB's
+        ``enable_external_access`` is instance-wide and one-way, so disabling it on
+        the shared warehouse connection would permanently break the writer's own
+        file writes), so **the caller MUST gate this path** — the service validates
+        the SELECT's AST (real tables only, no table functions, no file paths) before
+        calling here. An engine with a genuinely isolated read-only mode may override
+        to add defence in depth."""
         return await self.fetch(ast)
 
     def transpile(self, ast: exp.Expression) -> str:

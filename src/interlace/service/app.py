@@ -858,24 +858,58 @@ _EXTERNAL_FN = re.compile(
     r"|(_scan|_query)$",
     re.IGNORECASE,
 )
+# Table functions the console may use: pure in-memory row generators, no I/O.
+# `range(...)` normalises to generate_series in the sqlglot AST. Anything else in
+# table position (read_csv / read_parquet / query / query_table / glob / …) is
+# rejected, named or not — the allowlist is the robust part.
+_SAFE_TABLE_FUNCTIONS = frozenset({"generate_series"})
+
+
+def _console_fn_name(node: object) -> str | None:
+    from sqlglot import exp as _exp
+
+    if isinstance(node, _exp.Anonymous):
+        return str(node.this).lower()
+    if isinstance(node, _exp.Func):
+        return str(node.sql_name()).lower()
+    return None
+
+
 _QUERY_MAX_CELL_BYTES = 8_000_000  # ~8 MB of rendered cells; the console inspects, never extracts
 
 
 def _guard_console_query(parsed: object) -> None:
+    """Reject anything the read-only console must never run. This is the *fence*, not
+    merely defence in depth: an engine-level lockdown is not available to us. On a
+    DuckLake warehouse the console shares the writer's DuckDB connection (a process
+    can hold the catalog file only once), and ``enable_external_access`` is
+    instance-wide and one-way — flipping it off to sandbox a query would permanently
+    disable the writer's own file writes (the flusher, apply, exports).
+
+    So the SELECT is validated structurally. The key rule: every table source must be
+    a real table/view identifier, never a table function. ``read_csv`` / ``read_parquet``
+    / ``query`` / ``query_table`` / ``glob`` / … all parse as a *function* in table
+    position (``Table.this`` is a function node, not an ``Identifier``), so this
+    rejects every one of them — including any not yet named. A function-name denylist
+    and a file-path check backstop it for the rare scalar-position reader."""
     from sqlglot import exp as _exp
 
-    for node in parsed.walk():  # type: ignore[attr-defined]
-        name = None
-        if isinstance(node, _exp.Anonymous):
-            name = str(node.this)
-        elif isinstance(node, _exp.Func):
-            name = node.sql_name()
-        if name and _EXTERNAL_FN.search(name):
-            raise ClientException(detail=f"function {name!r} reads outside the warehouse — not in the console")
-        if isinstance(node, _exp.Table):
-            raw = node.name or ""
+    parsed_expr: _exp.Expression = parsed  # type: ignore[assignment]
+    for table in parsed_expr.find_all(_exp.Table):
+        if isinstance(table.this, _exp.Identifier):  # a real table/view reference
+            raw = table.name or ""
             if "/" in raw or "\\" in raw or "://" in raw:
                 raise ClientException(detail="file paths are not queryable from the console")
+            continue
+        name = _console_fn_name(table.this)  # a table function in FROM/JOIN position
+        if name not in _SAFE_TABLE_FUNCTIONS:
+            raise ClientException(
+                detail=f"table function {name or 'call'!r} is not queryable from the console — read tables only"
+            )
+    for node in parsed_expr.walk():  # backstop: file/network readers in scalar position
+        name = _console_fn_name(node)
+        if name and _EXTERNAL_FN.search(name):
+            raise ClientException(detail=f"function {name!r} reads outside the warehouse — not in the console")
 
 
 @post("/query", opt={"scope": "read"})
@@ -897,14 +931,14 @@ async def post_query(data: QueryRequest, state: State) -> QueryResponse:
     parsed = statements[0]
     if not isinstance(parsed, (_exp.Select, _exp.Union)):
         raise ClientException(detail="SELECT only — the console never writes")
-    _guard_console_query(parsed)  # defense in depth; the sandboxed cursor is the real fence
+    _guard_console_query(parsed)  # the fence: SELECT-only, tables (not table functions), no file paths
     limit = max(1, min(data.limit, 10_000))
     bounded = _exp.select("*").from_(parsed.subquery("q")).limit(limit + 1)  # +1: exact truncation
     started = _time.perf_counter()
 
     async def _run() -> pa.Table:
-        # fetch_sandboxed runs with external access disabled: query()/read_csv()/
-        # httpfs cannot reach host files or the network however they are spelled
+        # The query was already fenced by _guard_console_query (SELECT-only, no table
+        # functions, no file paths), so no host file or network read can be expressed.
         reader = await state.engine.fetch_sandboxed(bounded)
         return await asyncio.to_thread(reader.read_all)
 

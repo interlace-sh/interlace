@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
@@ -222,3 +223,20 @@ async def test_fetch_closes_its_cursor_when_the_stream_ends() -> None:
     assert conn.log == [], "cursor closed before the stream was read"
     assert reader.read_all().num_rows == 5
     assert conn.log == ["closed"], "exhausting the stream must close the cursor"
+
+
+async def test_sandboxed_fetch_does_not_disable_file_writes(tmp_path: Path) -> None:
+    """Regression: the console read path must not poison the warehouse connection.
+    DuckDB's enable_external_access is instance-wide and one-way, so the old sandbox
+    (a SET on a shared cursor) bricked every later file write — the stream flusher,
+    apply, exports. The fence is now the service's AST guard, not an engine latch."""
+    engine = DuckDBAdapter.connect(str(tmp_path / "wh.duckdb"))
+    try:
+        await engine.execute_sql("CREATE TABLE t AS SELECT 1 AS x")
+        reader = await engine.fetch_sandboxed(sqlglot.parse_one("SELECT * FROM t", read="duckdb"))
+        reader.read_all()  # the console read, drained
+        out = tmp_path / "out.parquet"
+        await engine.execute_sql(f"COPY (SELECT 1 AS x) TO '{out}' (FORMAT parquet)")  # a file write
+        assert out.exists(), "file write after a sandboxed read must still succeed"
+    finally:
+        engine.close()

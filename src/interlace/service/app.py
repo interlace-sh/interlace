@@ -1013,13 +1013,21 @@ async def get_lineage(state: State) -> LineageResponse:
     promoted = await state.store.get_environment(state.environment)
     snapshots = await state.store.get_snapshots(promoted.items())
 
+    order = compiled.graph.topological_sort()
+    types_by_model = {name: await _described_columns(state, name, promoted, snapshots) for name in order}
+    # Real warehouse columns feed column lineage: a Python model then contributes its
+    # true output columns to the schema graph, so SQL models downstream of it qualify
+    # and trace precisely (falling back to name-passthrough only where nothing's built).
+    described = {name: list(types) for name, types in types_by_model.items() if types}
+    lineage = column_lineage(compiled, known_columns=described)
+
     models: list[LineageModel] = []
     edges: list[list[str]] = []
     known = set(compiled.models)
-    for name in compiled.graph.topological_sort():
+    for name in order:
         model = compiled.models[name]
-        types = await _described_columns(state, name, promoted, snapshots)
-        columns = list(types) or list(state.lineage.get(name, {})) or _ast_projection_names(model)
+        types = types_by_model[name]
+        columns = list(types) or list(lineage.get(name, {})) or _ast_projection_names(model)
         models.append(
             LineageModel(
                 name=name,
@@ -1059,26 +1067,14 @@ async def get_lineage(state: State) -> LineageResponse:
         edges.extend([key, consumer] for consumer in consumers)
 
     # column sources: keep only references that resolve to a node on the canvas
-    # (a VALUES alias like `t` is a phantom, not a navigable source)
+    # (a VALUES alias like `t` is a phantom, not a navigable source). column_lineage
+    # already traces through opaque models (Python / *) by name-passthrough, so no
+    # separate fallback here.
     column_sources = {
         name: {col: [[t, c] for t, c in refs if t in known or t in stream_keys] for col, refs in sources.items()}
-        for name, sources in state.lineage.items()
+        for name, sources in lineage.items()
         if sources
     }
-    # models without parsed lineage (Python models, sinks over them) would break
-    # every trace passing through: fall back to NAME-MATCHING against direct
-    # upstreams — a heuristic, but the honest alternative is a dead end
-    columns_of = {info.name: set(info.columns) for info in models}
-    for info in models:
-        if column_sources.get(info.name):
-            continue
-        model = compiled.models[info.name]
-        matched = {
-            col: [[dep, col] for dep in model.dependencies if col in columns_of.get(dep, set())] for col in info.columns
-        }
-        matched = {col: refs for col, refs in matched.items() if refs}
-        if matched:
-            column_sources[info.name] = matched
     return LineageResponse(models=models, edges=edges, columns=column_sources, streams=streams)
 
 

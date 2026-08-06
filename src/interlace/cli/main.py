@@ -1183,6 +1183,28 @@ def engines(path: Path = _PATH, as_json: bool = _JSON) -> None:
     console.print(table)
 
 
+async def _warehouse_columns(project: Project, compiled: CompiledProject) -> dict[str, list[str]]:
+    """Best-effort real output columns per model, probed from the built warehouse so
+    column lineage traces precisely through Python models (a Python model's true
+    columns can't be known statically). Empty on any failure — an unbuilt project or
+    a warehouse held by a running ``serve`` — and lineage falls back to static analysis."""
+    from sqlglot import exp
+
+    try:
+        engines = project.open_engines()
+    except Exception:
+        return {}
+    described: dict[str, list[str]] = {}
+    try:
+        for name, model in compiled.models.items():
+            with contextlib.suppress(Exception):  # unbuilt / non-queryable (file target): names-only is fine
+                reader = await engines.get(model.engine).fetch(exp.select("*").from_(exp.to_table(name)).limit(0))
+                described[name] = list(reader.schema.names)
+    finally:
+        engines.close()
+    return described
+
+
 @app.command()
 def impact(
     target: str = typer.Argument(..., help="model.column — what would changing this column touch?"),
@@ -1198,7 +1220,8 @@ def impact(
         console.print(f"[red]expected <model>.<column> with a known model; got {target!r}[/red]")
         raise typer.Exit(1)
     model, column = parsed
-    result = column_impact(compiled, model, column)
+    described = asyncio.run(_warehouse_columns(project, compiled))
+    result = column_impact(compiled, model, column, known_columns=described)
     impacted = result["impacted"]
     opaque = result["opaque_consumers"]
 
@@ -1241,7 +1264,8 @@ def lineage(
 
     upstream = sorted(compiled.graph.ancestors(model))
     downstream = sorted(compiled.graph.descendants(model))
-    sources = column_lineage(compiled).get(model, {}) if columns else {}
+    described = asyncio.run(_warehouse_columns(project, compiled)) if columns else {}
+    sources = column_lineage(compiled, known_columns=described).get(model, {}) if columns else {}
 
     if fmt == "dot":
         typer.echo(_lineage_dot(compiled, model, upstream, downstream, sources))

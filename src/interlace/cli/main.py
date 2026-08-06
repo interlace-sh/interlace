@@ -655,23 +655,28 @@ def serve(
         token = secrets.token_hex(8)
         console.print(f"[bold]quack[/bold] warehouse at [cyan]{quack}[/cyan] · token [yellow]{token}[/yellow]")
         console.print("Clients: set [bold]database: quack:...[/bold] and INTERLACE_QUACK_TOKEN in the environment.")
-    uvicorn.run(
-        create_app(
-            path,
-            environment,
-            quack=quack or None,
-            quack_token=token or None,
-            scheduler=scheduler,
-            scheduler_interval=interval,
-        ),
+    app = create_app(
+        path,
+        environment,
+        quack=quack or None,
+        quack_token=token or None,
+        scheduler=scheduler,
+        scheduler_interval=interval,
+    )
+    config = uvicorn.Config(
+        app,
         host=host,
         port=port,
-        # SSE clients (/events/stream) hold their response open forever; without a
-        # bound, uvicorn's graceful shutdown waits on them indefinitely ("Waiting
-        # for connections to close") and Ctrl+C appears to hang. Lifespan cleanup
-        # (flush, store/engine close) runs only after this drain completes.
+        # SSE clients (/events/stream) hold their response open forever. The app's
+        # shutdown watcher ends them the instant this server flips `should_exit`, so
+        # the graceful-shutdown drain finds the connections already closed instead of
+        # force-cancelling them (which used to dump a CancelledError traceback on
+        # Ctrl+C). The bound is a backstop; lifespan cleanup runs after the drain.
         timeout_graceful_shutdown=3,
     )
+    server = uvicorn.Server(config)
+    app.state.uvicorn_server = server  # let the app release SSE streams as shutdown begins
+    server.run()
 
 
 @app.command("models")

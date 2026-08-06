@@ -1503,9 +1503,28 @@ def create_app(
                     logger.exception("scheduler tick failed; retrying next interval")
                 await asyncio.sleep(scheduler_interval)
 
+        async def shutdown_watch() -> None:
+            """End every open SSE stream the moment uvicorn begins shutting down.
+
+            SSE responses (/events/stream) block forever on their queue, so at Ctrl+C
+            uvicorn's graceful-shutdown drain waits the full timeout and then force-
+            cancels them — which surfaces as a CancelledError traceback from the held-
+            open stream. Poisoning the subscribers (their tail() returns on ``None``)
+            lets the drain find the connections already closed, so shutdown is clean
+            and immediate. ``uvicorn_server`` is injected by the serve command."""
+            server = getattr(app.state, "uvicorn_server", None)
+            if server is None:
+                return
+            while not getattr(server, "should_exit", False):
+                await asyncio.sleep(0.2)
+            for subscriber in list(app.state.sse_subscribers):
+                with contextlib.suppress(asyncio.QueueFull):
+                    subscriber.put_nowait(None)
+
         tail_task = asyncio.create_task(event_tail())
         flusher_task = asyncio.create_task(flusher_loop()) if streams else None
         loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None
+        watch_task = asyncio.create_task(shutdown_watch())
         try:
             yield
         finally:
@@ -1515,7 +1534,12 @@ def create_app(
             # and the store/log/engine handles would leak — shield the whole thing.
             import anyio
 
-            for task in (loop_task, flusher_task, tail_task):
+            # Belt-and-braces: release any SSE stream still open (the watcher above
+            # normally does this the instant should_exit flips).
+            for subscriber in list(app.state.sse_subscribers):
+                with contextlib.suppress(asyncio.QueueFull):
+                    subscriber.put_nowait(None)
+            for task in (loop_task, flusher_task, tail_task, watch_task):
                 if task is not None:
                     task.cancel()
                     # suppress Exception too: a task that already died must not

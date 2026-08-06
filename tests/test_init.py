@@ -22,12 +22,14 @@ def test_scaffold_writes_a_loadable_project(tmp_path: Path) -> None:
 
     assert (tmp_path / "interlace.yaml") in written
     assert (tmp_path / "models" / "raw_events.sql").exists()
+    assert (tmp_path / "models" / "enriched_events.py").exists()
 
     project = Project.load(tmp_path)
     assert project.config.name == "shop"
     compiled = project.compile()
-    assert "event_totals" in compiled.models
-    assert compiled.models["event_totals"].dependencies == ("raw_events",)
+    # SQL seed -> Python model (dependency inferred from the parameter name) -> SQL rollup
+    assert compiled.models["enriched_events"].dependencies == ("raw_events",)
+    assert compiled.models["event_summary"].dependencies == ("enriched_events",)
 
 
 def test_scaffold_refuses_to_overwrite(tmp_path: Path) -> None:

@@ -12,7 +12,8 @@ DuckDB + DuckLake by default.
 > The package is published to PyPI as **`interlaced`**; the import name and CLI are `interlace`.
 
 ```bash
-uv pip install "interlaced[service]"   # extras: service, adbc, postgres, polars, pandas, all
+pip install 'interlaced[service]'   # the CLI + daemon; core CLI only: pip install interlaced
+# more extras: [adbc] postgres/redshift · [spark] · [polars] · [all]
 ```
 
 ## Sixty seconds

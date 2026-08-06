@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.3 (2026-08-06)
+
+**Fix (correctness + security): the query console no longer disables warehouse writes.**
+The read-only SQL console sandboxed untrusted queries by setting DuckDB's
+`enable_external_access = false` on the shared warehouse connection. That setting is
+**instance-wide and one-way**, so the first console query permanently disabled the
+warehouse's own file writes — the stream flusher, `apply` and exports all started failing
+("file system operations are disabled"), and publishes then returned 429 forever. The fence
+now sits at parse time: a console `SELECT` may read tables and vetted row generators
+(`range` / `generate_series`) only — every table function (`read_csv`, `read_parquet`,
+`query`, `query_table`, `glob`, and unnamed or future ones) is rejected structurally, with a
+file/network function backstop. No engine latch, so writes are never affected. (An
+engine-level lockdown isn't possible here: a DuckLake catalog is held by one connection per
+process, so the console necessarily shares the writer's.)
+
+**New example: `event_stream`** — durable ingestion, end to end. A `@stream` endpoint, the
+exactly-once micro-batch materializer, backpressure, and live rollups over a moving stream,
+with a standard-library load generator that fires events in parallel batches (a million per
+burst, `--loop` for a million a minute).
+
 ## 2.0.2 (2026-08-06)
 
 Docs and examples — no code changes.

@@ -15,6 +15,13 @@ file/network function backstop. No engine latch, so writes are never affected. (
 engine-level lockdown isn't possible here: a DuckLake catalog is held by one connection per
 process, so the console necessarily shares the writer's.)
 
+**Fix: `interlace serve` shuts down cleanly on Ctrl+C.** An open SSE stream (`/events/stream`,
+the UI's live feed) blocked uvicorn's graceful shutdown until it timed out and force-cancelled
+the held-open connection, dumping a `CancelledError` traceback ("Cancel 1 running task(s),
+timeout graceful shutdown exceeded"). The daemon now ends open SSE streams the instant
+shutdown begins, so the drain finds the connections already closed — Ctrl+C is immediate and
+quiet.
+
 **New example: `event_stream`** — durable ingestion, end to end. A `@stream` endpoint, the
 exactly-once micro-batch materializer, backpressure, and live rollups over a moving stream,
 with a standard-library load generator that fires events in parallel batches (a million per

@@ -100,3 +100,7 @@ tasks/
 spark-warehouse/
 metastore_db/
 derby.log
+
+# benchmark reverse-ETL target (append model)
+examples/benchmark/serving.duckdb
+examples/benchmark/serving.duckdb.wal

@@ -6,17 +6,22 @@ DAG that exercises the pieces that matter for throughput —
 
 ```
 events (25M rows) ── enriched (ephemeral: inlined into every consumer)
-                      ├─ by_user ──── user_ltv (Python, Arrow batches, merge)
-                      ├─ by_product ─ top_products (view)
+                      ├─ by_user ────┬─ user_ltv       (Python, Arrow batches, merge)
+                      │              └─ user_history   (scd — Type 2 history)
+                      ├─ by_product ─┬─ top_products   (view)
+                      │              └─ product_catalog (full_merge, composite key)
                       ├─ by_device
                       └─ by_day
 events ───────────── daily_revenue (incremental_by_time, 1d grain)
-                      └─ revenue_report (parquet sink → out/)
+                      ├─ revenue_report (parquet file → out/)
+                      └─ daily_feed     (append → external serving.duckdb, reverse ETL)
 ```
 
-The four `by_*` branches share no edges, so `apply` builds them **concurrently**
-— watch the progress rows overlap. `enriched` is ephemeral, so each branch scans
-the full 25M rows through the inlined CTE: the fan-out does real, repeated work.
+The `by_*` branches share no edges, so `apply` builds them **concurrently** — watch
+the progress rows overlap. `enriched` is ephemeral, so each branch scans the full
+25M rows through the inlined CTE: the fan-out does real, repeated work. Between them
+the models exercise **every strategy** — `replace`, `incremental_by_time`, `merge`,
+`full_merge`, `scd`, `append` — across `virtual` / `view` / `file` / external `table`.
 
 ## Run it
 
@@ -40,7 +45,7 @@ Reference numbers (25M rows, laptop-class 8-core, DuckLake warehouse):
 
 | flow                                   | wall  | cpu    |
 | -------------------------------------- | ----- | ------ |
-| full build (9 models)                  | ~4.3s | ~12.8s |
+| full build (12 models, every strategy) | ~5.0s | ~14s   |
 | 30-day incremental backfill            | ~1.3s | ~12.9s |
 | same window again (ledger catchup)     | ~0.3s | —      |
 | restate one week                       | ~0.6s | —      |
@@ -61,9 +66,11 @@ wall ≪ cpu is the point: independent DAG branches build in parallel
 
 ## What it covers (beyond load)
 
-- `materialise: ephemeral` (CTE inlining), views, contracts-by-checks
-- `incremental_by_time` + the interval ledger: catchup vs `restate`
+- **every strategy** in one DAG: `replace`, `incremental_by_time` (+ interval
+  ledger: catchup vs `restate`), `merge`, `full_merge` (composite key), `scd`
+  (Type 2 history), `append`
+- every materialisation: `virtual`, `ephemeral` (CTE inlining), `view`,
+  `file` (Parquet), and an external `table` (reverse ETL into `serving.duckdb`)
 - a Python model streaming Arrow `RecordBatch`es with bounded memory,
   upserted via `merge`
-- a Parquet file materialisation (`materialise: file, format: parquet`)
 - `row_count` / `not_null` checks gating promotion at volume

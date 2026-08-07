@@ -62,6 +62,12 @@ Configured engines (name, type, dialect, DSN with credentials redacted). Config 
 Declared streams with drift policy, retention, log head, warehouse watermark, and pending
 backlog. Opens the warehouse + stream log.
 
+### `interlace query "SELECT ..." [--limit/-n 100]`
+Run a read-only `SELECT` against the warehouse and print the result. `SELECT` only — the same
+parse-time fence as the web console (real tables and views, never table functions or file
+readers). Unqualified names resolve to the promoted (prod) views; capped at `--limit` rows (max
+10,000). Opens the warehouse. (Same fence as the HTTP `POST /query`.)
+
 ## Environments — `interlace env ...`
 
 ### `interlace env list [--json]`

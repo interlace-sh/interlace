@@ -88,10 +88,11 @@ wrong scope = 403.
 
 ### Query console
 - **`POST /query`** (read) → `QueryResponse {columns, types, rows, row_count, truncated,
-  elapsed_ms}`. Body `{sql, limit=500}` (limit capped at 10 000). **SELECT only**: exactly one
-  statement, `Select`/`Union` at top level, and external/file/HTTP reader functions
-  (`read_csv`, `query`, `glob`, …) rejected — the query runs on a **sandboxed cursor with
-  external access disabled**, so it can only read the warehouse. 30s timeout; ~8 MB cell cap.
+  elapsed_ms}`. Body `{sql, limit=500}` (limit capped at 10 000). **SELECT only**: the SQL is
+  parsed and fenced *before* execution — exactly one `Select`/`Union` at the top level, and every
+  table source must be a real table or view (table functions and file/HTTP readers like
+  `read_csv`, `query`, `glob` are rejected, named or not), so it can only read the warehouse. The
+  same fence backs `interlace query` on the CLI. 30s timeout; ~8 MB cell cap.
 
 ### System (admin)
 - **`GET /engines`** (read) → `[EngineInfo]` `{name, type, dialect, database (redacted),

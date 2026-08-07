@@ -15,6 +15,9 @@ def orders(event):
     return event
 ```
 
+`interlace init --template events` scaffolds a complete, runnable streaming project (ingestion
+endpoint, live rollups, and a load generator).
+
 ## `@stream` config
 
 | Key | Type | Default | Meaning |

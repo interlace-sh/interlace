@@ -21,6 +21,7 @@ credentials it needs. Filesystem only. Bundled templates:
 | Template | What it scaffolds | Needs |
 |---|---|---|
 | `quickstart` (default) | A no-source SQL → Python → SQL chain with checks | — |
+| `events` | Durable `@stream` HTTP ingestion + exactly-once live rollups | `[service]` extra to run |
 | `github` | Incremental pull of GitHub issues via the REST source client | `[sources]` extra |
 | `postgres` | Incremental pull from a Postgres source (bundled seeded docker-compose) | Docker + `[postgres]` extra |
 

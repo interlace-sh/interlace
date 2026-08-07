@@ -87,6 +87,16 @@ def test_github_template_compiles_as_an_incremental_source(tmp_path: Path) -> No
     assert compiled.models["issues_by_state"].dependencies == ("github_issues",)
 
 
+def test_events_template_compiles_as_a_streaming_project(tmp_path: Path) -> None:
+    scaffold_project(tmp_path, name="ev", template="events")
+    assert (tmp_path / "generate.py").exists()  # the bundled producer
+    project = Project.load(tmp_path)
+    assert "events" in {s.name for s in project.streams}  # the @stream registered
+    compiled = project.compile()
+    # the rollups read the stream and plan without the daemon
+    assert {"events_by_minute", "events_by_type", "user_spend", "top_users"} <= set(compiled.models)
+
+
 def test_postgres_template_compiles_without_the_postgres_extra(tmp_path: Path) -> None:
     scaffold_project(tmp_path, name="pg", template="postgres")
     assert (tmp_path / "docker-compose.yml").exists()  # bundled seeded source db

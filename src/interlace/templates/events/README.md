@@ -1,4 +1,4 @@
-# event_stream
+# __PROJECT_NAME__ — streaming ingestion
 
 Durable event ingestion, end to end: an HTTP endpoint that swallows a firehose of
 events, materializes them **exactly-once** into the warehouse, and drives a handful
@@ -16,13 +16,15 @@ source, firing synthetic events at the endpoint in parallel batches.
 
 ## Run it
 
+```bash
+pip install "interlaced[service]"   # the daemon (interlace serve)
+```
+
 Two shells:
 
 ```bash
-cd examples/event_stream
-
 # 1) the daemon: ingestion endpoint + micro-batch materializer + scheduler
-interlace serve --path .
+interlace serve
 
 # 2) the producer (another shell): one burst of a million events
 python generate.py
@@ -42,8 +44,8 @@ Without the daemon it still plans and builds — the rollups just read an empty
 `streams.events`:
 
 ```bash
-interlace plan --path .
-interlace apply --path .
+interlace plan
+interlace apply
 ```
 
 ## What it shows

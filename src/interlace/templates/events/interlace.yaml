@@ -1,5 +1,6 @@
-name: event_stream
+name: __PROJECT_NAME__
 default_dialect: duckdb
-# Streaming demo. `interlace serve` runs the daemon — the ingestion endpoint,
+# A streaming project. `interlace serve` runs the daemon — the ingestion endpoint,
 # the exactly-once micro-batch materializer, and the scheduler — in one process.
 # generate.py is the external producer that fires events at POST /streams/events.
+database: ducklake:.interlace/warehouse.ducklake

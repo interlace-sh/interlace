@@ -1,0 +1,3 @@
+# Template metadata (read by `interlace init --list`; not copied into the project).
+title: Events (streaming)
+description: Durable HTTP event ingestion with @stream + exactly-once rollups (run under `interlace serve`; needs the [service] extra).

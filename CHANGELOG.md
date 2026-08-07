@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.1 (2026-08-07)
+
+**Fix (2.1.0 regression): `gc` reclaims `materialise: view` snapshots.** A view model's
+physical snapshot is a view (`CREATE OR REPLACE VIEW`), but `gc` dropped every superseded
+snapshot by trying `DROP TABLE` first — and `DROP TABLE` on a view *raises* rather than
+no-opping, so `gc` aborted before the `DROP VIEW` could run and reclaimed nothing. Any
+project with view models could never `gc`. It now drops each object by its actual catalog
+kind (`DROP VIEW` / `DROP TABLE`).
+
 ## 2.1.0 (2026-08-07)
 
 **New: source models — ingestion by pull (`interlace.sources`).** A small synchronous REST

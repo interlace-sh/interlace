@@ -10,6 +10,11 @@ snapshot, running its checks, and swapping the environment's view — instead of
 Scoped to virtual/view models (terminals always deliver); checks still gate promotion; falls
 back to a real build if the table is gone (in-memory warehouse, gc).
 
+**Fix: `interlace init --list` shows each template's extra and full description.** The
+templates now declare `requires_env`, so the Needs column lists the extra
+(service/sources/postgres) instead of "—"; and the descriptions no longer lose their
+`[sources]`-style bracketed text, which Rich had been eating as markup.
+
 **Fix: `interlace serve` picks up model edits without a restart.** The daemon compiled the
 project once at startup, so editing a model and pressing Plan/Apply in the UI showed nothing
 new — only a restart (or `interlace plan` in a fresh process) did. It now recompiles on demand

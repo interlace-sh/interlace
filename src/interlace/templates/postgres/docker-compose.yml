@@ -1,0 +1,20 @@
+# A throwaway source Postgres, seeded on first boot from ./init/*.sql.
+#   docker compose up -d      # start it (port 5456, so it won't clash with a 5455 dev db)
+#   interlace apply           # pull from it into the warehouse
+#   docker compose down -v    # stop and wipe
+services:
+  source-db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: interlace
+      POSTGRES_PASSWORD: interlace
+      POSTGRES_DB: shop
+    ports:
+      - "5456:5432"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U interlace -d shop"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

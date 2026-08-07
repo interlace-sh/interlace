@@ -1,0 +1,3 @@
+# Template metadata (read by `interlace init --list`; not copied into the project).
+title: Postgres
+description: Incrementally pull from a Postgres source (bundled docker-compose seeds one) — needs Docker + the [postgres] extra.

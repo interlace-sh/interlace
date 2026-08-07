@@ -1,0 +1,4 @@
+name: __PROJECT_NAME__
+default_dialect: duckdb
+# The pull lands in a plain DuckDB file you can open with any DuckDB client.
+database: warehouse.duckdb

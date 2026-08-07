@@ -85,3 +85,13 @@ def test_github_template_compiles_as_an_incremental_source(tmp_path: Path) -> No
     assert issues.cursor == "updated_at" and issues.strategy == "merge" and issues.key == ("id",)
     assert issues.dependencies == ()  # a source has no upstream model
     assert compiled.models["issues_by_state"].dependencies == ("github_issues",)
+
+
+def test_postgres_template_compiles_without_the_postgres_extra(tmp_path: Path) -> None:
+    scaffold_project(tmp_path, name="pg", template="postgres")
+    assert (tmp_path / "docker-compose.yml").exists()  # bundled seeded source db
+    assert (tmp_path / "init" / "seed.sql").exists()
+    compiled = Project.load(tmp_path).compile()  # psycopg import is lazy → compiles without the extra
+    orders = compiled.models["orders"]
+    assert orders.cursor == "updated_at" and orders.strategy == "merge" and orders.key == ("id",)
+    assert compiled.models["orders_by_status"].dependencies == ("orders",)

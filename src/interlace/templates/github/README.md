@@ -17,10 +17,11 @@ interlace apply                        # pull + build + promote
 interlace query "SELECT * FROM issues_by_state"
 ```
 
-Re-run `interlace apply` any time: the model resumes from the newest `updated_at`
-it has already loaded (GitHub's `since` filter) and **upserts by issue id**, so you
-only fetch what changed and never get duplicates. Point it at any repo by editing
-`REPO` in `models/github_issues.py`.
+`interlace apply` builds the model; to pull fresh data afterwards use **`interlace
+run`** (or a schedule). It resumes from the newest `updated_at` already loaded
+(GitHub's `since` filter) and **upserts by issue id**, so you only fetch what changed
+and never get duplicates. Point it at any repo by editing `REPO` in
+`models/github_issues.py`.
 
 ## How it works
 

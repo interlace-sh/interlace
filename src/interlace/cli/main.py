@@ -252,7 +252,8 @@ def init(
         table.add_column("Description", style="dim")
         table.add_column("Needs", style="dim")
         for info in list_templates():
-            table.add_row(info.name, info.description, ", ".join(info.requires_env) or "—")
+            # escape: a description may contain [sources]-style brackets Rich would eat as markup
+            table.add_row(info.name, escape(info.description), ", ".join(info.requires_env) or "—")
         console.print(table)
         return
     try:

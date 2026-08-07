@@ -1,3 +1,4 @@
 # Template metadata (read by `interlace init --list`; not copied into the project).
 title: GitHub
-description: Pull GitHub issues incrementally via the REST source client (needs the [sources] extra).
+description: Pull GitHub issues incrementally via the REST source client.
+requires_env: [sources]

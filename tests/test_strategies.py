@@ -7,7 +7,7 @@ import sqlglot
 
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef
-from interlace.strategies import IncrementalByTime, Merge, Replace, View, resolve_strategy
+from interlace.strategies import HashMerge, IncrementalByTime, Merge, Replace, View, resolve_strategy
 
 pytestmark = pytest.mark.unit
 
@@ -92,6 +92,35 @@ def test_merge_row_counts_native_is_a_single_written_count() -> None:
     # the DELETE+INSERT fallback keeps the split: [ensure, delete=2, insert=5] -> +3 ~2
     counts = Merge(("id",)).row_counts([0, 2, 5])
     assert (counts.inserted, counts.updated) == (3, 2)
+
+
+def test_hash_merge_builds_ensure_update_insert() -> None:
+    statements = HashMerge(("id",)).plan_statements(
+        SqlRelation(ast=sqlglot.parse_one("SELECT id, v FROM src")), _TARGET, _CAPS
+    )
+    rendered = _sql(statements)
+    assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
+    assert "MD5(CONCAT_WS('||', COALESCE(CAST(v AS TEXT), ''))) AS _hash" in rendered[0]  # hash over the non-key col
+    assert rendered[1].startswith("UPDATE interlace__main.orders__abc SET v = _s.v, _hash = _s._hash FROM")
+    assert "orders__abc._hash <> _s._hash AND orders__abc.id = _s.id" in rendered[1]  # changed keys only
+    assert rendered[2].startswith("INSERT INTO interlace__main.orders__abc SELECT * FROM")
+    assert "NOT _s.id IN (SELECT id FROM interlace__main.orders__abc)" in rendered[2]  # new keys only
+
+
+def test_hash_merge_row_counts_split_update_and_insert() -> None:
+    counts = HashMerge(("id",)).row_counts([0, 3, 5])  # [ensure, update=3 changed, insert=5 new]
+    assert (counts.inserted, counts.updated) == (5, 3)
+
+
+def test_hash_merge_needs_explicit_columns_for_select_star() -> None:
+    from interlace.exceptions import PlanError
+
+    with pytest.raises(PlanError):  # the hash is built from the projection — SELECT * can't be enumerated
+        HashMerge(("id",)).plan_statements(SqlRelation(ast=sqlglot.parse_one("SELECT * FROM src")), _TARGET, _CAPS)
+
+
+def test_resolve_strategy_hash_merge() -> None:
+    assert isinstance(resolve_strategy("virtual", "hash_merge", ("id",)), HashMerge)
 
 
 def test_incremental_by_time_builds_windowed_statements() -> None:

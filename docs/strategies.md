@@ -17,6 +17,7 @@ The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strat
 | `virtual` | `replace` (default) | `Replace` (`CREATE OR REPLACE`) | — |
 | `virtual` \| `table` | `merge` | `Merge` | `key` |
 | `virtual` \| `table` | `full_merge` | `FullMerge` | `key` |
+| `virtual` \| `table` | `hash_merge` | `HashMerge` | `key` (explicit projection, not `SELECT *`) |
 | `virtual` \| `table` | `incremental_by_time` | `IncrementalByTime` | `time_column` (+ an interval) |
 | `virtual` \| `table` | `scd` | `Scd` | `key` (explicit projection on engines without `supports_star_exclude`) |
 | `table` | `replace` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
@@ -140,6 +141,33 @@ every run). Duplicate source rows collapse via `EXCEPT`'s distinct semantics.
 this run (no deletes), while `full_merge` treats the query as the whole world and deletes
 what's missing.
 
+## `hash_merge` (HashMerge) — keyed upsert, change-detected
+
+Requires `key`. Like `merge` it's an upsert — it keeps keys absent from the source (no
+deletes) — but it stores an `_hash` column (an `md5` of the non-key columns) and writes
+only the rows that actually changed:
+
+```
+CREATE TABLE IF NOT EXISTS target AS (SELECT *, md5(<non-key cols>) AS _hash FROM (<query>) _src LIMIT 0)
+UPDATE target SET <cols>, _hash = _s._hash FROM (source+_hash) _s
+   WHERE target.<key> = _s.<key> AND target._hash <> _s._hash   -- changed keys only
+INSERT INTO target SELECT * FROM (source+_hash) _s
+   WHERE _s.<key> NOT IN (SELECT <key> FROM target)              -- new keys only
+```
+
+So an unchanged row is skipped (idempotent — a run over identical data writes nothing, no
+new DuckLake files), and the reported counts split cleanly into `+inserted` / `~updated`.
+The `_hash` is an ordinary stored column, visible to consumers. Keys must be non-NULL.
+Because the hash is built from the projection, a `hash_merge` model needs its columns
+spelled out — give it an explicit `SELECT col, …`, not `SELECT *`.
+
+`hash_merge` vs `full_merge`: both write only the delta over identical data, but `full_merge`
+detects change with a whole-row `EXCEPT` and treats the query as the full state (it *deletes*
+vanished keys); `hash_merge` compares a single `_hash` column (an O(key) join, cheaper on wide
+tables) and is a pure upsert (it *keeps* vanished keys). `hash_merge` vs `merge`: `merge`'s
+native `MERGE` rewrites every matched row each run and can't split insert vs update;
+`hash_merge` touches only changed rows and reports the split.
+
 ## `incremental_by_time` (IncrementalByTime) — windowed rebuild
 
 Requires `time_column`; the scheduler/planner supplies one interval `[start, end)` per run.
@@ -223,4 +251,4 @@ on the old table) — *unless* you apply with **`--forward-only`**, which copies
 history onto the new version (copy-on-write) so the new logic applies going forward while
 history survives; checks still gate before the view moves, and the old table remains the
 rollback target until `gc`. This applies to every history-keeping strategy
-(`merge`, `full_merge`, `scd`, `incremental_by_time`).
+(`merge`, `full_merge`, `hash_merge`, `scd`, `incremental_by_time`).

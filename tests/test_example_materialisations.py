@@ -23,6 +23,7 @@ VIRTUAL = {
     "customers_view",
     "accounts_merge",
     "accounts_full_merge",
+    "accounts_hash_merge",
     "events_incremental",
     "customer_history",
 }

@@ -243,7 +243,7 @@ def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, enviro
         )
 
 
-_HISTORY_STRATEGIES = frozenset({"merge", "full_merge", "scd", "incremental_by_time"})
+_HISTORY_STRATEGIES = frozenset({"merge", "full_merge", "hash_merge", "scd", "incremental_by_time"})
 """Strategies whose targets accumulate state a rebuild would destroy."""
 
 

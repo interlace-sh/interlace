@@ -8,6 +8,7 @@ from interlace.exceptions import PlanError
 from interlace.strategies.append import Append
 from interlace.strategies.base import Strategy, table_expr
 from interlace.strategies.full_merge import FullMerge
+from interlace.strategies.hash_merge import HashMerge
 from interlace.strategies.incremental_by_time import IncrementalByTime
 from interlace.strategies.merge import Merge
 from interlace.strategies.replace import Replace
@@ -18,6 +19,7 @@ from interlace.strategies.view import View
 __all__ = [
     "Append",
     "FullMerge",
+    "HashMerge",
     "IncrementalByTime",
     "Merge",
     "Replace",
@@ -65,6 +67,10 @@ def resolve_strategy(
             if not key:
                 raise PlanError("full_merge requires a key", details={"materialise": materialise})
             return FullMerge(tuple(key))
+        if strategy == "hash_merge":
+            if not key:
+                raise PlanError("hash_merge requires a key", details={"materialise": materialise})
+            return HashMerge(tuple(key))
         if strategy == "incremental_by_time":
             if not time_column:
                 raise PlanError("incremental_by_time requires a time_column", details={"materialise": materialise})

@@ -122,6 +122,30 @@ async def test_re_apply_is_a_no_op(env: tuple[DuckDBAdapter, SqliteStateStore]) 
     assert plan.is_empty
 
 
+async def test_hash_merge_is_idempotent_and_splits_counts(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """hash_merge writes only the real delta: identical data is a no-op (+0 ~0), and a
+    changed row vs a new key report as an update vs an insert — not one lumped count."""
+    from interlace.plan.run import run_plan
+    from interlace.strategies.base import RowCounts
+
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA raw")
+    await engine.execute_sql("CREATE TABLE raw.src AS SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, v)")
+    models = [sql_model("dim", "SELECT id, v FROM raw.src", strategy="hash_merge", key=("id",))]
+    project = compile_models(models)
+
+    first = await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
+    assert first.rows["dim"] == RowCounts(inserted=2)  # fresh: two inserts
+
+    rerun = await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
+    assert not rerun.rows.get("dim")  # identical data: nothing written — idempotent
+
+    await engine.execute_sql("UPDATE raw.src SET v = 'B' WHERE id = 2")  # one changed key
+    await engine.execute_sql("INSERT INTO raw.src VALUES (3, 'c')")  # one new key
+    delta = await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
+    assert delta.rows["dim"] == RowCounts(inserted=1, updated=1)  # split, not lumped
+
+
 async def test_ephemeral_models_are_not_counted_as_promoted(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     """An ephemeral model is inlined into its consumers — it has no promotable table, so
     it must not inflate the promoted count over the models that actually built."""

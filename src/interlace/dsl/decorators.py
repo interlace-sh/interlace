@@ -22,7 +22,7 @@ ModelFn = Callable[..., Any]
 # (a fingerprinted snapshot read through an environment view); `table`/`file` are
 # terminal deliveries into a destination interlace does not own.
 _MATERIALISATIONS = frozenset({"virtual", "view", "ephemeral", "table", "file"})
-_KEYED_STRATEGIES = frozenset({"merge", "full_merge", "scd"})
+_KEYED_STRATEGIES = frozenset({"merge", "full_merge", "hash_merge", "scd"})
 _DRIFT_MODES = frozenset({"evolve", "reject", "quarantine"})
 
 

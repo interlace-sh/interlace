@@ -21,6 +21,8 @@ built-in orchestration, and durable streaming ingestion. Published to PyPI as `i
   gating.
 - **[Streaming](streaming.md)** — `@stream` ingestion, publishing, schema-drift modes,
   exactly-once materialisation, and reverse-ETL (terminal `table` / `file`).
+- **[Sources](sources.md)** — pulling from REST APIs and databases: the `interlace.sources`
+  client (auth, pagination, retry), incremental `cursor` pulls, and the source templates.
 
 ## Operating
 

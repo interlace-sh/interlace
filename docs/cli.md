@@ -15,8 +15,14 @@ unknown target / guard tripped; `2` malformed input (bad ISO window, bad grace, 
 
 ### `interlace init [PATH] [--name NAME] [--template NAME] [--list]`
 Scaffold a new project from a template (writes `interlace.yaml`, `models/`, a README).
-`--template/-t` picks the starter (default `quickstart`, a no-source SQL → Python → SQL
-chain); `--list` shows every template and any credentials it needs. Filesystem only.
+`--template/-t` picks the starter (default `quickstart`); `--list` shows every template and any
+credentials it needs. Filesystem only. Bundled templates:
+
+| Template | What it scaffolds | Needs |
+|---|---|---|
+| `quickstart` (default) | A no-source SQL → Python → SQL chain with checks | — |
+| `github` | Incremental pull of GitHub issues via the REST source client | `[sources]` extra |
+| `postgres` | Incremental pull from a Postgres source (bundled seeded docker-compose) | Docker + `[postgres]` extra |
 
 ### `interlace plan [--env] [--select] [--forward-only] [--json]`
 Preview what `apply` would change in an environment, without building. Opens the state store

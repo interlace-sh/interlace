@@ -55,6 +55,10 @@ class BackfillTask:
     # the strategy runs — history moves to the new fingerprint, the old table stays
     # as the rollback until gc.
     seed_from: TableRef | None = None
+    # This exact fingerprint is already materialised (a prior apply, often in another
+    # environment): the physical table exists and its content is fingerprint-pinned, so
+    # apply skips the build compute and only gates checks + swaps this env's view.
+    reuse_existing: bool = False
 
 
 @dataclass(frozen=True)
@@ -121,7 +125,13 @@ def env_view(environment: str, model_name: str) -> TableRef:
 
 
 def schedule_build(
-    plan: Plan, model: CompiledModel, snapshot: Snapshot, environment: str, *, seed_from: TableRef | None = None
+    plan: Plan,
+    model: CompiledModel,
+    snapshot: Snapshot,
+    environment: str,
+    *,
+    seed_from: TableRef | None = None,
+    reuse_existing: bool = False,
 ) -> None:
     """Add the right tasks for a model: ephemeral builds nothing; a terminal
     table/file builds (delivers) but gets no environment view; a virtual/view model
@@ -130,7 +140,14 @@ def schedule_build(
     An incremental_by_time model (virtual, or a terminal ``table``) cannot build
     without a window, so an apply fills the latest grain interval — the same default
     as ``interlace run`` — leaving history to ``run --start/--end``.
+
+    ``reuse_existing`` (the fingerprint is already materialised) skips the compute for a
+    plain virtual/view build — never for a terminal delivery, a forward-only seed, or an
+    incremental window, which must always run.
     """
+    # only a plain (non-seeded, non-windowed) virtual/view build can skip its compute:
+    # a terminal always delivers, a seed must copy history, an interval must fill
+    reuse = reuse_existing and seed_from is None and model.materialise in ("virtual", "view")
     if model.materialise == "ephemeral":  # inlined into consumers, never built
         return
     wants_view = model.materialise in ("virtual", "view")  # terminal table/file has no env view
@@ -164,7 +181,7 @@ def schedule_build(
         plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
         add_view()
         return
-    plan.backfills.append(BackfillTask(snapshot=snapshot, seed_from=seed_from))
+    plan.backfills.append(BackfillTask(snapshot=snapshot, seed_from=seed_from, reuse_existing=reuse))
     add_view()
 
 

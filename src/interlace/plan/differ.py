@@ -303,6 +303,13 @@ async def diff(
         for name, fingerprint in current.items()
         if name in compiled.models and fingerprint != compiled.models[name].fingerprint
     )
+    # Fingerprints already materialised (by any prior apply — most usefully another
+    # environment): building these again would recompute an identical, content-addressed
+    # table, so schedule a reuse (record + view-swap) instead of a rebuild.
+    already_built = await state.get_snapshots((name, compiled.models[name].fingerprint) for name in selected)
+
+    def is_materialised(model: CompiledModel) -> bool:
+        return (model.name, model.fingerprint) in already_built
 
     for model in compiled.ordered():  # topo order: upstream impact known before downstream
         previous_fingerprint = current.get(model.name)
@@ -311,7 +318,13 @@ async def diff(
             impact[model.name] = "semantic"
             if model.name in selected:
                 plan.changes.append(ModelChange(model.name, ChangeType.ADDED, None, None, model.fingerprint))
-                schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
+                schedule_build(
+                    plan,
+                    model,
+                    snapshot_of(model, ChangeCategory.BREAKING),
+                    environment,
+                    reuse_existing=is_materialised(model),
+                )
             continue
 
         if previous_fingerprint == model.fingerprint:
@@ -373,7 +386,9 @@ async def diff(
             )
             schedule_build(plan, model, snapshot, environment, seed_from=previous.physical_table)  # type: ignore[union-attr]
         elif rebuild:
-            schedule_build(plan, model, snapshot_of(model, category), environment)
+            schedule_build(
+                plan, model, snapshot_of(model, category), environment, reuse_existing=is_materialised(model)
+            )
         else:
             _schedule_reuse(plan, model, previous, environment)  # type: ignore[arg-type]  # previous is not None here
 

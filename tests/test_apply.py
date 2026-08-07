@@ -122,6 +122,51 @@ async def test_re_apply_is_a_no_op(env: tuple[DuckDBAdapter, SqliteStateStore]) 
     assert plan.is_empty
 
 
+async def test_second_environment_reuses_the_shared_table_instead_of_rebuilding(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """Snapshots are content-addressed and shared across environments, so promoting
+    the same logic to a second env is a view-swap onto the already-built table — not
+    a rebuild. The differ marks it ADDED, but apply reuses rather than recomputes."""
+    engine, store = env
+    project = compile_models(
+        [sql_model("a", "SELECT 1 AS id, 10 AS v"), sql_model("b", "SELECT id, v * 2 AS v2 FROM a")]
+    )
+    prod = await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
+    assert set(prod.built) == {"a", "b"} and not prod.reused
+
+    dev_plan = await diff(project, "dev", store)
+    assert all(task.reuse_existing for task in dev_plan.backfills)  # both fingerprints already materialised
+    dev = await apply(dev_plan, compiled=project, engine=engine, state=store)
+    assert not dev.built and set(dev.reused) == {"a", "b"} and dev.promoted == 2
+    # the sandbox view resolves through to the same shared physical table
+    assert await _rows(engine, "SELECT id, v2 FROM dev__main.b") == [{"id": 1, "v2": 20}]
+
+
+async def test_reuse_path_still_gates_on_checks(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A reused snapshot must still have its checks run — a fingerprint recorded with a
+    failing check (built, but promotion-blocked in the first env) cannot slip into a
+    second env unchecked."""
+    from interlace.checks.spec import parse_checks
+    from interlace.exceptions import CheckError
+
+    engine, store = env
+    # a check that always fails: id is never 999
+    models = [
+        sql_model(
+            "m", "SELECT 1 AS id", checks=parse_checks([{"accepted_values": {"column": "id", "values": [999]}}], "m")
+        )
+    ]
+    project = compile_models(models)
+    with pytest.raises(CheckError):  # first env: builds the table, then the check blocks promotion
+        await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
+
+    dev_plan = await diff(project, "dev", store)
+    assert dev_plan.backfills[0].reuse_existing  # the table exists from prod's (blocked) build
+    with pytest.raises(CheckError):  # reuse still runs the check, so the second env is gated too
+        await apply(dev_plan, compiled=project, engine=engine, state=store)
+
+
 async def test_view_materialisation(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     project = compile_models([sql_model("answer", "SELECT 42 AS n", materialise="view")])

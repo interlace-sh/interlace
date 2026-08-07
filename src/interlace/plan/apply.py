@@ -409,6 +409,21 @@ async def _run_backfill(
     target_engine = registry.require(model.engine, model=model.name)
     resolution = await _stage_cross_engine_inputs(model, compiled, registry, physical, staged, stage_lock, result)
 
+    if task.reuse_existing and await target_engine.table_exists(snapshot.physical_table):
+        # fingerprint already materialised (e.g. by another environment): the content-
+        # addressed table exists, so skip the (re)build compute — record the snapshot for
+        # this env's promotion, gate on checks against the existing table, and let the
+        # caller swap this environment's view onto the shared table. The table_exists guard
+        # is what makes the differ's optimistic reuse safe: a snapshot row can outlive its
+        # table (an in-memory warehouse across processes, a gc'd table) — then we fall
+        # through and build for real.
+        await state.add_snapshot(snapshot)  # idempotent — the row may already exist
+        if snapshot.name not in result.built and snapshot.name not in result.reused:
+            result.reused.append(snapshot.name)
+        await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
+        result.timings[snapshot.name] = result.timings.get(snapshot.name, 0.0) + (time.perf_counter() - task_started)
+        return
+
     if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
         if model.materialise != "virtual":
             raise PlanError(

@@ -36,11 +36,11 @@ def test_discovers_sql_and_python_models(tmp_path: Path) -> None:
 
 def test_sql_header_backfill_is_honoured(tmp_path: Path) -> None:
     """`backfill:` in a SQL header must reach the ModelDef — it only matters for
-    incremental_by_time, which is SQL-only, so if the header ignored it the config
+    incremental, which is SQL-only, so if the header ignored it the config
     would be unreachable."""
     _write(
         tmp_path / "models" / "events.sql",
-        "/* interlace: {strategy: incremental_by_time, time_column: day, interval: 1d, backfill: none} */\n"
+        "/* interlace: {strategy: incremental, time_column: day, interval: 1d, backfill: none} */\n"
         "SELECT day FROM raw",
     )
     models = {m.name: m for m in discover_models(tmp_path, ["models"], "duckdb")}

@@ -34,7 +34,7 @@ backend is a dialect, a capability set, and a `connect`. Spark is its own transp
 Every [strategy](strategies.md) runs on every engine, with two exceptions on Spark
 (`scd`/`full_merge`). ✓ = supported · ✗ = not supported.
 
-| Engine | Status | `replace` | `view` | `append` | `merge` | `full_merge` | `incremental_by_time` | `scd` |
+| Engine | Status | `replace` | `view` | `append` | `merge` | `full_merge` | `incremental` | `scd` |
 |---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | `duckdb` / `ducklake` | stable | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `quack` | stable | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -76,7 +76,7 @@ Everything is portable by construction. `merge` upserts with a native `MERGE` wh
 column list isn't known or the engine lacks `MERGE`. **`scd` now runs everywhere** — engines
 without `SELECT * EXCLUDE` (Postgres, Redshift) enumerate the model's own columns to compare
 open rows, so history tracking is no longer DuckDB-only; it just needs an explicit projection.
-`replace`, `view`, `full_merge` and `incremental_by_time` run on every engine.
+`replace`, `view`, `full_merge` and `incremental` run on every engine.
 
 ## Multi-engine and cross-engine transfers
 
@@ -103,7 +103,7 @@ database (Postgres, SQLite, another DuckDB) — see [streaming § reverse ETL](s
 
 `spark` runs canonical ASTs inside a PySpark `SparkSession` (local, or remote via Spark
 Connect), moving data as Arrow with `DataFrame.toArrow()` / `SparkSession.createDataFrame` —
-no ADBC. `replace`, `append`, `view`, `merge` (native `MERGE`) and `incremental_by_time`
+no ADBC. `replace`, `append`, `view`, `merge` (native `MERGE`) and `incremental`
 (windowed `DELETE` + `INSERT`) are verified against a local **Spark + Delta Lake** session;
 the mutating strategies need a Delta or Iceberg catalog (plain Hive/parquet has no row-level
 `DELETE`/`MERGE`), configured on the session you hand the adapter.

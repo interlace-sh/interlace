@@ -122,7 +122,7 @@ Every strategy runs on every SQL engine — `merge` upserts natively where `MERG
 `scd` enumerates its columns where `SELECT * EXCLUDE` is missing (so on Postgres/Redshift an
 `scd` model needs an explicit projection, not `SELECT *`). The one exception is **Spark**,
 where `scd`/`full_merge` don't work: Delta forbids subqueries in `UPDATE`/`DELETE` conditions,
-which those strategies' close/delete steps rely on (`merge`, `incremental_by_time`, `replace`,
+which those strategies' close/delete steps rely on (`merge`, `incremental`, `replace`,
 `append` do run on Spark).
 
 ## Roadmap

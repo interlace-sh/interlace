@@ -137,7 +137,7 @@ def schedule_build(
     table/file builds (delivers) but gets no environment view; a virtual/view model
     builds and is repointed by an environment view.
 
-    An incremental_by_time model (virtual, or a terminal ``table``) cannot build
+    An incremental model (virtual, or a terminal ``table``) cannot build
     without a window, so an apply fills the latest grain interval — the same default
     as ``interlace run`` — leaving history to ``run --start/--end``.
 
@@ -160,7 +160,7 @@ def schedule_build(
                 ViewSwap(env_view(environment, model.name), snapshot.physical_table, engine=model.engine)
             )
 
-    if model.strategy == "incremental_by_time":  # virtual or terminal table: windowed delete+insert
+    if model.strategy == "incremental":  # virtual or terminal table: windowed delete+insert
         from datetime import datetime
 
         from interlace.state.interval import latest_complete_window, parse_grain

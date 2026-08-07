@@ -37,7 +37,7 @@ failure aborts before promotion (exit 1). Needs a live warehouse.
 
 ### `interlace run [--env] [--select] [--start] [--end] [--parallelism]`
 Force-build models regardless of change detection, then promote. `--start`/`--end` set the
-catch-up window for `incremental_by_time` models (default: the latest grain); it fills only
+catch-up window for `incremental` models (default: the latest grain); it fills only
 windows the interval ledger doesn't yet cover.
 
 ### `interlace restate [--env] [--select] [--start] [--end] [--parallelism]`

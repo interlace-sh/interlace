@@ -111,7 +111,7 @@ async def test_forward_only_inherits_interval_ledger(env: tuple[DuckDBAdapter, S
     v1 = ModelDef(
         name="inc",
         sql="SELECT id, name FROM raw.customers",
-        strategy="incremental_by_time",
+        strategy="incremental",
         time_column="ts",
         interval="1d",
     )
@@ -128,7 +128,7 @@ async def test_forward_only_inherits_interval_ledger(env: tuple[DuckDBAdapter, S
     v2 = ModelDef(
         name="inc",
         sql="SELECT id, name FROM raw.customers WHERE id > 0",
-        strategy="incremental_by_time",
+        strategy="incremental",
         time_column="ts",
         interval="1d",
     )
@@ -158,7 +158,7 @@ async def test_forward_only_apply_persists_the_inherited_ledger(
     )
 
     def inc(sql: str) -> ModelDef:
-        return ModelDef(name="inc", sql=sql, strategy="incremental_by_time", time_column="ts", interval="1d")
+        return ModelDef(name="inc", sql=sql, strategy="incremental", time_column="ts", interval="1d")
 
     v1 = inc("SELECT ts, id FROM raw.events")
     compiled = compile_models([v1])

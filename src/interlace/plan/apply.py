@@ -183,7 +183,7 @@ async def _deliver_table(
     interval: Interval | None,
 ) -> RowCounts:
     """Deliver ``resolved`` into an external table (``materialise: table``) via
-    ``strategy`` (replace / append / merge / full_merge / incremental_by_time).
+    ``strategy`` (replace / append / merge / full_merge / incremental).
 
     The external target is never dropped (grants and readers survive). When it already
     exists the source is staged in the warehouse and aligned to the target (additive
@@ -193,7 +193,7 @@ async def _deliver_table(
     order exactly.
 
     Two cases skip staging and run the strategy directly against the target: the first
-    delivery (the ensure-create matches the source), and any windowed ``incremental_by_time``
+    delivery (the ensure-create matches the source), and any windowed ``incremental``
     delivery (``interval`` set). An incremental window is grain-scoped and stays
     schema-stable within a fingerprint, so staging the *whole* source once per window
     would make a wide backfill/restate O(windows × source) — the pathological case."""
@@ -435,9 +435,9 @@ async def _run_backfill(
                 f"Python model {snapshot.name!r} must materialise as virtual; table/file (write a SQL model "
                 f"over its output), view and ephemeral are not supported for Python models"
             )
-        if model.strategy == "incremental_by_time":
+        if model.strategy == "incremental":
             raise PlanError(
-                f"Python model {snapshot.name!r} cannot use incremental_by_time; " f"use cursor= with merge instead"
+                f"Python model {snapshot.name!r} cannot use incremental; " f"use cursor= with merge instead"
             )
         recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
         previous = recorded_self.physical_table if recorded_self is not None else None

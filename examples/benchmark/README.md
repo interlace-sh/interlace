@@ -12,7 +12,7 @@ events (25M rows) ── enriched (ephemeral: inlined into every consumer)
                       │              └─ product_catalog (full_merge, composite key)
                       ├─ by_device
                       └─ by_day
-events ───────────── daily_revenue (incremental_by_time, 1d grain)
+events ───────────── daily_revenue (incremental, 1d grain)
                       ├─ revenue_report (parquet file → out/)
                       └─ daily_feed     (append → external serving.duckdb, reverse ETL)
 ```
@@ -20,7 +20,7 @@ events ───────────── daily_revenue (incremental_by_tim
 The `by_*` branches share no edges, so `apply` builds them **concurrently** — watch
 the progress rows overlap. `enriched` is ephemeral, so each branch scans the full
 25M rows through the inlined CTE: the fan-out does real, repeated work. Between them
-the models exercise **every strategy** — `replace`, `incremental_by_time`, `merge`,
+the models exercise **every strategy** — `replace`, `incremental`, `merge`,
 `full_merge`, `scd`, `append` — across `virtual` / `view` / `file` / external `table`.
 
 ## Run it
@@ -66,7 +66,7 @@ wall ≪ cpu is the point: independent DAG branches build in parallel
 
 ## What it covers (beyond load)
 
-- **every strategy** in one DAG: `replace`, `incremental_by_time` (+ interval
+- **every strategy** in one DAG: `replace`, `incremental` (+ interval
   ledger: catchup vs `restate`), `merge`, `full_merge` (composite key), `scd`
   (Type 2 history), `append`
 - every materialisation: `virtual`, `ephemeral` (CTE inlining), `view`,

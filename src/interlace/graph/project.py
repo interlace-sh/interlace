@@ -44,9 +44,9 @@ class CompiledModel:
     materialise: str
     strategy: str
     key: tuple[str, ...]  # business key for keyed strategies (merge)
-    time_column: str | None  # partition column for incremental_by_time
+    time_column: str | None  # partition column for incremental
     cursor: str | None  # column whose max is injected into a Python model's `cursor` param
-    interval: str | None  # grain for incremental_by_time (e.g. "1d")
+    interval: str | None  # grain for incremental (e.g. "1d")
     tags: tuple[str, ...]  # for tag: selection
     schedule: dict[str, str] | None  # cron/interval schedule for the trigger engine
     columns: dict[str, str | None] | None  # output contract validated at apply time

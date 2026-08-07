@@ -1,5 +1,5 @@
 /* interlace:
-  strategy: incremental_by_time
+  strategy: incremental
   time_column: day
   interval: 1d
   checks:

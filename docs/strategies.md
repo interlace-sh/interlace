@@ -18,7 +18,7 @@ The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strat
 | `virtual` \| `table` | `merge` | `Merge` | `key` |
 | `virtual` \| `table` | `full_merge` | `FullMerge` | `key` |
 | `virtual` \| `table` | `hash_merge` | `HashMerge` | `key` (SQL models need an explicit projection) |
-| `virtual` \| `table` | `incremental_by_time` | `IncrementalByTime` | `time_column` (+ an interval) |
+| `virtual` \| `table` | `incremental` | `IncrementalByTime` | `time_column` (+ an interval) |
 | `virtual` \| `table` | `scd` | `Scd` | `key` (explicit projection on engines without `supports_star_exclude`) |
 | `table` | `replace` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
 | `table` | `append` | `Append` | — |
@@ -169,10 +169,13 @@ tables) and is a pure upsert (it *keeps* vanished keys). `hash_merge` vs `merge`
 native `MERGE` rewrites every matched row each run and can't split insert vs update;
 `hash_merge` touches only changed rows and reports the split.
 
-## `incremental_by_time` (IncrementalByTime) — windowed rebuild
+## `incremental` (Incremental) — one time window at a time
 
 Requires `time_column`; the scheduler/planner supplies one interval `[start, end)` per run.
-Processes exactly that window:
+Only rows whose `time_column` falls in the window are read. What the window *means for the
+target* depends on whether you give it a `key`.
+
+### Without `key` — the window is authoritative
 
 ```
 CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)
@@ -180,8 +183,29 @@ DELETE FROM target WHERE time_column >= start AND time_column < end          -- 
 INSERT INTO target SELECT * FROM (<query>) WHERE time_column >= start AND time_column < end
 ```
 
-Delete-then-reinsert makes reprocessing a window **idempotent**, which is what makes
-backfill and restatement safe. The window is driven explicitly:
+The period is rewritten from scratch, so a row that no longer appears in the source
+**disappears from the target**. Delete-then-reinsert is what makes reprocessing a window
+**idempotent**, and therefore what makes backfill and restatement safe.
+
+### With `key` — the window only bounds what is read
+
+```
+MERGE INTO target USING (<query> filtered to the window) ON key ...          -- where supported
+-- or, portably:
+DELETE FROM target WHERE key IN (SELECT key FROM (<query> filtered to the window))
+INSERT INTO target SELECT * FROM (<query> filtered to the window)
+```
+
+Rows are upserted by key, so a target row inside the window that the source no longer produces
+is **left alone**. Use this for late-arriving corrections to rows you have already published,
+where the window is a cheap way to avoid rescanning history rather than a statement about what
+the period should contain.
+
+The difference shows up the moment one row leaves the source: unkeyed, it is gone after the
+next run; keyed, it stays. Pick unkeyed when the source is the whole truth for a period, keyed
+when it is a feed of changes.
+
+The window is driven explicitly, in both modes:
 
 - **`interlace run`** fills windows the interval ledger doesn't yet cover (catch-up), then
   records them; a second run over the same window is skipped.
@@ -252,4 +276,4 @@ on the old table) — *unless* you apply with **`--forward-only`**, which copies
 history onto the new version (copy-on-write) so the new logic applies going forward while
 history survives; checks still gate before the view moves, and the old table remains the
 rollback target until `gc`. This applies to every history-keeping strategy
-(`merge`, `full_merge`, `hash_merge`, `scd`, `incremental_by_time`).
+(`merge`, `full_merge`, `hash_merge`, `scd`, `incremental`).

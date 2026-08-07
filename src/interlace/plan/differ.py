@@ -243,7 +243,7 @@ def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, enviro
         )
 
 
-_HISTORY_STRATEGIES = frozenset({"merge", "full_merge", "hash_merge", "scd", "incremental_by_time"})
+_HISTORY_STRATEGIES = frozenset({"merge", "full_merge", "hash_merge", "scd", "incremental"})
 """Strategies whose targets accumulate state a rebuild would destroy."""
 
 
@@ -283,7 +283,7 @@ async def diff(
     classification still runs over the whole graph so downstream categories are correct.
 
     ``forward_only``: modified models whose strategy accumulates history
-    (merge / full_merge / scd / incremental_by_time) inherit their
+    (merge / full_merge / scd / incremental) inherit their
     previous physical table and interval ledger instead of starting fresh — the
     new logic applies going forward, history survives. Requires the new query to
     stay shape-compatible with the existing table.

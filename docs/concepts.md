@@ -18,7 +18,7 @@ and **durable streaming ingestion** — one binary, one state store, one warehou
 - **Plan / apply** — `plan` diffs the compiled project against an environment and previews
   what would change; `apply` builds the changed snapshots, runs checks, and promotes.
 - **Strategy** — how a model's query becomes a table (`full`, `merge`, `full_merge`,
-  `hash_merge`, `incremental_by_time`, `scd`; `append` for an external `table`). See
+  `hash_merge`, `incremental`, `scd`; `append` for an external `table`). See
   [strategies](strategies.md).
 - **Materialise** — *where* the result lands: `virtual`/`view`/`ephemeral` (interlace-owned) or
   `table`/`file` (terminal, external — reverse ETL). See [models](models.md#materialisations).

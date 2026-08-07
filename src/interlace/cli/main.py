@@ -107,7 +107,7 @@ _END = typer.Option("", "--end", help="Window end (ISO), for incremental models.
 _FORWARD_ONLY = typer.Option(
     False,
     "--forward-only",
-    help="Modified history-keeping models (merge/full_merge/scd/incremental_by_time) carry their history "
+    help="Modified history-keeping models (merge/full_merge/scd/incremental) carry their history "
     "forward: it is copied to the new version, the new logic applies to the copy, and checks gate "
     "before views move. Requires a shape-compatible change.",
 )
@@ -205,7 +205,7 @@ async def _render_empty_incrementals(result: ApplyResult, compiled: CompiledProj
 
     for name in result.built:
         model = compiled.models[name]
-        if model.strategy != "incremental_by_time" or model.is_terminal:
+        if model.strategy != "incremental" or model.is_terminal:
             continue
         counts = result.rows.get(name)
         if counts is not None and (counts.inserted or counts.updated):
@@ -404,7 +404,7 @@ def run(
 ) -> None:
     """Force-build models and promote, ignoring change detection.
 
-    For incremental_by_time models, --start/--end set the catchup window
+    For incremental models, --start/--end set the catchup window
     (default: the latest grain interval).
     """
     asyncio.run(_execute(environment, path, select, start, end, restate=False, parallelism=parallelism))

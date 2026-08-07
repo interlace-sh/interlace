@@ -1,6 +1,6 @@
 """Terminal `materialise: table` (reverse ETL): deliver a model's result into an
 attached database with full(replace) / append / merge / full_merge /
-incremental_by_time — never dropping the live table."""
+incremental — never dropping the live table."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ async def test_full_merge_deletes_vanished_keys(env: tuple[DuckDBAdapter, Sqlite
     assert await _rows(engine, "SELECT id FROM ext.main.state") == [{"id": 1}]
 
 
-async def test_incremental_by_time_into_table(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+async def test_incremental_into_table(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     """The capability the reframe unlocks: windowed DELETE+INSERT into an external table.
     A forced run over a two-day window delivers each grain; the external table is never
     dropped, and re-running the same window is idempotent."""
@@ -121,7 +121,7 @@ async def test_incremental_by_time_into_table(env: tuple[DuckDBAdapter, SqliteSt
         sql=rows,
         materialise="table",
         target="ext.main.events",
-        strategy="incremental_by_time",
+        strategy="incremental",
         time_column="day",
         interval="1d",
     )
@@ -245,7 +245,7 @@ def _incr(target: str) -> ModelDef:
         sql=src,
         materialise="table",
         target=target,
-        strategy="incremental_by_time",
+        strategy="incremental",
         time_column="day",
         interval="1d",
     )

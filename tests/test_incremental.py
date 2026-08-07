@@ -1,4 +1,4 @@
-"""End-to-end incremental_by_time: windowed processing + interval ledger."""
+"""End-to-end incremental: windowed processing + interval ledger."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ async def test_incremental_processes_windows_and_fills_the_ledger(env: tuple[Duc
         ") v(ts, val)"
     )
     project = compile_models(
-        [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental_by_time", time_column="ts")]
+        [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental", time_column="ts")]
     )
     model = project.models["agg"]
 
@@ -81,7 +81,7 @@ async def test_apply_bootstraps_incremental_from_source_range(env: tuple[DuckDBA
         "(TIMESTAMP '2026-06-29 10:00:00', 3)) AS t (ts, val)"
     )
     project = compile_models(
-        [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental_by_time", time_column="ts")]
+        [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental", time_column="ts")]
     )
 
     plan = await diff(project, "prod", store)
@@ -116,7 +116,7 @@ async def test_backfill_none_keeps_latest_window_only(env: tuple[DuckDBAdapter, 
             ModelDef(
                 name="agg",
                 sql="SELECT ts, val FROM main.events",
-                strategy="incremental_by_time",
+                strategy="incremental",
                 time_column="ts",
                 backfill="none",
             )
@@ -147,7 +147,7 @@ async def test_run_plan_expands_window_and_catches_up(env: tuple[DuckDBAdapter, 
             ModelDef(
                 name="agg",
                 sql="SELECT ts, val FROM main.events",
-                strategy="incremental_by_time",
+                strategy="incremental",
                 time_column="ts",
                 interval="1d",
             )
@@ -178,7 +178,7 @@ async def test_restate_reprocesses_filled_intervals(env: tuple[DuckDBAdapter, Sq
             ModelDef(
                 name="agg",
                 sql="SELECT ts, val FROM main.events",
-                strategy="incremental_by_time",
+                strategy="incremental",
                 time_column="ts",
                 interval="1d",
             )
@@ -203,7 +203,7 @@ async def test_reprocessing_a_window_is_idempotent(env: tuple[DuckDBAdapter, Sql
         "CREATE TABLE main.events AS SELECT * FROM (VALUES (TIMESTAMP '2026-01-01 10:00', 1)) v(ts, val)"
     )
     project = compile_models(
-        [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental_by_time", time_column="ts")]
+        [ModelDef(name="agg", sql="SELECT ts, val FROM main.events", strategy="incremental", time_column="ts")]
     )
     model = project.models["agg"]
     window = [Interval(d(1), d(2))]
@@ -213,3 +213,69 @@ async def test_reprocessing_a_window_is_idempotent(env: tuple[DuckDBAdapter, Sql
 
     rows = await _fetch(engine, "SELECT count(*) AS n FROM main.agg")
     assert rows == [{"n": 1}]  # not duplicated
+
+
+async def test_unkeyed_window_is_authoritative(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """Without a key the window owns its rows: one that leaves the source is dropped."""
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
+    await engine.execute_sql(
+        "CREATE TABLE main.events AS SELECT * FROM (VALUES "
+        "(1, TIMESTAMP '2026-01-01 10:00', 'a'), (2, TIMESTAMP '2026-01-01 11:00', 'b')) v(id, ts, val)"
+    )
+    project = compile_models(
+        [ModelDef(name="agg", sql="SELECT id, ts, val FROM main.events", strategy="incremental", time_column="ts")]
+    )
+    window = [Interval(d(1), d(2))]
+    await apply(_windowed_plan(project.models["agg"], window), compiled=project, engine=engine, state=store)
+    assert await _fetch(engine, "SELECT count(*) AS n FROM main.agg") == [{"n": 2}]
+
+    # id 2 leaves the source entirely; reprocess the same window.
+    await engine.execute_sql("DELETE FROM main.events WHERE id = 2")
+    await apply(_windowed_plan(project.models["agg"], window), compiled=project, engine=engine, state=store)
+
+    rows = await _fetch(engine, "SELECT id FROM main.agg ORDER BY id")
+    assert rows == [{"id": 1}], "the window was rewritten, so the departed row is gone"
+
+
+async def test_keyed_window_only_touches_matching_keys(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """With a key the window only bounds what is read: an unmatched target row survives."""
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
+    await engine.execute_sql(
+        "CREATE TABLE main.events AS SELECT * FROM (VALUES "
+        "(1, TIMESTAMP '2026-01-01 10:00', 'a'), (2, TIMESTAMP '2026-01-01 11:00', 'b')) v(id, ts, val)"
+    )
+    project = compile_models(
+        [
+            ModelDef(
+                name="agg",
+                sql="SELECT id, ts, val FROM main.events",
+                strategy="incremental",
+                time_column="ts",
+                key=("id",),
+            )
+        ]
+    )
+    window = [Interval(d(1), d(2))]
+    await apply(_windowed_plan(project.models["agg"], window), compiled=project, engine=engine, state=store)
+    assert await _fetch(engine, "SELECT count(*) AS n FROM main.agg") == [{"n": 2}]
+
+    # id 2 leaves the source; id 1 changes. Same window.
+    await engine.execute_sql("DELETE FROM main.events WHERE id = 2")
+    await engine.execute_sql("UPDATE main.events SET val = 'a2' WHERE id = 1")
+    await apply(_windowed_plan(project.models["agg"], window), compiled=project, engine=engine, state=store)
+
+    rows = await _fetch(engine, "SELECT id, val FROM main.agg ORDER BY id")
+    assert rows == [
+        {"id": 1, "val": "a2"},
+        {"id": 2, "val": "b"},
+    ], "the upsert updated id 1 and left id 2 alone — the opposite of the unkeyed case"
+
+
+def test_the_old_strategy_name_explains_the_rename() -> None:
+    from interlace.exceptions import PlanError
+    from interlace.strategies import resolve_strategy
+
+    with pytest.raises(PlanError, match="renamed to incremental"):
+        resolve_strategy("virtual", "incremental_by_time", time_column="ts")

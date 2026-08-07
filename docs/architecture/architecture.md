@@ -113,7 +113,7 @@ class Strategy(ABC):
 ```
 
 Built-ins: `replace`, `view`, `ephemeral` (AST-spliced as a CTE into consumers at compile
-time), `incremental_by_time` (interval predicate injected as an AST filter),
+time), `incremental` (interval predicate injected as an AST filter),
 `merge` and `full_merge` (keyed upsert built from `exp` constructors), and
 `scd` (update-expire + insert-new sequence). Strategies build canonical ASTs and
 consult `EngineCaps` for the fallbacks they actually need; the adapter transpiles.
@@ -353,7 +353,7 @@ to `strategy` (*how* it is written):
   environment view** — it is a side-effecting delivery.
 
 **Strategies are destination-agnostic.** The accumulating strategies
-(`merge`/`full_merge`/`incremental_by_time`/`scd`) are `CREATE IF NOT EXISTS` +
+(`merge`/`full_merge`/`incremental`/`scd`) are `CREATE IF NOT EXISTS` +
 surgical `DELETE`/`UPDATE`/`INSERT` and run identically against an owned `virtual` table or an
 external `table`. Only `replace` differs by ownership: it rewrites the owned table
 (`CREATE OR REPLACE` → `Replace`) but empties an external one in place (DELETE all +
@@ -664,7 +664,7 @@ src/interlace/
   plan/        # differ (sqlglot.diff + classification), plan, apply, run
   engines/     # base (EngineAdapter, EngineCaps); adbc (shared ADBC base); duckdb (+ DuckLake),
                #   postgres, redshift/snowflake/bigquery (alpha), spark (beta), quack, registry
-  strategies/  # replace, view, full_merge, incremental_by_time, merge, scd
+  strategies/  # replace, view, full_merge, incremental, merge, scd
   checks/      # built-in check types + @check decorator — results gate promotion
   scheduler/   # triggers (cron/interval), engine (TriggerEngine), worker (leases/retries/cancel)
   runtime/     # execution context for Python models (Arrow handles)
@@ -745,7 +745,7 @@ only shipped behaviour:
   wired and dialect-correct but **not yet run against a live account** — promoting them out of
   alpha needs live validation (connection strings, metadata probes).
 - **Spark (beta)** — a `SparkSession` transport (Arrow via `toArrow`/`createDataFrame`),
-  tested against a local Spark + Delta Lake session. `merge` and `incremental_by_time` run
+  tested against a local Spark + Delta Lake session. `merge` and `incremental` run
   natively; `scd`/`full_merge` need a MERGE-based rewrite to work on Delta (which forbids
   subqueries in `UPDATE`/`DELETE` conditions). Databricks is still open: its connector is
   Arrow-native but lacks an `adbc_ingest` bulk-load, so `load()` needs a bespoke staged-COPY

@@ -9,7 +9,7 @@ from interlace.strategies.append import Append
 from interlace.strategies.base import Strategy, table_expr
 from interlace.strategies.full_merge import FullMerge
 from interlace.strategies.hash_merge import HashMerge
-from interlace.strategies.incremental_by_time import IncrementalByTime
+from interlace.strategies.incremental import Incremental
 from interlace.strategies.merge import Merge
 from interlace.strategies.replace import Replace
 from interlace.strategies.replace_in_place import ReplaceInPlace
@@ -20,7 +20,7 @@ __all__ = [
     "Append",
     "FullMerge",
     "HashMerge",
-    "IncrementalByTime",
+    "Incremental",
     "Merge",
     "Replace",
     "ReplaceInPlace",
@@ -72,9 +72,15 @@ def resolve_strategy(
                 raise PlanError("hash_merge requires a key", details={"materialise": materialise})
             return HashMerge(tuple(key))
         if strategy == "incremental_by_time":
+            raise PlanError(
+                "strategy: incremental_by_time was renamed to incremental — the behaviour is unchanged, "
+                "and `key:` now additionally makes it upsert within the window instead of rewriting it",
+                details={"materialise": materialise, "strategy": strategy},
+            )
+        if strategy == "incremental":
             if not time_column:
-                raise PlanError("incremental_by_time requires a time_column", details={"materialise": materialise})
-            return IncrementalByTime(time_column)
+                raise PlanError("incremental requires a time_column", details={"materialise": materialise})
+            return Incremental(time_column, tuple(key))
         if strategy == "scd":
             if not key:
                 raise PlanError("scd requires a key", details={"materialise": materialise})

@@ -63,8 +63,9 @@ def orders(cursor, this):
 ```
 
 **Strategies:** `replace`, `view`, `ephemeral` (CTE-inlined), `merge` (upsert),
-`full_merge` (full-state source applied as a minimal diff), `incremental_by_time`
-(windowed, interval-ledger backfill/catchup), `scd` (history with validity windows).
+`full_merge` (full-state source applied as a minimal diff), `incremental` (one time window
+at a time — rewrites the window, or upserts within it if you give it a `key`), `scd`
+(history with validity windows).
 
 ## Plan / apply
 

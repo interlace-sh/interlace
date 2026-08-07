@@ -4,6 +4,20 @@
 
 (Supersedes the never-released 2.1.1 — its fixes ship here.)
 
+**Breaking: `incremental_by_time` is now `incremental`, and it takes an optional `key`.**
+The old name raises a migration error naming the replacement; there is no alias.
+
+Without `key` the behaviour is exactly what it was — `DELETE` the window, `INSERT` the
+window — so the period is rewritten and a row that leaves the source disappears. That
+delete-then-reinsert is what keeps reprocessing idempotent, and backfill and `restate` safe.
+
+With `key` the window stops being authoritative and only bounds *what is read*: rows are
+upserted by key (native `MERGE` where the engine supports it, portable `DELETE`+`INSERT`
+otherwise), so a target row inside the window that the source no longer produces is left
+alone. That is the mode for late-arriving corrections to already-published rows, where the
+window is a way to avoid rescanning history rather than a claim about what the period
+contains. The keyed path reuses `merge`'s upsert rather than reimplementing it.
+
 **New: `hash_merge` strategy — a change-detected keyed upsert.** Like `merge` (a keyed
 upsert that keeps rows absent from the source) but it stores an `_hash` (md5 of the non-key
 columns) and writes only the delta — new key inserts, changed hash updates, unchanged rows

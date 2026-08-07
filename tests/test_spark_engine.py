@@ -135,19 +135,19 @@ async def test_merge_upserts_natively_in_spark(spark_engine) -> None:
 @requires_spark
 @pytest.mark.slow
 @pytest.mark.requires_db
-async def test_incremental_by_time_windows_in_spark(spark_engine) -> None:
+async def test_incremental_windows_in_spark(spark_engine) -> None:
     # Windowed DELETE+INSERT uses literal predicates (no subquery), so it runs on Delta —
     # unlike scd/full_merge, whose mutation conditions use subqueries Delta rejects
     # (DELTA_UNSUPPORTED_SUBQUERY). Reprocessing a window is idempotent.
     from datetime import datetime
 
     from interlace.state.interval import Interval
-    from interlace.strategies.incremental_by_time import IncrementalByTime
+    from interlace.strategies.incremental import Incremental
 
     engine = spark_engine
     await engine.create_schema("w")
     target = TableRef(schema="w", name="events")
-    strategy = IncrementalByTime("ts")
+    strategy = Incremental("ts")
     query = SqlRelation(ast=sqlglot.parse_one("SELECT * FROM VALUES (CAST('2026-01-01' AS DATE), 5) AS e(ts, n)"))
     window = Interval(datetime(2026, 1, 1), datetime(2026, 1, 2))
     await engine.execute_all(strategy.plan_statements(query, target, engine.caps, window))

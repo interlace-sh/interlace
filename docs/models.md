@@ -49,7 +49,7 @@ Two parameter names are **reserved** for incremental extraction and never name a
 
 Sync functions run in a worker thread; async functions run on the event loop. A Python model
 must materialise as `virtual` and can't be terminal (`table`/`file`) or use
-`incremental_by_time` (use `cursor` + a keyed strategy instead). To deliver a Python model's
+`incremental` (use `cursor` + a keyed strategy instead). To deliver a Python model's
 output to an external table/file, write a SQL `materialise: table`/`file` model over it.
 
 ## Dynamic / programmatic models
@@ -145,11 +145,11 @@ Every key below is settable in the SQL comment block or as a `@model(...)` argum
 |---|---|---|---|
 | `name` | str | filename / fn name | Model identifier. |
 | `materialise` | str | `virtual` | `virtual` \| `view` \| `ephemeral` (interlace-owned) \| `table` \| `file` (terminal). |
-| `strategy` | str | `full` | For `virtual`/`table`: `full` \| `merge` \| `full_merge` \| `hash_merge` \| `incremental_by_time` \| `scd`; `append` is `table`-only. `file` is overwrite (`full`). |
+| `strategy` | str | `full` | For `virtual`/`table`: `full` \| `merge` \| `full_merge` \| `hash_merge` \| `incremental` \| `scd`; `append` is `table`-only. `file` is overwrite (`full`). |
 | `key` | str \| list | — | Key column(s) for keyed strategies. |
-| `time_column` | str | — | Partition column for `incremental_by_time`. |
-| `interval` | str | — | Grain for `incremental_by_time` (e.g. `1d`, `1h`). |
-| `backfill` | str | `auto` | First-build window for `incremental_by_time`: `auto` (derive `[min,max]`), `none` (latest grain only), or an ISO date. |
+| `time_column` | str | — | Partition column for `incremental`. |
+| `interval` | str | — | Grain for `incremental` (e.g. `1d`, `1h`). |
+| `backfill` | str | `auto` | First-build window for `incremental`: `auto` (derive `[min,max]`), `none` (latest grain only), or an ISO date. |
 | `cursor` | str | — | Python models: column whose max is injected into the `cursor` param. |
 | `dialect` | str | project `default_dialect` | sqlglot dialect the SQL is authored in. |
 | `engine` | str | project `default_engine` | Named engine this model builds on (multi-engine). |

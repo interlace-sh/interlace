@@ -94,9 +94,9 @@ class ModelDef:
     dialect: str | None = None
     engine: str | None = None  # named engine from config (None → project default_engine)
     depends_on: tuple[str, ...] = ()
-    interval: str | None = None  # grain for incremental_by_time (e.g. "1d")
-    time_column: str | None = None  # partition column for incremental_by_time
-    # First-build window for incremental_by_time: "auto" derives [min, max] of the
+    interval: str | None = None  # grain for incremental (e.g. "1d")
+    time_column: str | None = None  # partition column for incremental
+    # First-build window for incremental: "auto" derives [min, max] of the
     # time column from the source at apply time and fills it as ONE interval;
     # "none" keeps only the latest grain window; an ISO date pins the start.
     backfill: str = "auto"

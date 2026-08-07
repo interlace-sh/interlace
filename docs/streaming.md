@@ -85,6 +85,6 @@ SELECT customer_id, score FROM customer_value
   is a database wired in via the project's `attach:` config (Postgres, SQLite, another
   DuckDB). `strategy` picks the delivery — the **same strategies as virtual models**, pointed
   at the external table: `replace` (DELETE all + INSERT — the live table is never dropped, so
-  grants and readers survive), `append`, `merge`, `full_merge`, `incremental_by_time`
+  grants and readers survive), `append`, `merge`, `full_merge`, `incremental`
   (windowed DELETE + INSERT), and `scd`. The external table is only ever created,
   appended, or evolved additively — never dropped, and never mutated by a breaking change.

@@ -70,7 +70,7 @@ async def run_plan(
 
         # incremental into the interlace-owned virtual plane, or into a terminal
         # `table` (windowed delete+insert against the external target)
-        is_incremental = model.strategy == "incremental_by_time" and model.materialise != "ephemeral"
+        is_incremental = model.strategy == "incremental" and model.materialise != "ephemeral"
         wants_view = model.materialise in ("virtual", "view")  # terminal table has no env view
         if is_incremental:
             grain = parse_grain(model.interval or "1d")

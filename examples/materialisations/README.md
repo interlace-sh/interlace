@@ -19,13 +19,13 @@ ls   examples/materialisations/out/                         # the file exports
 | `customers_view` | `view` | — | a VIEW over the query, fronted by an env view |
 | `accounts_merge` | `virtual` | `merge` | keyed upsert into the owned table |
 | `accounts_full_merge` | `virtual` | `full_merge` | full-state diff (changed + vanished keys) |
-| `events_incremental` | `virtual` | `incremental_by_time` | windowed delete+insert, ledger-tracked |
+| `events_incremental` | `virtual` | `incremental` | windowed delete+insert, ledger-tracked |
 | `customer_history` | `virtual` | `scd` | keyed history with `_valid_from`/`_valid_to` |
 | `crm_replace` | `table` | `full` | reverse ETL: DELETE all + INSERT, never drops |
 | `crm_append` | `table` | `append` | reverse ETL: add rows only (opted into `dev` too) |
 | `crm_upsert` | `table` | `merge` | reverse ETL: keyed upsert into an external table |
 | `crm_full_merge` | `table` | `full_merge` | reverse ETL: full-state diff into an external table |
-| `crm_incremental` | `table` | `incremental_by_time` | **windowed delivery into an external table** |
+| `crm_incremental` | `table` | `incremental` | **windowed delivery into an external table** |
 | `export_parquet` | `file` | — | overwrite a Parquet file via `COPY` |
 | `export_csv` | `file` | — | overwrite a CSV file (with header) |
 | `export_json` | `file` | — | overwrite a newline-delimited JSON file |
@@ -41,7 +41,7 @@ ls   examples/materialisations/out/                         # the file exports
   environment-gated (default: `prod` only — widen with `environments: [dev, prod]`), and
   evolves the destination additively but **never drops** it.
 
-Strategies are destination-agnostic: `merge`, `full_merge`, `incremental_by_time`
+Strategies are destination-agnostic: `merge`, `full_merge`, `incremental`
 and `scd` run identically on a `virtual` table or an external `table`. Only `full`
 differs by ownership — `CREATE OR REPLACE` on the owned table, DELETE-all + INSERT on the
 external one. `append` is terminal-only; `view` is virtual-only.

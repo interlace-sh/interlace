@@ -214,14 +214,14 @@ async def test_python_scd2_model_survives_reruns(env: tuple[DuckDBAdapter, Sqlit
     assert [(r["tier"], r["open"]) for r in rows] == [("gold", False), ("silver", True)]
 
 
-async def test_python_model_rejects_incremental_by_time(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+async def test_python_model_rejects_incremental(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     def windowed(raw: RelationHandle) -> pa.Table:
         return raw.table()
 
     windowed_model = ModelDef(
-        name="windowed", fn=windowed, depends_on=("raw",), strategy="incremental_by_time", time_column="ts"
+        name="windowed", fn=windowed, depends_on=("raw",), strategy="incremental", time_column="ts"
     )
-    with pytest.raises(PlanError, match="incremental_by_time"):
+    with pytest.raises(PlanError, match="incremental"):
         await _build(env, [RAW, windowed_model])
 
 

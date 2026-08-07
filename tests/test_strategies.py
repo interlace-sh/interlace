@@ -7,7 +7,7 @@ import sqlglot
 
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef
-from interlace.strategies import HashMerge, IncrementalByTime, Merge, Replace, View, resolve_strategy
+from interlace.strategies import HashMerge, Incremental, Merge, Replace, View, resolve_strategy
 
 pytestmark = pytest.mark.unit
 
@@ -123,13 +123,13 @@ def test_resolve_strategy_hash_merge() -> None:
     assert isinstance(resolve_strategy("virtual", "hash_merge", ("id",)), HashMerge)
 
 
-def test_incremental_by_time_builds_windowed_statements() -> None:
+def test_incremental_builds_windowed_statements() -> None:
     from datetime import datetime
 
     from interlace.state.interval import Interval
 
     window = Interval(datetime(2026, 1, 1), datetime(2026, 1, 2))
-    rendered = _sql(IncrementalByTime("ts").plan_statements(_relation(), _TARGET, _CAPS, window))
+    rendered = _sql(Incremental("ts").plan_statements(_relation(), _TARGET, _CAPS, window))
     assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS")
     assert rendered[1] == (
         "DELETE FROM interlace__main.orders__abc WHERE ts >= '2026-01-01T00:00:00' AND ts < '2026-01-02T00:00:00'"
@@ -137,25 +137,25 @@ def test_incremental_by_time_builds_windowed_statements() -> None:
     assert "WHERE ts >= '2026-01-01T00:00:00' AND ts < '2026-01-02T00:00:00'" in rendered[2]
 
 
-def test_incremental_by_time_requires_an_interval() -> None:
+def test_incremental_requires_an_interval() -> None:
     from interlace.exceptions import PlanError
 
     with pytest.raises(PlanError):
-        IncrementalByTime("ts").plan_statements(_relation(), _TARGET, _CAPS, None)
+        Incremental("ts").plan_statements(_relation(), _TARGET, _CAPS, None)
 
 
 def test_resolve_strategy_picks_implementations() -> None:
     assert isinstance(resolve_strategy("virtual", "replace"), Replace)
     assert isinstance(resolve_strategy("view", "replace"), View)
     assert isinstance(resolve_strategy("virtual", "merge", ("id",)), Merge)
-    assert isinstance(resolve_strategy("virtual", "incremental_by_time", time_column="ts"), IncrementalByTime)
+    assert isinstance(resolve_strategy("virtual", "incremental", time_column="ts"), Incremental)
 
 
 def test_resolve_strategy_incremental_requires_time_column() -> None:
     from interlace.exceptions import PlanError
 
     with pytest.raises(PlanError):
-        resolve_strategy("virtual", "incremental_by_time")
+        resolve_strategy("virtual", "incremental")
 
 
 def test_resolve_strategy_merge_requires_key() -> None:

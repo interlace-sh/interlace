@@ -7,7 +7,7 @@ come back as Arrow via ``DataFrame.toArrow()``, and Arrow loads go in through
 (``local[*]``, for tests) or a remote one (Spark Connect / a shared session).
 
 **Strategy support.** ``replace``, ``append`` and ``view`` run on any Spark
-catalog. ``merge`` (native ``MERGE``) and ``incremental_by_time`` (windowed
+catalog. ``merge`` (native ``MERGE``) and ``incremental`` (windowed
 ``DELETE`` by literal predicate + ``INSERT``) need a catalog with row-level
 mutations — Delta Lake or Iceberg — configured on the session you hand the
 adapter (the tests use a Delta-backed local session). ``scd`` and ``full_merge``

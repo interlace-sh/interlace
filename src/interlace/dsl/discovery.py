@@ -64,7 +64,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         depends_on=_as_tuple(config.get("depends_on") or ()),
         interval=config.get("interval"),
         time_column=config.get("time_column"),
-        backfill=config.get("backfill", "auto"),  # first-build window for incremental_by_time
+        backfill=config.get("backfill", "auto"),  # first-build window for incremental
         tags=_as_tuple(config.get("tags") or ()),
         owner=config.get("owner"),
         description=config.get("description"),

@@ -46,7 +46,14 @@ export async function render(el, { api, modal, params }) {
   }
 
   function insertRef(ref) {
-    editor.setRangeText(ref, editor.selectionStart, editor.selectionEnd, "end");
+    // empty editor → a runnable starter; mid-query → drop the ref at the cursor so a
+    // JOIN/subquery can be built up without clobbering what's already typed
+    if (editor.value.trim() === "") {
+      editor.value = `select * from ${ref}`;
+      editor.setSelectionRange(editor.value.length, editor.value.length);
+    } else {
+      editor.setRangeText(ref, editor.selectionStart, editor.selectionEnd, "end");
+    }
     editor.focus();
   }
 

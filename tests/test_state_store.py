@@ -108,3 +108,22 @@ async def test_events_for_run_selects_model_events_by_payload(tmp_path: Path) ->
     got = await store.events_for_run(2)
     await store.close()
     assert [(e["type"], e["entity"]) for e in got] == [("model.start", "orders"), ("model.done", "orders")]
+
+
+async def test_list_runs_enriches_duration_and_environment(store: SqliteStateStore) -> None:
+    """list_runs derives each run's wall-clock span and target env from its events,
+    so the runs view can show duration + env without a per-run round-trip."""
+    await store.enqueue_run("api:prod:abc", ["event_totals"], None)
+    run_id = str((await store.list_runs())[0]["id"])
+    await store.append_event("run.started", entity=run_id, payload={})
+    await store.append_event("run.succeeded", entity=run_id, payload={"environment": "prod"})
+
+    enriched = (await store.list_runs())[0]
+    assert enriched["environment"] == "prod"
+    assert enriched["started_at"] and enriched["finished_at"]  # both endpoints of the span recorded
+
+
+async def test_list_runs_leaves_derived_fields_none_before_a_run(store: SqliteStateStore) -> None:
+    await store.enqueue_run("api:prod:xyz", ["event_totals"], None)
+    queued = (await store.list_runs())[0]
+    assert queued["started_at"] is None and queued["finished_at"] is None and queued["environment"] is None

@@ -100,8 +100,9 @@ export function latestPerCheck(rows) {
 }
 
 /** The house table: columns = [{k, label, num?, render?}], rows = objects.
- * `expandRow(row)` may return a node rendered full-width directly under that row. */
-export function table(columns, rows, { onRow, empty = "nothing here yet", hint, expandRow } = {}) {
+ * `expandRow(row)` may return a node rendered full-width directly under that row.
+ * `class` appends a modifier (e.g. "compact") to the base table class. */
+export function table(columns, rows, { onRow, empty = "nothing here yet", hint, expandRow, class: extra } = {}) {
   if (!rows.length) {
     return h("div", { class: "empty" }, empty, hint ? h("div", { class: "hint" }, hint) : null);
   }
@@ -131,7 +132,7 @@ export function table(columns, rows, { onRow, empty = "nothing here yet", hint, 
     const detail = expandRow?.(row);
     if (detail) body.push(h("tr", { class: "expand-row" }, h("td", { colspan: columns.length }, detail)));
   }
-  return h("table", { class: "t" }, h("thead", {}, head), h("tbody", {}, body));
+  return h("table", { class: extra ? `t ${extra}` : "t" }, h("thead", {}, head), h("tbody", {}, body));
 }
 
 // ---- SQL highlighting (display only — the server owns parsing) ---------------

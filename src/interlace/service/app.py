@@ -118,6 +118,7 @@ class ModelInfo(msgspec.Struct):
     schedule: dict[str, str] | None
     engine: str = "default"
     language: str = "sql"  # "sql" | "python"
+    has_checks: bool = False  # declares SQL or Python checks — the runs view flags per-model check status
 
 
 class ModelDetail(msgspec.Struct):
@@ -170,6 +171,8 @@ class RunInfo(msgspec.Struct):
     # how the run came to be — the enqueue key's prefix names the trigger
     # (cron: / interval: / api: / stream:)
     idempotency_key: str | None = None
+    environment: str | None = None  # the env it built into (once it has succeeded)
+    duration: float | None = None  # wall-clock seconds, run.started → terminal
 
 
 class CreateRun(msgspec.Struct):
@@ -420,7 +423,7 @@ def _output(model: CompiledModel) -> str:
     return model.materialise
 
 
-def _info(model: CompiledModel) -> ModelInfo:
+def _info(model: CompiledModel, has_checks: bool = False) -> ModelInfo:
     return ModelInfo(
         name=model.name,
         output=_output(model),
@@ -434,6 +437,7 @@ def _info(model: CompiledModel) -> ModelInfo:
         schedule=model.schedule,
         engine=model.engine,
         language="python" if model.ast is None else "sql",
+        has_checks=has_checks,
     )
 
 
@@ -451,7 +455,10 @@ async def ui_redirect() -> Redirect:
 async def get_models(state: State) -> list[ModelInfo]:
     await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
-    return [_info(compiled.models[name]) for name in compiled.graph.topological_sort()]
+    return [
+        _info(compiled.models[name], bool(compiled.models[name].checks) or bool(compiled.python_checks.get(name)))
+        for name in compiled.graph.topological_sort()
+    ]
 
 
 @get("/models/{name:str}")
@@ -613,6 +620,12 @@ async def get_runs(state: State, limit: FromQuery[int | None] = None) -> list[Ru
     runs: list[RunInfo] = []
     for run in await state.store.list_runs():
         partition = [str(run["partition_start"]), str(run["partition_end"])] if run["partition_start"] else None
+        started, finished = run.get("started_at"), run.get("finished_at")
+        duration = None
+        if started and finished:  # ledger timestamps are naive ISO; the span is what we want
+            from datetime import datetime
+
+            duration = (datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds()
         runs.append(
             RunInfo(
                 id=run["id"],
@@ -625,6 +638,8 @@ async def get_runs(state: State, limit: FromQuery[int | None] = None) -> list[Ru
                 partition=partition,
                 restate=run["restate"],
                 idempotency_key=run["idempotency_key"],
+                environment=run.get("environment"),
+                duration=duration,
             )
         )
     return runs[:limit] if limit else runs  # list_runs is newest-first

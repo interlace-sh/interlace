@@ -583,3 +583,18 @@ def test_model_added_on_disk_is_recompiled_without_restart(tmp_path: Path) -> No
         os.utime(added, (time.time() + 2, time.time() + 2))  # mtime must strictly advance past startup
         assert "live_added" in {m["name"] for m in test_client.get("/models").json()}
         assert test_client.get("/models/live_added").status_code == 200
+
+
+def test_models_carry_has_checks(client: TestClient) -> None:
+    """The runs view flags per-model check status, so /models must say which models
+    even declare checks (getting_started declares none — the field is still present)."""
+    body = client.get("/models").json()
+    assert all("has_checks" in m for m in body)
+
+
+def test_runs_list_carries_environment_and_duration_fields(client: TestClient) -> None:
+    """RunInfo gained env + wall-clock duration; both are present (null until a run
+    has actually succeeded) so the runs table can show them in the main row."""
+    client.post("/runs", json={"selectors": ["event_totals"], "environment": "prod"})
+    run = client.get("/runs").json()[0]
+    assert "environment" in run and "duration" in run  # populated once the worker drains it

@@ -182,6 +182,22 @@ table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
 .t .dim { color: var(--tx-dim); }
 .t .faint { color: var(--tx-faint); }
 
+/* compact variant (run detail): the CLI's small font + rule-under-header, but no
+   per-row separators — the rows read as one tight block, not a striped grid */
+.t.compact { font-size: 11.5px; }
+.t.compact th { padding: 3px 9px; }
+.t.compact td { padding: 2.5px 9px; border-bottom: 0; }
+.t.compact .tl-mark { display: inline-block; width: 13px; text-align: center; }
+
+/* run detail: a dim header line (env · duration · models · window · attempt) above
+   the build table, all riding the expand-row's inset background. .dim/.faint are
+   otherwise scoped to .t, so re-declare them for the header spans living outside it */
+.run-detail { display: flex; flex-direction: column; gap: 8px; }
+.run-meta { font-size: 11.5px; }
+.run-detail .dim { color: var(--tx-dim); }
+.run-detail .faint { color: var(--tx-faint); }
+.run-detail .sub { font-size: 11.5px; color: var(--tx-dim); }
+
 .empty { padding: 26px; text-align: center; color: var(--tx-dim); }
 .empty .hint { font-size: 11px; color: var(--tx-faint); margin-top: 4px; }
 

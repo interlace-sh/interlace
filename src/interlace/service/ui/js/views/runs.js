@@ -1,10 +1,23 @@
-// Runs: the durable queue, live. Clicking a run expands its detail directly
-// under the row — the CLI's build-results table (model / output / strategy /
-// engine / depends on / rows / time), the checks line, and the summary line,
-// then the raw event timeline.
+// Runs: the durable queue, live. Clicking a run expands its detail directly under
+// the row — a single compact build table (status tick / model / output / strategy /
+// engine / depends on / checks / rows / time), a header line (env · duration · models,
+// plus the backfill window and attempt when they apply), and the summary line.
 
-import { clock, debounce, glyph, h, pill, relTime, rowsDelta, seconds, statusPill, table } from "../ui.js";
-import { modelTimeline } from "../timeline.js";
+import { debounce, glyph, h, relTime, rowsDelta, seconds, statusPill, table } from "../ui.js";
+
+const _MARK = { done: glyph.ok, failed: glyph.fail, cancelled: glyph.skip, skip: glyph.skip };
+const _TONE = { done: "glyph-ok", failed: "glyph-fail", cancelled: "glyph-skip", skip: "glyph-skip" };
+
+/** Join nodes with a dim "·" separator. */
+function dotted(...bits) {
+  const kept = bits.filter(Boolean);
+  const wrap = h("span", { class: "run-meta" });
+  kept.forEach((bit, index) => {
+    if (index) wrap.append(h("span", { class: "faint" }, " · "));
+    wrap.append(bit);
+  });
+  return wrap;
+}
 
 export async function render(el, { api, feed, toast, modal, params }) {
   const listBody = h("div", {});
@@ -28,7 +41,8 @@ export async function render(el, { api, feed, toast, modal, params }) {
   );
 
   let runs = [];
-  let catalog = new Map(); // model name -> ModelInfo (output/strategy/engine/depends_on)
+  let catalog = new Map(); // model name -> ModelInfo (output/strategy/engine/depends_on/has_checks)
+  let daemonEnv = null; // fallback env for runs not yet succeeded (all runs build into it)
   let openRun = params.r ? Number(params.r) : null;
   let openDetail = null; // fetched RunDetail for openRun
   let refreshSeq = 0; // only the newest refresh may repaint — feed storms race otherwise
@@ -38,9 +52,14 @@ export async function render(el, { api, feed, toast, modal, params }) {
     const targetRun = openRun;
     let runList;
     let models;
+    let health;
     let detail = null;
     try {
-      [runList, models] = await Promise.all([api.get("/runs"), catalog.size ? null : api.get("/models")]);
+      [runList, models, health] = await Promise.all([
+        api.get("/runs"),
+        catalog.size ? null : api.get("/models"),
+        daemonEnv ? null : api.get("/health").catch(() => null),
+      ]);
       if (targetRun !== null) detail = await api.get(`/runs/${targetRun}`).catch(() => null);
     } catch {
       return; // daemon hiccup: keep the last good list rather than blanking or throwing
@@ -48,6 +67,7 @@ export async function render(el, { api, feed, toast, modal, params }) {
     if (mine !== refreshSeq) return; // a newer refresh already landed — don't repaint stale data
     runs = runList;
     if (models) catalog = new Map(models.map((m) => [m.name, m]));
+    if (health) daemonEnv = health.environment;
     openDetail = targetRun !== null ? detail : null;
     renderList();
   }
@@ -75,74 +95,93 @@ export async function render(el, { api, feed, toast, modal, params }) {
     }
   }
 
-  // ---- the expanded detail: CLI build results, checks line, summary, timeline ----
+  // ---- the expanded detail: one compact build table, header, summary -------------
 
-  function buildResults(payload) {
-    const names = [...(payload.built ?? [])];
-    if (!names.length) return null;
-    const rows = names.map((name) => {
-      const info = catalog.get(name) ?? {};
+  /** name -> terminal model.* phase (done/failed/cancelled), for the status tick. */
+  function phaseMap(events) {
+    const phases = new Map();
+    for (const event of events) {
+      if (!event.type.startsWith("model.")) continue;
+      const phase = event.type.slice(6);
+      if (phase !== "start") phases.set(event.entity, phase);
+    }
+    return phases;
+  }
+
+  /** The per-model checks cell: — none declared, ✓ passed, ✗N some failed. */
+  function checkCell(name, payload) {
+    if (!catalog.get(name)?.has_checks) return h("span", { class: "faint" }, "—");
+    const failed = (payload.checks?.failing ?? []).filter((c) => c.startsWith(`${name}.`)).length;
+    return failed
+      ? h("span", { class: "glyph-fail" }, `${glyph.fail} ${failed}`)
+      : h("span", { class: "glyph-ok" }, glyph.ok);
+  }
+
+  function buildTable(payload, events) {
+    const phases = phaseMap(events);
+    const built = payload.built ?? [];
+    const names = built.length ? built : [...phases.keys()];
+    const gated = (payload.gated ?? []).filter((name) => !names.includes(name));
+    if (!names.length && !gated.length) return null;
+    const rows = [
+      ...names.map((name) => ({ name, phase: phases.get(name) ?? "done" })),
+      ...gated.map((name) => ({ name, phase: "skip", gated: true })),
+    ].map((row) => {
+      const info = catalog.get(row.name) ?? {};
       return {
-        name,
+        ...row,
         output: info.output ?? "—",
         strategy: info.strategy ?? "—",
         engine: info.engine ?? "default",
         deps: (info.depends_on ?? []).join(", "),
-        rows: payload.rows?.[name],
-        time: payload.timings?.[name],
+        rows: payload.rows?.[row.name],
+        time: payload.timings?.[row.name],
       };
     });
+    const dim = (text) => h("span", { class: "dim" }, text);
     return table(
       [
-        { k: "name", label: "model" },
-        { k: "output", label: "output", render: (row) => h("span", { class: "dim" }, row.output) },
-        { k: "strategy", label: "strategy", render: (row) => h("span", { class: "dim" }, row.strategy) },
         {
-          k: "engine",
-          label: "engine",
-          render: (row) => h("span", { class: "dim" }, row.engine === "default" ? "default" : row.engine),
+          k: "phase",
+          label: "",
+          render: (row) => h("span", { class: `tl-mark ${_TONE[row.phase] ?? "glyph-ok"}` }, _MARK[row.phase] ?? glyph.ok),
         },
-        { k: "deps", label: "depends on", render: (row) => h("span", { class: "dim" }, row.deps || "—") },
+        { k: "name", label: "model" },
+        { k: "output", label: "output", render: (row) => dim(row.output) },
+        { k: "strategy", label: "strategy", render: (row) => dim(row.strategy) },
+        { k: "engine", label: "engine", render: (row) => dim(row.engine) },
+        { k: "deps", label: "depends on", render: (row) => dim(row.deps || "—") },
+        { k: "checks", label: "checks", render: (row) => (row.gated ? h("span", { class: "faint" }, "gated") : checkCell(row.name, payload)) },
         { k: "rows", label: "rows", num: true, render: (row) => rowsDelta(row.rows) },
-        { k: "time", label: "time", num: true, render: (row) => h("span", { class: "dim" }, seconds(row.time)) },
+        { k: "time", label: "time", num: true, render: (row) => dim(seconds(row.time)) },
       ],
       rows,
+      { class: "compact" },
     );
   }
 
-  function summaryLines(detail, payload) {
-    const lines = [];
-    if (payload.checks?.total) {
-      const warned = payload.checks.failing ?? [];
-      lines.push(
-        h(
-          "div",
-          { style: warned.length ? "color:var(--amber)" : "" },
-          `Checks: ${payload.checks.passed}/${payload.checks.total} passed`,
-          warned.length ? ` — ${warned.join(", ")}` : "",
-        ),
-      );
-    }
+  function detailHeader(run, payload) {
     const built = (payload.built ?? []).length;
-    const reused = (payload.reused ?? []).length;
-    const gated = (payload.gated ?? []).length;
-    if (built || payload.promoted) {
-      const parts = [`Ran ${built} model(s)`];
-      if (reused) parts.push(`${reused} reused`);
-      if (gated) parts.push(`${gated} gated`);
-      let line = parts.join(", ");
-      if (payload.promoted) line += `; promoted ${payload.promoted} to '${payload.environment ?? ""}'`;
-      lines.push(h("div", { class: "dim" }, line + "."));
-    }
-    return lines;
+    const env = run.environment ?? daemonEnv;
+    return dotted(
+      env ? h("span", { class: "dim" }, env) : null,
+      run.duration != null ? h("span", { class: "dim" }, seconds(run.duration)) : null,
+      built ? h("span", { class: "dim" }, `${built} model${built === 1 ? "" : "s"}`) : null,
+      // the backfill window: the partition an incremental model (re)processes — empty
+      // for an ordinary full run, so it only shows when one was actually requested
+      run.partition ? h("span", { class: "dim" }, `window ${run.partition[0] ?? ""} → ${run.partition[1] ?? ""}`) : null,
+      run.attempts > 1 ? h("span", { class: "dim" }, `attempt ${run.attempts}`) : null,
+    );
   }
 
-  function timeline(detail) {
-    // the run's per-model timeline (start → done/failed, with durations)
+  function summaryLine(payload) {
+    if (!payload.checks?.total) return null;
+    const warned = payload.checks.failing ?? [];
     return h(
       "div",
-      { style: "border-top:1px solid var(--line-soft); margin-top:10px; padding-top:8px" },
-      modelTimeline(detail.events),
+      { class: "sub", style: warned.length ? "color:var(--amber)" : "" },
+      `Checks: ${payload.checks.passed}/${payload.checks.total} passed`,
+      warned.length ? ` — ${warned.join(", ")}` : "",
     );
   }
 
@@ -153,17 +192,16 @@ export async function render(el, { api, feed, toast, modal, params }) {
       ["run.succeeded", "run.failed", "run.cancelled"].includes(event.type),
     );
     const payload = terminal?.payload ?? {};
-    const parts = [];
-    if (openDetail.error) parts.push(h("div", { style: "color:var(--red); margin-bottom:8px" }, openDetail.error));
-    const results = buildResults(payload);
-    if (results) parts.push(results);
-    const summary = summaryLines(openDetail, payload);
-    if (summary.length) parts.push(h("div", { style: "margin-top:10px; display:flex; flex-direction:column; gap:2px" }, ...summary));
-    if (!results && !summary.length && !openDetail.error) {
+    const parts = [detailHeader(run, payload)];
+    if (openDetail.error) parts.push(h("div", { style: "color:var(--red); margin:6px 0" }, openDetail.error));
+    const built = buildTable(payload, openDetail.events);
+    if (built) parts.push(built);
+    const summary = summaryLine(payload);
+    if (summary) parts.push(summary);
+    if (!built && !summary && !openDetail.error) {
       parts.push(h("div", { class: "dim" }, run.state === "queued" ? "waiting for a worker…" : "no build output recorded"));
     }
-    parts.push(timeline(openDetail));
-    return h("div", {}, ...parts);
+    return h("div", { class: "run-detail" }, ...parts);
   }
 
   function renderList() {
@@ -176,18 +214,17 @@ export async function render(el, { api, feed, toast, modal, params }) {
             { k: "id", label: "#", num: true },
             { k: "flow_selector", label: "models", render: (run) => run.flow_selector.join(", ") || "all" },
             { k: "state", label: "state", render: (run) => statusPill(run.state) },
-            { k: "attempts", label: "attempt", num: true, render: (run) => h("span", { class: "dim" }, String(run.attempts)) },
+            {
+              k: "environment",
+              label: "env",
+              render: (run) => h("span", { class: "dim" }, run.environment ?? daemonEnv ?? "—"),
+            },
             {
               k: "idempotency_key",
               label: "trigger",
               render: (run) => h("span", { class: "dim" }, run.idempotency_key?.split(":")[0] ?? "—"),
             },
-            {
-              k: "partition",
-              label: "window",
-              render: (run) =>
-                run.partition ? h("span", { class: "dim" }, `${run.partition[0] ?? ""} → ${run.partition[1] ?? ""}`) : h("span", { class: "faint" }, "—"),
-            },
+            { k: "duration", label: "duration", num: true, render: (run) => h("span", { class: "dim" }, seconds(run.duration)) },
             { k: "enqueued_at", label: "enqueued", render: (run) => h("span", { class: "dim" }, relTime(run.enqueued_at)) },
             {
               k: "_actions",

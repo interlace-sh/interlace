@@ -23,7 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
 
 from interlace.ir.relation import TableRef
 from interlace.state.interval import Interval, IntervalSet
@@ -169,6 +169,11 @@ class RunRecord(TypedDict):
     error: str | None
     enqueued_at: str | None
     restate: bool
+    # derived from the run's events by list_runs (absent from get_run, which carries
+    # the full event list instead): the wall-clock span and the env it built into
+    started_at: NotRequired[str | None]
+    finished_at: NotRequired[str | None]
+    environment: NotRequired[str | None]
 
 
 @dataclass
@@ -877,11 +882,31 @@ class SqliteStateStore:
         return await asyncio.to_thread(self._list_runs_sync, limit)
 
     def _list_runs_sync(self, limit: int) -> list[RunRecord]:
+        # correlated subqueries on idx_event_log_entity give each run its wall-clock
+        # span (run.started → terminal) and the env it built into, without a per-run
+        # round-trip — so the list can show duration + env, not just enqueue time
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT {self._RUN_COLUMNS} FROM work_queue ORDER BY id DESC LIMIT ?", (limit,)
+                f"SELECT {self._RUN_COLUMNS}, "
+                "  (SELECT ts FROM event_log e WHERE e.entity = CAST(work_queue.id AS TEXT) "
+                "     AND e.type = 'run.started' ORDER BY e.seq LIMIT 1) AS started_at, "
+                "  (SELECT ts FROM event_log e WHERE e.entity = CAST(work_queue.id AS TEXT) "
+                "     AND e.type IN ('run.succeeded', 'run.failed', 'run.cancelled') "
+                "     ORDER BY e.seq DESC LIMIT 1) AS finished_at, "
+                "  (SELECT json_extract(e.payload, '$.environment') FROM event_log e "
+                "     WHERE e.entity = CAST(work_queue.id AS TEXT) AND e.type = 'run.succeeded' "
+                "     ORDER BY e.seq DESC LIMIT 1) AS environment "
+                "FROM work_queue ORDER BY id DESC LIMIT ?",
+                (limit,),
             ).fetchall()
-        return [self._run_dict(row) for row in rows]
+        records = []
+        for row in rows:
+            record = self._run_dict(row)
+            record["started_at"] = row["started_at"]
+            record["finished_at"] = row["finished_at"]
+            record["environment"] = row["environment"]
+            records.append(record)
+        return records
 
     async def get_run(self, run_id: int) -> RunRecord | None:
         return await asyncio.to_thread(self._get_run_sync, run_id)

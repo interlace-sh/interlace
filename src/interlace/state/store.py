@@ -899,16 +899,31 @@ class SqliteStateStore:
             rows = self._conn.execute(
                 "SELECT seq, ts, type, entity, payload FROM event_log WHERE entity = ? ORDER BY seq", (entity,)
             ).fetchall()
-        return [
-            {
-                "seq": row["seq"],
-                "ts": row["ts"],
-                "type": row["type"],
-                "entity": row["entity"],
-                "payload": json.loads(row["payload"]) if row["payload"] else None,
-            }
-            for row in rows
-        ]
+        return [self._event_row(row) for row in rows]
+
+    async def events_for_run(self, run_id: int) -> list[dict[str, object]]:
+        """A run's per-model events — keyed by ``payload.run`` (their entity is the model
+        name, not the run id), so the run detail can show a model-level timeline."""
+        return await asyncio.to_thread(self._events_for_run_sync, run_id)
+
+    def _events_for_run_sync(self, run_id: int) -> list[dict[str, object]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, ts, type, entity, payload FROM event_log "
+                "WHERE json_extract(payload, '$.run') = ? ORDER BY seq",
+                (run_id,),
+            ).fetchall()
+        return [self._event_row(row) for row in rows]
+
+    @staticmethod
+    def _event_row(row: object) -> dict[str, object]:
+        return {
+            "seq": row["seq"],  # type: ignore[index]
+            "ts": row["ts"],  # type: ignore[index]
+            "type": row["type"],  # type: ignore[index]
+            "entity": row["entity"],  # type: ignore[index]
+            "payload": json.loads(row["payload"]) if row["payload"] else None,  # type: ignore[index]
+        }
 
     # --- event log ----------------------------------------------------------
 

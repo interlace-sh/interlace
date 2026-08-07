@@ -184,6 +184,8 @@ class ApplyResponse(msgspec.Struct):
     # per-model row movement (inserted/updated/deleted) and build seconds
     rows: dict[str, dict[str, int]] = msgspec.field(default_factory=dict)
     timings: dict[str, float] = msgspec.field(default_factory=dict)
+    gated: list[str] = msgspec.field(default_factory=list)  # terminals recorded but not delivered (env gate)
+    checks: list[CheckOutcomeInfo] = msgspec.field(default_factory=list)  # so a UI apply can show check results
 
 
 class CheckResultInfo(msgspec.Struct):
@@ -581,10 +583,12 @@ async def get_run(run_id: FromPath[int], state: State) -> RunDetail:
     run = await state.store.get_run(run_id)
     if run is None:
         raise NotFoundException(detail=f"unknown run: {run_id}")
-    # lifecycle events are keyed by run id (worker) and idempotency key (enqueue)
-    events = await state.store.events_for_entity(str(run_id))
+    # lifecycle events are keyed by run id (worker) and idempotency key (enqueue); the
+    # per-model events are keyed by payload.run (their entity is the model name)
+    events = await state.store.events_for_entity(str(run_id)) + await state.store.events_for_run(run_id)
     if run["idempotency_key"]:
-        events = sorted(events + await state.store.events_for_entity(run["idempotency_key"]), key=lambda e: e["seq"])
+        events += await state.store.events_for_entity(run["idempotency_key"])
+    events = sorted({event["seq"]: event for event in events}.values(), key=lambda event: event["seq"])
     partition = [str(run["partition_start"]), str(run["partition_end"])] if run["partition_start"] else None
     return RunDetail(
         id=run["id"],

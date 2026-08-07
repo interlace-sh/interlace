@@ -43,14 +43,20 @@ export function groupEpisodes(events) {
         ep.status = phase === "blocked" ? "failed" : "ok";
         openApply.delete(ev.entity);
       } else items.push({ kind: "event", ev });
-    } else if (group === "run" && ["succeeded", "failed", "cancelled"].includes(phase)) {
-      const ep = runs.get(ev.entity) ?? _episode("run", ev.entity, ev);
-      if (!runs.has(ev.entity)) {
+    } else if (group === "run" && phase === "enqueued") {
+      continue; // the ugly idempotency-key row; the run episode itself carries the run
+    } else if (group === "run" && ["started", "succeeded", "failed", "cancelled"].includes(phase)) {
+      let ep = runs.get(ev.entity); // entity is the run id
+      if (!ep) {
+        ep = _episode("run", ev.entity, ev);
         runs.set(ev.entity, ep);
         items.push(ep);
       }
-      ep.end = ev;
-      ep.status = phase === "succeeded" ? "ok" : phase === "failed" ? "failed" : "skip";
+      if (phase === "started") ep.start = ev; // the run's start anchor (excludes queue wait)
+      else {
+        ep.end = ev;
+        ep.status = phase === "succeeded" ? "ok" : phase === "failed" ? "failed" : "skip";
+      }
     } else if (group === "model") {
       const id = ev.payload?.run;
       const ep = id != null ? runs.get(String(id)) : openApply.get(ev.payload?.environment);

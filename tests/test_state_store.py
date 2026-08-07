@@ -95,3 +95,16 @@ async def test_state_survives_reopen(tmp_path: Path) -> None:
     assert await reopened.get_snapshot("silver.orders", "aaaa1111") is not None
     assert await reopened.get_environment("prod") == {"silver.orders": "aaaa1111"}
     await reopened.close()
+
+
+async def test_events_for_run_selects_model_events_by_payload(tmp_path: Path) -> None:
+    # A run's per-model events are keyed by payload.run (entity is the model name);
+    # events_for_run must find them and ignore an apply's model events (no run key).
+    store = await SqliteStateStore.open(tmp_path / "state.db")
+    await store.append_event("run.started", entity="2", payload={"models": ["a"]})
+    await store.append_event("model.start", entity="orders", payload={"run": 2})
+    await store.append_event("model.done", entity="orders", payload={"run": 2})
+    await store.append_event("model.start", entity="other", payload={"environment": "dev"})  # apply, not this run
+    got = await store.events_for_run(2)
+    await store.close()
+    assert [(e["type"], e["entity"]) for e in got] == [("model.start", "orders"), ("model.done", "orders")]

@@ -40,9 +40,18 @@ checks:
   - {type: expression, expression: "amount >= 0", severity: warn}
 ```
 
+A Python `@model` takes the **same mappings**, as a list of dicts — one spelling for both
+surfaces (each YAML `- key: value` line is just a `{"key": value}` dict):
+
+```python
+@model(checks=[{"not_null": "customer_id"}, {"unique": ["customer_id", "day"]}, {"row_count": {"min": 1}}])
+def orders(): ...
+```
+
 Two forms are accepted: **shorthand** `{check_type: column}` / `{check_type: {params}}`,
-and **explicit** `{type: ..., column: ..., ...params}`. Python `@check` functions attach by
-model name for logic a SQL check can't express.
+and **explicit** `{type: ..., column: ..., ...params}`. The typed `CheckSpec` (importable
+from `interlace`) also works if you prefer it. Python `@check` functions attach by model
+name for logic a SQL check can't express.
 
 ## The ten built-in types
 

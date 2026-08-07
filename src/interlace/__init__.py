@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
+from interlace.checks.spec import CheckSpec
 from interlace.dsl.decorators import check, model, stream
 
 try:
@@ -20,6 +21,7 @@ except PackageNotFoundError:  # running from a source tree without an install
 
 __all__ = [
     "__version__",
+    "CheckSpec",
     "check",
     "model",
     "stream",

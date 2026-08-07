@@ -201,6 +201,11 @@ def model(
 
     ``engine`` pins the model to a named engine from ``interlace.yaml`` (defaults
     to the project's ``default_engine``).
+
+    ``checks`` takes the *same* shorthand mappings as a SQL config block — one
+    spelling for both surfaces — e.g. ``checks=[{"not_null": "customer_id"},
+    {"row_count": {"min": 1}}]``. A :class:`~interlace.CheckSpec` also works if you
+    prefer the typed form.
     """
     model_name = name or "<model>"
     if export is not None:

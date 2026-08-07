@@ -17,7 +17,7 @@ from typing import Any
 from interlace.checks.spec import parse_checks
 from interlace.dsl.decorators import REGISTRY, ModelDef, _as_columns, _as_tuple, validate_materialise
 from interlace.dsl.sql_config import extract_sql_config
-from interlace.exceptions import DefinitionError
+from interlace.exceptions import DefinitionError, InterlaceError
 
 
 def discover_models(root: Path, model_paths: list[str], default_dialect: str) -> list[ModelDef]:
@@ -82,6 +82,13 @@ def _model_name(base: Path, file: Path) -> str:
     return ".".join(file.relative_to(base).with_suffix("").parts)
 
 
+def _relative_to_cwd(file: Path) -> str:
+    try:
+        return str(file.relative_to(Path.cwd()))
+    except ValueError:
+        return str(file)
+
+
 def _import_module(base: Path, file: Path) -> None:
     module_name = "interlace_model_" + "_".join(file.relative_to(base).with_suffix("").parts)
     spec = importlib.util.spec_from_file_location(module_name, file)
@@ -89,4 +96,15 @@ def _import_module(base: Path, file: Path) -> None:
         raise DefinitionError("could not import model module", details={"path": str(file)})
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except InterlaceError:
+        raise  # a bad @model config is already a clean, actionable error — don't rewrap it
+    except Exception as exc:
+        # a typo/import error in user model code should read like a user error — one
+        # line naming the file — not a dozen frames of interlace's import machinery
+        sys.modules.pop(module_name, None)  # don't leave a half-initialised module behind
+        raise DefinitionError(
+            f"could not load {_relative_to_cwd(file)}: {type(exc).__name__}: {exc}",
+            details={"path": str(file)},
+        ) from exc

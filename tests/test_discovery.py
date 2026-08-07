@@ -8,6 +8,7 @@ import pytest
 
 from interlace.config.config import ProjectConfig
 from interlace.dsl.discovery import discover_models
+from interlace.exceptions import DefinitionError
 from interlace.project import Project
 
 pytestmark = pytest.mark.unit
@@ -56,6 +57,31 @@ def test_underscore_python_files_are_skipped(tmp_path: Path) -> None:
 
 def test_missing_model_path_is_ignored(tmp_path: Path) -> None:
     assert discover_models(tmp_path, ["models"], "duckdb") == []
+
+
+def test_broken_model_file_raises_a_clean_error_naming_the_file(tmp_path: Path) -> None:
+    # A typo/import error in user model code must read like a user error — one line
+    # naming the file — not a raw traceback through interlace's import machinery.
+    _write(tmp_path / "models" / "orders.py", "from interlace import mdoel  # typo\n")
+    with pytest.raises(DefinitionError) as excinfo:
+        discover_models(tmp_path, ["models"], "duckdb")
+    message = excinfo.value.message
+    assert "orders.py" in message and "could not load" in message  # names the file
+    assert "ImportError" in message  # and the underlying cause
+    assert isinstance(excinfo.value.__cause__, ImportError)  # original preserved for --debug
+
+
+def test_bad_model_config_error_is_not_rewrapped(tmp_path: Path) -> None:
+    # A clean DefinitionError from the @model decorator must pass through unchanged,
+    # not get buried under a generic "could not load".
+    _write(
+        tmp_path / "models" / "bad.py",
+        "from interlace import model\n\n@model(materialise='nope')\ndef bad():\n    ...\n",
+    )
+    with pytest.raises(DefinitionError) as excinfo:
+        discover_models(tmp_path, ["models"], "duckdb")
+    assert "could not load" not in excinfo.value.message
+    assert "materialise" in excinfo.value.message
 
 
 def test_project_load_uses_defaults_without_config(tmp_path: Path) -> None:

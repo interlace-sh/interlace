@@ -75,6 +75,31 @@ def test_parse_rejects_bad_entries() -> None:
         parse_checks(["not_null"], "m")
 
 
+def test_checkspec_is_importable_from_the_package_root() -> None:
+    # It lived only at interlace.checks; the top-level package is where people look first.
+    import interlace
+
+    assert interlace.CheckSpec is CheckSpec
+
+
+def test_model_decorator_accepts_the_same_shorthand_as_sql() -> None:
+    # One spelling for both surfaces: the Python @model takes the identical dict
+    # mappings a SQL config block does — no need to hand-build CheckSpec objects.
+    from interlace.dsl.decorators import REGISTRY, model
+
+    REGISTRY.clear()
+
+    @model(name="orders", checks=[{"not_null": "customer_id"}, {"row_count": {"min": 1}}])
+    def orders() -> None: ...
+
+    specs = REGISTRY.models["orders"].checks
+    REGISTRY.clear()
+    assert [(s.type, s.columns, s.params) for s in specs] == [
+        ("not_null", ("customer_id",), {}),
+        ("row_count", (), {"min": 1}),
+    ]
+
+
 # --- built-ins, run live through apply -----------------------------------------
 
 

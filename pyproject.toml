@@ -68,7 +68,10 @@ spark = ["pyspark>=4.0,<4.1", "delta-spark>=4.0,<4.1"]
 postgres = ["psycopg[binary]>=3.1,<4.0"]
 polars = ["polars>=1.0,<2.0"]
 pandas = ["pandas>=2.0,<4.0"]
-all = ["interlaced[service,adbc,postgres,polars]"]
+# Building source models (interlace.sources): a sync REST client — auth, paging,
+# retry, rate limiting — that yields Arrow. httpx is the transport.
+sources = ["httpx>=0.27,<1.0"]
+all = ["interlaced[service,adbc,postgres,polars,sources]"]
 dev = [
     "pytest>=8.0,<10.0",
     "httpx>=0.27,<1.0",  # litestar's TestClient transport

@@ -76,3 +76,12 @@ def test_init_with_explicit_template(tmp_path: Path) -> None:
     result = runner.invoke(app, ["init", str(tmp_path), "--template", "quickstart", "--name", "q"])
     assert result.exit_code == 0, result.output
     assert Project.load(tmp_path).config.name == "q"
+
+
+def test_github_template_compiles_as_an_incremental_source(tmp_path: Path) -> None:
+    scaffold_project(tmp_path, name="gh", template="github")
+    compiled = Project.load(tmp_path).compile()  # imports the model → interlace.sources must import
+    issues = compiled.models["github_issues"]
+    assert issues.cursor == "updated_at" and issues.strategy == "merge" and issues.key == ("id",)
+    assert issues.dependencies == ()  # a source has no upstream model
+    assert compiled.models["issues_by_state"].dependencies == ("github_issues",)

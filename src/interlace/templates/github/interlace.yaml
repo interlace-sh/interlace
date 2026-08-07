@@ -1,0 +1,5 @@
+name: __PROJECT_NAME__
+default_dialect: duckdb
+# A plain DuckDB file here so the pull lands somewhere you can open with any DuckDB
+# client. DuckLake (ducklake:.interlace/warehouse.ducklake) works too.
+database: warehouse.duckdb

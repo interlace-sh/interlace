@@ -4,9 +4,10 @@ A read + trigger surface over a project: list/inspect models, preview a plan
 (with per-change SQL + impacted columns), apply it (build changed snapshots and
 promote — guarded against breaking changes unless forced), inspect environments,
 list/inspect runs, and enqueue runs onto the durable queue (a running ``interlace
-scheduler`` drains them). The project is loaded and compiled once at startup and
-held on app state; the warehouse engine and control-plane store are opened for
-the app's lifetime. msgspec structs are the wire types (Litestar serialises them
+scheduler`` drains them). The project is compiled at startup and recompiled on
+demand when a model file changes on disk (see ``reload_if_stale``), so a Plan/Apply
+from the UI reflects live edits — matching what ``interlace plan`` shows; the
+warehouse engine and control-plane store are opened for the app's lifetime. msgspec structs are the wire types (Litestar serialises them
 natively). Scoped API-key auth is enforced once a key exists (see auth.py), and
 OpenAPI docs render via Scalar at ``/schema/scalar``.
 """
@@ -56,6 +57,52 @@ from interlace.streaming.materializer import (
     sweep_streams,
 )
 from interlace.streaming.schema import partition_rows, validate_rows, validate_rows_evolve
+
+# ---- live reload ---------------------------------------------------------------
+# The project is compiled once at startup, then recompiled on demand when a model
+# file changes on disk — so editing a `.sql`/`.py` model and pressing Plan/Apply in
+# the UI reflects the edit, matching what `interlace plan` (a fresh process) shows.
+# Only the model graph is re-derived; changing engine/stream/path topology in
+# interlace.yaml still needs a daemon restart.
+
+
+def _source_mtime(root: Path, model_paths: list[str]) -> float:
+    """Newest mtime across the config file and every model source. Cheap staleness
+    probe (a stat walk); recompile only happens when this advances."""
+    from interlace.config.config import CONFIG_FILE
+
+    latest = 0.0
+    config = root / CONFIG_FILE
+    if config.exists():
+        latest = config.stat().st_mtime
+    for relative in model_paths:
+        base = root / relative
+        if not base.is_dir():
+            continue
+        for file in base.rglob("*"):
+            if file.suffix in (".sql", ".py") and file.is_file():
+                latest = max(latest, file.stat().st_mtime)
+    return latest
+
+
+async def reload_if_stale(state: State) -> None:
+    """Recompile from disk if any model source changed since the last compile.
+
+    Serialised by a lock so concurrent requests recompile at most once, and a
+    no-op (one stat walk) when nothing changed. Refreshes only the compile-derived
+    state — the graph, whole-project lineage, stream→consumer map — and clears the
+    describe cache (new fingerprints mean new tables to re-describe)."""
+    async with state.reload_lock:
+        mtime = await asyncio.to_thread(_source_mtime, state.root, state.model_paths)
+        if mtime <= state.source_mtime:
+            return
+        project = await asyncio.to_thread(Project.load, state.root)
+        compiled = await asyncio.to_thread(project.compile)
+        state.compiled = compiled
+        state.lineage = column_lineage(compiled)
+        state.stream_consumer_map = {name: sorted(stream_consumers(compiled, name)) for name in state.streams}
+        state.describe_cache = {}
+        state.source_mtime = mtime
 
 
 class ModelInfo(msgspec.Struct):
@@ -402,12 +449,14 @@ async def ui_redirect() -> Redirect:
 
 @get("/models")
 async def get_models(state: State) -> list[ModelInfo]:
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     return [_info(compiled.models[name]) for name in compiled.graph.topological_sort()]
 
 
 @get("/models/{name:str}")
 async def get_model(name: FromPath[str], state: State) -> ModelDetail:
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     if name not in compiled.models:
         raise NotFoundException(detail=f"unknown model: {name}")
@@ -439,6 +488,7 @@ async def get_model_impact(name: FromPath[str], state: State, column: FromQuery[
     transitively derived from it, plus opaque consumers (Python / ``*`` models)."""
     from interlace.graph.column_lineage import column_impact
 
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     if name not in compiled.models:
         raise NotFoundException(detail=f"unknown model: {name}")
@@ -460,6 +510,7 @@ async def get_plan(
     """Preview a plan. ``select`` takes comma-separated selectors (same grammar as
     POST /apply's ``selectors``); ``forward_only`` previews history-inheriting plans
     — so what you preview is exactly what POST /apply will do."""
+    await reload_if_stale(state)
     env = environment or state.environment
     compiled: CompiledProject = state.compiled
     selectors = [part.strip() for part in select.split(",") if part.strip()] if select else []
@@ -502,6 +553,7 @@ async def get_plan(
 
 @get("/environments")
 async def get_environments(state: State) -> list[EnvironmentInfo]:
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     out: list[EnvironmentInfo] = []
     promoted_ats = await state.store.environment_promoted_at()
@@ -607,6 +659,7 @@ async def get_run(run_id: FromPath[int], state: State) -> RunDetail:
 
 @post("/runs", opt={"scope": "write"})
 async def create_run(data: CreateRun, state: State) -> CreateRunResult:
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
     try:
@@ -636,6 +689,7 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     enqueued = await state.store.enqueue_run(key, models, partition, 0, restate=data.restate)
     if enqueued:
         await state.store.append_event("run.enqueued", entity=key, payload={"models": models})
+        state.drain_wanted.set()  # wake the scheduler now, don't wait out the tick interval
     return CreateRunResult(enqueued=1 if enqueued else 0, models=models)
 
 
@@ -652,6 +706,7 @@ async def cancel_run(run_id: FromPath[int], state: State) -> dict:
 
 @post("/apply", opt={"scope": "write"})
 async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
     try:
@@ -754,6 +809,7 @@ async def _enqueue_stream_consumers(state: State, stream: StreamDef) -> None:
     key = f"stream:{stream.name}:{watermark}"
     if await state.store.enqueue_run(key, sorted(consumers), None, 0):
         await state.store.append_event("run.enqueued", entity=key, payload={"models": sorted(consumers)})
+        state.drain_wanted.set()  # wake the scheduler now, don't wait out the tick interval
 
 
 def _stream_or_404(state: State, name: str) -> StreamDef:
@@ -958,6 +1014,7 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
 
     from cronsim import CronSim
 
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     infos: list[ScheduleInfo] = []
     for name in sorted(compiled.models):
@@ -1033,6 +1090,7 @@ async def get_lineage(state: State, environment: FromQuery[str | None] = None) -
     """The whole graph in one payload: nodes (with warehouse-described column
     types), table edges, column lineage, and stream sources — the UI renders
     and traces without a request per node. ``?environment=`` inspects a sandbox."""
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     promoted = await state.store.get_environment(environment or state.environment)
     snapshots = await state.store.get_snapshots(promoted.items())
@@ -1109,6 +1167,7 @@ async def post_checks_run(state: State, data: RunChecksRequest | None = None) ->
     from interlace.checks.runner import run_checks
 
     request = data or RunChecksRequest()
+    await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     env = request.environment or state.environment
     promoted = await state.store.get_environment(env)
@@ -1339,11 +1398,17 @@ def create_app(
         app.state.engines = engines
         app.state.environment = environment
         app.state.root = project.root
+        app.state.model_paths = project.config.model_paths  # for the on-demand recompile staleness probe
+        app.state.reload_lock = asyncio.Lock()  # serialise recompiles; recompile at most once per change
+        app.state.source_mtime = _source_mtime(project.root, project.config.model_paths)
         app.state.parallelism = project.config.parallelism
         app.state.engine_configs = project.config.engine_configs()
         app.state.default_engine = project.config.default_engine
         app.state.describe_cache = {}  # (model, fingerprint) -> {column: type}, filled by /lineage
         app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
+        # Wake the scheduler's drain the instant a run is enqueued, instead of waiting
+        # out the tick interval — an enqueue from the UI/API/stream picks up promptly.
+        app.state.drain_wanted = asyncio.Event()
         app.state.streams = streams
         app.state.stream_log = stream_log
         app.state.flush_targets = flush_targets  # streams + their quarantine shadows
@@ -1431,11 +1496,15 @@ def create_app(
             app.state.flush_wanted.set()  # catch up anything durable but unflushed at last shutdown
 
         async def scheduler_loop() -> None:
-            trigger_engine = TriggerEngine(build_triggers(compiled), store)
             next_trim = asyncio.get_running_loop().time()  # first tick trims; then every 6h
             while True:
+                # cleared before the pass so an enqueue landing mid-drain re-arms the
+                # event and earns another prompt pass rather than being lost
+                app.state.drain_wanted.clear()
                 try:
-                    await trigger_engine.tick(datetime.now())
+                    await reload_if_stale(app.state)  # scheduled/queued builds see on-disk edits too
+                    compiled = app.state.compiled  # live: reload may have swapped it
+                    await TriggerEngine(build_triggers(compiled), store).tick(datetime.now())
                     if asyncio.get_running_loop().time() >= next_trim:
                         # event_log / check_results / terminal queue rows grow with
                         # every apply and flush; nothing else reclaims them
@@ -1455,7 +1524,9 @@ def create_app(
                         await sweep_streams(streams.values(), stream_log, engine)  # apply retention
                 except Exception:
                     logger.exception("scheduler tick failed; retrying next interval")
-                await asyncio.sleep(scheduler_interval)
+                # wake early the instant a run is enqueued; otherwise tick on the interval
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(app.state.drain_wanted.wait(), timeout=scheduler_interval)
 
         async def shutdown_watch() -> None:
             """End every open SSE stream the moment uvicorn begins shutting down.

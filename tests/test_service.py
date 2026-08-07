@@ -567,3 +567,19 @@ def test_runs_checks_limit_and_lineage_environment(client: TestClient) -> None:
     assert client.get("/runs?limit=1").status_code == 200
     assert client.get("/checks?limit=1").status_code == 200
     assert client.get("/lineage?environment=dev").status_code == 200  # inspect a sandbox
+
+
+def test_model_added_on_disk_is_recompiled_without_restart(tmp_path: Path) -> None:
+    """A model file added after startup is picked up on the next request: the daemon
+    recompiles when sources change, so a UI Plan/Apply reflects live edits — matching
+    what `interlace plan` (a fresh process) shows."""
+    import os
+
+    proj = _make_project(tmp_path)
+    with TestClient(app=create_app(proj, "prod")) as test_client:
+        assert "live_added" not in {m["name"] for m in test_client.get("/models").json()}
+        added = proj / "models" / "live_added.sql"
+        added.write_text("select 1 as x\n")
+        os.utime(added, (time.time() + 2, time.time() + 2))  # mtime must strictly advance past startup
+        assert "live_added" in {m["name"] for m in test_client.get("/models").json()}
+        assert test_client.get("/models/live_added").status_code == 200

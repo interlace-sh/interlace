@@ -27,7 +27,7 @@ from interlace.checks.runner import CheckOutcome, run_checks
 from interlace.contracts import validate_contract
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
-from interlace.exceptions import CheckError, PlanError
+from interlace.exceptions import CheckError, ExecutionError, InterlaceError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
@@ -631,6 +631,13 @@ async def apply(
             logger.warning("model %s failed (%s)", name, type(exc).__name__)
             if on_progress is not None:
                 on_progress(name, "failed")
+            # Wrap a plain build error (engine/SQL/Python-model exception) so it reads as one
+            # clean "error: model … failed: …" line, not a raw traceback. InterlaceErrors
+            # (checks, contracts) already carry a good message; other BaseExceptions
+            # (KeyboardInterrupt, CancelledError) must propagate untouched.
+            if isinstance(exc, Exception) and not isinstance(exc, InterlaceError):
+                message = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+                raise ExecutionError(f"model {name!r} failed: {message}", details={"model": name}) from exc
             raise
         finished[name].set()
         if on_progress is not None:
@@ -642,7 +649,10 @@ async def apply(
                 group.create_task(run_model(name))
     except ExceptionGroup as failures:  # single failure keeps apply()'s plain-exception contract
         if len(failures.exceptions) == 1:
-            raise failures.exceptions[0] from None
+            # re-raise the plain single exception, preserving its own cause (the build error,
+            # kept for --debug) rather than re-chaining the ExceptionGroup
+            failure = failures.exceptions[0]
+            raise failure from failure.__cause__
         raise
 
     for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing

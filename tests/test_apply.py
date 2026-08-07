@@ -8,6 +8,7 @@ from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
+from interlace.exceptions import ExecutionError
 from interlace.graph.project import compile_models
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
@@ -94,7 +95,9 @@ async def test_apply_reports_failed_progress_event(env: tuple[DuckDBAdapter, Sql
     project = compile_models([sql_model("broken", "SELECT x FROM does_not_exist_anywhere")])
     events: list[tuple[str, str]] = []
 
-    with pytest.raises(Exception):  # noqa: B017 - any engine error; the event is what's under test
+    # a build failure surfaces as a clean ExecutionError naming the model — not a raw
+    # engine traceback — which the CLI renders as one `error:` line
+    with pytest.raises(ExecutionError) as excinfo:
         await apply(
             await diff(project, "dev", store),
             compiled=project,
@@ -103,6 +106,8 @@ async def test_apply_reports_failed_progress_event(env: tuple[DuckDBAdapter, Sql
             on_progress=lambda model, event: events.append((model, event)),
         )
 
+    assert "broken" in excinfo.value.message and excinfo.value.details.get("model") == "broken"
+    assert excinfo.value.__cause__ is not None  # original engine error preserved for --debug
     assert events == [("broken", "start"), ("broken", "failed")]
 
 

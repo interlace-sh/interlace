@@ -15,12 +15,13 @@ pip install "interlaced[sources]"
 ```
 
 ```python
+import os
 from interlace import model
 from interlace.sources import RestClient, BearerAuth, NoAuth, LinkHeader, batches
 
 @model(cursor="updated_at", strategy="merge", key="id")
 def github_issues(cursor=None):
-    auth = BearerAuth(env="GITHUB_TOKEN") if cursor is not None else NoAuth()
+    auth = BearerAuth(env="GITHUB_TOKEN") if os.environ.get("GITHUB_TOKEN") else NoAuth()
     params = {"state": "all", "per_page": 100, "sort": "updated", "direction": "asc"}
     if cursor:
         params["since"] = cursor                       # only what changed since last run

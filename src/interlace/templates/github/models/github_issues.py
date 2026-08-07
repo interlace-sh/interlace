@@ -13,19 +13,29 @@ Incremental by design:
 
 Auth is optional: unauthenticated works but GitHub caps it at ~60 requests/hour, so
 set ``GITHUB_TOKEN`` (a fine-grained or classic PAT) to lift it to 5,000/hour. Point
-it at any repo by editing ``REPO``.
+it at any repo by editing ``REPO``. If the rate limit is hit mid-pull, the model keeps
+what it loaded and stops cleanly — because it's incremental and merges by id, the next
+``interlace run`` simply resumes from where it left off.
 
 Requires the sources extra:  pip install "interlaced[sources]"
 """
 
+import logging
 import os
 
+import httpx
 import pyarrow as pa
 
 from interlace import model
 from interlace.sources import BearerAuth, LinkHeader, NoAuth, RestClient, batches
 
 REPO = "duckdb/duckdb"  # owner/name — change me
+_log = logging.getLogger("interlace.templates.github")
+
+
+def _rate_limited(response: httpx.Response) -> bool:
+    """GitHub signals its primary rate limit with 403 (or 429) + a spent quota header."""
+    return response.status_code in (403, 429) and response.headers.get("X-RateLimit-Remaining") == "0"
 
 # A fixed schema keeps types stable across runs (and lets an empty incremental page
 # still produce a valid, typed batch). GitHub's /issues also returns pull requests;
@@ -61,4 +71,14 @@ def github_issues(cursor=None):
             [_flatten(issue) for issue in page]
             for page in api.paginate(f"/repos/{REPO}/issues", params=params, paginator=LinkHeader())
         )
-        yield from batches(pages, columns=COLUMNS, schema=SCHEMA)
+        try:
+            yield from batches(pages, columns=COLUMNS, schema=SCHEMA)
+        except httpx.HTTPStatusError as exc:
+            if not _rate_limited(exc.response):
+                raise
+            # keep what we've loaded; merge + the updated_at cursor resume the rest next run
+            _log.warning(
+                "GitHub rate limit hit for %s — loaded up to here; re-run to continue "
+                "(set GITHUB_TOKEN to raise 60 -> 5,000 requests/hour).",
+                REPO,
+            )

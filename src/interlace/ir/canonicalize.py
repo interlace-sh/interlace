@@ -15,6 +15,18 @@ from interlace.exceptions import CompilationError
 from interlace.ir.relation import TableRef
 
 
+def is_star_projection(projection: exp.Expression) -> bool:
+    """Whether a SELECT projection expands the row — a bare ``*`` or ``t.*`` (and
+    DuckDB ``COLUMNS(...)``) — as opposed to a ``*`` that is merely a function
+    argument, like the one in ``count(*)`` (which projects a single named column).
+    A blunt ``find(exp.Star)`` conflates the two and misreads every ``count(*)`` as
+    a star; column lineage and plan classification both depend on the distinction."""
+    node = projection.this if isinstance(projection, exp.Alias) else projection
+    return isinstance(node, (exp.Star, exp.Columns)) or (
+        isinstance(node, exp.Column) and isinstance(node.this, exp.Star)
+    )
+
+
 def parse(sql: str, dialect: str = "duckdb") -> exp.Expression:
     """Parse a single SQL statement in the given dialect into a sqlglot AST."""
     try:

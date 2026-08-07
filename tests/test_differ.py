@@ -61,6 +61,52 @@ async def test_added_column_is_non_breaking(store: SqliteStateStore) -> None:
     assert change.category is ChangeCategory.NON_BREAKING
 
 
+async def test_added_aggregate_column_over_group_by_is_non_breaking(store: SqliteStateStore) -> None:
+    # Regression: a count(*) in the projection must not be mistaken for a row-expanding
+    # star. Adding another aggregate over the same grouping is additive, not breaking —
+    # the classification that lets a rollup gain a column without gating apply.
+    before = "SELECT g, count(*) AS n FROM src GROUP BY g"
+    after = "SELECT g, count(*) AS n, sum(v) AS total FROM src GROUP BY g"
+    await promote(store, "prod", compile_models([sql_model("m", before)]))
+    plan = await diff(compile_models([sql_model("m", after)]), "prod", store)
+
+    (change,) = plan.changes
+    assert change.category is ChangeCategory.NON_BREAKING
+    assert not plan.has_breaking_changes  # so `apply` proceeds without --force
+    assert change.impacted_columns == ("total",)
+
+
+async def test_added_dimension_extending_group_by_is_breaking(store: SqliteStateStore) -> None:
+    # The opposite case: a new grouping key changes the row set, so it is genuinely
+    # breaking even though it "adds a column".
+    await promote(store, "prod", compile_models([sql_model("m", "SELECT g, count(*) AS n FROM src GROUP BY g")]))
+    plan = await diff(
+        compile_models([sql_model("m", "SELECT g, h, count(*) AS n FROM src GROUP BY g, h")]), "prod", store
+    )
+    assert plan.changes[0].category is ChangeCategory.BREAKING
+
+
+async def test_added_aggregate_column_leaves_downstream_unbuilt(store: SqliteStateStore) -> None:
+    # The blog's "rebuilds one model": an additive upstream change rebuilds only the
+    # changed model; a downstream reading none of the new column is reused, not rebuilt.
+    down = "SELECT g, n FROM up"
+    await promote(
+        store,
+        "prod",
+        compile_models([sql_model("up", "SELECT g, count(*) AS n FROM src GROUP BY g"), sql_model("down", down)]),
+    )
+    after = compile_models(
+        [sql_model("up", "SELECT g, count(*) AS n, sum(v) AS total FROM src GROUP BY g"), sql_model("down", down)]
+    )
+    plan = await diff(after, "prod", store)
+
+    by_name = {c.name: c for c in plan.changes}
+    assert by_name["up"].category is ChangeCategory.NON_BREAKING
+    built = {task.snapshot.name for task in plan.backfills}
+    reused = {snapshot.name for snapshot in plan.reuses}
+    assert built == {"up"} and "down" in reused  # only `up` rebuilds; `down` is reused
+
+
 async def test_changed_expression_is_breaking(store: SqliteStateStore) -> None:
     await promote(store, "prod", compile_models([sql_model("a", "SELECT 1 AS x")]))
     plan = await diff(compile_models([sql_model("a", "SELECT 2 AS x")]), "prod", store)

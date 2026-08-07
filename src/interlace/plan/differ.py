@@ -37,7 +37,7 @@ from dataclasses import replace
 from sqlglot import exp
 
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.ir.canonicalize import parse
+from interlace.ir.canonicalize import is_star_projection, parse
 from interlace.ir.fingerprint import canonical_sql
 from interlace.plan.plan import ChangeType, ModelChange, Plan, ViewSwap, collect_transfers, env_view, schedule_build
 from interlace.state.snapshot import ChangeCategory, Snapshot
@@ -74,8 +74,8 @@ def _projection_map(ast: exp.Expression | None) -> dict[str, str] | None:
         return None
     columns: dict[str, str] = {}
     for projection in ast.selects:
-        if projection.find(exp.Star, exp.Columns) is not None:
-            return None  # star / COLUMNS(regex) -> output columns unknown without a schema
+        if is_star_projection(projection):
+            return None  # bare * / t.* / COLUMNS(regex): output columns unknown without a schema
         expr = projection.this if isinstance(projection, exp.Alias) else projection
         name = _fold(projection.alias_or_name)
         if name in columns:

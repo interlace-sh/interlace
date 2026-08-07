@@ -27,6 +27,7 @@ from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 
 from interlace.graph.project import CompiledModel, CompiledProject
+from interlace.ir.canonicalize import is_star_projection
 
 ColumnSources = dict[str, list[tuple[str, str]]]  # output column -> [(table, column), ...]
 
@@ -64,15 +65,6 @@ def _model_lineage(ast: exp.Expression, schema: dict[str, Any], dialect: str) ->
     return lineage
 
 
-def _is_star_projection(projection: exp.Expression) -> bool:
-    """A row-expanding star — ``*`` or ``t.*`` — as opposed to a star that's merely
-    an argument, like the ``*`` in ``count(*)`` (which projects a single named column)."""
-    node = projection.this if isinstance(projection, exp.Alias) else projection
-    return isinstance(node, (exp.Star, exp.Columns)) or (
-        isinstance(node, exp.Column) and isinstance(node.this, exp.Star)
-    )
-
-
 def _projection_names(model: CompiledModel) -> list[str]:
     """Output column names read straight off a SELECT, or [] if it projects a star
     (which we can't name without expanding it against the upstream schema)."""
@@ -80,7 +72,7 @@ def _projection_names(model: CompiledModel) -> list[str]:
         return []
     names: list[str] = []
     for projection in model.ast.selects:
-        if _is_star_projection(projection):
+        if is_star_projection(projection):
             return []
         names.append(projection.alias_or_name)
     return names

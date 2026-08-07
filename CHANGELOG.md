@@ -9,6 +9,9 @@ no-opping, so `gc` aborted before the `DROP VIEW` could run and reclaimed nothin
 project with view models could never `gc`. It now drops each object by its actual catalog
 kind (`DROP VIEW` / `DROP TABLE`).
 
+**UI: brand refresh.** The `interlace serve` web UI adopts the interlace.sh woven mark
+(favicon + topbar) and the `interlace.sh` wordmark with a muted `.sh`.
+
 ## 2.1.0 (2026-08-07)
 
 **New: source models — ingestion by pull (`interlace.sources`).** A small synchronous REST

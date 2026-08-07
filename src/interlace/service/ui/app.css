@@ -74,6 +74,7 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 8px; }
 .wordmark { font-weight: 600; letter-spacing: 0.02em; }
+.wordmark .wordmark-tld { color: var(--tx-faint); font-weight: 500; }  /* muted ".sh" */
 .grow { flex: 1; }
 
 .env-chip {

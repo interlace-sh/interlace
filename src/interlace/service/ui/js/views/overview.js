@@ -2,6 +2,7 @@
 // event feed. Every number links to the view that explains it.
 
 import { clock, count, h, latestPerCheck, statusPill, table } from "../ui.js";
+import { episodeKey, feedItem, groupEpisodes } from "../timeline.js";
 
 export async function render(el, { api, feed, go }) {
   // /health is the liveness probe: if it rejects the daemon is down and the router
@@ -69,31 +70,49 @@ export async function render(el, { api, feed, go }) {
   const liveCard = h(
     "div",
     { class: "card" },
-    h("div", { class: "card-head" }, "event feed", h("span", { class: "spread" }), h("span", { class: "faint" }, "live")),
+    h("div", { class: "card-head" }, "activity", h("span", { class: "spread" }), h("span", { class: "faint" }, "live")),
     feedRows,
   );
 
   el.append(h("div", { class: "grid2" }, recentRuns, liveCard));
 
-  const pushEvent = (event) => {
-    feedRows.prepend(
-      h(
-        "div",
-        { class: "feed-row" },
-        h("span", { class: "ts" }, clock(event.ts)),
-        h("span", { class: "ty" }, event.type),
-        h("span", { class: "en" }, event.entity ?? ""),
-      ),
+  // group the event stream into apply/run episodes (expandable), re-derived on every
+  // event so it stays correct without incremental bookkeeping; `expanded` persists the
+  // open episodes across re-renders
+  const EVENT_CAP = 200;
+  let events = [];
+  const expanded = new Set();
+
+  function renderFeed() {
+    const items = groupEpisodes(events);
+    if (!items.length) {
+      feedRows.replaceChildren(h("div", { class: "empty" }, "no activity yet"));
+      return;
+    }
+    feedRows.replaceChildren(
+      ...items.map((item) => {
+        const key = episodeKey(item);
+        return feedItem(item, expanded.has(key), () => {
+          if (expanded.has(key)) expanded.delete(key);
+          else expanded.add(key);
+          renderFeed();
+        });
+      }),
     );
-    while (feedRows.children.length > 40) feedRows.lastChild.remove();
+  }
+
+  const ingest = (event) => {
+    events.push(event);
+    if (events.length > EVENT_CAP) events = events.slice(-EVENT_CAP);
+    renderFeed();
   };
 
   try {
-    const recent = await api.get("/events");
-    recent.slice(-25).forEach(pushEvent);
+    (await api.get("/events")).slice(-EVENT_CAP).forEach((event) => events.push(event));
   } catch {
-    /* fine — feed fills live */
+    /* fine — fills live */
   }
-  const offFeed = feed.on(pushEvent);
+  renderFeed();
+  const offFeed = feed.on(ingest);
   return () => offFeed();
 }

@@ -325,6 +325,24 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .feed-row .ty { color: var(--tx-dim); width: 140px; flex-shrink: 0; }
 .feed-row .en { color: var(--tx); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---- activity: build episodes (apply / run) + model timelines ---------------- */
+.episode { border-bottom: 1px solid var(--line-soft); }
+.episode:last-child { border-bottom: 0; }
+.episode-head { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 5px 12px; font-size: 11.5px; }
+.episode-head:hover { background: var(--ink-2); }
+.episode-head .spread { flex: 1; }
+.ep-kind { color: var(--tx); font-weight: 500; }
+.ep-target { color: var(--violet); }
+.ep-meta { color: var(--tx-dim); font-size: 11px; }
+.episode-head .ts { color: var(--tx-faint); }
+.timeline { display: flex; flex-direction: column; gap: 2px; padding: 4px 12px 8px 30px; }
+.tl-step { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; }
+.tl-mark { width: 13px; text-align: center; flex-shrink: 0; }
+.tl-mark.running::before { content: "◌"; color: var(--amber); display: inline-block; animation: spin 0.9s linear infinite; }
+.tl-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-dur { color: var(--tx-faint); font-size: 11px; }
+.tl-empty { padding: 8px 12px; color: var(--tx-faint); font-size: 11.5px; }
+
 /* ---- query console --------------------------------------------------------- */
 .q-layout { display: grid; grid-template-columns: 1fr 240px; gap: 12px; align-items: start; }
 .q-layout .card { margin-top: 0; }

@@ -12,6 +12,11 @@ kind (`DROP VIEW` / `DROP TABLE`).
 **UI: brand refresh.** The `interlace serve` web UI adopts the interlace.sh woven mark
 (favicon + topbar) and the `interlace.sh` wordmark with a muted `.sh`.
 
+**UI: activity timeline.** The overview feed now groups the event stream into expandable
+build *episodes* — one per apply or run — each a per-model timeline (start → done/failed with
+durations) instead of a flat list; the run detail renders the same timeline. Ad-hoc applies
+(which aren't queued runs) surface in this feed.
+
 ## 2.1.0 (2026-08-07)
 
 **New: source models — ingestion by pull (`interlace.sources`).** A small synchronous REST

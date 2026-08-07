@@ -4,6 +4,7 @@
 // then the raw event timeline.
 
 import { clock, debounce, glyph, h, pill, relTime, rowsDelta, seconds, statusPill, table } from "../ui.js";
+import { modelTimeline } from "../timeline.js";
 
 export async function render(el, { api, feed, toast, modal, params }) {
   const listBody = h("div", {});
@@ -17,6 +18,11 @@ export async function render(el, { api, feed, toast, modal, params }) {
       h("span", { class: "sub" }, "the durable queue — leases, retries, cancellation"),
       h("span", { class: "spread" }),
       enqueueBtn,
+    ),
+    h(
+      "div",
+      { class: "sub", style: "margin:-8px 0 12px; color:var(--tx-faint)" },
+      "ad-hoc applies (interlace apply) aren't queued — they appear in the overview activity feed",
     ),
     listBody,
   );
@@ -132,21 +138,12 @@ export async function render(el, { api, feed, toast, modal, params }) {
   }
 
   function timeline(detail) {
-    const feedEl = h("div", { class: "feed", style: "border-top:1px solid var(--line-soft); margin-top:10px; padding-top:6px" });
-    for (const event of detail.events) {
-      const isModel = event.type.startsWith("model.");
-      const mark = { "model.done": glyph.ok, "model.failed": glyph.fail, "model.cancelled": glyph.skip, "model.start": "▸" }[event.type];
-      feedEl.append(
-        h(
-          "div",
-          { class: "feed-row" },
-          h("span", { class: "ts" }, clock(event.ts)),
-          h("span", { class: "ty" }, isModel && mark ? `${mark} ${event.type}` : event.type),
-          h("span", { class: "en" }, isModel ? event.entity : JSON.stringify(event.payload ?? {}).slice(0, 120)),
-        ),
-      );
-    }
-    return feedEl;
+    // the run's per-model timeline (start → done/failed, with durations)
+    return h(
+      "div",
+      { style: "border-top:1px solid var(--line-soft); margin-top:10px; padding-top:8px" },
+      modelTimeline(detail.events),
+    );
   }
 
   function detailNode(run) {

@@ -1,10 +1,11 @@
 // Query: the read-only SQL console. SELECT only, always row-capped — the
 // server enforces both; this view just makes the cap visible. ⌘⏎ runs.
 
-import { count, h } from "../ui.js";
+import { clickableAttrs, count, h } from "../ui.js";
 
 const HISTORY_KEY = "interlace.qhistory";
 const HISTORY_MAX = 8;
+const RENDER_CAP = 2000; // rows materialised into the DOM; the fetch may return up to 10k
 
 function loadHistory() {
   try {
@@ -25,12 +26,16 @@ function saveHistory(sql) {
 }
 
 export async function render(el, { api, modal, params }) {
-  const editor = h("textarea", { class: "q-editor", placeholder: "SELECT … — read-only, always row-capped" });
+  const editor = h("textarea", {
+    class: "q-editor",
+    placeholder: "SELECT … — read-only, always row-capped",
+    "aria-label": "SQL query",
+  });
   if (params.sql) editor.value = params.sql;
 
   // ---- table browser: what you can FROM, per environment --------------------
-  const envSelect = h("select", { class: "in", style: "width:100%" });
-  const tableFilter = h("input", { class: "in", placeholder: "filter…", style: "width:100%" });
+  const envSelect = h("select", { class: "in", style: "width:100%", "aria-label": "environment" });
+  const tableFilter = h("input", { class: "in", placeholder: "filter…", style: "width:100%", "aria-label": "filter tables" });
   const tableList = h("div", { class: "q-tables" });
   let models = [];
   let streams = [];
@@ -56,7 +61,7 @@ export async function render(el, { api, modal, params }) {
       rows.push(
         h(
           "div",
-          { class: "q-table", title: `insert ${ref}`, onclick: () => insertRef(ref) },
+          { class: "q-table", title: `insert ${ref}`, ...clickableAttrs(() => insertRef(ref)) },
           h("span", { class: "nm" }, model.name),
           h("span", { class: "ty" }, model.output),
         ),
@@ -68,7 +73,7 @@ export async function render(el, { api, modal, params }) {
       rows.push(
         h(
           "div",
-          { class: "q-table", title: `insert ${ref}`, onclick: () => insertRef(ref) },
+          { class: "q-table", title: `insert ${ref}`, ...clickableAttrs(() => insertRef(ref)) },
           h("span", { class: "nm" }, stream.name),
           h("span", { class: "ty", style: "color:var(--cyan)" }, "stream"),
         ),
@@ -99,7 +104,7 @@ export async function render(el, { api, modal, params }) {
 
   const limitSelect = h(
     "select",
-    { class: "in" },
+    { class: "in", "aria-label": "row limit" },
     [100, 500, 2000, 10000].map((value) => h("option", { value, selected: value === 500 }, String(value))),
   );
   const runBtn = h("button", { class: "btn primary" }, "run (⌘⏎)");
@@ -169,8 +174,25 @@ export async function render(el, { api, modal, params }) {
       {},
       response.columns.map((column, index) => h("th", {}, column, h("small", {}, response.types[index] ?? ""))),
     );
-    const body = response.rows.map((row) => h("tr", {}, row.map(cellFor)));
-    return h("div", { class: "q-grid" }, h("table", {}, h("thead", {}, head), h("tbody", {}, body)));
+    // cap the rows actually built into the DOM — a 10k-row result is tens of
+    // thousands of nodes in one synchronous pass; the row_count/truncated meta
+    // above already reports the true size
+    const shown = response.rows.slice(0, RENDER_CAP);
+    const body = shown.map((row) => h("tr", {}, row.map(cellFor)));
+    const gridEl = h("div", { class: "q-grid" }, h("table", {}, h("thead", {}, head), h("tbody", {}, body)));
+    if (response.rows.length > RENDER_CAP) {
+      return h(
+        "div",
+        {},
+        gridEl,
+        h(
+          "div",
+          { class: "hint", style: "padding:6px 2px" },
+          `showing the first ${count(RENDER_CAP)} of ${count(response.rows.length)} rows — lower the limit or narrow the query to see the rest`,
+        ),
+      );
+    }
+    return gridEl;
   }
 
   async function run() {
@@ -216,11 +238,11 @@ export async function render(el, { api, modal, params }) {
               {
                 class: "feed-row",
                 style: "cursor:pointer",
-                onclick: () => {
+                ...clickableAttrs(() => {
                   editor.value = sql;
                   close();
                   editor.focus();
-                },
+                }),
               },
               h("span", { class: "en", title: sql }, sql),
             ),

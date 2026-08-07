@@ -1,32 +1,38 @@
 // Overview: the room at a glance — drift, queue, streams, checks, and the live
 // event feed. Every number links to the view that explains it.
 
-import { clock, count, h, statusPill, table } from "../ui.js";
+import { clock, count, h, latestPerCheck, statusPill, table } from "../ui.js";
 
 export async function render(el, { api, feed, go }) {
+  // /health is the liveness probe: if it rejects the daemon is down and the router
+  // shows the error. The other five are wrapped so one flaky endpoint degrades to a
+  // fallback instead of blanking the whole landing page.
+  const safe = (promise, fallback) => promise.catch(() => fallback);
   const [planBody, runsBody, streamsBody, envsBody, checksBody, health] = await Promise.all([
-    api.get("/plan"),
-    api.get("/runs"),
-    api.get("/streams"),
-    api.get("/environments"),
-    api.get("/checks"),
+    safe(api.get("/plan"), { changes: [] }),
+    safe(api.get("/runs"), []),
+    safe(api.get("/streams"), []),
+    safe(api.get("/environments"), []),
+    safe(api.get("/checks"), []),
     api.get("/health"),
   ]);
 
   const active = runsBody.filter((run) => run.state === "running" || run.state === "queued");
   const failed = runsBody.filter((run) => run.state === "failed").length;
   const lag = streamsBody.reduce((sum, stream) => sum + Math.max(0, stream.head - stream.watermark), 0);
-  const failingChecks = checksBody.filter((check) => check.status !== "passed").length;
+  // one row per (model, check) first — /checks returns history, so raw filtering
+  // would count a check that failed earlier and passes now (matches the checks view)
+  const failingChecks = latestPerCheck(checksBody).filter((check) => check.status !== "passed").length;
 
   const stat = (label, value, { alert = false, route, small } = {}) => {
-    const card = h(
-      "div",
-      { class: `stat ${alert ? "alert" : ""}`, style: route ? "cursor:pointer" : "" },
+    const children = [
       h("div", { class: "k" }, label),
       h("div", { class: "v" }, String(value), small ? h("small", {}, ` ${small}`) : null),
-    );
-    if (route) card.addEventListener("click", () => go(route));
-    return card;
+    ];
+    // a routed stat is a real link — keyboard-focusable and activable for free
+    return route
+      ? h("a", { class: `stat ${alert ? "alert" : ""}`, href: `#/${route}` }, ...children)
+      : h("div", { class: `stat ${alert ? "alert" : ""}` }, ...children);
   };
 
   el.append(

@@ -2,7 +2,7 @@
 // column lineage, graph neighbours, canonical SQL, latest check results — and
 // act from there: trace it, run it, query it.
 
-import { copy, debounce, h, pill, pythonBlock, relTime, sqlBlock, statusPill, table } from "../ui.js";
+import { copy, debounce, h, latestPerCheck, pill, pythonBlock, relTime, sqlBlock, statusPill, table } from "../ui.js";
 
 const OUTPUT_TONE = { sink: "cyan", view: "violet" };
 
@@ -27,6 +27,7 @@ export async function render(el, { api, go, toast, modal, params }) {
   );
 
   const models = await api.get("/models");
+  const modelNames = new Set(models.map((m) => m.name));
   let detailSeq = 0;
 
   function matches(model, needle) {
@@ -104,8 +105,15 @@ export async function render(el, { api, go, toast, modal, params }) {
 
   function modelLink(name) {
     return h(
-      "span",
-      { style: "color:var(--violet); cursor:pointer", onclick: () => go("models", { m: name }) },
+      "a",
+      {
+        href: `#/models?m=${encodeURIComponent(name)}`,
+        style: "color:var(--violet)",
+        onclick: (event) => {
+          event.preventDefault();
+          go("models", { m: name });
+        },
+      },
       name,
     );
   }
@@ -177,6 +185,8 @@ export async function render(el, { api, go, toast, modal, params }) {
       h("strong", {}, detail.name),
       pill(detail.language === "python" ? "py" : "sql", detail.language === "python" ? "amber" : ""),
       pill(detail.output, OUTPUT_TONE[detail.output] ?? ""),
+      detail.is_terminal ? pill("terminal", "cyan") : null,
+      detail.owner ? h("span", { class: "sub" }, `owner: ${detail.owner}`) : null,
       h(
         "span",
         {
@@ -212,12 +222,23 @@ export async function render(el, { api, go, toast, modal, params }) {
               if (index) cell.append(" ");
               const dot = source.lastIndexOf(".");
               const upmodel = dot > 0 ? source.slice(0, dot) : source;
+              // only a real model is navigable; an external table or a stream source
+              // (streams.<name>.<col>) has no model page — render it as plain text
               cell.append(
-                h(
-                  "span",
-                  { class: "dim", style: "cursor:pointer", onclick: () => go("models", { m: upmodel }) },
-                  source,
-                ),
+                modelNames.has(upmodel)
+                  ? h(
+                      "a",
+                      {
+                        class: "dim",
+                        href: `#/models?m=${encodeURIComponent(upmodel)}`,
+                        onclick: (event) => {
+                          event.preventDefault();
+                          go("models", { m: upmodel });
+                        },
+                      },
+                      source,
+                    )
+                  : h("span", { class: "faint" }, source),
               );
             });
             return cell;
@@ -276,8 +297,8 @@ export async function render(el, { api, go, toast, modal, params }) {
       ),
     );
 
-    // latest check results
-    const recent = [...checkRows]
+    // latest check results — one row per check (dedup by max id), newest first
+    const recent = latestPerCheck(checkRows)
       .sort((a, b) => (b.executed_at || "").localeCompare(a.executed_at || ""))
       .slice(0, 10);
     cards.push(
@@ -299,7 +320,11 @@ export async function render(el, { api, go, toast, modal, params }) {
             { k: "executed_at", label: "when", render: (row) => h("span", { class: "dim" }, relTime(row.executed_at)) },
           ],
           recent,
-          { empty: "no check results yet", hint: "run checks from the checks view" },
+          {
+            empty: "no check results yet",
+            hint: "run checks from the checks view",
+            expandRow: (row) => (row.message ? h("div", { class: "sub", style: "white-space:normal" }, row.message) : null),
+          },
         ),
       ),
     );

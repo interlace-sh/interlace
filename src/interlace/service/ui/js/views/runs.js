@@ -3,9 +3,9 @@
 // engine / depends on / rows / time), the checks line, and the summary line,
 // then the raw event timeline.
 
-import { clock, glyph, h, pill, relTime, rowsDelta, seconds, statusPill, table } from "../ui.js";
+import { clock, debounce, glyph, h, pill, relTime, rowsDelta, seconds, statusPill, table } from "../ui.js";
 
-export async function render(el, { api, feed, go, toast, modal, params }) {
+export async function render(el, { api, feed, toast, modal, params }) {
   const listBody = h("div", {});
   const enqueueBtn = h("button", { class: "btn primary" }, "run…");
 
@@ -25,18 +25,24 @@ export async function render(el, { api, feed, go, toast, modal, params }) {
   let catalog = new Map(); // model name -> ModelInfo (output/strategy/engine/depends_on)
   let openRun = params.r ? Number(params.r) : null;
   let openDetail = null; // fetched RunDetail for openRun
+  let refreshSeq = 0; // only the newest refresh may repaint — feed storms race otherwise
 
   async function refresh() {
-    const [runList, models] = await Promise.all([api.get("/runs"), catalog.size ? null : api.get("/models")]);
+    const mine = ++refreshSeq;
+    const targetRun = openRun;
+    let runList;
+    let models;
+    let detail = null;
+    try {
+      [runList, models] = await Promise.all([api.get("/runs"), catalog.size ? null : api.get("/models")]);
+      if (targetRun !== null) detail = await api.get(`/runs/${targetRun}`).catch(() => null);
+    } catch {
+      return; // daemon hiccup: keep the last good list rather than blanking or throwing
+    }
+    if (mine !== refreshSeq) return; // a newer refresh already landed — don't repaint stale data
     runs = runList;
     if (models) catalog = new Map(models.map((m) => [m.name, m]));
-    if (openRun !== null) {
-      try {
-        openDetail = await api.get(`/runs/${openRun}`);
-      } catch {
-        openDetail = null;
-      }
-    }
+    openDetail = targetRun !== null ? detail : null;
     renderList();
   }
 
@@ -256,9 +262,11 @@ export async function render(el, { api, feed, go, toast, modal, params }) {
   enqueueBtn.addEventListener("click", enqueueModal);
   await refresh();
 
+  // collapse feed storms (a busy build emits many model.* events) into one refetch
+  const scheduleRefresh = debounce(refresh, 150);
   const offFeed = feed.on((event) => {
-    if (event.type.startsWith("run.")) refresh();
-    else if (event.type.startsWith("model.") && openRun !== null && event.payload?.run === openRun) refresh();
+    if (event.type.startsWith("run.")) scheduleRefresh();
+    else if (event.type.startsWith("model.") && openRun !== null && event.payload?.run === openRun) scheduleRefresh();
   });
   return () => offFeed();
 }

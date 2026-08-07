@@ -1,6 +1,7 @@
 // Plan & apply: preview exactly what apply will do — per-change SQL diffs,
-// breaking gates, scope/forward-only knobs — then watch the build live
-// (the dock mirrors the CLI's ✓/✗ rows; this view also inlines them).
+// breaking gates, scope/forward-only knobs — then apply. Live build progress is
+// narrated by the global dock (the CLI's ✓/✗ rows); this view renders the final
+// build results when apply returns.
 
 import { diffBlock, h, pill, rowsDelta, seconds, sqlBlock, table } from "../ui.js";
 
@@ -93,11 +94,18 @@ export async function render(el, { api, toast, modal, go }) {
       if (change.impacted_columns.length) headBits.push(h("span", { class: "sub" }, `+ ${change.impacted_columns.join(", ")}`));
 
       const card = h("div", { class: "card" });
-      const head = h("div", { class: "card-head", style: "text-transform:none; letter-spacing:0; cursor:pointer" }, ...headBits, h("span", { class: "spread" }), h("span", { class: "faint" }, change.new_fingerprint?.slice(0, 8) ?? ""));
       const detail = h("div", { class: "card-body" });
       detail.hidden = true;
+      const head = h(
+        "button",
+        { class: "card-head", style: "text-transform:none; letter-spacing:0; width:100%; text-align:left", "aria-expanded": "false" },
+        ...headBits,
+        h("span", { class: "spread" }),
+        h("span", { class: "faint" }, change.new_fingerprint?.slice(0, 8) ?? ""),
+      );
       head.addEventListener("click", () => {
         detail.hidden = !detail.hidden;
+        head.setAttribute("aria-expanded", String(!detail.hidden));
         if (!detail.hidden && !detail.childNodes.length) {
           if (change.previous_sql && change.new_sql && change.previous_sql !== change.new_sql) {
             detail.append(diffBlock(change.previous_sql, change.new_sql));
@@ -127,7 +135,7 @@ export async function render(el, { api, toast, modal, go }) {
       renderResult(result);
       toast(`applied — ${result.built.length} built, ${result.promoted} promoted`, "ok");
     } catch (error) {
-      if (error.message.includes("resubmit with force=true") && !force) {
+      if (error.status === 409 && !force) {
         modal((box, close) => {
           box.append(
             h("h2", {}, "Breaking changes"),

@@ -18,11 +18,17 @@ export function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-export const glyph = { ok: "✓", fail: "✗", skip: "⊘", run: "◌" };
+export const glyph = { ok: "✓", fail: "✗", skip: "⊘" };
+
+/** Parse a server timestamp as UTC. The daemon emits naive UTC strings, so a bare
+ * one (no `Z`, no offset) must be pinned to UTC or the browser reads it as local. */
+export function toUtc(iso) {
+  return new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z");
+}
 
 export function relTime(iso) {
   if (!iso) return "—";
-  const seconds = (Date.now() - new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z").getTime()) / 1000;
+  const seconds = (Date.now() - toUtc(iso).getTime()) / 1000;
   if (!Number.isFinite(seconds)) return iso;
   if (seconds < 0) return "in " + relSpan(-seconds);
   if (seconds < 5) return "just now";
@@ -38,8 +44,7 @@ function relSpan(seconds) {
 
 export function clock(iso) {
   if (!iso) return "—";
-  const when = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z");
-  return when.toLocaleTimeString([], { hour12: false });
+  return toUtc(iso).toLocaleTimeString([], { hour12: false });
 }
 
 export function seconds(value) {
@@ -79,6 +84,21 @@ export function statusPill(status) {
   return pill(status, tone);
 }
 
+/** Collapse raw `/checks` rows to the latest result per (model, check_name), by
+ * max id. The endpoint returns many historical rows; callers want one per check
+ * (used by the checks view, the overview stat, and a model's detail). */
+export function latestPerCheck(rows) {
+  const byPair = new Map();
+  for (const row of rows) {
+    const key = `${row.model} ${row.check_name}`;
+    const kept = byPair.get(key);
+    if (!kept || row.id > kept.id) byPair.set(key, row);
+  }
+  return [...byPair.values()].sort(
+    (a, b) => a.model.localeCompare(b.model) || a.check_name.localeCompare(b.check_name),
+  );
+}
+
 /** The house table: columns = [{k, label, num?, render?}], rows = objects.
  * `expandRow(row)` may return a node rendered full-width directly under that row. */
 export function table(columns, rows, { onRow, empty = "nothing here yet", hint, expandRow } = {}) {
@@ -96,7 +116,17 @@ export function table(columns, rows, { onRow, empty = "nothing here yet", hint, 
         return h("td", { class: col.num ? "num" : "" }, cell ?? "—");
       }),
     );
-    if (onRow) tr.addEventListener("click", () => onRow(row));
+    if (onRow) {
+      tr.tabIndex = 0; // keyboard-activable: a clickable row must be reachable and Enter/Space-triggerable
+      tr.setAttribute("role", "button");
+      tr.addEventListener("click", () => onRow(row));
+      tr.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onRow(row);
+        }
+      });
+    }
     body.push(tr);
     const detail = expandRow?.(row);
     if (detail) body.push(h("tr", { class: "expand-row" }, h("td", { colspan: columns.length }, detail)));
@@ -105,6 +135,13 @@ export function table(columns, rows, { onRow, empty = "nothing here yet", hint, 
 }
 
 // ---- SQL highlighting (display only — the server owns parsing) ---------------
+
+/** Escape HTML metacharacters. The one shared choke-point that turns raw text into
+ * safe markup — the highlighters call it before inserting their own <span> tags, so
+ * a stray `<` in SQL/source can never open a real element. */
+export function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+}
 
 const KEYWORDS = new RegExp(
   "\\b(select|from|where|group by|order by|having|qualify|join|left|right|full|inner|outer|cross|natural|on|using|" +
@@ -115,7 +152,7 @@ const KEYWORDS = new RegExp(
 
 export function highlightSql(sql) {
   if (!sql) return "";
-  let out = sql.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  let out = escapeHtml(sql);
   out = out.replace(/('(?:[^']|'')*')/g, '<span class="str">$1</span>');
   out = out.replace(/(--[^\n]*)/g, '<span class="cmt">$1</span>');
   out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');
@@ -140,7 +177,7 @@ const PY_STRINGS = /("(?:""[^]*?""|(?:[^"\\\n]|\\.)*)"|'(?:''[^]*?''|(?:[^'\\\n]
  * regex passes over already-inserted markup would otherwise re-highlight the
  * markup itself (`class="str"` contains the keyword `class`). */
 export function pythonBlock(source) {
-  let out = (source || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  let out = escapeHtml(source);
   const lifted = [];
   const lift = (cls) => (match) => {
     lifted.push(`<span class="${cls}">${match}</span>`);
@@ -192,6 +229,22 @@ export function diffBlock(before, after) {
 }
 
 // ---- misc ----------------------------------------------------------------------
+
+/** Attrs that make a non-interactive element (a clickable div/span) behave like a
+ * button for the keyboard: focusable, and activated by Enter/Space. Spread into `h`. */
+export function clickableAttrs(handler) {
+  return {
+    role: "button",
+    tabindex: "0",
+    onclick: handler,
+    onkeydown: (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        handler(event);
+      }
+    },
+  };
+}
 
 export function debounce(fn, wait = 150) {
   let timer;

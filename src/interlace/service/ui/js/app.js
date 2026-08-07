@@ -2,44 +2,84 @@
 // Views are ES modules under views/ exporting render(el, ctx) -> cleanup?.
 
 import { api, feed, token } from "./api.js";
-import { glyph, h, seconds } from "./ui.js";
+import { glyph, h, seconds, toUtc } from "./ui.js";
 
-import { render as overview } from "./views/overview.js";
-import { render as lineage } from "./views/lineage.js";
-import { render as models } from "./views/models.js";
-import { render as plan } from "./views/plan.js";
-import { render as runs } from "./views/runs.js";
-import { render as query } from "./views/query.js";
-import { render as streams } from "./views/streams.js";
-import { render as checks } from "./views/checks.js";
-import { render as environments } from "./views/environments.js";
-import { render as system } from "./views/system.js";
-
-const routes = { overview, lineage, models, plan, runs, query, streams, checks, environments, system };
+// Views load on demand: only the module for the route you visit is fetched (and then
+// cached by the browser), so the initial payload is the shell + the first view, not
+// all ten. Each entry is a dynamic import; the router awaits it before rendering.
+const routes = {
+  overview: () => import("./views/overview.js"),
+  lineage: () => import("./views/lineage.js"),
+  models: () => import("./views/models.js"),
+  plan: () => import("./views/plan.js"),
+  runs: () => import("./views/runs.js"),
+  query: () => import("./views/query.js"),
+  streams: () => import("./views/streams.js"),
+  checks: () => import("./views/checks.js"),
+  environments: () => import("./views/environments.js"),
+  system: () => import("./views/system.js"),
+};
 
 // ---- toasts / modal ------------------------------------------------------------
 
 export function toast(message, tone = "") {
-  const el = h("div", { class: `toast ${tone}` }, message);
+  // errors are announced assertively (role=alert); the container is aria-live polite
+  const el = h("div", { class: `toast ${tone}`, role: tone === "err" ? "alert" : null }, message);
   document.getElementById("toasts").append(el);
   setTimeout(() => el.remove(), tone === "err" ? 6000 : 2800);
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function modal(build) {
   const scrim = document.getElementById("modalScrim");
   const body = document.getElementById("modalBody");
+  const restoreFocus = document.activeElement; // return focus here when the dialog closes
   body.replaceChildren();
+
   const close = () => {
     scrim.hidden = true;
+    document.removeEventListener("keydown", onKeydown, true);
+    scrim.onclick = null;
     body.replaceChildren();
+    body.removeAttribute("aria-label");
+    if (restoreFocus && typeof restoreFocus.focus === "function") restoreFocus.focus();
   };
+
+  // Escape closes; Tab is trapped inside the dialog so focus can't wander to the
+  // page behind the scrim (capture phase, so children can't stop it first).
+  const onKeydown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const items = [...body.querySelectorAll(FOCUSABLE)];
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   build(body, close);
+  const heading = body.querySelector("h2"); // name the dialog for assistive tech
+  if (heading) body.setAttribute("aria-label", heading.textContent);
   scrim.hidden = false;
+  document.addEventListener("keydown", onKeydown, true);
   // statement body, never an expression: a DOM0 handler RETURNING false means
   // preventDefault — which silently cancels checkbox toggles inside the modal
   scrim.onclick = (event) => {
     if (event.target === scrim) close();
   };
+  (body.querySelector(FOCUSABLE) ?? body).focus(); // initial focus inside the dialog
   return close;
 }
 
@@ -119,9 +159,15 @@ async function renderRoute() {
   // already navigated away must neither touch the live view nor win the
   // cleanup slot — its listeners are torn down immediately instead
   const stage = h("div", { style: "display:contents" });
-  view.append(stage);
+  // an unobtrusive top progress strip while the view's first fetch is in flight —
+  // most views await their data before appending anything, so without this the
+  // panel is a blank flash until it resolves
+  const loading = h("div", { class: "route-loading" });
+  view.append(loading, stage);
   try {
-    const done = await routes[name](stage, { api, feed, go, toast, modal, params, token });
+    const module = await routes[name](); // dynamic import (cached after first visit)
+    const done = await module.render(stage, { api, feed, go, toast, modal, params, token });
+    loading.remove();
     if (mine !== generation) {
       if (typeof done === "function") done(); // stale: release its listeners now
       stage.remove();
@@ -129,6 +175,7 @@ async function renderRoute() {
     }
     cleanup = done;
   } catch (error) {
+    loading.remove();
     if (mine !== generation) return;
     view.replaceChildren(
       h("div", { class: "empty" }, `this view failed to load: ${error.message}`, h("div", { class: "hint" }, "the daemon may be unreachable — check that `interlace serve` is running")),
@@ -248,7 +295,7 @@ async function boot() {
   });
   feed.on((event) => {
     // the dock narrates the build happening NOW — replayed history stays out of it
-    const fresh = event.ts && Date.now() - new Date(event.ts.includes("+") || event.ts.endsWith("Z") ? event.ts : event.ts + "Z").getTime() < 15000;
+    const fresh = event.ts && Date.now() - toUtc(event.ts).getTime() < 15000;
     if (event.type === "model.start" && fresh) dock.start(event.entity);
     else if (event.type?.startsWith("model.") && fresh) dock.finish(event.entity, event.type.slice(6));
     if (["run.enqueued", "run.started", "run.succeeded", "run.failed", "apply.finished"].includes(event.type)) {
@@ -268,6 +315,12 @@ async function boot() {
   setInterval(refreshBadges, 30000);
 
   window.addEventListener("hashchange", renderRoute);
+  // let the page enter the back/forward cache: close the live feed as it's hidden,
+  // reopen only when it's actually restored from cache (persisted)
+  window.addEventListener("pagehide", () => feed.stop());
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) feed.start();
+  });
   renderRoute();
 }
 

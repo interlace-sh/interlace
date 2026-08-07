@@ -13,7 +13,7 @@
   --line-soft: #1A2033;
   --tx: #DFE4F2;         /* primary text */
   --tx-dim: #8A94AC;     /* secondary */
-  --tx-faint: #5A6379;   /* tertiary, rules */
+  --tx-faint: #737D9B;   /* tertiary, rules — lifted to clear WCAG AA (~4.7:1) on --ink-0 */
   --violet: #8B5CF6;     /* interactive / selected — the brand, spent sparingly */
   --violet-soft: rgba(139, 92, 246, 0.14);
   --green: #34D399;      /* inserted / passed / live */
@@ -133,7 +133,13 @@ input, textarea, select { font: inherit; color: inherit; }
 .rail-foot { margin-top: auto; text-align: center; font-size: 9px; color: var(--tx-faint); padding: 6px 2px; overflow: hidden; }
 
 /* ---- view chrome -------------------------------------------------------- */
-main#view { grid-area: view; overflow: auto; padding: 18px 22px 80px; }
+main#view { grid-area: view; overflow: auto; padding: 18px 22px 80px; position: relative; }
+.route-loading { position: absolute; top: 0; left: 0; right: 0; height: 2px; overflow: hidden; z-index: 5; }
+.route-loading::before {
+  content: ""; position: absolute; top: 0; height: 100%; width: 35%;
+  background: var(--violet); animation: route-load 0.9s ease-in-out infinite;
+}
+@keyframes route-load { 0% { left: -35%; } 100% { left: 100%; } }
 main#view[data-route="lineage"] { overflow: hidden; padding-bottom: 22px; display: flex; flex-direction: column; }
 main#view[data-route="lineage"] .view-head { flex-shrink: 0; }
 .view-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -193,7 +199,6 @@ table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
 .glyph-ok { color: var(--green); }
 .glyph-fail { color: var(--red); }
 .glyph-skip { color: var(--tx-faint); }
-.glyph-run { color: var(--amber); }
 
 .btn {
   padding: 4px 12px; border: 1px solid var(--line); border-radius: var(--r);
@@ -215,10 +220,6 @@ table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
 .in:focus { border-color: var(--violet); outline: none; }
 label.check { display: flex; gap: 7px; align-items: center; font-size: 12px; color: var(--tx-dim); cursor: pointer; }
 input[type="checkbox"] { appearance: auto; accent-color: var(--violet); width: 14px; height: 14px; margin: 0; cursor: pointer; }
-
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line-soft); margin-bottom: 12px; }
-.tabs button { padding: 5px 12px; color: var(--tx-dim); border-bottom: 2px solid transparent; font-size: 12px; }
-.tabs button.on { color: var(--tx); border-bottom-color: var(--violet); }
 
 /* ---- SQL / code --------------------------------------------------------- */
 pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-radius: var(--r); padding: 10px 12px; overflow-x: auto; font-size: 12px; line-height: 1.55; }
@@ -270,7 +271,6 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .edge { fill: none; stroke: var(--line); stroke-width: 1.2; }
 .edge.lit { stroke: var(--violet); stroke-width: 1.6; }
 .edge.dimmed { opacity: 0.15; }
-.edge.col { stroke: var(--cyan); stroke-width: 1; stroke-dasharray: 3 3; }
 .edge.flow { stroke: var(--cyan); stroke-width: 1.6; stroke-dasharray: 5 6; animation: flow 0.7s linear infinite; }
 @keyframes flow { to { stroke-dashoffset: -11; } }
 
@@ -303,7 +303,6 @@ pre.sql { background: var(--ink-0); border: 1px solid var(--line-soft); border-r
 .palette-results .hit { display: flex; gap: 10px; align-items: baseline; padding: 7px 11px; border-radius: var(--r); cursor: pointer; }
 .palette-results .hit.on, .palette-results .hit:hover { background: var(--violet-soft); }
 .palette-results .hit .kind { font-size: 10px; color: var(--tx-faint); text-transform: uppercase; width: 52px; }
-.palette-results .hit .extra { margin-left: auto; color: var(--tx-faint); font-size: 11px; }
 
 .modal { margin-top: 10vh; width: min(680px, 94vw); max-height: 78vh; overflow-y: auto; background: var(--ink-1); border: 1px solid var(--line); border-radius: 10px; padding: 18px; box-shadow: 0 20px 48px rgba(0,0,0,0.6); }
 .modal h2 { font-size: 14px; margin-bottom: 12px; }

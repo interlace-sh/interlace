@@ -239,6 +239,13 @@ export async function render(el, { api, go, toast, modal, token }) {
       },
       "save",
     );
+    const graceInput = h("input", {
+      class: "in",
+      value: "7d",
+      style: "width:64px",
+      "aria-label": "gc grace period",
+      title: "keep snapshots newer than this (e.g. 7d, 24h, 0 for none)",
+    });
     const gcBtn = (label, dryRun) =>
       h(
         "button",
@@ -248,7 +255,7 @@ export async function render(el, { api, go, toast, modal, token }) {
             const btn = event.currentTarget;
             btn.disabled = true;
             try {
-              const result = await api.post("/gc", { grace: "7d", dry_run: dryRun });
+              const result = await api.post("/gc", { grace: graceInput.value.trim() || "7d", dry_run: dryRun });
               const verb = result.dry_run ? "would remove" : "removed";
               toast(`gc: ${verb} ${result.removed_snapshots} snapshot(s), ${result.dropped_tables.length} table(s) — ${result.kept_snapshots} kept`, "ok");
             } catch (error) {
@@ -276,8 +283,14 @@ export async function render(el, { api, go, toast, modal, token }) {
         h(
           "div",
           { class: "field" },
-          h("span", {}, "snapshot gc — 7d grace"),
-          h("div", { style: "display:flex; gap:8px" }, gcBtn("gc (dry run)", true), gcBtn("gc now", false)),
+          h("span", {}, "snapshot gc — keep newer than"),
+          h(
+            "div",
+            { style: "display:flex; gap:8px; align-items:center" },
+            graceInput,
+            gcBtn("gc (dry run)", true),
+            gcBtn("gc now", false),
+          ),
         ),
         versionLine,
       ),

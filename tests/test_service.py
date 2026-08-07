@@ -74,6 +74,21 @@ def test_ui_shell_is_served(client: TestClient) -> None:
         assert f"views/{view.name}" in app_js, f"view {view.name} is not routed in app.js"
 
 
+def test_ui_sends_security_headers(client: TestClient) -> None:
+    """The air-gapped UI is served with a same-origin CSP + sniff/frame protection,
+    scoped to /ui so the API and OpenAPI docs are untouched."""
+    page = client.get("/ui/")
+    csp = page.headers.get("content-security-policy", "")
+    assert "default-src 'self'" in csp
+    assert "script-src 'self'" in csp and "'unsafe-inline'" not in csp.split("script-src")[1].split(";")[0]
+    assert "frame-ancestors 'none'" in csp
+    assert page.headers.get("x-content-type-options") == "nosniff"
+    assert page.headers.get("x-frame-options") == "DENY"
+    # a static asset carries it too; the JSON API does not (headers are /ui-scoped)
+    assert "default-src 'self'" in client.get("/ui/app.css").headers.get("content-security-policy", "")
+    assert "content-security-policy" not in client.get("/health").headers
+
+
 def test_environments_carry_promoted_at(client: TestClient) -> None:
     client.post("/apply", json={"environment": "prod"})
     envs = client.get("/environments").json()

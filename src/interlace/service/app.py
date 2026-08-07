@@ -25,6 +25,7 @@ from uuid import uuid4
 import msgspec
 import pyarrow as pa
 from litestar import Litestar, Request, delete, get, post
+from litestar.config.compression import CompressionConfig
 from litestar.datastructures import CacheControlHeader, State
 from litestar.exceptions import ClientException, ImproperlyConfiguredException, NotFoundException
 from litestar.openapi import OpenAPIConfig
@@ -661,7 +662,10 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         breaking = plan.has_breaking_changes
         if breaking and not data.force:
             names = ", ".join(c.name for c in plan.changes if c.category is ChangeCategory.BREAKING)
-            raise ClientException(detail=f"plan has breaking changes ({names}); resubmit with force=true")
+            # 409 Conflict so the UI can offer "apply anyway" by status, not by matching this string
+            raise ClientException(
+                status_code=409, detail=f"plan has breaking changes ({names}); resubmit with force=true"
+            )
         if plan.is_empty:
             return ApplyResponse(environment=env, built=[], promoted=0, breaking=False)
         await state.store.append_event("apply.started", entity=env, payload={"models": plan.promote})
@@ -1487,6 +1491,37 @@ def create_app(
                     await store.close()
             engines.close()
 
+    # The UI is self-contained and air-gapped: a CSP locks every fetch to same-origin,
+    # enforcing (not just documenting) that mandate. style-src allows 'unsafe-inline'
+    # because the views set element style="…" attributes; scripts are external ES
+    # modules only, so script-src stays 'self' with no inline-exec escape hatch. Scoped
+    # to /ui by router middleware, so the Scalar API docs and JSON endpoints are untouched.
+    from litestar.types import ASGIApp, Message, Receive, Scope, Send
+
+    ui_csp = (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+        "connect-src 'self'; font-src 'self'; form-action 'self'"
+    )
+
+    def ui_security_headers(app: ASGIApp) -> ASGIApp:  # Litestar calls the factory as app=<next>
+        async def wrapped(scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] != "http":
+                await app(scope, receive, send)
+                return
+
+            async def send_wrapper(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    headers = message.setdefault("headers", [])
+                    headers.append((b"content-security-policy", ui_csp.encode()))
+                    headers.append((b"x-content-type-options", b"nosniff"))
+                    headers.append((b"x-frame-options", b"DENY"))
+                await send(message)
+
+            await app(scope, receive, send_wrapper)
+
+        return wrapped
+
     # no-cache (not no-store): the browser may keep copies but must revalidate,
     # so upgrading the daemon can never serve a stale shell against new modules
     ui_router = create_static_files_router(
@@ -1495,6 +1530,7 @@ def create_app(
         html_mode=True,
         include_in_schema=False,
         cache_control=CacheControlHeader(no_cache=True),
+        middleware=[ui_security_headers],
     )
     from litestar import Response
 
@@ -1509,6 +1545,10 @@ def create_app(
 
     return Litestar(
         exception_handlers={_InterlaceError: _domain_error},
+        # gzip the served modules/CSS/JSON (no build step, so this is where transfer
+        # size is won). The SSE stream is excluded — compressing it would buffer and
+        # stall live events. minimum_size skips tiny bodies where framing costs more.
+        compression_config=CompressionConfig(backend="gzip", exclude=["/events/stream"]),
         route_handlers=[
             ui_router,
             ui_redirect,

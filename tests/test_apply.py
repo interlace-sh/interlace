@@ -122,6 +122,22 @@ async def test_re_apply_is_a_no_op(env: tuple[DuckDBAdapter, SqliteStateStore]) 
     assert plan.is_empty
 
 
+async def test_ephemeral_models_are_not_counted_as_promoted(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """An ephemeral model is inlined into its consumers — it has no promotable table, so
+    it must not inflate the promoted count over the models that actually built."""
+    engine, store = env
+    project = compile_models(
+        [
+            sql_model("base", "SELECT 1 AS id"),
+            sql_model("mid", "SELECT id FROM base", materialise="ephemeral"),
+            sql_model("out", "SELECT id FROM mid"),
+        ]
+    )
+    result = await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store)
+    assert set(result.built) == {"base", "out"}  # mid is inlined, never built
+    assert result.promoted == 2  # base + out — the ephemeral mid is tracked but not counted
+
+
 async def test_second_environment_reuses_the_shared_table_instead_of_rebuilding(
     env: tuple[DuckDBAdapter, SqliteStateStore],
 ) -> None:

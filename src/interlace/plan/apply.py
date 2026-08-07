@@ -684,7 +684,10 @@ async def apply(
 
     mapping = {name: compiled.models[name].fingerprint for name in plan.promote}
     await state.promote(plan.environment, mapping)
-    result.promoted = len(mapping)
+    # ephemeral models are tracked in the mapping (so re-plans stay clean) but are inlined
+    # into consumers — they have no promotable table/view, so the user-facing count omits
+    # them, keeping "promoted N" consistent with the N build rows shown
+    result.promoted = sum(1 for name in mapping if compiled.models[name].materialise != "ephemeral")
 
     # deleted models: drop their env view and demote them, or the view serves the
     # last snapshot forever and pins it against gc

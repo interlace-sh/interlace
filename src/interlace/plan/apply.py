@@ -38,6 +38,7 @@ from interlace.state.interval import Interval
 from interlace.state.store import StateStore
 from interlace.strategies import Strategy, resolve_strategy
 from interlace.strategies.base import RowCounts
+from interlace.strategies.hash_merge import HashMerge
 
 
 @dataclass
@@ -107,6 +108,10 @@ async def _merge_python_output(
         pre_statements, source, columns = await _align_stage_to_target(
             engine, stage, target, exclude=strategy.managed_columns
         )
+    elif isinstance(strategy, HashMerge):
+        # hash_merge builds its _hash from the column list; on the first build the target
+        # doesn't exist yet (so no align pass ran), so take the columns from the staged output
+        columns = [c for c in await engine.describe(stage) if c not in strategy.managed_columns]
 
     relation = SqlRelation(ast=source)
     statements = strategy.plan_statements(relation, target, engine.caps, None, columns)

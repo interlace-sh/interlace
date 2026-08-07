@@ -161,6 +161,36 @@ async def test_python_model_supports_keyed_strategies(env: tuple[DuckDBAdapter, 
     assert [row["id"] for row in rows] == [1, 2, 3]
 
 
+async def test_python_hash_merge_builds_first_time_and_detects_change(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """hash_merge on a Python model must build on the FIRST run — its _hash is built from
+    the staged output's columns, since the target doesn't exist yet — then write only the
+    delta on re-runs (idempotent when nothing changed, an update when a row's value flips)."""
+    from interlace.plan.run import run_plan
+
+    engine, store = env
+    state = {"tier": "gold"}
+
+    def dim(raw: RelationHandle) -> pa.Table:
+        table = raw.table()
+        return table.append_column("tier", pa.array([state["tier"]] * table.num_rows))
+
+    model = ModelDef(name="dim", fn=dim, depends_on=("raw",), strategy="hash_merge", key=("id",))
+    await _build(env, [RAW, model])  # first build: would raise "needs explicit columns" before the fix
+    assert await _rows(engine, "SELECT count(*) AS n FROM dev__main.dim") == [{"n": 3}]
+    assert await _rows(engine, "SELECT count(*) AS n FROM dev__main.dim WHERE _hash IS NOT NULL") == [{"n": 3}]
+
+    compiled = compile_models([RAW, model])
+    rerun = await apply(await run_plan(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
+    assert not rerun.rows.get("dim")  # unchanged data: nothing written
+
+    state["tier"] = "silver"  # every row's payload changes
+    delta = await apply(await run_plan(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
+    assert (delta.rows["dim"].inserted, delta.rows["dim"].updated) == (0, 3)  # all updates, no inserts
+    assert await _rows(engine, "SELECT DISTINCT tier FROM dev__main.dim") == [{"tier": "silver"}]
+
+
 async def test_python_scd2_model_survives_reruns(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     """Regression: stage-to-target alignment used to NULL-fill scd2's validity columns
     into the source, breaking the strategy's EXCEPT arity on every run after the first."""

@@ -557,7 +557,7 @@ async def rollback_environment_endpoint(name: FromPath[str], state: State, data:
 
 
 @get("/runs")
-async def get_runs(state: State) -> list[RunInfo]:
+async def get_runs(state: State, limit: FromQuery[int | None] = None) -> list[RunInfo]:
     runs: list[RunInfo] = []
     for run in await state.store.list_runs():
         partition = [str(run["partition_start"]), str(run["partition_end"])] if run["partition_start"] else None
@@ -575,7 +575,7 @@ async def get_runs(state: State) -> list[RunInfo]:
                 idempotency_key=run["idempotency_key"],
             )
         )
-    return runs
+    return runs[:limit] if limit else runs  # list_runs is newest-first
 
 
 @get("/runs/{run_id:int}")
@@ -717,12 +717,28 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
             for name, c in result.rows.items()
         },
         timings={name: round(seconds, 3) for name, seconds in result.timings.items()},
+        gated=result.gated,
+        checks=[
+            CheckOutcomeInfo(
+                model=outcome.model,
+                name=outcome.name,
+                check_type=outcome.type,
+                severity=outcome.severity,
+                status=outcome.status,
+                failures=outcome.failures,
+                message=outcome.message,
+            )
+            for outcome in result.checks
+        ],
     )
 
 
 @get("/checks")
-async def get_checks(state: State, model: FromQuery[str | None] = None) -> list[CheckResultInfo]:
-    return [CheckResultInfo(**row) for row in await state.store.list_check_results(model)]
+async def get_checks(
+    state: State, model: FromQuery[str | None] = None, limit: FromQuery[int | None] = None
+) -> list[CheckResultInfo]:
+    rows = await state.store.list_check_results(model)
+    return [CheckResultInfo(**row) for row in (rows[:limit] if limit else rows)]
 
 
 async def _enqueue_stream_consumers(state: State, stream: StreamDef) -> None:
@@ -1013,12 +1029,12 @@ async def _described_columns(state: State, name: str, promoted: dict[str, str], 
 
 
 @get("/lineage")
-async def get_lineage(state: State) -> LineageResponse:
+async def get_lineage(state: State, environment: FromQuery[str | None] = None) -> LineageResponse:
     """The whole graph in one payload: nodes (with warehouse-described column
     types), table edges, column lineage, and stream sources — the UI renders
-    and traces without a request per node."""
+    and traces without a request per node. ``?environment=`` inspects a sandbox."""
     compiled: CompiledProject = state.compiled
-    promoted = await state.store.get_environment(state.environment)
+    promoted = await state.store.get_environment(environment or state.environment)
     snapshots = await state.store.get_snapshots(promoted.items())
 
     order = compiled.graph.topological_sort()

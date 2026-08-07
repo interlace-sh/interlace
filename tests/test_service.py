@@ -556,3 +556,14 @@ def test_rollback_over_http(client: TestClient) -> None:
     refused = client.post("/environments/prod/rollback", json={})
     assert refused.status_code == 400
     assert "valid targets" in refused.json()["detail"]
+
+
+def test_apply_response_carries_checks_and_gated(client: TestClient) -> None:
+    body = client.post("/apply", json={}).json()
+    assert "checks" in body and "gated" in body  # so a UI apply can render check results
+
+
+def test_runs_checks_limit_and_lineage_environment(client: TestClient) -> None:
+    assert client.get("/runs?limit=1").status_code == 200
+    assert client.get("/checks?limit=1").status_code == 200
+    assert client.get("/lineage?environment=dev").status_code == 200  # inspect a sandbox

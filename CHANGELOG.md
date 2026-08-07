@@ -1,5 +1,42 @@
 # Changelog
 
+## 2.1.0 (2026-08-07)
+
+**New: source models — ingestion by pull (`interlace.sources`).** A small synchronous REST
+client behind the `interlaced[sources]` extra — auth (bearer / API-key / basic), pagination
+(page / offset / cursor / RFC-5988 link header), retry with jittered backoff that honours
+`Retry-After`, and rate limiting — that turns an API into Arrow. A *source* is an ordinary
+`@model` that pulls and yields batches; incremental via the reserved `cursor` param, idempotent
+via `merge`. See `docs/sources.md`.
+
+**New: init templates (`interlace init --template NAME` / `--list`).** `interlace init` is now a
+registry over runnable starter projects, each shipped in the wheel with a README that doubles as
+its landing page: `quickstart` (default, no-source SQL → Python → SQL), `github` (incremental
+REST pull), `postgres` (incremental DB pull via psycopg, with a seeded docker-compose), and
+`events` (durable `@stream` ingestion + live rollups — formerly the `event_stream` example).
+
+**New: `interlace query "SELECT …"`.** A read-only query command — the CLI counterpart of the web
+console, sharing one parse-and-fence path (SELECT-only; table functions and file/HTTP readers
+rejected).
+
+**Improved: the web UI.** A correctness / robustness / accessibility / security / performance pass
+over the in-package UI — fixed the "failing checks" over-count and dead stream-column links,
+keyboard-operable modals and navigation, a same-origin Content-Security-Policy + `nosniff` /
+frame headers scoped to `/ui`, gzip compression, and lazy-loaded views.
+
+**Fix: column lineage traces through Python models.** A Python model (no SQL to qualify) no
+longer dead-ends the whole downstream subtree — the differ, UI and `interlace lineage`/`impact`
+resolve columns through it — and a `count(*)` is no longer misread as a row-expanding `SELECT *`.
+
+**Fix: adding an aggregate column to a rollup is non-breaking.** The additive-change class now
+fires for aggregate models (same `count(*)`-as-star cause), so `apply` no longer gates a plain
+column addition behind `--force`. A dimension add that changes the row set stays breaking.
+
+**Fix: errors read like errors.** A model that fails to build — or a typo in a model file — now
+surfaces as one `error:` line naming the model/file, not a raw traceback. `CheckSpec` is exported
+from the package root, and a Python `@model(checks=…)` accepts the same dict shorthand as a SQL
+config block.
+
 ## 2.0.3 (2026-08-06)
 
 **Fix (correctness + security): the query console no longer disables warehouse writes.**

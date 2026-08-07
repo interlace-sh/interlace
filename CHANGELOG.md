@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+**Fix: `interlace serve` picks up model edits without a restart.** The daemon compiled the
+project once at startup, so editing a model and pressing Plan/Apply in the UI showed nothing
+new — only a restart (or `interlace plan` in a fresh process) did. It now recompiles on demand
+when a model file changes on disk (a cheap mtime probe; the graph, lineage and stream→consumer
+map re-derive only when something changed). Changing engine/stream/path topology in
+`interlace.yaml` still needs a restart.
+
+**Fix: enqueued runs start immediately, not on the next tick.** A run enqueued from the UI/API
+waited out the scheduler interval (up to `--interval`, 60s) before a worker picked it up. An
+enqueue now wakes the drain at once; the interval remains the periodic fallback for schedules.
+
+**UI: run detail redesign.** The expanded run is one compact table — a status tick (✓/✗/⊘) plus
+model / output / strategy / engine / depends on / **checks** / rows / time — instead of a
+build-results table *and* a separate tick timeline. The runs list gains **env** and overall
+**duration** columns and drops the usually-empty *window* column (the backfill window now shows in
+the detail header only when a run had one).
+
+**UI: query console — a runnable starter.** Clicking a table into an empty editor inserts
+`select * from <ref>`; mid-query it still drops just the ref at the cursor.
+
+**API: CLI↔API↔UI parity.** `POST /apply` returns `checks` + `gated`; `GET /runs` and `/checks`
+take `?limit=`; `GET /lineage` takes `?environment=`.
+
 ## 2.1.1 (2026-08-07)
 
 **Fix (2.1.0 regression): `gc` reclaims `materialise: view` snapshots.** A view model's

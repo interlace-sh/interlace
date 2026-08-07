@@ -13,8 +13,10 @@ unknown target / guard tripped; `2` malformed input (bad ISO window, bad grace, 
 
 ## Transformation
 
-### `interlace init [PATH] [--name NAME]`
-Scaffold a new project (writes `interlace.yaml`, `models/`, an example). Filesystem only.
+### `interlace init [PATH] [--name NAME] [--template NAME] [--list]`
+Scaffold a new project from a template (writes `interlace.yaml`, `models/`, a README).
+`--template/-t` picks the starter (default `quickstart`, a no-source SQL → Python → SQL
+chain); `--list` shows every template and any credentials it needs. Filesystem only.
 
 ### `interlace plan [--env] [--select] [--forward-only] [--json]`
 Preview what `apply` would change in an environment, without building. Opens the state store

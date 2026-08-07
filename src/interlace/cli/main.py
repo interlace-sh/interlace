@@ -25,7 +25,7 @@ from interlace.plan.differ import diff
 from interlace.plan.plan import ChangeType, Plan
 from interlace.plan.run import run_plan
 from interlace.project import Project
-from interlace.scaffold import scaffold_project
+from interlace.scaffold import list_templates, scaffold_project
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
 from interlace.sinks import target_ref
@@ -242,16 +242,30 @@ async def _promoted_if_needed(state: Any, environment: str, selectors: list[str]
 def init(
     path: Path = typer.Argument(Path("."), help="Directory to initialise."),
     name: str = typer.Option("", "--name", "-n", help="Project name (defaults to the directory name)."),
+    template: str = typer.Option("quickstart", "--template", "-t", help="Which starter to scaffold (see --list)."),
+    show_list: bool = typer.Option(False, "--list", help="List available templates and exit."),
 ) -> None:
-    """Scaffold a new interlace project."""
+    """Scaffold a new interlace project from a template."""
+    if show_list:
+        table = _table("Templates")
+        table.add_column("Template")
+        table.add_column("Description", style="dim")
+        table.add_column("Needs", style="dim")
+        for info in list_templates():
+            table.add_row(info.name, info.description, ", ".join(info.requires_env) or "—")
+        console.print(table)
+        return
     try:
-        written = scaffold_project(path, name or None)
+        written = scaffold_project(path, name or None, template)
     except ConfigurationError as exc:
         console.print(f"[red]{escape(exc.message)}[/red] ({exc.details.get('path', '')})")
         raise typer.Exit(1) from exc
-    console.print(f"[green]Initialised interlace project in {path}[/green]")
+    console.print(f"[green]Initialised interlace project in {path}[/green] [dim](template: {template})[/dim]")
     for written_path in written:
         console.print(f"  + {written_path}")
+    needs = next((t.requires_env for t in list_templates() if t.name == template), ())
+    if needs:
+        console.print(f"\n[yellow]Set before applying:[/yellow] {', '.join(needs)}")
     console.print("\nNext: [bold]interlace apply[/bold] (or --env dev for a sandbox)")
 
 

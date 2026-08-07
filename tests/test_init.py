@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from interlace.cli.main import app
 from interlace.exceptions import ConfigurationError
 from interlace.project import Project
-from interlace.scaffold import scaffold_project
+from interlace.scaffold import DEFAULT_TEMPLATE, list_templates, scaffold_project
 
 pytestmark = pytest.mark.unit
 
@@ -23,6 +23,7 @@ def test_scaffold_writes_a_loadable_project(tmp_path: Path) -> None:
     assert (tmp_path / "interlace.yaml") in written
     assert (tmp_path / "models" / "raw_events.sql").exists()
     assert (tmp_path / "models" / "enriched_events.py").exists()
+    assert not (tmp_path / "template.yaml").exists()  # metadata is not copied into the project
 
     project = Project.load(tmp_path)
     assert project.config.name == "shop"
@@ -52,3 +53,26 @@ def test_init_command_refuses_existing_project(tmp_path: Path) -> None:
     runner.invoke(app, ["init", str(tmp_path)])
     second = runner.invoke(app, ["init", str(tmp_path)])
     assert second.exit_code == 1
+
+
+def test_list_templates_puts_the_default_first() -> None:
+    names = [t.name for t in list_templates()]
+    assert names and names[0] == DEFAULT_TEMPLATE
+    assert "quickstart" in names
+
+
+def test_init_list_flag_shows_templates() -> None:
+    result = runner.invoke(app, ["init", "--list"])
+    assert result.exit_code == 0, result.output
+    assert "quickstart" in result.output
+
+
+def test_scaffold_unknown_template_errors(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match="unknown template"):
+        scaffold_project(tmp_path, template="does-not-exist")
+
+
+def test_init_with_explicit_template(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["init", str(tmp_path), "--template", "quickstart", "--name", "q"])
+    assert result.exit_code == 0, result.output
+    assert Project.load(tmp_path).config.name == "q"

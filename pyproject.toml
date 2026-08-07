@@ -85,15 +85,18 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-interlace = ["py.typed", "service/ui/*", "service/ui/**/*"]
+interlace = ["py.typed", "service/ui/*", "service/ui/**/*", "templates/*", "templates/**/*"]
 
 [tool.black]
 line-length = 120
 target-version = ['py312']
+# init templates are user-facing example projects, not library code
+extend-exclude = 'src/interlace/templates/'
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+extend-exclude = ["src/interlace/templates"]
 
 [tool.ruff.lint]
 select = [
@@ -116,6 +119,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.12"
+exclude = ['src/interlace/templates/']  # example project code, not library code
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

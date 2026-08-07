@@ -19,6 +19,19 @@ function dotted(...bits) {
   return wrap;
 }
 
+/** The models cell: "13 models · a, b, c…" — the count, then names truncated to a
+ * max width with an ellipsis (full list on hover). Empty selector = the whole graph. */
+function modelsCell(names) {
+  if (!names.length) return h("span", { class: "dim" }, "all");
+  return h(
+    "span",
+    { class: "run-models" },
+    h("span", { class: "rm-count" }, `${names.length} model${names.length === 1 ? "" : "s"}`),
+    h("span", { class: "faint" }, " · "),
+    h("span", { class: "rm-names", title: names.join(", ") }, names.join(", ")),
+  );
+}
+
 export async function render(el, { api, feed, toast, modal, params }) {
   const listBody = h("div", {});
   const enqueueBtn = h("button", { class: "btn primary" }, "run…");
@@ -160,29 +173,15 @@ export async function render(el, { api, feed, toast, modal, params }) {
     );
   }
 
-  function detailHeader(run, payload) {
-    const built = (payload.built ?? []).length;
-    const env = run.environment ?? daemonEnv;
-    return dotted(
-      env ? h("span", { class: "dim" }, env) : null,
-      run.duration != null ? h("span", { class: "dim" }, seconds(run.duration)) : null,
-      built ? h("span", { class: "dim" }, `${built} model${built === 1 ? "" : "s"}`) : null,
-      // the backfill window: the partition an incremental model (re)processes — empty
-      // for an ordinary full run, so it only shows when one was actually requested
+  // env / duration / model-count / per-model checks all live in the row + build table
+  // now; the header only carries what those don't — a backfill window or a retry — and
+  // is omitted entirely for an ordinary run.
+  function detailHeader(run) {
+    const bits = [
       run.partition ? h("span", { class: "dim" }, `window ${run.partition[0] ?? ""} → ${run.partition[1] ?? ""}`) : null,
       run.attempts > 1 ? h("span", { class: "dim" }, `attempt ${run.attempts}`) : null,
-    );
-  }
-
-  function summaryLine(payload) {
-    if (!payload.checks?.total) return null;
-    const warned = payload.checks.failing ?? [];
-    return h(
-      "div",
-      { class: "sub", style: warned.length ? "color:var(--amber)" : "" },
-      `Checks: ${payload.checks.passed}/${payload.checks.total} passed`,
-      warned.length ? ` — ${warned.join(", ")}` : "",
-    );
+    ].filter(Boolean);
+    return bits.length ? dotted(...bits) : null;
   }
 
   function detailNode(run) {
@@ -192,13 +191,13 @@ export async function render(el, { api, feed, toast, modal, params }) {
       ["run.succeeded", "run.failed", "run.cancelled"].includes(event.type),
     );
     const payload = terminal?.payload ?? {};
-    const parts = [detailHeader(run, payload)];
+    const parts = [];
+    const header = detailHeader(run);
+    if (header) parts.push(header);
     if (openDetail.error) parts.push(h("div", { style: "color:var(--red); margin:6px 0" }, openDetail.error));
     const built = buildTable(payload, openDetail.events);
     if (built) parts.push(built);
-    const summary = summaryLine(payload);
-    if (summary) parts.push(summary);
-    if (!built && !summary && !openDetail.error) {
+    if (!built && !openDetail.error) {
       parts.push(h("div", { class: "dim" }, run.state === "queued" ? "waiting for a worker…" : "no build output recorded"));
     }
     return h("div", { class: "run-detail" }, ...parts);
@@ -212,7 +211,7 @@ export async function render(el, { api, feed, toast, modal, params }) {
         table(
           [
             { k: "id", label: "#", num: true },
-            { k: "flow_selector", label: "models", render: (run) => run.flow_selector.join(", ") || "all" },
+            { k: "flow_selector", label: "models", render: (run) => modelsCell(run.flow_selector) },
             { k: "state", label: "state", render: (run) => statusPill(run.state) },
             {
               k: "environment",

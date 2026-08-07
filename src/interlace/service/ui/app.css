@@ -196,7 +196,11 @@ table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
 .run-meta { font-size: 11.5px; }
 .run-detail .dim { color: var(--tx-dim); }
 .run-detail .faint { color: var(--tx-faint); }
-.run-detail .sub { font-size: 11.5px; color: var(--tx-dim); }
+
+/* models cell: "13 models · a, b, c…" — count stays, names shrink to an ellipsis */
+.run-models { display: inline-flex; align-items: baseline; max-width: 460px; vertical-align: top; }
+.rm-count { flex: 0 0 auto; white-space: nowrap; }
+.rm-names { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--tx-dim); }
 
 .empty { padding: 26px; text-align: center; color: var(--tx-dim); }
 .empty .hint { font-size: 11px; color: var(--tx-faint); margin-top: 4px; }

@@ -7,3 +7,12 @@ projects:
 # Hash inputs from git's view of the tree, so gitignored dirs (.venv) are excluded.
 hasher:
   walkStrategy: 'vcs'
+
+# Gate every push on the same checks CI runs. `sync: true` installs a managed
+# .git/hooks/pre-push on the next `moon` invocation (or `moon sync hooks`); moon's
+# task cache makes it a near-no-op when nothing changed. Bypass with `git push --no-verify`.
+vcs:
+  sync: true
+  hooks:
+    pre-push:
+      - 'moon run interlace:check interlace:typecheck interlace:test-fast'

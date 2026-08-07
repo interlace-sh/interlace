@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 (2026-08-07)
+
+(Supersedes the never-released 2.1.1 — its fixes ship here.)
 
 **New: `hash_merge` strategy — a change-detected keyed upsert.** Like `merge` (a keyed
 upsert that keeps rows absent from the source) but it stores an `_hash` (md5 of the non-key
@@ -48,8 +50,6 @@ the detail header only when a run had one).
 
 **API: CLI↔API↔UI parity.** `POST /apply` returns `checks` + `gated`; `GET /runs` and `/checks`
 take `?limit=`; `GET /lineage` takes `?environment=`.
-
-## 2.1.1 (2026-08-07)
 
 **Fix (2.1.0 regression): `gc` reclaims `materialise: view` snapshots.** A view model's
 physical snapshot is a view (`CREATE OR REPLACE VIEW`), but `gc` dropped every superseded

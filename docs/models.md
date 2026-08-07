@@ -145,7 +145,7 @@ Every key below is settable in the SQL comment block or as a `@model(...)` argum
 |---|---|---|---|
 | `name` | str | filename / fn name | Model identifier. |
 | `materialise` | str | `virtual` | `virtual` \| `view` \| `ephemeral` (interlace-owned) \| `table` \| `file` (terminal). |
-| `strategy` | str | `full` | For `virtual`/`table`: `full` \| `merge` \| `full_merge` \| `incremental_by_time` \| `scd`; `append` is `table`-only. `file` is overwrite (`full`). |
+| `strategy` | str | `full` | For `virtual`/`table`: `full` \| `merge` \| `full_merge` \| `hash_merge` \| `incremental_by_time` \| `scd`; `append` is `table`-only. `file` is overwrite (`full`). |
 | `key` | str \| list | — | Key column(s) for keyed strategies. |
 | `time_column` | str | — | Partition column for `incremental_by_time`. |
 | `interval` | str | — | Grain for `incremental_by_time` (e.g. `1d`, `1h`). |

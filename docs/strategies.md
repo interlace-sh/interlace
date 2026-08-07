@@ -17,7 +17,7 @@ The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strat
 | `virtual` | `replace` (default) | `Replace` (`CREATE OR REPLACE`) | — |
 | `virtual` \| `table` | `merge` | `Merge` | `key` |
 | `virtual` \| `table` | `full_merge` | `FullMerge` | `key` |
-| `virtual` \| `table` | `hash_merge` | `HashMerge` | `key` (explicit projection, not `SELECT *`) |
+| `virtual` \| `table` | `hash_merge` | `HashMerge` | `key` (SQL models need an explicit projection) |
 | `virtual` \| `table` | `incremental_by_time` | `IncrementalByTime` | `time_column` (+ an interval) |
 | `virtual` \| `table` | `scd` | `Scd` | `key` (explicit projection on engines without `supports_star_exclude`) |
 | `table` | `replace` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
@@ -158,8 +158,9 @@ INSERT INTO target SELECT * FROM (source+_hash) _s
 So an unchanged row is skipped (idempotent — a run over identical data writes nothing, no
 new DuckLake files), and the reported counts split cleanly into `+inserted` / `~updated`.
 The `_hash` is an ordinary stored column, visible to consumers. Keys must be non-NULL.
-Because the hash is built from the projection, a `hash_merge` model needs its columns
-spelled out — give it an explicit `SELECT col, …`, not `SELECT *`.
+Because the hash is built from the column list, a **SQL** `hash_merge` model needs an
+explicit projection (`SELECT col, …`, not `SELECT *`); a **Python** source model is fine —
+its columns come from the staged Arrow output.
 
 `hash_merge` vs `full_merge`: both write only the delta over identical data, but `full_merge`
 detects change with a whole-row `EXCEPT` and treats the query as the full state (it *deletes*

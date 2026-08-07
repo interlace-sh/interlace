@@ -15,7 +15,7 @@ built-in orchestration, and durable streaming ingestion. Published to PyPI as `i
 - **[Models](models.md)** — defining SQL and Python models, materialisations, the full
   `@model` / config-key reference, and fingerprint-based rebuild-skip.
 - **[Strategies](strategies.md)** — how each strategy turns a query into a table: `replace`,
-  `append`, `merge`, `full_merge`, `incremental_by_time`, `scd` — across the
+  `append`, `merge`, `full_merge`, `hash_merge`, `incremental_by_time`, `scd` — across the
   owned and external planes, with the exact statements each emits and when to use it.
 - **[Checks](checks.md)** — the ten built-in data-quality checks, severity, and promotion
   gating.

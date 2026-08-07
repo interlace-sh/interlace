@@ -29,7 +29,7 @@ import pyarrow as pa
 from interlace import model
 from interlace.sources import BearerAuth, LinkHeader, NoAuth, RestClient, batches
 
-REPO = "duckdb/duckdb"  # owner/name — change me
+REPO = "duckdb/ducklake"  # owner/name — change me
 _log = logging.getLogger("interlace.templates.github")
 
 

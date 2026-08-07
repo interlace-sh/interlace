@@ -26,7 +26,7 @@ def github_issues(cursor=None):
     if cursor:
         params["since"] = cursor                       # only what changed since last run
     with RestClient("https://api.github.com", auth=auth) as api:
-        pages = api.paginate("/repos/duckdb/duckdb/issues", params=params, paginator=LinkHeader())
+        pages = api.paginate("/repos/duckdb/ducklake/issues", params=params, paginator=LinkHeader())
         yield from batches(pages, columns=["id", "number", "title", "state", "updated_at"])
 ```
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+**New: `hash_merge` strategy — a change-detected keyed upsert.** Like `merge` (a keyed
+upsert that keeps rows absent from the source) but it stores an `_hash` (md5 of the non-key
+columns) and writes only the delta — new key inserts, changed hash updates, unchanged rows
+skipped. Idempotent (identical data writes nothing) with counts that split cleanly into
+`+inserted` / `~updated`, where `merge`'s native `MERGE` rewrites every matched row each run
+and reports one lumped count. See `docs/strategies.md`.
+
+**Fix: ephemeral models aren't counted in "promoted N".** An ephemeral model is inlined and
+has no promotable table, so a project with one (e.g. the benchmark) no longer reads
+"Ran 12 model(s); promoted 13" — the count matches the build rows.
+
 **Improved: promoting existing logic to a second environment is a view-swap, not a rebuild.**
 Snapshots are content-addressed and shared across environments, but a fresh environment
 still rebuilt every model. `apply` now recognises a fingerprint already materialised by a

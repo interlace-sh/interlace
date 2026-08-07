@@ -34,6 +34,22 @@ def _table_key(row: dict[str, str]) -> str:
     return f"{engine}:{row['physical_schema']}.{row['physical_name']}"
 
 
+async def _drop_relation(adapter: EngineAdapter, schema: str, name: str) -> None:
+    """Drop a snapshot's physical object — a table (virtual plane) or a **view**
+    (view plane) — picking the kind from the catalog first. ``DROP TABLE`` on a view
+    (or vice versa) raises rather than no-ops, so a blind ``DROP TABLE`` could never
+    reclaim view-materialised snapshots."""
+    reader = await adapter.fetch_sql(
+        f"SELECT table_type FROM information_schema.tables "  # noqa: S608 — internal interlace__ names, not user input
+        f"WHERE table_schema = '{schema}' AND table_name = '{name}'"
+    )
+    rows = reader.read_all().to_pylist()
+    if not rows:
+        return  # already gone
+    kind = "VIEW" if str(rows[0]["table_type"]).upper() == "VIEW" else "TABLE"
+    await adapter.execute(exp.Drop(this=exp.table_(name, db=schema), kind=kind, exists=True))
+
+
 async def rollback_environment(
     state: SqliteStateStore,
     engine: EngineAdapter | None = None,
@@ -213,7 +229,5 @@ async def gc(
         eng_name, rest = table_key.split(":", 1)
         schema, name = rest.split(".", 1)
         target = registry.require(key_engine.get(table_key, eng_name))
-        # a snapshot's physical object is a table or (for view materialise) a view
-        for kind in ("TABLE", "VIEW"):
-            await target.execute(exp.Drop(this=exp.table_(name, db=schema), kind=kind, exists=True))
+        await _drop_relation(target, schema, name)
     return result

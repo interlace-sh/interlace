@@ -53,6 +53,22 @@ async def test_gc_removes_superseded_snapshot_and_table(env: tuple[DuckDBAdapter
     assert await _rows(engine, "SELECT x FROM main.a") == [{"x": 2}]  # env untouched
 
 
+async def test_gc_reclaims_a_view_materialised_snapshot(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    # Regression: a `materialise: view` model's physical snapshot is a VIEW, not a table.
+    # gc must DROP VIEW it — a blind DROP TABLE raises (CatalogException) and reclaims nothing.
+    engine, store = env
+    await _apply(env, [ModelDef(name="v", sql="SELECT 1 AS x", materialise="view")])
+    await _apply(env, [ModelDef(name="v", sql="SELECT 2 AS x", materialise="view")])  # new fp → old view is garbage
+    assert len(await _tables(engine, "v__%")) == 2
+
+    result = await gc(store, engine, grace=NONE)
+
+    assert len(result.removed_snapshots) == 1
+    assert len(result.dropped_tables) == 1  # the superseded VIEW was dropped, no DROP TABLE error
+    assert len(await _tables(engine, "v__%")) == 1
+    assert await _rows(engine, "SELECT x FROM main.v") == [{"x": 2}]  # env view untouched
+
+
 async def test_gc_keeps_tables_shared_by_reuse(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     """The rebuild-skip case: down@v2 reuses down@v1's physical table. GC must
     delete the v1 row but keep the shared table."""

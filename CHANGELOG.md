@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**Improved: promoting existing logic to a second environment is a view-swap, not a rebuild.**
+Snapshots are content-addressed and shared across environments, but a fresh environment
+still rebuilt every model. `apply` now recognises a fingerprint already materialised by a
+prior apply (typically in another environment) and reuses the shared table — recording the
+snapshot, running its checks, and swapping the environment's view — instead of recomputing.
+Scoped to virtual/view models (terminals always deliver); checks still gate promotion; falls
+back to a real build if the table is gone (in-memory warehouse, gc).
+
 **Fix: `interlace serve` picks up model edits without a restart.** The daemon compiled the
 project once at startup, so editing a model and pressing Plan/Apply in the UI showed nothing
 new — only a restart (or `interlace plan` in a fresh process) did. It now recompiles on demand

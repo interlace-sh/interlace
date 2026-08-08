@@ -1618,10 +1618,14 @@ def create_app(
 
             async def send_wrapper(message: Message) -> None:
                 if message["type"] == "http.response.start":
-                    headers = message.setdefault("headers", [])
-                    headers.append((b"content-security-policy", ui_csp.encode()))
-                    headers.append((b"x-content-type-options", b"nosniff"))
-                    headers.append((b"x-frame-options", b"DENY"))
+                    # ASGI types `headers` as an Iterable, not a list, so copy into one
+                    # rather than appending to whatever the server happened to pass.
+                    message["headers"] = [
+                        *message.get("headers", []),
+                        (b"content-security-policy", ui_csp.encode()),
+                        (b"x-content-type-options", b"nosniff"),
+                        (b"x-frame-options", b"DENY"),
+                    ]
                 await send(message)
 
             await app(scope, receive, send_wrapper)

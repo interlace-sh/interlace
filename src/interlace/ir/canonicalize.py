@@ -8,6 +8,8 @@ pruning and the ``impact`` command).
 
 from __future__ import annotations
 
+from typing import cast
+
 import sqlglot
 from sqlglot import exp
 
@@ -86,4 +88,5 @@ def resolve_references(ast: exp.Expression, mapping: dict[str, TableRef]) -> exp
                 node.set("catalog", exp.to_identifier(target.catalog) if target.catalog else None)
         return node
 
-    return ast.transform(rewrite)
+    # sqlglot 29 loosened transform()'s return annotation; it is an Expression.
+    return cast("exp.Expression", ast.transform(rewrite))

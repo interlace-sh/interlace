@@ -1,22 +1,37 @@
 # Changelog
 
+## 2.3.0 (2026-08-08)
+
+**Breaking: `incremental_by_time` is now `incremental`, and it takes an optional `key`.**
+The old name raises a migration error naming the replacement; there is no alias. Without a
+`key` the behaviour is unchanged — `DELETE` the window, `INSERT` the window — so the period is
+rewritten and a row that leaves the source disappears. That delete-then-reinsert is what keeps
+reprocessing idempotent, and backfill and `restate` safe.
+
+With a `key` the window stops being authoritative and only bounds *what is read*: rows are
+upserted by key (native `MERGE` where the engine supports it, portable `DELETE`+`INSERT`
+otherwise), so a target row inside the window that the source no longer produces is left alone.
+That is the mode for late-arriving corrections to already-published rows.
+
+**Python models can use `incremental` when they declare a `key`.** The Arrow output is staged
+and the window's rows are upserted into it, with the interval ledger filling exactly as it does
+for SQL. Unkeyed is refused on purpose: a SQL model has the window predicate pushed into its
+query so the engine computes only that window, whereas a Python function has already run in full
+by the time the window could be applied — the unkeyed form would look incremental while doing
+all the work every run. Bound the fetch with `cursor` instead.
+
+**Fix: the UI's security headers.** ASGI types a response message's `headers` as an iterable,
+not a list, so appending to it was only sound if the server happened to hand over a list. The
+wrapper builds a new list now.
+
+**Dependencies.** sqlglot 28 → 29, rich 14 → 15, pyarrow 23 → 25, and the dev tooling (mypy 2,
+pytest 9.1, ruff 0.16, black 26.5). sqlglot 30 is deliberately still out of range: it changes
+`Expression`/`Expr` typing enough to produce 27 type errors across 12 files, which is a
+migration rather than a bump.
+
 ## 2.2.0 (2026-08-07)
 
 (Supersedes the never-released 2.1.1 — its fixes ship here.)
-
-**Breaking: `incremental_by_time` is now `incremental`, and it takes an optional `key`.**
-The old name raises a migration error naming the replacement; there is no alias.
-
-Without `key` the behaviour is exactly what it was — `DELETE` the window, `INSERT` the
-window — so the period is rewritten and a row that leaves the source disappears. That
-delete-then-reinsert is what keeps reprocessing idempotent, and backfill and `restate` safe.
-
-With `key` the window stops being authoritative and only bounds *what is read*: rows are
-upserted by key (native `MERGE` where the engine supports it, portable `DELETE`+`INSERT`
-otherwise), so a target row inside the window that the source no longer produces is left
-alone. That is the mode for late-arriving corrections to already-published rows, where the
-window is a way to avoid rescanning history rather than a claim about what the period
-contains. The keyed path reuses `merge`'s upsert rather than reimplementing it.
 
 **New: `hash_merge` strategy — a change-detected keyed upsert.** Like `merge` (a keyed
 upsert that keeps rows absent from the source) but it stores an `_hash` (md5 of the non-key

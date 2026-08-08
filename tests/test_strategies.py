@@ -100,7 +100,13 @@ def test_hash_merge_builds_ensure_update_insert() -> None:
     )
     rendered = _sql(statements)
     assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
-    assert "MD5(CONCAT_WS('||', COALESCE(CAST(v AS TEXT), ''))) AS _hash" in rendered[0]  # hash over the non-key col
+    # MD5 over the non-key columns, each NULL-normalised and joined on a separator.
+    # Asserted by its parts, not as one string: sqlglot 30 wraps CONCAT_WS in a NULL
+    # guard which is inert here (literal separator, every argument COALESCE'd) but
+    # changes the rendering. tests/test_example_materialisations.py covers the effect.
+    assert "MD5(" in rendered[0]
+    assert "CONCAT_WS('||', COALESCE(CAST(v AS TEXT), ''))" in rendered[0]
+    assert "AS _hash" in rendered[0]
     assert rendered[1].startswith("UPDATE interlace__main.orders__abc SET v = _s.v, _hash = _s._hash FROM")
     assert "orders__abc._hash <> _s._hash AND orders__abc.id = _s.id" in rendered[1]  # changed keys only
     assert rendered[2].startswith("INSERT INTO interlace__main.orders__abc SELECT * FROM")

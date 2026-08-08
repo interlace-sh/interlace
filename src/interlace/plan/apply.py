@@ -36,7 +36,7 @@ from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.sinks import file_statements, target_ref
 from interlace.state.interval import Interval
 from interlace.state.store import StateStore
-from interlace.strategies import Strategy, resolve_strategy
+from interlace.strategies import Incremental, Strategy, resolve_strategy
 from interlace.strategies.base import RowCounts
 from interlace.strategies.hash_merge import HashMerge
 
@@ -87,7 +87,9 @@ async def _merge_python_output(
     reader: pa.RecordBatchReader,
     *,
     exists: bool,
-) -> RowCounts:
+    interval: Interval | None = None,
+    bootstrap: bool = False,
+) -> tuple[RowCounts, Interval | None]:
     """Stage a Python model's Arrow output and apply its keyed strategy in SQL.
 
     The output lands in a stage table (CREATE OR REPLACE, so a crashed run's
@@ -114,10 +116,15 @@ async def _merge_python_output(
         columns = [c for c in await engine.describe(stage) if c not in strategy.managed_columns]
 
     relation = SqlRelation(ast=source)
-    statements = strategy.plan_statements(relation, target, engine.caps, None, columns)
+    if isinstance(strategy, Incremental) and bootstrap:
+        # First build of a keyed incremental Python model: the range comes from the
+        # staged output, since there is no query to probe the way a SQL model has.
+        interval = await _bootstrap_window(model, exp.select("*").from_(stage_table.copy()), engine)
+    statements = strategy.plan_statements(relation, target, engine.caps, interval, columns)
     drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
     counts = await engine.execute_all([*pre_statements, *statements, drop_stage])
-    return strategy.row_counts(counts[len(pre_statements) : len(pre_statements) + len(statements)])
+    written = strategy.row_counts(counts[len(pre_statements) : len(pre_statements) + len(statements)])
+    return written, interval
 
 
 async def _align_stage_to_target(
@@ -435,9 +442,17 @@ async def _run_backfill(
                 f"Python model {snapshot.name!r} must materialise as virtual; table/file (write a SQL model "
                 f"over its output), view and ephemeral are not supported for Python models"
             )
-        if model.strategy == "incremental":
+        if model.strategy == "incremental" and not model.key:
+            # Keyed is supported: the window bounds which staged rows are upserted.
+            # Unkeyed is not, and deliberately. For a SQL model the window predicate
+            # is pushed into the query so the engine only computes the window; a
+            # Python function has already computed everything by the time we could
+            # filter it, so an unkeyed windowed rewrite would look incremental while
+            # doing the full work every run. Bound the fetch with cursor= instead.
             raise PlanError(
-                f"Python model {snapshot.name!r} cannot use incremental; " f"use cursor= with merge instead"
+                f"Python model {snapshot.name!r} cannot use incremental without a key: the function "
+                f"runs in full before the window can be applied, so the window would not save any work. "
+                f"Add key= to upsert the window's rows, or use cursor= with merge to bound the fetch"
             )
         recorded_self = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
         previous = recorded_self.physical_table if recorded_self is not None else None
@@ -452,10 +467,21 @@ async def _run_backfill(
             result.record_rows(snapshot.name, RowCounts(inserted=loaded))
         else:  # keyed strategy: stage the Arrow output, then merge it in SQL
             reader = await run_python_model(model, compiled, target_engine, resolution, previous)
-            merged = await _merge_python_output(
-                model, target_engine, snapshot.physical_table, reader, exists=previous is not None
+            merged, filled_window = await _merge_python_output(
+                model,
+                target_engine,
+                snapshot.physical_table,
+                reader,
+                exists=previous is not None,
+                interval=task.interval,
+                bootstrap=task.bootstrap,
             )
             result.record_rows(snapshot.name, merged)
+            if filled_window is not None:  # incremental: accumulate the window in the ledger
+                filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
+                for carried in snapshot.intervals:
+                    filled = filled.add(carried)
+                snapshot = replace(snapshot, intervals=filled.add(filled_window))
         if model.columns:
             validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
         await state.add_snapshot(snapshot)

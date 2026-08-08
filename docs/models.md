@@ -48,9 +48,15 @@ Two parameter names are **reserved** for incremental extraction and never name a
   first build), for anti-join backfills against what the model already produced.
 
 Sync functions run in a worker thread; async functions run on the event loop. A Python model
-must materialise as `virtual` and can't be terminal (`table`/`file`) or use
-`incremental` (use `cursor` + a keyed strategy instead). To deliver a Python model's
-output to an external table/file, write a SQL `materialise: table`/`file` model over it.
+must materialise as `virtual` and can't be terminal (`table`/`file`). To deliver a Python
+model's output to an external table/file, write a SQL `materialise: table`/`file` model over it.
+
+`incremental` works **with a `key`**: the Arrow output is staged and the window's rows are
+upserted into it. Without a key it is refused, and deliberately — a SQL model has the window
+predicate pushed into its query so the engine only computes that window, whereas a Python
+function has already run in full by the time the window could be applied, so an unkeyed
+windowed rewrite would look incremental while doing all the work every run. Bound the fetch
+with `cursor` instead.
 
 ## Dynamic / programmatic models
 

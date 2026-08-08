@@ -18,7 +18,7 @@ The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strat
 | `virtual` \| `table` | `merge` | `Merge` | `key` |
 | `virtual` \| `table` | `full_merge` | `FullMerge` | `key` |
 | `virtual` \| `table` | `hash_merge` | `HashMerge` | `key` (SQL models need an explicit projection) |
-| `virtual` \| `table` | `incremental` | `IncrementalByTime` | `time_column` (+ an interval) |
+| `virtual` \| `table` | `incremental` | `Incremental` | `time_column` (+ an interval) |
 | `virtual` \| `table` | `scd` | `Scd` | `key` (explicit projection on engines without `supports_star_exclude`) |
 | `table` | `replace` | `ReplaceInPlace` (DELETE all + INSERT — never drops) | — |
 | `table` | `append` | `Append` | — |
@@ -216,6 +216,13 @@ The window is driven explicitly, in both modes:
   interval; `none` keeps only the latest grain; an ISO date pins the start.
 
 The interval ledger lives in the state store, keyed by `(model, fingerprint)`.
+
+**Python models** may use `incremental` when they declare a `key`. The function's Arrow output
+is staged and the window's rows are upserted into the target, so the keyed semantics above hold
+unchanged. Without a key it is refused: a SQL model gets the window predicate pushed into its
+query and computes only that window, but a Python function has already produced everything
+before the window can be applied — so the unkeyed form would do the full work every run while
+appearing incremental. Use `cursor` to bound what the function fetches.
 
 ## `scd` (Scd) — slowly-changing dimension, history
 

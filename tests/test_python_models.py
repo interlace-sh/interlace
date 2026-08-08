@@ -239,3 +239,90 @@ def test_decorator_rejects_python_views() -> None:
 
         @model(materialise="view")
         def as_view() -> None: ...
+
+
+async def test_python_incremental_requires_a_key(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """Unkeyed is refused, and the error says why rather than just redirecting."""
+
+    def windowed(raw: RelationHandle) -> pa.Table:
+        return raw.table()
+
+    windowed_model = ModelDef(
+        name="windowed", fn=windowed, depends_on=("raw",), strategy="incremental", time_column="ts"
+    )
+    with pytest.raises(PlanError, match="without a key"):
+        await _build(env, [RAW, windowed_model])
+
+
+async def test_python_keyed_incremental_upserts_within_the_window(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """The window bounds which staged rows are written; keys it does not supply survive.
+
+    Same contract as the SQL path, reached differently: the Arrow output is staged and
+    the strategy runs against that stage. The window is driven explicitly so both runs
+    hit the same fingerprint — and therefore the same physical table, which is the only
+    way a "row survived" assertion means anything.
+    """
+    from datetime import datetime
+
+    from interlace.plan.differ import snapshot_of
+    from interlace.plan.plan import BackfillTask, Plan, ViewSwap, env_view
+    from interlace.state.interval import Interval
+    from interlace.state.snapshot import ChangeCategory
+
+    engine, store = env
+    await engine.execute_sql("CREATE SCHEMA IF NOT EXISTS main")
+    await engine.execute_sql(
+        "CREATE TABLE main.events AS SELECT * FROM (VALUES "
+        "(1, DATE '2026-01-01', 'a'), (2, DATE '2026-01-01', 'b')) v(id, ts, val)"
+    )
+
+    def scored(events: RelationHandle) -> pa.Table:
+        return events.table()
+
+    project = compile_models(
+        [
+            ModelDef(name="events", sql="SELECT id, ts, val FROM main.events"),
+            ModelDef(
+                name="scored",
+                fn=scored,
+                depends_on=("events",),
+                strategy="incremental",
+                time_column="ts",
+                interval="1d",
+                key=("id",),
+            ),
+        ]
+    )
+    window = Interval(datetime(2026, 1, 1), datetime(2026, 1, 2))
+
+    async def run_scored() -> None:
+        model = project.models["scored"]
+        snap = snapshot_of(model, ChangeCategory.BREAKING)
+        plan = Plan(environment="prod")
+        plan.backfills = [BackfillTask(snapshot=snap, interval=window)]
+        plan.virtual_updates = [ViewSwap(env_view("prod", model.name), model.physical_table)]
+        await apply(plan, compiled=project, engine=engine, state=store)
+
+    # The Python model reads its upstream's physical table, so seed that directly:
+    # rebuilding `events` is not the subject here.
+    upstream = project.models["events"].physical_table
+    await engine.execute_sql(f"CREATE SCHEMA IF NOT EXISTS {upstream.schema}")
+    await engine.execute_sql(f"CREATE OR REPLACE TABLE {upstream.to_expr().sql()} AS SELECT * FROM main.events")
+
+    await run_scored()
+    assert len(await _rows(engine, "SELECT id FROM main.scored")) == 2
+
+    # id 2 leaves the source, id 1 changes. Same window, same fingerprint.
+    await engine.execute_sql(
+        f"CREATE OR REPLACE TABLE {upstream.to_expr().sql()} AS "
+        "SELECT * FROM (VALUES (1, DATE '2026-01-01', 'a2')) v(id, ts, val)"
+    )
+    await run_scored()
+
+    rows = await _rows(engine, "SELECT id, val FROM main.scored ORDER BY id")
+    assert [(r["id"], r["val"]) for r in rows] == [
+        (1, "a2"),
+        (2, "b"),
+    ], "the upsert updated id 1 and left id 2 alone — the keyed window never rewrites the period"

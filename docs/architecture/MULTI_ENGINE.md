@@ -25,7 +25,7 @@ default_engine: default        # optional; "default" if omitted
 
 # Top-level warehouse fields ARE the `default` engine (single-engine projects
 # never need an engines: block):
-database: ducklake:.interlace/warehouse.ducklake
+database: .interlace/warehouse.duckdb   # default; use ducklake:… for concurrent serve+CLI
 
 engines:
   analytics:

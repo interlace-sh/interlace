@@ -180,18 +180,19 @@ per-model process-pool opt-in and no `executor=` argument today (§8, §14).
 
 ## 4. DuckDB's two roles; DuckLake as default storage
 
-**Role 1 — the default local engine.** Physical storage defaults to **DuckLake**
-(Parquet data + SQL catalog) rather than a monolithic `.duckdb` file: snapshot tables
-map naturally onto DuckLake tables, DuckLake snapshots give time-travel and cheap
-rollback, data inlining keeps small tables fast, and the catalog is SQLite locally.
-DuckLake commit conflicts need retry; a `tenacity` policy lives in the adapter. A plain
-`.duckdb` file remains a config option for zero-dependency toy projects.
+**Role 1 — the default local engine.** Physical storage defaults to a **plain DuckDB
+file** — one file, single-process, zero extra setup, the simplest way to start. **DuckLake**
+(Parquet data + SQL catalog) is the opt-in upgrade (`database: ducklake:…`): snapshot tables
+map naturally onto DuckLake tables, DuckLake snapshots give time-travel and cheap rollback,
+data inlining keeps small tables fast, and the catalog (SQLite locally) serialises catalog
+writes so `interlace serve` and a separate CLI can share one warehouse — which a single-writer
+`.duckdb` file cannot. DuckLake commit conflicts need retry; a `tenacity` policy lives in the adapter.
 
-**Current state.** `database: ducklake:.interlace/warehouse.ducklake` is the config
-default (catalog file + `<catalog>.files/` Parquet directory; DuckDB opens the DuckLake
-as its primary database). The full strategy surface — schemas, views, transactional
-DDL+DML (merge), `DESCRIBE`, Arrow ingest — runs on DuckLake unchanged; the whole test
-suite executes against it. Requires `duckdb>=1.5.3`.
+**Current state.** `database: .interlace/warehouse.duckdb` is the config default. The full
+strategy surface — schemas, views, transactional DDL+DML (merge), `DESCRIBE`, Arrow ingest —
+runs identically on plain DuckDB and on DuckLake (`ducklake:…` — a catalog file +
+`<catalog>.files/` Parquet directory DuckDB opens as its primary database); the whole test
+suite executes against DuckDB. Requires `duckdb>=1.5.3`.
 
 **Serving the warehouse: the quack protocol.** DuckDB 1.5.3 ships **quack** (core
 extension, beta): `CALL quack_serve('quack:host:port', token := ...)` turns the process

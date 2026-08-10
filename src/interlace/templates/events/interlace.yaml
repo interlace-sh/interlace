@@ -3,4 +3,5 @@ default_dialect: duckdb
 # A streaming project. `interlace serve` runs the daemon — the ingestion endpoint,
 # the exactly-once micro-batch materializer, and the scheduler — in one process.
 # generate.py is the external producer that fires events at POST /streams/events.
-database: ducklake:.interlace/warehouse.ducklake
+# Warehouse: a plain DuckDB file (swap for `ducklake:...` for serialised concurrent writes).
+database: .interlace/warehouse.duckdb

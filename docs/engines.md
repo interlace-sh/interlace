@@ -12,8 +12,8 @@ them on), so treat them as ready-to-try, not production-blessed.
 
 | `type` | Backed by | Status | Role |
 |---|---|---|---|
-| `ducklake` (default) | DuckDB + the DuckLake extension | stable | Snapshot storage as DuckLake tables over a catalog DB (SQLite or Postgres), data in local files or object storage. Catalog writes are serialised. |
-| `duckdb` | a DuckDB file or `:memory:` | stable | Plain DuckDB. Builds run genuinely in parallel (no catalog-write lock). |
+| `duckdb` (default) | a DuckDB file or `:memory:` | stable | Plain DuckDB — one file, single-process. The simplest warehouse. |
+| `ducklake` | DuckDB + the DuckLake extension | stable | Snapshot storage as DuckLake tables over a catalog DB (SQLite or Postgres), data in local files or object storage. Catalog writes are serialised, so `interlace serve` and a separate CLI can share the warehouse concurrently. |
 | `motherduck` | MotherDuck (`md:` cloud DuckDB) | alpha | DuckDB dialect over a cloud catalog. Set `database: md:<db>` (token via `motherduck_token`). |
 | `quack` | a remote quack-served warehouse (`quack:host:port`) | stable | SQL routed over the quack protocol; Arrow loads stream over an attached catalog. |
 | `postgres` | Postgres over ADBC | stable | Strategies execute *inside* Postgres; Arrow in/out via `adbc_ingest`. Needs the `adbc` extra. |
@@ -22,7 +22,10 @@ them on), so treat them as ready-to-try, not production-blessed.
 | `snowflake` | Snowflake over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-snowflake` extra. |
 | `bigquery` | BigQuery over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-bigquery` extra. |
 
-The default warehouse is `ducklake:.interlace/warehouse.ducklake`. DuckDB is also the
+The default warehouse is a plain DuckDB file (`.interlace/warehouse.duckdb`) — simplest to
+start with. Switch to `ducklake:.interlace/warehouse.ducklake` when you need `interlace serve`
+and a separate CLI to write the same warehouse concurrently (DuckLake serialises catalog
+writes; a plain DuckDB file is single-writer). DuckDB is also the
 **federation hub**: everything crosses the Python boundary as Arrow `RecordBatchReader`, and
 DuckDB can ATTACH other databases for cross-engine reads. The remote ADBC engines
 (`postgres`/`redshift`/`snowflake`/`bigquery`) share one base (`engines/adbc.py`): a new ADBC

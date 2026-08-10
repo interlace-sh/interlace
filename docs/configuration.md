@@ -10,8 +10,8 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `name` | str | `interlace` | Project name (also the default DuckLake catalog alias). |
-| `database` | str | `ducklake:.interlace/warehouse.ducklake` | The default warehouse DSN — see [engines](engines.md). |
+| `name` | str | `interlace` | Project name (also the default warehouse catalog alias). |
+| `database` | str | `.interlace/warehouse.duckdb` | The default warehouse DSN — a plain DuckDB file; use `ducklake:…` for concurrent serve+CLI access. See [engines](engines.md). |
 | `default_dialect` | str | `duckdb` | sqlglot dialect models are authored in unless they set `dialect:`. |
 | `default_engine` | str | `default` | Which named engine models build on unless they set `engine:`. |
 | `engines` | map | `{}` | Named engines `{name: EngineConfig}` for multi-engine projects. The top-level `database`/`data_path`/etc. synthesize the `default` engine. |
@@ -26,7 +26,7 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `type` | str | `ducklake` | `ducklake` \| `duckdb` \| `quack` \| `postgres`. |
+| `type` | str | `duckdb` | `duckdb` \| `ducklake` \| `quack` \| `postgres`. |
 | `database` | str | — | DSN. DuckLake catalog (`ducklake:...`), a `.duckdb` file, `:memory:`, `quack:host:port`, or a Postgres DSN. |
 | `dialect` | str | from `type` | sqlglot dialect (defaults to `duckdb` for the DuckDB family). |
 | `alias` | str | project/name | DuckLake catalog attach alias. |

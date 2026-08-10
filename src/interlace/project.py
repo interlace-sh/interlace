@@ -182,7 +182,7 @@ class Project:
             if not database.startswith("md:"):
                 database = f"md:{database}"
             return DuckDBAdapter.connect(database)
-        database = cfg.database or "ducklake:.interlace/warehouse.ducklake"
+        database = cfg.database or ".interlace/warehouse.duckdb"
         if cfg.type == "quack" or database.startswith("quack:"):
             from interlace.engines.quack import QuackAdapter
 

@@ -84,7 +84,7 @@ class EngineConfig(BaseModel):
     declaring them fails at open until an adapter ships.
     """
 
-    type: str = "ducklake"
+    type: str = "duckdb"
     # Path / URI for DuckDB-family engines. Also accepted on the project top level
     # as ``database:`` (synthesised into the ``default`` engine).
     database: str | None = None
@@ -117,13 +117,14 @@ class ProjectConfig(BaseModel):
     default_engine: str = "default"
     engines: dict[str, EngineConfig] = Field(default_factory=dict)
     state_path: str = ".interlace/state.db"  # SQLite control-plane database
-    # The warehouse. Default is DuckLake (Parquet data + SQL catalog) via DuckDB.
-    # Also accepted: a DuckLake catalog hosted in a SQL database
-    # ("ducklake:postgres:dbname=... host=..." — pair with data_path/metadata_schema),
-    # a plain DuckDB file path, ":memory:", or "quack:<host>:<port>" to connect to a
-    # warehouse served by `interlace serve --quack`.
+    # The warehouse. Default is a plain DuckDB file — simplest, single-process.
+    # Also accepted: a DuckLake catalog (``ducklake:.interlace/warehouse.ducklake``, or
+    # hosted in a SQL DB: ``ducklake:postgres:dbname=... host=...`` — pair with
+    # data_path/metadata_schema) which serialises catalog writes so `interlace serve`
+    # and a separate CLI can share the warehouse concurrently; ":memory:"; or
+    # "quack:<host>:<port>" to connect to a warehouse served by `interlace serve --quack`.
     # When ``engines.default`` is not set, these top-level fields synthesise it.
-    database: str = "ducklake:.interlace/warehouse.ducklake"
+    database: str = ".interlace/warehouse.duckdb"
     # The warehouse catalog's ATTACH alias (defaults to ``name``). Set it when a
     # schema inside the warehouse shares the project name — see EngineConfig.alias.
     alias: str | None = None

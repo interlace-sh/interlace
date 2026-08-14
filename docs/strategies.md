@@ -3,11 +3,11 @@
 A model's `materialise` and `strategy` config decide **how its query result becomes a
 table**. Every strategy is an *AST builder*: given the model's resolved query, the target
 table, and the engine's capabilities, it emits a short list of SQL statements that `apply`
-runs **atomically** (one transaction, via `execute_all`). Strategies are column-agnostic —
-a model's schema can change without hand-written migrations (a definition change simply
-mints a new snapshot table). The one exception is `merge`'s native `MERGE`, which uses the
-target's column list (which `apply` already knows on the delivery paths) to build its `SET`
-clause, and falls back to a column-agnostic `DELETE`+`INSERT` when that list isn't available.
+runs **atomically** (one transaction, via `execute_all`). Most strategies are
+column-agnostic — a model's schema can change without hand-written migrations (a definition
+change simply mints a new snapshot table). The keyed upserts (`merge`, `hash_merge`) and
+`append` instead write a **named column list**, which `apply` supplies from the target it has
+already described; see [Shared destinations](#shared-destinations-columns-interlace-doesnt-own).
 
 The resolver (`strategies/__init__.py::resolve_strategy`) maps config to a strategy:
 
@@ -32,6 +32,44 @@ rewrites the owned table (`CREATE OR REPLACE`) but empties an external one in pl
 
 Row movement is reported per model as `+inserted ~updated -deleted`, derived from each
 statement's affected-row count (`row_counts`).
+
+---
+
+## Shared destinations: columns interlace doesn't own
+
+Delivering into an external `table` that another system also writes — a firm-owned table
+where your model supplies some columns and its owner maintains the rest — depends on the
+strategy, because `apply` first stages the model's output and **aligns** it to the existing
+target (additive `ALTER` for new columns, widening type promotions, casts for type drift):
+
+- **Named-column strategies** (`merge`, `hash_merge`, `append`) are handed only the columns
+  the model actually produces. A matched row keeps every other column, and an inserted row
+  takes the target's `DEFAULT`s (or `NULL`) for them. These are the strategies to use on a
+  shared table.
+- **Whole-row strategies** (`replace`, `full_merge`, `scd`) compare or rewrite entire rows,
+  so the aligned source is widened to the target's full column set with `NULL` in anything
+  the model doesn't produce — those columns are **reset on every run**, and `replace` /
+  `full_merge` additionally **delete** rows the model doesn't supply. That is correct for a
+  table interlace owns, and destructive on a shared one; `apply` logs a warning naming the
+  affected columns rather than doing it silently.
+
+The flip side, on a table interlace *does* own: a named-column strategy no longer clears a
+column the model has **stopped** producing — it keeps its last value instead of being NULLed.
+On a `virtual` model that never arises (dropping a column changes the fingerprint, so the
+next build gets a fresh table); on an external `table` the column persists until you drop it
+there.
+
+`incremental` is the exception to all of the above: a windowed delivery runs **straight
+against the target** without staging (staging the whole source once per window would make a
+wide backfill O(windows × source)), so no alignment happens at all and the model must produce
+the target's full column set. Delivering an `incremental` model into a table with columns of
+its own fails on the column count.
+
+A strategy that keeps bookkeeping columns (`hash_merge`'s `_hash`, `scd`'s `_valid_from` /
+`_valid_to`) can only take over a table that already carries them — i.e. one interlace
+created. Pointed at a pre-existing external table, the delivery raises (use `merge`, or add
+the columns to the table). Note this fires when the model builds, not during `plan` — the
+check needs the target described, which happens on the delivery path.
 
 ---
 
@@ -80,8 +118,12 @@ a growing log or event table:
 
 ```
 CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)
-INSERT INTO target SELECT * FROM (<query>)
+INSERT INTO target (<cols>) SELECT * FROM (<query>)
 ```
+
+The insert names its columns once the target exists (so a column the model doesn't produce
+takes its `DEFAULT`); on the first delivery it binds positionally against the table the
+`CREATE` just made.
 
 ## `merge` (Merge) — keyed upsert
 
@@ -108,9 +150,21 @@ unique" bug, and native `MERGE` surfaces it as a cardinality error rather than p
 `DISTINCT` on every run. A `MERGE` returns one combined affected-row count, so the native path
 reports rows as `+written` without an insert/update split.
 
-**Fallback** — with no column list (a first delivery into a fresh table) or an engine without
-`MERGE`, the portable, column-agnostic path runs instead, and keeps the exact insert/update
-split (`~` = a re-supplied key, `+` = a new one):
+**In-place fallback** — with a column list but an engine without `MERGE`, the same
+semantics come from two statements, and the exact insert/update split survives
+(`~` = a matched key, `+` = a new one):
+
+```
+UPDATE target SET <col> = _s.<col>, ... FROM (<query>) _s WHERE target.<key> = _s.<key>
+INSERT INTO target (<cols>) SELECT _s.<cols> FROM (<query>) _s
+    WHERE _s.<key> NOT IN (SELECT <key> FROM target)
+```
+
+Like native `MERGE`, both statements name their columns, so a column outside the model's
+output is never written.
+
+**Column-agnostic fallback** — with no column list at all (a first delivery, where the target
+doesn't exist yet and there is nothing to preserve):
 
 ```
 CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)   -- ensure shape
@@ -139,7 +193,9 @@ every run). Duplicate source rows collapse via `EXCEPT`'s distinct semantics.
 
 `full_merge` vs `merge`: both are keyed, but `merge` only touches the keys in
 this run (no deletes), while `full_merge` treats the query as the whole world and deletes
-what's missing.
+what's missing. `full_merge` also compares and rewrites **whole rows**, so it can't preserve
+columns the model doesn't produce (see
+[Shared destinations](#shared-destinations-columns-interlace-doesnt-own)).
 
 ## `hash_merge` (HashMerge) — keyed upsert, change-detected
 
@@ -151,7 +207,7 @@ only the rows that actually changed:
 CREATE TABLE IF NOT EXISTS target AS (SELECT *, md5(<non-key cols>) AS _hash FROM (<query>) _src LIMIT 0)
 UPDATE target SET <cols>, _hash = _s._hash FROM (source+_hash) _s
    WHERE target.<key> = _s.<key> AND target._hash <> _s._hash   -- changed keys only
-INSERT INTO target SELECT * FROM (source+_hash) _s
+INSERT INTO target (<cols>, _hash) SELECT * FROM (source+_hash) _s
    WHERE _s.<key> NOT IN (SELECT <key> FROM target)              -- new keys only
 ```
 

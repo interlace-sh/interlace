@@ -47,6 +47,12 @@ class Incremental(Strategy):
         # the one in Merge rather than a second copy of it here.
         self._merge = Merge(key) if key else None
 
+    @property
+    def writes_named_columns(self) -> bool:
+        # Keyed mode delegates to Merge (explicit SET / INSERT column lists); the
+        # unkeyed window rewrite inserts positionally.
+        return self._merge is not None
+
     def plan_statements(
         self,
         relation: SqlRelation,

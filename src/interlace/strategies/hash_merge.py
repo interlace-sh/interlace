@@ -16,6 +16,11 @@ whole-row ``EXCEPT`` — cheaper on wide tables. ``_hash`` is an ordinary stored
 column, visible to consumers. Keys must be non-NULL. A ``SELECT *`` model needs
 its columns spelled out (the hash is built from the projection). apply runs the
 statements atomically.
+
+Because ``_hash`` is stored on the target, this strategy can only take over a table
+that already carries it — i.e. one interlace created. Delivering into a pre-existing
+externally-owned table needs ``merge`` instead (apply raises rather than letting the
+missing column surface as a binder error).
 """
 
 from __future__ import annotations
@@ -45,9 +50,13 @@ class HashMerge(Strategy):
             raise PlanError("hash_merge requires a non-empty key")
         self.key = key
 
+    @property
+    def writes_named_columns(self) -> bool:
+        return True
+
     def _payload_columns(self, query: exp.Expression, columns: Sequence[str] | None) -> list[str]:
-        """The non-key columns the hash is built from — from the aligned target column
-        list when apply knows it, else read off the query's projections."""
+        """The non-key columns the hash is built from — the model's own columns as apply
+        aligned them when it knows them, else read off the query's projections."""
         key_set = set(self.key)
         if columns is not None:
             return [c for c in columns if c not in key_set and c != HASH_COLUMN]
@@ -83,18 +92,20 @@ class HashMerge(Strategy):
             inner = cast("exp.Query", query.copy()).subquery("_src")
             return exp.select(exp.Star(), exp.alias_(self._hash_expr(payload), HASH_COLUMN)).from_(inner)
 
-        source_key: exp.Expression = (
-            exp.column(self.key[0], table=_SOURCE)
-            if len(self.key) == 1
-            else exp.Tuple(expressions=[exp.column(k, table=_SOURCE) for k in self.key])
-        )
+        def key_match() -> exp.Expression:  # target.k = _s.k, ANDed across the key
+            match: exp.Expression | None = None
+            for k in self.key:
+                eq = exp.column(k, table=target.name).eq(exp.column(k, table=_SOURCE))
+                match = eq if match is None else exp.and_(match, eq)
+            assert match is not None  # the constructor rejects an empty key
+            return match
 
         ensure = exp.Create(this=table.copy(), kind="TABLE", exists=True, expression=source_hashed().limit(0))
 
         # UPDATE the payload + hash for keys whose stored hash differs from the source's
-        match: exp.Expression = exp.column(HASH_COLUMN, table=target.name).neq(exp.column(HASH_COLUMN, table=_SOURCE))
-        for k in self.key:
-            match = exp.and_(match, exp.column(k, table=target.name).eq(exp.column(k, table=_SOURCE)))
+        changed = exp.and_(
+            exp.column(HASH_COLUMN, table=target.name).neq(exp.column(HASH_COLUMN, table=_SOURCE)), key_match()
+        )
         update = exp.Update(
             this=table.copy(),
             expressions=[
@@ -102,16 +113,27 @@ class HashMerge(Strategy):
             ],
         )
         update.set("from_", exp.From(this=exp.Subquery(this=source_hashed(), alias=exp.TableAlias(this=_SOURCE))))
-        update.set("where", exp.Where(this=match))
+        update.set("where", exp.Where(this=changed))
 
-        # INSERT source rows whose key is not already present
-        target_keys = exp.select(*self.key).from_(table.copy())
-        insert = exp.Insert(
-            this=table.copy(),
-            expression=exp.select("*")
-            .from_(exp.Subquery(this=source_hashed(), alias=exp.TableAlias(this=_SOURCE)))
-            .where(exp.Not(this=exp.In(this=source_key, query=exp.Subquery(this=target_keys)))),
+        # INSERT source rows whose key is not already present. NOT EXISTS rather than
+        # `key NOT IN (SELECT key FROM target)`: one NULL key in the target would make the
+        # IN subquery NULL for every row and silently insert nothing. Named columns when
+        # apply aligned the source (the target may carry columns this model doesn't
+        # produce — they take their DEFAULTs); positional on a first build, where the
+        # ensure above created the target from this very source.
+        unmatched = exp.Not(
+            this=exp.Exists(this=exp.select(exp.Literal.number(1)).from_(table.copy()).where(key_match()))
         )
+        rows = (
+            exp.select("*")
+            .from_(exp.Subquery(this=source_hashed(), alias=exp.TableAlias(this=_SOURCE)))
+            .where(unmatched)
+        )
+        into: exp.Expression = table.copy()
+        if columns is not None:
+            written = [*(c for c in columns if c != HASH_COLUMN), HASH_COLUMN]  # source_hashed's order
+            into = exp.Schema(this=table.copy(), expressions=[exp.column(c) for c in written])
+        insert = exp.Insert(this=into, expression=rows)
         return [ensure, update, insert]
 
     def row_counts(self, counts: Sequence[int]) -> RowCounts:

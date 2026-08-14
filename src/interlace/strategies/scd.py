@@ -134,8 +134,16 @@ class Scd(Strategy):
 
         closes = self._closes(query, table, target, key_expr, source, open_rows)
 
+        # Name the insert's columns when apply knows them. The validity pair is only
+        # physically last on a table scd created in one shot: an additive ALTER (the
+        # model grew a column) appends the new column AFTER them, and a positional
+        # insert would then write it into _valid_from.
+        into: exp.Expression = table.copy()
+        if columns is not None:
+            written = [*(c for c in columns if c not in self.managed_columns), VALID_FROM, VALID_TO]
+            into = exp.Schema(this=table.copy(), expressions=[exp.column(c) for c in written])
         insert = exp.Insert(
-            this=table.copy(),
+            this=into,
             expression=exp.select(exp.Star(), self._valid_from(), _null_timestamp()).from_(fresh_subquery()),
         )
         return [ensure, *closes, insert]

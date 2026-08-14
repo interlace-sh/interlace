@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -107,9 +108,9 @@ async def _merge_python_output(
     pre_statements: list[exp.Expression] = []
     columns: list[str] | None = None
     if exists:
-        pre_statements, source, columns = await _align_stage_to_target(
-            engine, stage, target, exclude=strategy.managed_columns
-        )
+        alignment = await _align_stage_to_target(engine, stage, target, strategy)
+        pre_statements = alignment.pre_statements
+        source, columns = alignment.for_strategy(strategy)
     elif isinstance(strategy, HashMerge):
         # hash_merge builds its _hash from the column list; on the first build the target
         # doesn't exist yet (so no align pass ran), so take the columns from the staged output
@@ -127,21 +128,54 @@ async def _merge_python_output(
     return written, interval
 
 
-async def _align_stage_to_target(
-    engine: EngineAdapter, stage: TableRef, target: TableRef, exclude: tuple[str, ...] = ()
-) -> tuple[list[exp.Expression], exp.Query, list[str]]:
-    """Align a staged source to an EXISTING target: additive ALTERs for new columns,
-    widening type promotions in place, and a projection over the stage matching the
-    target's final column set (NULL-fill vanished columns, cast type drift). Returns
-    (pre-statements, aligned source select, target column order).
+@dataclass(frozen=True)
+class Alignment:
+    """A staged source fitted to an existing target, in both widths.
 
-    ``exclude`` names strategy-managed bookkeeping columns (e.g. scd2's validity
-    pair): they live on the target but never in the model's output, so they must
-    not be NULL-filled into the aligned source — the strategy owns them."""
+    ``source``/``columns`` cover the target's full column set — what a strategy that
+    binds positionally or compares whole rows (``INSERT ... SELECT *``, ``EXCEPT``)
+    needs, with columns the model doesn't produce NULL-filled in.
+    ``produced_source``/``produced`` cover only the model's own columns; a strategy
+    that names its columns takes these instead, so the rest of the target is left
+    alone on an update and takes its DEFAULTs on an insert. ``unproduced`` names the
+    difference — target columns this model has no value for."""
+
+    pre_statements: list[exp.Expression]
+    source: exp.Query
+    columns: list[str]
+    produced_source: exp.Query
+    produced: list[str]
+    unproduced: list[str]
+
+    def for_strategy(self, strategy: Strategy) -> tuple[exp.Query, list[str]]:
+        """The (source, column list) pair this strategy should be planned against."""
+        if strategy.writes_named_columns:
+            return self.produced_source, self.produced
+        return self.source, self.columns
+
+
+async def _align_stage_to_target(
+    engine: EngineAdapter, stage: TableRef, target: TableRef, strategy: Strategy
+) -> Alignment:
+    """Align a staged source to an EXISTING target: additive ALTERs for new columns,
+    widening type promotions in place, and projections over the stage fitted to the
+    target's final column set (NULL-fill vanished columns, cast type drift).
+
+    The strategy's managed bookkeeping columns (e.g. scd's validity pair, hash_merge's
+    ``_hash``) live on the target but never in the model's output, so they are held out
+    of both projections — the strategy owns them, and must find them already there."""
     target_columns = await engine.describe(target)
+    _require_managed_columns(strategy, target, target_columns)
+    exclude = strategy.managed_columns
     for column in exclude:
         target_columns.pop(column, None)
     stage_columns = await engine.describe(stage)
+    if clash := [c for c in stage_columns if c in exclude]:
+        raise PlanError(
+            f"model output column {clash[0]!r} collides with a column the "
+            f"{_strategy_name(strategy)} strategy manages — rename it in the model",
+            details={"target": target.to_expr().sql(), "columns": clash},
+        )
     target_expr = target.to_expr()
     pre_statements: list[exp.Expression] = []
     for column, dtype in stage_columns.items():
@@ -170,16 +204,60 @@ async def _align_stage_to_target(
     # Any remaining type mismatch (e.g. a numeric field arriving as VARCHAR) is cast
     # to the target's type — deterministic, and loudly fails the run on values that
     # genuinely don't convert rather than silently corrupting the column.
-    projection = []
+    projection: list[exp.Expression] = []
+    produced_projection: list[exp.Expression] = []
+    produced: list[str] = []
+    unproduced: list[str] = []
     for column, dtype in target_columns.items():
         if column not in stage_columns:
             projection.append(exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column))
-        elif stage_columns[column] != dtype:
-            projection.append(exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column))
+            unproduced.append(column)
+            continue
+        if stage_columns[column] != dtype:
+            fitted: exp.Expression = exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column)
         else:
-            projection.append(exp.column(column))
-    source = exp.select(*projection).from_(stage.to_expr())
-    return pre_statements, source, list(target_columns)
+            fitted = exp.column(column)
+        projection.append(fitted)
+        produced_projection.append(fitted.copy())
+        produced.append(column)
+    return Alignment(
+        pre_statements=pre_statements,
+        source=exp.select(*projection).from_(stage.to_expr()),
+        columns=list(target_columns),
+        produced_source=exp.select(*produced_projection).from_(stage.to_expr()),
+        produced=produced,
+        unproduced=unproduced,
+    )
+
+
+def _strategy_name(strategy: Strategy) -> str:
+    """The strategy's config keyword (``HashMerge`` -> ``hash_merge``), for messages."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", type(strategy).__name__).lower()
+
+
+def _require_managed_columns(strategy: Strategy, target: TableRef, target_columns: Mapping[str, str]) -> None:
+    """A strategy that keeps bookkeeping columns can only take over a table that already
+    carries them. Missing ones would otherwise surface as an engine binder error deep in
+    the strategy's UPDATE — most likely an externally-owned table that interlace did not
+    create, or a strategy swapped under an existing delivery target.
+
+    Nothing to say when the target describes empty: it isn't really there (a snapshot row
+    can outlive its table), so the caller is not taking over anything. Matching is
+    case-insensitive — an engine that folds unquoted identifiers (Snowflake, BigQuery)
+    stores ``_hash`` as ``_HASH`` and would otherwise trip this on every run."""
+    if not target_columns:
+        return
+    present = {c.casefold() for c in target_columns}
+    missing = [c for c in strategy.managed_columns if c.casefold() not in present]
+    if missing:
+        name = _strategy_name(strategy)
+        qualified = target.to_expr().sql()
+        raise PlanError(
+            f"{name} needs its bookkeeping column(s) {', '.join(missing)} on {qualified}, which already "
+            f"exists without them — interlace did not create this table. Use strategy: merge, or add "
+            f"the column(s) to it.",
+            details={"target": qualified, "missing": missing, "strategy": name},
+        )
 
 
 async def _deliver_table(
@@ -194,10 +272,11 @@ async def _deliver_table(
 
     The external target is never dropped (grants and readers survive). When it already
     exists the source is staged in the warehouse and aligned to the target (additive
-    ALTERs, widening, NULL-fill, casts) so a model that grows or reorders columns evolves
-    the destination instead of breaking it or positionally corrupting it. The insert
-    binds positionally against the aligned source, which reproduces the target's column
-    order exactly.
+    ALTERs, widening, casts) so a model that grows or reorders columns evolves the
+    destination instead of breaking it or positionally corrupting it. A strategy that
+    names its columns is then planned against the model's own columns alone, leaving the
+    rest of the target untouched (see :class:`Alignment`); a whole-row one gets the source
+    widened to the target with NULLs, and binds positionally in the target's order.
 
     Two cases skip staging and run the strategy directly against the target: the first
     delivery (the ensure-create matches the source), and any windowed ``incremental``
@@ -213,9 +292,23 @@ async def _deliver_table(
     stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
-    pre_statements, aligned, columns = await _align_stage_to_target(
-        engine, stage, target, exclude=strategy.managed_columns
-    )
+    alignment = await _align_stage_to_target(engine, stage, target, strategy)
+    pre_statements = alignment.pre_statements
+    aligned, columns = alignment.for_strategy(strategy)
+    if alignment.unproduced and not strategy.writes_named_columns:
+        # A whole-row strategy rewrites rows entire, so any column the model doesn't
+        # produce is reset on every run — and the deleting ones (replace, full_merge)
+        # drop rows it doesn't supply at all. Fine when interlace owns the table (this
+        # is just a widened source); destructive when it shares it with another writer.
+        logger.warning(
+            "%s: strategy %s writes whole rows into %s — it resets columns this model does not "
+            "produce (%s) on every delivery, and (replace, full_merge) deletes rows it does not "
+            "supply. Use merge, hash_merge or append if another writer owns part of this table.",
+            model.name,
+            model.strategy,
+            target.to_expr().sql(),
+            ", ".join(alignment.unproduced),
+        )
     statements = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval, columns)
     # One transaction may write only ONE attached database: the delivery batch writes the
     # external target; the stage lives in the warehouse and is dropped separately (a

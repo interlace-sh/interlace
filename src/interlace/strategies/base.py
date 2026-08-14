@@ -52,6 +52,19 @@ class Strategy(ABC):
     # the model's own output) — alignment/evolution must leave them alone.
     managed_columns: ClassVar[tuple[str, ...]] = ()
 
+    @property
+    def writes_named_columns(self) -> bool:
+        """Whether every write this strategy emits names its columns explicitly.
+
+        True means apply can hand it *only* the columns the model actually produces
+        (see ``plan.apply.Alignment``): the writes bind by name, so columns the model
+        does not produce are left out of the SET list and out of the INSERT column
+        list — a co-owned target's own columns survive an update, and its DEFAULTs
+        apply on an insert. False means the strategy binds positionally or compares
+        whole rows (``INSERT ... SELECT *``, ``EXCEPT``), so it needs the source
+        widened to the target's full column set, NULL-filling what is missing."""
+        return False
+
     @abstractmethod
     def plan_statements(
         self,

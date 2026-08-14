@@ -74,9 +74,37 @@ def test_merge_native_multi_key_on_predicate_and_non_key_set() -> None:
 
 
 def test_merge_falls_back_to_delete_insert_without_columns() -> None:
-    # cap on, but the caller has no column list (e.g. a first delivery) -> portable path
+    # cap on, but the caller has no column list (e.g. a first delivery, where the target
+    # doesn't exist yet and there is nothing to preserve) -> column-agnostic path
     statements = Merge(("id",)).plan_statements(_relation(), _TARGET, _MERGE_CAPS)
     assert len(statements) == 3
+
+
+def test_merge_without_native_merge_upserts_in_place() -> None:
+    """No MERGE, but a column list: UPDATE the matched keys + INSERT the rest, both
+    naming their columns — a column outside the list is never written."""
+    statements = Merge(("id",)).plan_statements(_relation(), _TARGET, _CAPS, columns=["id", "x"])
+    rendered = _sql(statements)
+    assert len(rendered) == 2
+    assert rendered[0].startswith("UPDATE interlace__main.orders__abc SET x = _s.x FROM (SELECT 1 AS x) AS _s")
+    assert rendered[0].endswith("WHERE orders__abc.id = _s.id")
+    assert rendered[1].startswith("INSERT INTO interlace__main.orders__abc (id, x) SELECT _s.id, _s.x FROM")
+    # NOT EXISTS, not "key NOT IN (SELECT key FROM target)": one NULL key in the target
+    # would make that subquery NULL for every row and insert nothing at all.
+    assert "NOT EXISTS(SELECT 1 FROM interlace__main.orders__abc WHERE orders__abc.id = _s.id)" in rendered[1]
+
+
+def test_merge_without_native_merge_multi_key() -> None:
+    rendered = _sql(Merge(("a", "b")).plan_statements(_relation(), _TARGET, _CAPS, columns=["a", "b", "v"]))
+    assert "SET v = _s.v" in rendered[0]  # only non-key columns
+    assert "WHERE orders__abc.a = _s.a AND orders__abc.b = _s.b" in rendered[0]
+    assert "WHERE orders__abc.a = _s.a AND orders__abc.b = _s.b" in rendered[1]  # correlated NOT EXISTS
+
+
+def test_merge_without_native_merge_key_only_table_is_insert_only() -> None:
+    statements = Merge(("id",)).plan_statements(_relation(), _TARGET, _CAPS, columns=["id"])
+    assert len(statements) == 1  # nothing to update when every column is a key
+    assert _sql(statements)[0].startswith("INSERT INTO interlace__main.orders__abc (id) SELECT _s.id FROM")
 
 
 def test_merge_key_only_table_omits_the_update_clause() -> None:
@@ -89,6 +117,9 @@ def test_merge_key_only_table_omits_the_update_clause() -> None:
 def test_merge_row_counts_native_is_a_single_written_count() -> None:
     # native MERGE returns one combined affected-row count (no insert/update split)
     assert Merge(("id",)).row_counts([7]).inserted == 7
+    # the in-place fallback splits directly: [update=2, insert=5]
+    in_place = Merge(("id",)).row_counts([2, 5])
+    assert (in_place.inserted, in_place.updated) == (5, 2)
     # the DELETE+INSERT fallback keeps the split: [ensure, delete=2, insert=5] -> +3 ~2
     counts = Merge(("id",)).row_counts([0, 2, 5])
     assert (counts.inserted, counts.updated) == (3, 2)
@@ -110,7 +141,25 @@ def test_hash_merge_builds_ensure_update_insert() -> None:
     assert rendered[1].startswith("UPDATE interlace__main.orders__abc SET v = _s.v, _hash = _s._hash FROM")
     assert "orders__abc._hash <> _s._hash AND orders__abc.id = _s.id" in rendered[1]  # changed keys only
     assert rendered[2].startswith("INSERT INTO interlace__main.orders__abc SELECT * FROM")
-    assert "NOT _s.id IN (SELECT id FROM interlace__main.orders__abc)" in rendered[2]  # new keys only
+    assert "NOT EXISTS(SELECT 1 FROM interlace__main.orders__abc WHERE orders__abc.id = _s.id)" in rendered[2]
+
+
+def test_hash_merge_names_its_insert_columns_when_aligned() -> None:
+    """With a column list (an existing target, which may carry columns this model does
+    not produce) the insert binds by name and leaves the rest to their DEFAULTs."""
+    statements = HashMerge(("id",)).plan_statements(
+        SqlRelation(ast=sqlglot.parse_one("SELECT id, v FROM src")), _TARGET, _CAPS, columns=["id", "v"]
+    )
+    assert _sql(statements)[2].startswith("INSERT INTO interlace__main.orders__abc (id, v, _hash) SELECT * FROM")
+
+
+def test_append_names_its_columns_when_aligned() -> None:
+    from interlace.strategies import Append
+
+    positional = _sql(Append().plan_statements(_relation(), _TARGET, _CAPS))
+    assert positional[1] == "INSERT INTO interlace__main.orders__abc SELECT 1 AS x"
+    named = _sql(Append().plan_statements(_relation(), _TARGET, _CAPS, columns=["x"]))
+    assert named[1] == "INSERT INTO interlace__main.orders__abc (x) SELECT 1 AS x"
 
 
 def test_hash_merge_row_counts_split_update_and_insert() -> None:

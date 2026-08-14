@@ -178,6 +178,120 @@ async def test_merge_evolves_added_column(env: tuple[DuckDBAdapter, SqliteStateS
     ]
 
 
+async def _seed_shared(engine: DuckDBAdapter, table: str) -> None:
+    """A destination interlace did NOT create: it supplies id/v, the table's owner keeps
+    ``owner_note`` (with a DEFAULT) and ``owner_flag`` of their own."""
+    await engine.execute_sql(
+        f"CREATE TABLE {table} (id INTEGER, v VARCHAR, owner_note VARCHAR DEFAULT 'default-note', owner_flag BOOLEAN)"
+    )
+    await engine.execute_sql(f"INSERT INTO {table} VALUES (1, 'a', 'owner-owned', true)")
+
+
+async def test_merge_preserves_columns_the_model_does_not_produce(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """Co-owned destination: a merge writes only the model's own columns. The matched
+    row keeps the owner's values; the inserted row takes the owner's DEFAULTs."""
+    engine, _ = env
+    await _seed_shared(engine, "ext.main.shared")
+    await _apply(env, _values("(1, 'A'), (2, 'b')"), "ext.main.shared", "merge", ("id",))
+
+    assert await _rows(engine, "SELECT * FROM ext.main.shared ORDER BY id") == [
+        {"id": 1, "v": "A", "owner_note": "owner-owned", "owner_flag": True},
+        {"id": 2, "v": "b", "owner_note": "default-note", "owner_flag": None},
+    ]
+
+
+async def test_merge_preserves_them_without_native_merge(
+    env: tuple[DuckDBAdapter, SqliteStateStore], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The portable fallback upserts in place too — the same rows, from UPDATE+INSERT."""
+    from dataclasses import replace as _replace
+
+    engine, _ = env
+    monkeypatch.setattr(engine, "caps", _replace(engine.caps, supports_merge=False))
+    await _seed_shared(engine, "ext.main.shared_pf")
+    await _apply(env, _values("(1, 'A'), (2, 'b')"), "ext.main.shared_pf", "merge", ("id",))
+
+    assert await _rows(engine, "SELECT * FROM ext.main.shared_pf ORDER BY id") == [
+        {"id": 1, "v": "A", "owner_note": "owner-owned", "owner_flag": True},
+        {"id": 2, "v": "b", "owner_note": "default-note", "owner_flag": None},
+    ]
+
+
+@pytest.mark.parametrize("native_merge", [True, False])
+async def test_merge_still_inserts_when_the_target_holds_a_null_key(
+    env: tuple[DuckDBAdapter, SqliteStateStore], monkeypatch: pytest.MonkeyPatch, native_merge: bool
+) -> None:
+    """A NULL key already in the destination (another writer's row, or history) must not
+    swallow this run's inserts — `key NOT IN (SELECT key FROM target)` is NULL for every
+    row once the subquery yields one NULL, so it would insert nothing at all."""
+    from dataclasses import replace as _replace
+
+    engine, _ = env
+    if not native_merge:
+        monkeypatch.setattr(engine, "caps", _replace(engine.caps, supports_merge=False))
+    await engine.execute_sql(f"CREATE TABLE ext.main.nullkey_{native_merge} (id INTEGER, v VARCHAR)")
+    await engine.execute_sql(f"INSERT INTO ext.main.nullkey_{native_merge} VALUES (NULL, 'legacy'), (1, 'a')")
+    await _apply(env, _values("(1, 'A'), (2, 'b')"), f"ext.main.nullkey_{native_merge}", "merge", ("id",))
+
+    rows = await _rows(engine, f"SELECT id, v FROM ext.main.nullkey_{native_merge} ORDER BY id NULLS LAST")
+    assert rows == [{"id": 1, "v": "A"}, {"id": 2, "v": "b"}, {"id": None, "v": "legacy"}]
+
+
+async def test_hash_merge_still_inserts_when_the_target_holds_a_null_key(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    # explicit projections: hash_merge builds its hash from the column list
+    engine, _ = env
+    await _apply(env, "SELECT 1 AS id, 'a' AS v", "ext.main.hm_null", "hash_merge", ("id",))  # interlace creates it
+    await engine.execute_sql("INSERT INTO ext.main.hm_null VALUES (NULL, 'legacy', 'x')")
+    await _apply(env, "SELECT 2 AS id, 'b' AS v", "ext.main.hm_null", "hash_merge", ("id",))
+
+    rows = await _rows(engine, "SELECT id, v FROM ext.main.hm_null ORDER BY id NULLS LAST")
+    assert rows == [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": None, "v": "legacy"}]
+
+
+async def test_append_leaves_unproduced_columns_to_their_defaults(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, _ = env
+    await _seed_shared(engine, "ext.main.shared_log")
+    await _apply(env, _values("(2, 'b')"), "ext.main.shared_log", strategy="append")
+
+    assert await _rows(engine, "SELECT * FROM ext.main.shared_log ORDER BY id") == [
+        {"id": 1, "v": "a", "owner_note": "owner-owned", "owner_flag": True},
+        {"id": 2, "v": "b", "owner_note": "default-note", "owner_flag": None},
+    ]
+
+
+async def test_hash_merge_refuses_a_table_it_did_not_create(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """_hash is stored on the target, so hash_merge can only take over a table that
+    already carries it — otherwise the UPDATE would fail as an engine binder error."""
+    from interlace.exceptions import PlanError
+
+    engine, _ = env
+    await _seed_shared(engine, "ext.main.shared_hm")
+    with pytest.raises(PlanError, match="_hash"):
+        await _apply(env, _values("(1, 'A')"), "ext.main.shared_hm", "hash_merge", ("id",))
+
+
+async def test_whole_row_strategy_warns_about_unproduced_columns(
+    env: tuple[DuckDBAdapter, SqliteStateStore], caplog: pytest.LogCaptureFixture
+) -> None:
+    """full_merge is a whole-row strategy by design (the query is the desired state), so
+    it resets columns the model doesn't produce. Deliberate, but never silent."""
+    import logging
+
+    engine, _ = env
+    await _seed_shared(engine, "ext.main.shared_fm")
+    with caplog.at_level(logging.WARNING, logger="interlace.apply"):
+        await _apply(env, _values("(1, 'A')"), "ext.main.shared_fm", "full_merge", ("id",))
+
+    assert any("owner_note, owner_flag" in r.getMessage() for r in caplog.records)
+    assert await _rows(engine, "SELECT owner_note FROM ext.main.shared_fm") == [{"owner_note": None}]
+
+
 async def test_project_attach_reaches_external_database(tmp_path: Path) -> None:
     """attach: config wires an external db; a table model delivers into it."""
     import duckdb

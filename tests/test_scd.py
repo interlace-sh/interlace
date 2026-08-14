@@ -144,3 +144,26 @@ def test_statements_shape() -> None:
     assert "IF NOT EXISTS" in create and "_valid_from" in create
     assert "EXCLUDE (_valid_from, _valid_to)" in update and "EXCEPT" in update
     assert insert.startswith("INSERT INTO")
+
+
+async def test_insert_survives_a_column_added_after_the_validity_pair() -> None:
+    """An additive ALTER (the model grew a column) appends it AFTER _valid_from /
+    _valid_to, so a positional insert would write the new column into _valid_from.
+    With the target's column list in hand the insert binds by name instead."""
+    engine = DuckDBAdapter.in_memory()
+    await engine.execute_sql(
+        "CREATE TABLE main.dim_customers "
+        "(id INTEGER, name VARCHAR, tier VARCHAR, _valid_from TIMESTAMP, _valid_to TIMESTAMP)"
+    )
+    await engine.execute_sql("ALTER TABLE main.dim_customers ADD COLUMN region VARCHAR")
+    assert list(await engine.describe(TARGET))[-1] == "region"  # ALTER lands last, after the pair
+
+    source = "SELECT * FROM (VALUES (1, 'ada', 'gold', 'eu')) AS t (id, name, tier, region)"
+    statements = Scd(("id",)).plan_statements(
+        _relation(source), TARGET, engine.caps, columns=["id", "name", "tier", "region"]
+    )
+    await engine.execute_all(statements)
+
+    reader = await engine.fetch_sql("SELECT region, _valid_to IS NULL AS open FROM main.dim_customers")
+    assert [tuple(r.values()) for r in reader.read_all().to_pylist()] == [("eu", True)]
+    engine.close()

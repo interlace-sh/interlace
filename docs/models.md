@@ -22,6 +22,48 @@ becomes an edge). Config rides in a leading comment block:
 SELECT order_id, customer_id, total FROM raw.orders
 ```
 
+## Seeds and static files
+
+There is no `seed` model type and no `interlace seed` command, because a seed is just a model
+whose source is a file. Point a SQL model at the file and it behaves like every other node —
+fingerprinted, snapshotted, promoted, and referenceable by name:
+
+```sql
+-- models/countries.sql
+SELECT * FROM read_csv_auto('seeds/countries.csv')
+```
+
+```sql
+-- models/orders_by_country.sql — an ordinary reference, so an ordinary DAG edge
+SELECT c.country, count(*) AS orders
+FROM orders o JOIN countries c ON o.country_id = c.id
+GROUP BY c.country
+```
+
+Paths resolve relative to the **project root** (where `interlace.yaml` lives), not the model
+file. `read_parquet`, `read_json_auto` and `read_csv` work the same way, and a glob
+(`read_csv_auto('seeds/*.csv')`) unions matching files.
+
+Two consequences worth knowing:
+
+- **The CSV is not the state.** A fingerprint covers the model's *canonical SQL*, never the
+  bytes of a file it reads. Edit the CSV and `plan` reports `No changes` — correctly, by its own
+  rules, but not what you meant. Editing a comment does not help either, since canonicalisation
+  strips comments (that is the same property that stops a reformat from rebuilding anything).
+
+  Rebuild it unconditionally with **`interlace run --select countries+`** — `run` builds what
+  you select without consulting the fingerprint, then promotes. Mind the trailing `+`: it
+  includes descendants, and without it every model downstream of the seed keeps the old data
+  with no changed fingerprint to make `plan` notice. Note that `apply --force` is *not* the
+  escape hatch either: `--force` only permits breaking changes through the gate, and on an
+  unchanged fingerprint there is nothing for it to do.
+- **Type control is yours.** `read_csv_auto` sniffs types. Where that matters, be explicit:
+  `read_csv('seeds/countries.csv', columns={'id': 'INTEGER', 'country': 'VARCHAR'})`.
+
+**Coming from dbt:** this replaces `seeds/` plus `dbt seed`. Move the CSV anywhere you like
+(`seeds/` is a convention here, not a special directory), add the one-line model above, and
+every `ref('countries')` becomes a plain `countries` reference.
+
 ## Python models
 
 A `@model` function returns Arrow (a `pyarrow.Table`, `RecordBatch`, `RecordBatchReader`, or

@@ -25,7 +25,7 @@ and **durable streaming ingestion** — one binary, one state store, one warehou
 - **Check** — a data-quality assertion that gates promotion. See [checks](checks.md).
 - **Stream** — a durable ingestion endpoint; publishes land in a WAL log and materialise
   exactly-once into a warehouse table. See [streaming](streaming.md).
-- **Engine** — where SQL executes: DuckDB/DuckLake by default, Postgres over ADBC, or a
+- **Engine** — where SQL executes: DuckDB by default (DuckLake opt-in), Postgres over ADBC, or a
   quack-served remote warehouse. Models can pin an `engine:`. See [engines](engines.md).
 
 ## Fingerprints and the plan lifecycle
@@ -57,7 +57,7 @@ refuses to apply without `--force`.
 A SQLite (WAL) database (`.interlace/state.db`) holds everything that isn't warehouse data:
 snapshots, the interval ledger, environment pointers + promotion history, the durable run
 queue (with leases, retries, cancellation), per-trigger state, the event log, API keys, and
-check results. The warehouse (DuckLake by default) holds the actual model tables. The
+check results. The warehouse (a plain DuckDB file by default) holds the actual model tables. The
 stream log is a separate SQLite WAL database (`.interlace/streams.db`).
 
 ## The three surfaces

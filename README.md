@@ -1,20 +1,53 @@
 # interlace
 
-**Python/SQL-first data platform: transformation, orchestration, and durable streaming — one process.**
+**Python and SQL models are the same kind of node in one DAG.**
 
-interlace is an independent, MIT-licensed alternative to dbt/SQLMesh that also replaces the
-orchestrator (no Airflow) and the ingestion layer (Cloudflare-Pipelines-style durable streams).
-Models are `.sql` files or Python functions; state is versioned snapshots with virtual
+A `.py` model sits mid-graph with SQL either side, in both directions, with no bridge and no
+separate runtime — running in-process on DuckDB and Postgres, not only on a cloud warehouse.
+The Python model stays a plain function: call it in a test with no warehouse and no session.
+
+How that compares with dbt and SQLMesh, including where they are ahead, is on
+[interlace.sh/why](https://interlace.sh/why).
+
+```sql
+-- models/raw_events.sql                    SQL
+SELECT event_id, user_id, kind, amount, country, ts FROM read_parquet('events/*.parquet')
+```
+```python
+# models/enriched_events.py                 Python, mid-DAG
+@model()                    # the parameter name IS the dependency — no depends_on
+def enriched_events(raw_events):
+    for batch in raw_events.reader():       # Arrow in, Arrow out, bounded memory
+        yield add_revenue(batch)
+```
+```sql
+-- models/event_summary.sql                 SQL again, straight over the Python
+SELECT country, count(*) FILTER (WHERE is_conversion) AS conversions
+FROM enriched_events GROUP BY country
+```
+
+`interlace init` scaffolds exactly this shape, runnable, with no external source.
+
+That is the wedge. The rest is the reveal: interlace is an independent, MIT-licensed alternative
+to dbt/SQLMesh that also replaces the orchestrator (no Airflow) and the ingestion layer
+(Cloudflare-Pipelines-style durable streams). State is versioned snapshots with virtual
 environments and a terraform-style plan/apply; everything runs in a single daemon on
-DuckDB + DuckLake by default.
+DuckDB by default (DuckLake one config line away).
 
-> **Status: 2.0.** Requires Python 3.12+.
+> **2.x — see [releases](https://github.com/interlace-sh/interlace/releases).** Requires Python 3.12+.
 > The package is published to PyPI as **`interlaced`**; the import name and CLI are `interlace`.
 
 ```bash
 pip install 'interlaced[service]'   # the CLI + daemon; core CLI only: pip install interlaced
 # more extras: [adbc] postgres/redshift · [spark] · [polars] · [all]
 ```
+
+> **Platforms.** Developed on Linux; CI runs Linux only. Nothing in the codebase is
+> platform-specific — no `fork`, no signal handling, no POSIX-only calls, no shelling out — and
+> every dependency ships macOS and Windows wheels, so both are expected to work. But
+> **neither is tested**, so treat them as unverified rather than supported. If you run interlace
+> on macOS or Windows, please open an issue either way; that is the fastest route to changing
+> this paragraph.
 
 ## Sixty seconds
 
@@ -146,7 +179,7 @@ prod, so a dev apply never writes to a live external table (opt in with
 
 ## Multi-engine
 
-Models run on **named engines**: DuckDB/DuckLake by default, Postgres natively over ADBC
+Models run on **named engines**: DuckDB by default (DuckLake opt-in), Postgres natively over ADBC
 (`pip install 'interlaced[adbc]'`), Spark (beta, `[spark]` extra), plus alpha adapters for
 MotherDuck, Redshift, Snowflake and BigQuery (wired and dialect-correct, not yet run against a
 live account), with per-model pinning:
@@ -188,7 +221,8 @@ other processes (CLI runs, ad-hoc DuckDB clients) then share it concurrently by 
 
 - The IR is a **sqlglot AST**; the wire format is an **Arrow RecordBatchReader**; strategies
   are AST builders and dialect appears only at `transpile()`.
-- Storage defaults to **DuckLake** (Parquet + SQL catalog) opened as DuckDB's primary database.
+- Storage defaults to a plain **DuckDB** file; **DuckLake** (Parquet + SQL catalog, and
+  concurrent writers) is one `database: ducklake:…` line away.
 - Control plane (snapshots, intervals, queue, events, keys) is **SQLite WAL**; Postgres is the
   scale-out swap.
 - Streams live in their own durable log; the materializer commits data + watermark in one
@@ -205,7 +239,7 @@ Toolchain is pinned with [proto](https://moonrepo.dev/proto), tasks run via
 ```bash
 proto install
 moon run interlace:sync      # install deps
-moon run interlace:test      # 350+ tests
+moon run interlace:test      # 500+ tests
 moon run interlace:check     # black + ruff (CI equivalent)
 moon run interlace:typecheck # mypy
 ```

@@ -82,6 +82,21 @@ def test_secret_sql_rendering() -> None:
 # --- open_engine wiring ----------------------------------------------------------
 
 
+class _FakeEngine:
+    """Stand-in for the adapter connect_ducklake returns — enough surface for
+    open_engine's post-connect wiring (search path, attaches)."""
+
+    def __init__(self) -> None:
+        self.search_root: str | None = None
+        self.attached: list[tuple[str, str]] = []
+
+    def search_files_from(self, directory: str) -> None:
+        self.search_root = directory
+
+    def attach(self, alias: str, uri: str) -> None:
+        self.attached.append((alias, uri))
+
+
 def test_remote_catalog_is_not_path_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A postgres: catalog DSN must reach ATTACH verbatim (the old code mangled it into
     a filesystem path), with the options and extensions wired through."""
@@ -95,15 +110,16 @@ def test_remote_catalog_is_not_path_resolved(tmp_path: Path, monkeypatch: pytest
     )
     captured: dict = {}
 
-    def fake_connect_ducklake(catalog: str, **kwargs: object) -> str:
+    def fake_connect_ducklake(catalog: str, **kwargs: object) -> _FakeEngine:
         captured["catalog"] = catalog
         captured.update(kwargs)
-        return "engine"
+        return _FakeEngine()
 
     monkeypatch.setattr(DuckDBAdapter, "connect_ducklake", staticmethod(fake_connect_ducklake))
     project = Project.load(tmp_path)
     engine = project.open_engine()
-    assert engine == "engine"
+    assert isinstance(engine, _FakeEngine)
+    assert engine.search_root == str(tmp_path)  # relative read paths resolve from the project root
     assert captured["catalog"] == "ducklake:postgres:dbname=lakes host=db"
     assert captured["alias"] == "ml"
     assert captured["data_path"] == "s3://core/staged/ml/"
@@ -127,9 +143,9 @@ def test_alias_overrides_the_project_name(tmp_path: Path, monkeypatch: pytest.Mo
     )
     captured: dict = {}
 
-    def fake_connect_ducklake(catalog: str, **kwargs: object) -> str:
+    def fake_connect_ducklake(catalog: str, **kwargs: object) -> _FakeEngine:
         captured.update(kwargs)
-        return "engine"
+        return _FakeEngine()
 
     monkeypatch.setattr(DuckDBAdapter, "connect_ducklake", staticmethod(fake_connect_ducklake))
     Project.load(tmp_path).open_engine()

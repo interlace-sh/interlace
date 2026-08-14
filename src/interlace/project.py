@@ -209,6 +209,11 @@ class Project:
                 database = str(path)
             engine = DuckDBAdapter.connect(database)
 
+        # A model's relative read path (`read_csv_auto('seeds/x.csv')`) is documented to
+        # resolve against the project root. DuckDB resolves against the process CWD, which
+        # is only the same thing when you happen to run from the root — not under
+        # `--path`, `interlace serve`, or the scheduler.
+        engine.search_files_from(str(self.root))
         for alias, uri in cfg.attach.items():
             target = uri
             if uri.startswith(("postgres:", "postgres://", "postgresql://")):

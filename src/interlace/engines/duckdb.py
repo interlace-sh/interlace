@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import threading
 from collections.abc import Iterator, Sequence
 from uuid import uuid4
@@ -38,6 +39,7 @@ import tenacity
 from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode
+from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
 _DUCKDB_CAPS = EngineCaps(
@@ -56,6 +58,39 @@ _commit_retry = tenacity.retry(
     wait=tenacity.wait_exponential_jitter(initial=0.1, max=1.0),
     reraise=True,
 )
+
+
+@contextlib.contextmanager
+def _clean_lock_error(database: str) -> Iterator[None]:
+    """Translate DuckDB's file-lock conflict into one actionable line.
+
+    A DuckDB/DuckLake database is held by a single process. The common way to hit
+    that is running a CLI command (`interlace query`, `plan`, `apply`) while
+    `interlace serve` is up — an obvious thing to do, since serve is the daemon
+    and query is the console's CLI counterpart. Raw, that surfaces as a dozen
+    frames ending in `duckdb.IOException`, which names neither the cause nor the
+    fix. The fix is `--quack`, and it is already documented; the error just never
+    said so.
+    """
+    try:
+        yield
+    except duckdb.IOException as exc:
+        message = str(exc)
+        # "Conflicting lock is held in <exe> (PID n)" is the Linux rendering — DuckDB
+        # names the holder from /proc/locks. Elsewhere the message is the bare "Could
+        # not set lock on file", and a same-process conflict says "already held", so
+        # match all three or macOS/Windows keep the raw traceback.
+        if not any(marker in message for marker in ("Conflicting lock", "Could not set lock", "already held")):
+            raise
+        holder = re.search(r"\(PID (\d+)\)", message)
+        held_by = f" (PID {holder.group(1)})" if holder else ""
+        raise ConfigurationError(
+            f"the warehouse {database!r} is already open in another process{held_by}. "
+            "DuckDB allows one process at a time — stop `interlace serve`, or serve the "
+            "warehouse over the quack protocol (`interlace serve --quack quack:localhost:4213`) "
+            "and point this process at `database: quack:localhost:4213` to share it.",
+            details={"database": database},
+        ) from None
 
 
 def _affected(cur: duckdb.DuckDBPyConnection) -> int:
@@ -108,7 +143,9 @@ class DuckDBAdapter(EngineAdapter):
 
     @classmethod
     def connect(cls, path: str) -> DuckDBAdapter:
-        return cls(duckdb.connect(path), serialise_writes=path.startswith("ducklake:"))
+        with _clean_lock_error(path):
+            conn = duckdb.connect(path)
+        return cls(conn, serialise_writes=path.startswith("ducklake:"))
 
     @classmethod
     def connect_ducklake(
@@ -139,7 +176,8 @@ class DuckDBAdapter(EngineAdapter):
         options_sql = f" ({', '.join(options)})" if options else ""
         escaped = catalog.replace("'", "''")
         alias_sql = exp.to_identifier(alias).sql("duckdb")
-        conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {alias_sql}{options_sql}")
+        with _clean_lock_error(catalog):
+            conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {alias_sql}{options_sql}")
         conn.execute(f"USE {alias_sql}")
         # LOAD, secrets, and ATTACH are all instance-wide — they carry into every
         # cursor and must run ONCE (re-running CREATE OR REPLACE SECRET per cursor
@@ -162,10 +200,23 @@ class DuckDBAdapter(EngineAdapter):
         with contextlib.suppress(Exception):
             self._conn.interrupt()
 
+    def search_files_from(self, directory: str) -> None:
+        """Resolve relative read paths (``read_csv_auto('seeds/x.csv')``) against
+        ``directory`` — the project root — as well as the process CWD.
+
+        Additive: a CWD-relative path still resolves, so this only ever widens what a
+        model can find. GLOBAL scope because a plain ``SET`` is session-scoped and would
+        not reach the per-task cursors that actually run the queries. Reads only —
+        ``COPY`` targets stay CWD-relative, which is why exports resolve their own paths
+        against the root (``plan.apply._resolve_export_path``)."""
+        escaped = directory.replace("'", "''")
+        self._conn.execute(f"SET GLOBAL file_search_path='{escaped}'")
+
     def attach(self, alias: str, uri: str) -> None:
         """ATTACH another database (duckdb/sqlite/postgres/... URI) under ``alias``."""
         escaped = uri.replace("'", "''")
-        self._conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {exp.to_identifier(alias).sql('duckdb')}")
+        with _clean_lock_error(uri):  # attaching a held duckdb/ducklake file conflicts just like opening one
+            self._conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {exp.to_identifier(alias).sql('duckdb')}")
         self._attached.append(alias)
         if uri.startswith("ducklake:"):  # writes may now reach a DuckLake catalog (e.g. table sinks)
             if isinstance(self._write_lock, contextlib.nullcontext):

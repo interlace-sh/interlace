@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
+import duckdb
 import pyarrow as pa
 import pytest
 import sqlglot
 
-from interlace.engines.duckdb import DuckDBAdapter
+from interlace.engines.duckdb import DuckDBAdapter, _clean_lock_error
+from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
 pytestmark = pytest.mark.unit
@@ -240,3 +244,42 @@ async def test_sandboxed_fetch_does_not_disable_file_writes(tmp_path: Path) -> N
         assert out.exists(), "file write after a sandboxed read must still succeed"
     finally:
         engine.close()
+
+
+def test_lock_conflict_is_a_clean_error(tmp_path: Path) -> None:
+    """A DuckDB database is held by one process. Hitting that — by running a CLI
+    command while `interlace serve` is up — used to surface a dozen frames ending
+    in duckdb.IOException, naming neither the cause nor the documented fix."""
+    database = tmp_path / "warehouse.duckdb"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            # the connection must stay referenced, or it is freed and the lock released
+            f"import duckdb,sys;_c=duckdb.connect({str(database)!r});sys.stdout.write('up');"
+            "sys.stdout.flush();sys.stdin.read()",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.read(2) == "up"  # the lock is held before we try
+
+        with pytest.raises(ConfigurationError) as caught:
+            DuckDBAdapter.connect(str(database))
+
+        message = caught.value.message
+        assert "already open in another process" in message
+        assert "--quack" in message  # points at the documented way to share it
+    finally:
+        holder.terminate()
+        holder.wait(timeout=10)
+
+
+def test_lock_error_helper_reraises_other_io_errors() -> None:
+    """Only lock conflicts are translated; every other IOException keeps its trace."""
+    with pytest.raises(duckdb.IOException):
+        with _clean_lock_error("somewhere"):
+            raise duckdb.IOException("disk is on fire")

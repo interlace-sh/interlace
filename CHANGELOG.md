@@ -77,7 +77,7 @@ the trailing `+`, or every downstream model keeps the old data).
 **Docs: the DuckLake default flip landed everywhere.** The README, `docs/concepts.md` and the
 benchmark example still described DuckLake as the default warehouse. They now describe the
 plain DuckDB file, and the benchmark — whose published timings were measured on DuckLake —
-declares `database: ducklake:…` explicitly instead of relying on a default that moved.
+says so, with the one `database:` line needed to reproduce them.
 
 **Docs: platforms.** The README now states plainly that Linux is what CI runs, and that macOS
 and Windows are expected to work but untested, rather than saying nothing.

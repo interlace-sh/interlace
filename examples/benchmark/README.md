@@ -41,7 +41,9 @@ sed -i 's/avg_ticket/avg_ticket, min(amount) AS min_ticket/' models/by_device.sq
 time interlace apply --force
 ```
 
-Reference numbers (25M rows, laptop-class 8-core, DuckLake warehouse):
+Reference numbers (25M rows, laptop-class 8-core, DuckLake warehouse — this project ships on
+the default plain-DuckDB warehouse, so add `database: ducklake:.interlace/warehouse.ducklake`
+to `interlace.yaml` to reproduce them exactly):
 
 | flow                                   | wall  | cpu    |
 | -------------------------------------- | ----- | ------ |

@@ -1,5 +1,87 @@
 # Changelog
 
+## 2.4.0 (2026-08-14)
+
+**Breaking: the default warehouse is now plain DuckDB, not DuckLake.** `database` defaults to
+`.interlace/warehouse.duckdb` (and `EngineConfig.type` to `duckdb`) — the simplest start: one
+file, single-process, no catalog. DuckLake stays a first-class option (`database: ducklake:…`),
+and is the one to pick when `interlace serve` and a separate CLI must write the same warehouse
+concurrently (DuckLake serialises catalog writes; a plain DuckDB file is single-writer). On
+upgrade, a project with no explicit `database:` will open a fresh empty `.duckdb` and ignore its
+old `.ducklake` warehouse — set `database: ducklake:.interlace/warehouse.ducklake` to keep it.
+
+**Fix: delivering into a table you share with another writer no longer wipes its other
+columns.** Staged delivery aligned the model's output to the *whole* target — NULL-filling
+every column the model didn't produce — and then wrote all of them, so a `merge` into a table
+where another system owns some columns reset those columns to NULL on every run (`hash_merge`
+did the same through its `SET` list). The keyed upserts and `append` are now handed only the
+columns the model actually produces: a matched row keeps the rest, and an inserted row takes
+the target's `DEFAULT`s instead of a NULL (which also fixes inserting into a `NOT NULL DEFAULT`
+column). The flip side, on a table interlace owns: these strategies no longer clear a column
+the model has *stopped* producing — it keeps its last value rather than being NULLed (moot for
+`virtual` models, where dropping a column mints a fresh table anyway). `merge`'s portable
+fallback is now `UPDATE` + `INSERT` rather than `DELETE` + `INSERT`, so it preserves those
+columns too on an engine without native `MERGE` — though every shipped adapter has `MERGE`, so
+that path stays a safety net. Whole-row strategies (`replace`, `full_merge`, `scd`) are
+unchanged — they rewrite rows entire by design — but `apply` now warns, naming the columns it
+will reset. `incremental` is unaffected either way: a windowed delivery never stages, so it
+still requires the model to produce the target's full column set. And `hash_merge`/`scd`
+pointed at a pre-existing external table that lacks their bookkeeping columns (`_hash`,
+`_valid_from`/`_valid_to`) now fail with a clear error naming the missing column instead of a
+raw engine binder error. See [strategies](docs/strategies.md#shared-destinations-columns-interlace-doesnt-own).
+
+**Fix (first-run blocker): `interlace init` crashed after a `pip install`.** Templates are real
+projects, so they ship `.py` model files — and pip byte-compiles every `.py` in a wheel at install
+time, leaving `__pycache__/*.pyc` inside the installed template tree. `init` copied that tree file
+by file with `read_text()`, so the first `.pyc` it reached raised
+`UnicodeDecodeError: 'utf-8' codec can't decode byte 0xcb in position 0` — the 3.12 `.pyc` magic.
+Every template was affected, and it landed on the second command in the README. Install artefacts
+are now skipped, and a file that is not valid UTF-8 is copied byte for byte instead of decoded, so
+a template may carry a binary fixture. (uv does not byte-compile by default, which is why this
+only ever reproduced through the documented `pip install` path.)
+
+**Fix: a locked warehouse reads like an error, not a traceback.** Running any CLI command while
+`interlace serve` holds the warehouse — the obvious thing to try, since `interlace query` is the
+console's CLI counterpart — dumped a dozen frames ending in `duckdb.IOException`, naming neither
+the cause nor the fix. It is now one `error:` line that names the holding PID and points at
+`--quack`, the documented way to share one warehouse across processes. It covers `attach:`
+targets as well as the warehouse itself, and matches DuckDB's bare lock message too, so it
+reads the same on macOS and Windows (only Linux names the holding process). Other
+`IOException`s keep their traceback.
+
+**Fix: `ModelDef(checks=…)` takes the same dict shorthand as `@model(checks=…)`.** It stored the
+dicts raw and failed later at compile with `AttributeError: 'dict' object has no attribute
+'type'`. That is the dynamic-model path — exactly what generated models and dbt migrations use —
+so the "one spelling for both surfaces" promise only half-landed. Normalising now happens in
+`ModelDef`, so a malformed check fails at declaration instead.
+
+**Fix: a model's relative read path resolves against the project root.** `read_csv_auto('seeds/x.csv')`
+is documented to resolve from the directory holding `interlace.yaml`, but DuckDB resolves against
+the process CWD — the same thing only when you happen to run from the root. Under `--path`,
+`interlace serve`, or the scheduler it failed with `IO Error: No files found that match the
+pattern`. The warehouse connection now searches the project root as well as the CWD, so both
+resolve. Reads only; `COPY` targets already resolved against the root.
+
+**Fix: `scd` no longer corrupts its validity columns when the model grows a column.** Its insert
+bound positionally, assuming `_valid_from`/`_valid_to` are the last two columns — true for a table
+scd created in one shot, false after an additive `ALTER`, which appends the new column *after*
+them. The new column's value then landed in `_valid_from` (a conversion error if the types
+disagree, silent corruption if they don't). The insert now names its columns.
+
+**Docs: seeds.** `docs/models.md` gains a "Seeds and static files" section — there is no `seed`
+model type because a seed is a model over `read_csv_auto`. It covers the gotcha that a
+fingerprint tracks the canonical SQL and never the file's bytes, so editing a CSV plans as "no
+changes"; `interlace run --select <model>+` is the rebuild (`apply --force` is not — and mind
+the trailing `+`, or every downstream model keeps the old data).
+
+**Docs: the DuckLake default flip landed everywhere.** The README, `docs/concepts.md` and the
+benchmark example still described DuckLake as the default warehouse. They now describe the
+plain DuckDB file, and the benchmark — whose published timings were measured on DuckLake —
+declares `database: ducklake:…` explicitly instead of relying on a default that moved.
+
+**Docs: platforms.** The README now states plainly that Linux is what CI runs, and that macOS
+and Windows are expected to work but untested, rather than saying nothing.
+
 ## 2.3.0 (2026-08-08)
 
 **Breaking: `incremental_by_time` is now `incremental`, and it takes an optional `key`.**

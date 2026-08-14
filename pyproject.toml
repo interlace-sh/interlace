@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interlaced"
-version = "2.3.0"
-description = "Python/SQL-first data platform: transformation, built-in orchestration, and durable streaming ingestion"
+version = "2.4.0"
+description = "Python and SQL models in one DAG. Transformation, orchestration and durable streaming in one process, on DuckDB and Postgres."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -17,8 +17,12 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Build Tools",
+    "Topic :: Database",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: SQL",
+    # Linux is what CI runs and what this is developed on. Nothing in the codebase
+    # is platform-specific, but macOS and Windows are untested — see the README.
+    "Operating System :: POSIX :: Linux",
 ]
 
 # Core: the IR + engine + state + plan spine (Phase 1). Everything is Arrow- and

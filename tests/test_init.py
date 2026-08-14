@@ -105,3 +105,47 @@ def test_postgres_template_compiles_without_the_postgres_extra(tmp_path: Path) -
     orders = compiled.models["orders"]
     assert orders.cursor == "updated_at" and orders.strategy == "merge" and orders.key == ("id",)
     assert compiled.models["orders_by_status"].dependencies == ("orders",)
+
+
+def test_scaffold_skips_byte_compiled_artefacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Templates are real projects, so they ship `.py` model files — and pip
+    byte-compiles every `.py` in the wheel at install time. That leaves
+    `__pycache__/*.pyc` inside the installed template tree, which `init` used to
+    try to read as UTF-8, dying with UnicodeDecodeError on the first command a pip
+    user ever ran. (uv does not byte-compile by default, so it only reproduced
+    under the documented `pip install` path.)"""
+    template = tmp_path / "templates" / "fake"
+    (template / "models" / "__pycache__").mkdir(parents=True)
+    (template / "template.yaml").write_text("title: Fake\ndescription: fixture\n")
+    (template / "interlace.yaml").write_text("name: __PROJECT_NAME__\n")
+    (template / "models" / "m.py").write_text("# a model\n")
+    # the real 3.12 .pyc magic — the exact bytes that broke it
+    (template / "models" / "__pycache__" / "m.cpython-312.pyc").write_bytes(b"\xcb\x0d\x0d\x0a\x00\x00\x00\x00")
+    monkeypatch.setattr("interlace.scaffold.TEMPLATES_DIR", tmp_path / "templates")
+
+    target = tmp_path / "project"
+    target.mkdir()
+    written = scaffold_project(target, name="shop", template="fake")
+
+    assert (target / "models" / "m.py") in written
+    assert not list(target.rglob("*.pyc"))
+    assert not list(target.rglob("__pycache__"))
+    assert (target / "interlace.yaml").read_text() == "name: shop\n"
+
+
+def test_scaffold_copies_binary_fixtures_verbatim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A template may legitimately carry a binary fixture; it is copied byte for
+    byte rather than decoded and token-substituted."""
+    template = tmp_path / "templates" / "fake"
+    (template / "seeds").mkdir(parents=True)
+    (template / "template.yaml").write_text("title: Fake\ndescription: fixture\n")
+    (template / "interlace.yaml").write_text("name: __PROJECT_NAME__\n")
+    payload = b"PAR1\x00\xff\xfe binary \x00"
+    (template / "seeds" / "data.parquet").write_bytes(payload)
+    monkeypatch.setattr("interlace.scaffold.TEMPLATES_DIR", tmp_path / "templates")
+
+    target = tmp_path / "project"
+    target.mkdir()
+    scaffold_project(target, name="shop", template="fake")
+
+    assert (target / "seeds" / "data.parquet").read_bytes() == payload

@@ -72,10 +72,27 @@ def scaffold_project(root: Path, name: str | None = None, template: str = DEFAUL
 
     written: list[Path] = []
     for item in sorted(source.rglob("*")):
-        if item.name == _META_FILE or not item.is_file():
+        if item.name == _META_FILE or not item.is_file() or _is_install_artefact(item):
             continue
         target = root / item.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(item.read_text().replace(_NAME_TOKEN, project_name))
+        try:
+            text = item.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # A template may legitimately carry a binary fixture (parquet, sqlite).
+            target.write_bytes(item.read_bytes())
+        else:
+            target.write_text(text.replace(_NAME_TOKEN, project_name), encoding="utf-8")
         written.append(target)
     return written
+
+
+def _is_install_artefact(item: Path) -> bool:
+    """Templates are real projects, so they contain ``.py`` model files — and pip
+    byte-compiles every ``.py`` in the wheel at install time. That leaves
+    ``__pycache__/*.pyc`` sitting inside the *installed* template tree, which is an
+    artefact of the install and never part of the template. Copying one into a new
+    project is wrong, and reading it as text raised ``UnicodeDecodeError`` on the
+    first command a pip user ever ran. (uv does not byte-compile by default, which
+    is why this only reproduced via pip.)"""
+    return "__pycache__" in item.parts or item.suffix in {".pyc", ".pyo"}

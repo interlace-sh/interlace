@@ -1,7 +1,8 @@
-"""Warehouse storage backends: DuckLake (the default) and quack (remote serving).
+"""Warehouse storage backends: plain DuckDB (the default), DuckLake, and quack.
 
-DuckLake: a project with the default config gets a Parquet-backed warehouse with
-a DuckLake catalog — plan/apply must behave identically to a plain DuckDB file.
+Default: a project with no `database:` gets a plain single-file DuckDB warehouse.
+DuckLake: opting in with `database: ducklake:…` gets a Parquet-backed warehouse
+with a catalog — plan/apply must behave identically either way.
 Quack: a second process (here: a second adapter in this process) reaches the same
 warehouse through the quack protocol, including a full plan/apply round-trip.
 """
@@ -38,15 +39,12 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-# --- DuckLake (default storage) ----------------------------------------------
+# --- Warehouse storage --------------------------------------------------------
 
 
-async def test_default_config_applies_onto_ducklake(tmp_path: Path) -> None:
-    project_dir = tmp_path / "getting_started"
-    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
+async def _apply_example(project_dir: Path) -> None:
+    """Apply the getting_started example in `dev` and assert it built."""
     project = Project.load(project_dir)
-    assert project.config.database.startswith("ducklake:")
-
     compiled = project.compile()
     engine = project.open_engine()
     state = await project.open_state()
@@ -59,10 +57,36 @@ async def test_default_config_applies_onto_ducklake(tmp_path: Path) -> None:
         await state.close()
         engine.close()
 
-    # the warehouse is a DuckLake: a catalog file plus a data directory (small
-    # tables are inlined in the catalog; Parquet appears as data grows)
-    catalog = project_dir / ".interlace" / "warehouse.ducklake"
-    assert catalog.exists()
+
+def _example(tmp_path: Path, database: str | None = None) -> Path:
+    project_dir = tmp_path / "getting_started"
+    shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))
+    if database is not None:
+        config = project_dir / "interlace.yaml"
+        config.write_text(f"{config.read_text().rstrip()}\ndatabase: {database}\n")
+    return project_dir
+
+
+async def test_default_config_applies_onto_a_duckdb_file(tmp_path: Path) -> None:
+    """The default warehouse is one plain DuckDB file — no catalog, no data directory."""
+    project_dir = _example(tmp_path)
+    assert Project.load(project_dir).config.database == ".interlace/warehouse.duckdb"
+
+    await _apply_example(project_dir)
+
+    assert (project_dir / ".interlace" / "warehouse.duckdb").is_file()
+    assert not (project_dir / ".interlace" / "warehouse.ducklake").exists()
+
+
+async def test_ducklake_warehouse_applies_identically(tmp_path: Path) -> None:
+    """DuckLake stays first-class, one config line away: same plan/apply, different store."""
+    project_dir = _example(tmp_path, database="ducklake:.interlace/warehouse.ducklake")
+
+    await _apply_example(project_dir)
+
+    # a DuckLake is a catalog file plus a data directory (small tables are inlined
+    # in the catalog; Parquet appears as data grows)
+    assert (project_dir / ".interlace" / "warehouse.ducklake").exists()
     assert (project_dir / ".interlace" / "warehouse.ducklake.files").is_dir()
 
 

@@ -46,7 +46,7 @@ def test_apply_builds_then_replan_is_clean(tmp_path: Path) -> None:
     assert "Built 2 model(s)" in _plain(applied.output)
 
     # the warehouse file now holds the env view with the computed value
-    con = duckdb.connect(f"ducklake:{tmp_path / '.interlace' / 'warehouse.ducklake'}")
+    con = duckdb.connect(str(tmp_path / ".interlace" / "warehouse.duckdb"))
     try:
         rows = con.execute("SELECT id, v2 FROM main.b").fetchall()
     finally:
@@ -72,7 +72,7 @@ def test_apply_ensures_stream_tables_without_daemon(tmp_path: Path) -> None:
     applied = runner.invoke(app, ["apply", "--env", "prod", "--path", str(tmp_path)])
     assert applied.exit_code == 0, applied.output
 
-    con = duckdb.connect(f"ducklake:{tmp_path / '.interlace' / 'warehouse.ducklake'}")
+    con = duckdb.connect(str(tmp_path / ".interlace" / "warehouse.duckdb"))
     try:
         assert con.execute("SELECT count(*) FROM main.latest_clicks").fetchone() == (0,)
     finally:
@@ -84,6 +84,21 @@ def test_plan_on_empty_project_is_clean(tmp_path: Path) -> None:
     result = runner.invoke(app, ["plan", "--env", "dev", "--path", str(tmp_path)])
     assert result.exit_code == 0
     assert "No changes" in result.output
+
+
+def test_relative_read_paths_resolve_against_the_project_root(tmp_path: Path) -> None:
+    """A seed model reads `seeds/x.csv` — documented to resolve against the project root.
+    DuckDB resolves against the process CWD, so under `--path` (or serve, or the
+    scheduler) it used to fail with `No files found that match the pattern`."""
+    (tmp_path / "models").mkdir()
+    (tmp_path / "seeds").mkdir()
+    (tmp_path / "interlace.yaml").write_text("name: seeds\ndatabase: ':memory:'\n")
+    (tmp_path / "seeds" / "countries.csv").write_text("id,country\n1,UK\n2,US\n")
+    (tmp_path / "models" / "countries.sql").write_text("SELECT * FROM read_csv_auto('seeds/countries.csv')")
+
+    applied = runner.invoke(app, ["apply", "--env", "dev", "--path", str(tmp_path)])
+    assert applied.exit_code == 0, applied.output
+    assert "Built 1 model(s)" in _plain(applied.output)
 
 
 def test_apply_blocks_breaking_changes_without_force(tmp_path: Path) -> None:

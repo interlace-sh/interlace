@@ -6,7 +6,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from interlace.dsl.decorators import REGISTRY, check, model, stream
+from interlace.checks.spec import CheckSpec
+from interlace.dsl.decorators import REGISTRY, ModelDef, check, model, stream
 from interlace.exceptions import DefinitionError
 
 pytestmark = pytest.mark.unit
@@ -71,3 +72,33 @@ def test_stream_and_check_register() -> None:
     assert "orders_raw" in REGISTRY.streams
     assert REGISTRY.streams["orders_raw"].idempotency_key == "order_id"
     assert REGISTRY.checks[0].model == "orders_raw"
+
+
+def test_model_def_normalises_dict_checks() -> None:
+    """`@model(checks=…)` parses its shorthand, but a ModelDef built directly —
+    the dynamic-model path a generated or migrated project uses — used to store
+    the dicts raw and only fail at compile with `'dict' object has no attribute
+    'type'`. One spelling has to work on both surfaces."""
+    definition = ModelDef(
+        name="orders",
+        sql="SELECT 1 AS id",
+        checks=[{"type": "not_null", "column": "id"}],
+    )
+
+    assert all(isinstance(spec, CheckSpec) for spec in definition.checks)
+    assert definition.checks[0].type == "not_null"
+    assert definition.checks[0].columns == ("id",)
+
+
+def test_model_def_passes_check_specs_through() -> None:
+    spec = CheckSpec(type="not_null", columns=("id",))
+    assert ModelDef(name="orders", sql="SELECT 1 AS id", checks=[spec]).checks == (spec,)
+
+
+def test_model_def_without_checks_stays_empty() -> None:
+    assert ModelDef(name="orders", sql="SELECT 1").checks == ()
+
+
+def test_model_def_rejects_bad_checks_at_declaration() -> None:
+    with pytest.raises(DefinitionError):
+        ModelDef(name="orders", sql="SELECT 1", checks="not-a-list")

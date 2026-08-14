@@ -114,6 +114,18 @@ class ModelDef:
     schedule: dict[str, str] | None = None  # {"cron": "0 * * * *"} or {"every": "5m"} for `interlace serve`
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
 
+    def __post_init__(self) -> None:
+        # `@model(checks=…)` normalises through parse_checks, but a ModelDef built
+        # directly — the dynamic-model path, which is what generated models and dbt
+        # migrations use — stored the dicts raw and only failed at compile time with
+        # `AttributeError: 'dict' object has no attribute 'type'`. Normalise here too,
+        # so one spelling works on both surfaces and a bad check fails at declaration.
+        # Passed through as-is, not as list(...): parse_checks already handles a bare
+        # CheckSpec and reports a non-list clearly, both of which list() would mangle
+        # (TypeError on a CheckSpec; a dict silently degraded to its keys). Always run,
+        # so `checks=[]` normalises to the declared tuple rather than staying a list.
+        self.checks = parse_checks(self.checks, self.name)
+
     @property
     def is_terminal(self) -> bool:
         """A terminal model delivers into an external destination (table/file):

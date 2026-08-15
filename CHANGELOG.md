@@ -74,6 +74,14 @@ fingerprint tracks the canonical SQL and never the file's bytes, so editing a CS
 changes"; `interlace run --select <model>+` is the rebuild (`apply --force` is not — and mind
 the trailing `+`, or every downstream model keeps the old data).
 
+**Example: `jaffle-shop`.** dbt's own demo project
+([`jaffle-shop-classic`](https://github.com/dbt-labs/jaffle-shop-classic)) converted and shipped
+as a reference project: seeds as ordinary models over `read_csv_auto`, `schema.yml`'s twenty
+tests as promotion-gating checks, and the one Jinja-templated model (`{% for %}` over four
+payment methods, twice) as a dynamic model that generates the same SQL from a Python list.
+`interlace apply --env prod` builds 8 models and passes 20/20. Accompanies the
+[migration walkthrough](https://interlace.sh/blog/migrating-jaffle-shop).
+
 **Docs: the DuckLake default flip landed everywhere.** The README, `docs/concepts.md` and the
 benchmark example still described DuckLake as the default warehouse. They now describe the
 plain DuckDB file, and the benchmark — whose published timings were measured on DuckLake —

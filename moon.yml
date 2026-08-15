@@ -70,7 +70,7 @@ tasks:
       cache: false
 
   test-fast:
-    script: 'uv run pytest -x -q -m "not slow and not requires_db"'
+    script: 'uv run pytest -x -q -m "not slow and not requires_db and not requires_network"'
     inputs: ['src/**/*', 'tests/**/*', 'pyproject.toml']
     options:
       cache: false

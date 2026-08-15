@@ -180,6 +180,7 @@ markers = [
     "integration: Integration tests (slower, require database)",
     "slow: Slow tests (may take a long time)",
     "requires_db: Needs a reachable external database (e.g. Postgres)",
+    "requires_network: Needs the public internet (e.g. an example reading a remote CSV)",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

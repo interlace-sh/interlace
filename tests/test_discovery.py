@@ -100,3 +100,50 @@ def test_project_load_reads_config(tmp_path: Path) -> None:
     project = Project.load(tmp_path)
     assert project.config.name == "shop"
     assert project.config.default_dialect == "snowflake"
+
+
+def test_model_can_import_a_helper_module_beside_it(tmp_path: Path) -> None:
+    """`_`-prefixed files are skipped as models so they can be shared helpers — the
+    closest thing to a dbt macro. That is only useful if a model can import one."""
+    _write(tmp_path / "models" / "_macros.py", "def dollars(column: str) -> str:\n    return f'({column} / 100)'\n")
+    _write(
+        tmp_path / "models" / "m.py",
+        "from _macros import dollars\n"
+        "from interlace.dsl.decorators import REGISTRY, ModelDef\n"
+        "REGISTRY.register_model(ModelDef(name='m', sql=f'SELECT {dollars(\"x\")} AS d FROM t'))\n",
+    )
+    models = {m.name: m for m in discover_models(tmp_path, ["models"], "duckdb")}
+
+    assert "(x / 100)" in (models["m"].sql or "")
+    assert "_macros" not in models  # the helper is not a model
+
+
+def test_helper_directory_does_not_leak_onto_sys_path(tmp_path: Path) -> None:
+    """The model's directory is importable only while that model is being imported."""
+    import sys
+
+    _write(tmp_path / "models" / "_macros.py", "VALUE = 1\n")
+    _write(tmp_path / "models" / "m.sql", "SELECT 1 AS x")
+    before = list(sys.path)
+    discover_models(tmp_path, ["models"], "duckdb")
+
+    assert sys.path == before
+    assert "_macros" not in sys.modules
+
+
+def test_two_projects_do_not_share_a_helper_of_the_same_name(tmp_path: Path) -> None:
+    """A helper is imported under its plain name, so caching it would hand the next
+    project (a serve reload, a second project in-process) the first one's version."""
+    for project, divisor in (("a", 100), ("b", 1000)):
+        root = tmp_path / project
+        _write(
+            root / "models" / "_macros.py", f"def scale(column: str) -> str:\n    return f'({{column}} / {divisor})'\n"
+        )
+        _write(
+            root / "models" / "m.py",
+            "from _macros import scale\n"
+            "from interlace.dsl.decorators import REGISTRY, ModelDef\n"
+            "REGISTRY.register_model(ModelDef(name='m', sql=f'SELECT {scale(\"x\")} AS d FROM t'))\n",
+        )
+        models = {m.name: m for m in discover_models(root, ["models"], "duckdb")}
+        assert f"/ {divisor}" in (models["m"].sql or "")

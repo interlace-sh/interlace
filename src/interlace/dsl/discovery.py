@@ -9,8 +9,10 @@ cleared first for a clean load.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -22,18 +24,36 @@ from interlace.exceptions import DefinitionError, InterlaceError
 
 def discover_models(root: Path, model_paths: list[str], default_dialect: str) -> list[ModelDef]:
     REGISTRY.clear()
-    for relative in model_paths:
-        base = root / relative
-        if not base.is_dir():
-            continue
-        for sql_file in sorted(base.rglob("*.sql")):
-            config, sql = extract_sql_config(sql_file.read_text())
-            REGISTRY.register_model(_sql_model(_model_name(base, sql_file), sql, config, default_dialect))
-        for py_file in sorted(base.rglob("*.py")):
-            if py_file.name.startswith("_"):
+    imported = set(sys.modules)
+    try:
+        for relative in model_paths:
+            base = root / relative
+            if not base.is_dir():
                 continue
-            _import_module(base, py_file)
+            for sql_file in sorted(base.rglob("*.sql")):
+                config, sql = extract_sql_config(sql_file.read_text())
+                REGISTRY.register_model(_sql_model(_model_name(base, sql_file), sql, config, default_dialect))
+            for py_file in sorted(base.rglob("*.py")):
+                if py_file.name.startswith("_"):
+                    continue
+                _import_module(base, py_file)
+    finally:
+        _forget_project_modules(root, imported)
     return list(REGISTRY.models.values())
+
+
+def _forget_project_modules(root: Path, before: set[str]) -> None:
+    """Drop the project's own helper modules from the import cache.
+
+    A helper is imported under whatever plain name it has (``_macros``), so leaving it
+    cached would hand the *next* project — a reload under ``interlace serve``, another
+    project in the same process — the first one's version of a file with the same name.
+    Only modules loaded from inside this project during this pass are dropped."""
+    for name in set(sys.modules) - before:
+        module = sys.modules.get(name)
+        origin = getattr(module, "__file__", None)
+        if origin and Path(origin).is_relative_to(root):
+            del sys.modules[name]
 
 
 def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dialect: str) -> ModelDef:
@@ -89,6 +109,18 @@ def _relative_to_cwd(file: Path) -> str:
         return str(file)
 
 
+@contextlib.contextmanager
+def _importable(directory: Path) -> Iterator[None]:
+    """Put ``directory`` at the front of ``sys.path``, and take it back off."""
+    entry = str(directory)
+    sys.path.insert(0, entry)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            sys.path.remove(entry)
+
+
 def _import_module(base: Path, file: Path) -> None:
     module_name = "interlace_model_" + "_".join(file.relative_to(base).with_suffix("").parts)
     spec = importlib.util.spec_from_file_location(module_name, file)
@@ -97,7 +129,13 @@ def _import_module(base: Path, file: Path) -> None:
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)
+        # The model's own directory goes on the path for the duration of the import, so a
+        # model can `from _shared import ...` a helper sitting next to it — the closest
+        # thing to a macro. Files starting with `_` are already skipped as models, which
+        # is only useful if they can be imported. Removed again straight after: a project's
+        # helpers must not leak into the import path of everything that follows.
+        with _importable(file.parent):
+            spec.loader.exec_module(module)
     except InterlaceError:
         raise  # a bad @model config is already a clean, actionable error — don't rewrap it
     except Exception as exc:

@@ -1,5 +1,7 @@
 name: jaffle_shop
 default_dialect: duckdb
-# dbt's own demo project (dbt-labs/jaffle-shop-classic), converted. Eight models —
-# three seeds, three staging, two marts — and twenty checks, which are jaffle_shop's
-# twenty dbt tests. See README.md for what converted mechanically and what did not.
+# dbt names a model after its path, and so does interlace — which would make
+# models/staging/stg_customers.sql the model `staging.stg_customers`, and break every
+# bare ref in the marts. Listing the leaf directories instead of `models` keeps dbt's
+# layout and dbt's names. (The paths must not overlap, or a model is registered twice.)
+model_paths: [models/raw, models/staging, models/marts]

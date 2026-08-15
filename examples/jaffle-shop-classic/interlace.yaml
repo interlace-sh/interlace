@@ -1,0 +1,5 @@
+name: jaffle_shop
+default_dialect: duckdb
+# dbt's own demo project (dbt-labs/jaffle-shop-classic), converted. Eight models —
+# three seeds, three staging, two marts — and twenty checks, which are jaffle_shop's
+# twenty dbt tests. See README.md for what converted mechanically and what did not.

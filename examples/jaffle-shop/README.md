@@ -1,13 +1,16 @@
 # jaffle_shop
 
-[dbt's own demo project](https://github.com/dbt-labs/jaffle-shop-classic), converted to
-interlace. Eight models and twenty checks — which are jaffle_shop's twenty dbt tests, one
-for one.
+[dbt's current demo project](https://github.com/dbt-labs/jaffle-shop), converted to
+interlace. Nineteen models and twenty-seven checks — which are jaffle_shop's twenty-seven
+dbt data tests, one for one.
 
 ```
-raw_customers ── stg_customers ─┐
-raw_orders ───── stg_orders ────┼─ customers
-raw_payments ─── stg_payments ──┴─ orders
+raw_customers ── stg_customers ──────────────────────┐
+raw_stores ───── stg_locations ── locations          │
+raw_products ─── stg_products ──┐                    │
+raw_supplies ─── stg_supplies ──┼─ order_items ── orders ── customers
+raw_items ────── stg_order_items ┘                   │
+raw_orders ───── stg_orders ─────────────────────────┘
 ```
 
 ```bash
@@ -15,117 +18,118 @@ interlace apply --env prod
 ```
 
 ```
-Checks: 20/20 passed
-Built 8 model(s); promoted 8 to 'prod'.
+Checks: 27/27 passed
+Built 19 model(s); promoted 19 to 'prod'.
 ```
 
-The walkthrough, with the friction written down, is in
-[Migrating jaffle_shop](https://interlace.sh/blog/migrating-jaffle-shop). What follows is
-what changed and why.
+Needs the network: the raw tables are read straight from dbt's repo (below). The whole
+thing builds in about a second and a half.
 
-## Seeds became models
+> The older [`jaffle-shop-classic`](../jaffle-shop-classic/) is also here — five models,
+> one Jinja loop, and a walkthrough of the mechanical parts of a migration. This project
+> is the interesting one: sources, macros, package macros, and a semantic layer.
 
-dbt has a separate concept and a separate command for seeds: CSVs in `seeds/`, loaded by
-`dbt seed`. interlace has no seed concept, because a seed is a model with no upstreams:
+## Sources instead of seeds
+
+dbt ships the data as seed CSVs and then **disables them by default**
+(`load_source_data: false`), because the real project expects the data to already be in
+the warehouse behind `{{ source('ecom', ...) }}`. Two concepts — seeds and sources — for
+the same idea: a table this project reads but does not build.
+
+interlace has neither, because a source is a model with no upstreams. DuckDB reads a CSV
+over HTTP, so nothing stands between dbt's repo and the DAG:
 
 ```sql
--- models/raw_customers.sql
-SELECT * FROM read_csv_auto('seeds/raw_customers.csv')
+SELECT * FROM read_csv_auto('https://raw.githubusercontent.com/.../raw_customers.csv')
 ```
 
-Three files, one line each. The CSV now participates in the DAG, gets a fingerprint, and
-rebuilds downstream models when it changes.
+[`models/raw/sources.py`](models/raw/sources.py) registers all six from a loop, because
+the only thing that varies is the file name. Each one is an ordinary SQL model with a
+fingerprint, so a change upstream rebuilds what depends on it.
 
-## Four of five models: a two-line regex
+## What the regexes covered
 
-The staging models and `customers` are the ordinary case. Two transformations cover them —
-strip Jinja comments, and turn `{{ ref('x') }}` into `x`:
+Same as the classic project, plus the source form:
 
 ```python
-sql = re.sub(r'\{#-?.*?-?#\}', '', sql, flags=re.S)
-sql = re.sub(r"\{\{\s*ref\(\s*['\"]([^'\"]+)['\"]\s*\)\s*\}\}", r'\1', sql)
+sql = re.sub(r"\{\{\s*source\(\s*'[^']+'\s*,\s*'([^']+)'\s*\)\s*\}\}", r'\1', sql)   # source('ecom','raw_x') -> raw_x
+sql = re.sub(r"\{\{\s*ref\(\s*'([^']+)'\s*\)\s*\}\}", r'\1', sql)                    # ref('x') -> x
+sql = re.sub(r"\{\{\s*dbt\.date_trunc\('(\w+)','(\w+)'\)\s*\}\}", r"date_trunc('\1', \2)", sql)
+sql = re.sub(r"\{\{\s*cents_to_dollars\('(\w+)'\)\s*\}\}", r'(\1 / 100)::numeric(16, 2)', sql)
 ```
 
-The CTEs, the joins and the column lists are dbt's, untouched — interlace reads the
-dependency out of the `FROM` clause instead of asking you to declare it.
+`dbt.date_trunc` is a cross-database macro — a templating layer that exists to paper over
+dialect differences. interlace transpiles one dialect to another with sqlglot instead, so
+the macro has nothing to do and the model just writes `date_trunc`.
 
-One thing the regex does not cover: **a subdirectory becomes part of the model's name.**
-`models/staging/stg_customers.sql` is `staging.stg_customers`, so `customers.sql`'s
-`from stg_customers` no longer resolves. Either flatten the directory or pin the name in the
-model's config block, which is what this project does:
+## Three things the regexes did not cover
 
-```sql
-/*
-interlace:
-  name: stg_customers
-  ...
-*/
+**A subdirectory becomes part of the model's name.** `models/staging/stg_customers.sql`
+would be `staging.stg_customers`, and every bare ref in the marts would stop resolving.
+This project lists the leaf directories in `interlace.yaml` instead, which keeps dbt's
+layout *and* dbt's names:
+
+```yaml
+model_paths: [models/raw, models/staging, models/marts]
 ```
 
-## Tests became checks
+The paths must not overlap — listing both `models` and `models/staging` registers the
+staging models twice. (The classic example pins `name:` per model instead, because its
+models are split between `models/` and `models/staging/`, which cannot be expressed as
+non-overlapping paths.)
 
-All four dbt test types map one-to-one — `unique`, `not_null`, `accepted_values`,
-`relationships`. The difference is location: dbt keeps them in a separate `schema.yml`,
-interlace puts them in the model's own config block, so the model and its contract are one
-file. They also **gate promotion** by default, where `dbt test` is a separate command.
+**A CTE may not take the name of the model it selects from.** dbt's marts open with
+`with orders as (select * from {{ ref('orders') }})`, which is safe because `ref()`
+renders a fully-qualified relation. Here the reference is the model's bare name, so the
+CTE shadows it and DuckDB reports a circular CTE. Two models needed a renamed CTE;
+nothing else changed.
 
-The `relationships` check on `orders.customer_id` reads `customers`, which is a sibling in
-the DAG rather than an upstream. interlace schedules the check after `customers` builds; you
-do not have to order it yourself.
+**A check cannot point downstream.** dbt tests `order_items.order_id` against `orders` —
+but `orders` is built *from* `order_items`, and interlace runs a model's checks when that
+model builds, so the check would wait for a model that is waiting for it. It points at
+`stg_orders` instead: `orders` is `stg_orders` left-joined to a summary of these very
+rows, so it is the same set of `order_id`s and the same check. dbt does not hit this
+because `dbt test` is a separate pass over everything.
 
-## `orders` is the real work
+Sibling references are fine — `stg_order_items` is checked against `stg_orders` and
+simply waits for it.
 
-`orders.sql` is the one model Jinja was doing real work in: a `{% set %}` list of payment
-methods and a `{% for %}` loop generating four pivot columns, twice. There is no regex for
-that.
+## Macros
 
-[`models/orders.py`](models/orders.py) is the version to prefer — the `{% set %}` becomes a
-Python list, the `{% for %}` becomes a generator expression, and the generated SQL still runs
-in the engine. The checks loop over the same list, so adding a payment method adds its column
-and its `not_null` together.
+There is no macro layer, and that is the largest genuine gap. What replaces it depends on
+what the macro was doing.
 
-The alternative is a `@model` function that pivots in PyArrow. Both were built against this
-data and produce identical output, row for row:
+`cents_to_dollars` is a one-line cast with adapter dispatch. Three staging models just
+write the cast — a Python model to spell four tokens is a worse trade than the repetition.
 
-```python
-# models/orders.py — alternative to the dynamic model this project ships
-import pyarrow as pa
-import pyarrow.compute as pc
-from interlace import model
+`dbt_utils.generate_surrogate_key` is a package macro, and there is no package to install
+it from. It is written once in [`models/staging/_macros.py`](models/staging/_macros.py) —
+a file starting with `_` is not a model, and a model can import one sitting next to it —
+and [`stg_supplies.py`](models/staging/stg_supplies.py) generates its SQL from it. That is
+the pattern when a macro earns a Python function: the value lives in one place, and the
+SQL it builds still runs in the engine.
 
-PAYMENT_METHODS = ["credit_card", "coupon", "bank_transfer", "gift_card"]
+## Tests
 
+All twenty-seven convert. The four types the classic project used map by name, and dbt's
+`+materialized: view` on staging becomes `materialise: view`. The one worth noting:
 
-@model()
-def orders(stg_orders, stg_payments):
-    payments = stg_payments.table()
+| dbt | interlace |
+| --- | --- |
+| `dbt_utils.expression_is_true` | `expression` |
 
-    # The Jinja {% for %} pivot, as a Python loop over Arrow columns.
-    cols = {"order_id": payments["order_id"]}
-    for m in PAYMENT_METHODS:
-        is_m = pc.equal(payments["payment_method"], m)
-        cols[f"{m}_amount"] = pc.if_else(is_m, payments["amount"], 0.0)
-    cols["amount"] = payments["amount"]
+That is a **package** test in dbt and a built-in here, so the four row-level invariants
+(`order_total - tax_paid = subtotal` and friends) came across without the package:
 
-    per_method = (
-        pa.table(cols)
-        .group_by("order_id")
-        .aggregate([(f"{m}_amount", "sum") for m in PAYMENT_METHODS] + [("amount", "sum")])
-    )
-    per_method = per_method.rename_columns(["order_id"] + [f"{m}_amount" for m in PAYMENT_METHODS] + ["amount"])
-    return stg_orders.table().join(per_method, keys="order_id", join_type="left outer")
+```yaml
+- expression: {expression: order_total - tax_paid = subtotal}
 ```
 
-Reach for that one when the logic is heading somewhere SQL cannot follow — a model call, a
-rate-limited API, a library with no SQL equivalent. The cost is that the aggregation happens
-in the interlace process rather than the engine: irrelevant for 113 payment rows, wrong for
-25 million.
+## What did not convert
 
-Either way the pivot holds:
-
-```bash
-interlace query "SELECT count(*) AS mismatched_rows FROM orders
-                 WHERE credit_card_amount + coupon_amount + bank_transfer_amount
-                     + gift_card_amount <> amount"
-# 0
-```
+- **Semantic models, metrics and saved queries** (MetricFlow) — no equivalent. They are
+  the bulk of the `.yml` files in dbt's project and none of it came across.
+  `metricflow_time_spine` converts to an ordinary date spine, and then nothing reads it.
+- **Unit tests** (`unit_tests:` in `stg_locations.yml`) — no equivalent. A Python model is
+  a plain function you can call in a test; a SQL model is not.
+- **`dbt-audit-helper`** — a package of macros for comparing two relations. No equivalent.

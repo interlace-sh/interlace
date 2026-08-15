@@ -1,13 +1,11 @@
 /*
 interlace:
-  materialise: view
+  name: stg_customers
   checks:
-    - not_null: customer_id
     - unique: customer_id
+    - not_null: customer_id
 */
-with
-
-source as (
+with source as (
 
     select * from raw_customers
 
@@ -16,12 +14,9 @@ source as (
 renamed as (
 
     select
-
-        ----------  ids
         id as customer_id,
-
-        ---------- text
-        name as customer_name
+        first_name,
+        last_name
 
     from source
 

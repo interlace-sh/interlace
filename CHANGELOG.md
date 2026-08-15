@@ -74,7 +74,29 @@ fingerprint tracks the canonical SQL and never the file's bytes, so editing a CS
 changes"; `interlace run --select <model>+` is the rebuild (`apply --force` is not — and mind
 the trailing `+`, or every downstream model keeps the old data).
 
-**Example: `jaffle-shop`.** dbt's own demo project
+**Example: `jaffle-shop`.** dbt's *current* demo project
+([`dbt-labs/jaffle-shop`](https://github.com/dbt-labs/jaffle-shop)) converted: 19 models, 27
+checks, and its six raw tables read straight from dbt's repo over HTTP rather than vendored.
+It covers what the classic project does not — `source()`, a project macro, a `dbt_utils`
+package macro, `dbt_utils.expression_is_true` (which is the built-in `expression` check), and
+MetricFlow, which has no equivalent. Two interlace fixes came out of building it, below.
+
+**Fix: a model can import a helper module sitting next to it.** Discovery skips `.py` files
+whose names start with `_` so they can be shared helpers — the closest thing to a dbt macro —
+but the model's directory was never on `sys.path`, so `from _macros import ...` raised
+`ModuleNotFoundError`. The directory is now importable for the duration of that model's import,
+and the project's own modules are dropped from the import cache afterwards, so a second project
+with its own `_macros.py` gets its own (a reload under `interlace serve` would otherwise reuse
+the first).
+
+**Fix: a check that reads a sibling model no longer runs before it is built.** `relationships`
+(and `sql`) checks add scheduling edges, and an edge was kept only when the target happened to
+sort earlier in the topological order — so a check against an independent sibling that sorted
+later was dropped, and then failed with `Catalog Error: Table ... does not exist`. Edges are now
+dropped only when they would actually close a cycle (a check pointing at a model built *from*
+the model being checked), which is the case that would hang.
+
+**Example: `jaffle-shop-classic`.** dbt's original demo project
 ([`jaffle-shop-classic`](https://github.com/dbt-labs/jaffle-shop-classic)) converted and shipped
 as a reference project: seeds as ordinary models over `read_csv_auto`, `schema.yml`'s twenty
 tests as promotion-gating checks, and the one Jinja-templated model (`{% for %}` over four

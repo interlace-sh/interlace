@@ -27,9 +27,9 @@ renamed as (
         subtotal as subtotal_cents,
         tax_paid as tax_paid_cents,
         order_total as order_total_cents,
-        (subtotal / 100)::numeric(16, 2) as subtotal,
-        (tax_paid / 100)::numeric(16, 2) as tax_paid,
-        (order_total / 100)::numeric(16, 2) as order_total,
+        cents_to_dollars(subtotal) as subtotal,
+        cents_to_dollars(tax_paid) as tax_paid,
+        cents_to_dollars(order_total) as order_total,
 
         ---------- timestamps
         date_trunc('day', ordered_at) as ordered_at

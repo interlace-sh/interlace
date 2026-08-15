@@ -74,6 +74,28 @@ fingerprint tracks the canonical SQL and never the file's bytes, so editing a CS
 changes"; `interlace run --select <model>+` is the rebuild (`apply --force` is not — and mind
 the trailing `+`, or every downstream model keeps the old data).
 
+**SQL macros.** `macros/*.sql` holds `CREATE MACRO` definitions, and any model can call them:
+
+```sql
+-- macros/money.sql
+CREATE MACRO cents_to_dollars(amount) AS (amount / 100)::numeric(16, 2);
+```
+
+The call is expanded into the model's AST while it compiles — before the fingerprint, before
+lineage, before transpilation — and that ordering is the point. Editing a macro re-plans every
+model that calls it, because the expansion is part of the canonical SQL the fingerprint covers;
+a macro created in the warehouse instead would be invisible to it, leaving callers stale with
+nothing to notice. And one definition covers every engine: dbt writes `default__`, `postgres__`
+and `bigquery__` variants because Jinja renders text, while an expanded AST is transpiled like
+everything else, so Postgres gets its integer-division fix
+(`CAST(amount AS DOUBLE PRECISION) / NULLIF(100, 0)`) from the same line. Scalar expressions
+only; macros may call macros; recursion is a compile error. Configured with `macro_paths`
+(default `["macros"]`). See [models](docs/models.md#macros).
+
+**`interlace run` reports how long it took.** `Ran 19 model(s) (19 task(s)); promoted 19 to
+'prod'.` is now `Ran 19 model(s) in 1.23s; promoted 19 to 'prod'.` — the task count restated the
+model count in the common case, and wall-clock is what you were timing.
+
 **Example: `jaffle-shop`.** dbt's *current* demo project
 ([`dbt-labs/jaffle-shop`](https://github.com/dbt-labs/jaffle-shop)) converted: 19 models, 27
 checks, and its six raw tables read straight from dbt's repo over HTTP rather than vendored.

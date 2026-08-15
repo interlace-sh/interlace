@@ -55,7 +55,7 @@ Same as the classic project, plus the source form:
 sql = re.sub(r"\{\{\s*source\(\s*'[^']+'\s*,\s*'([^']+)'\s*\)\s*\}\}", r'\1', sql)   # source('ecom','raw_x') -> raw_x
 sql = re.sub(r"\{\{\s*ref\(\s*'([^']+)'\s*\)\s*\}\}", r'\1', sql)                    # ref('x') -> x
 sql = re.sub(r"\{\{\s*dbt\.date_trunc\('(\w+)','(\w+)'\)\s*\}\}", r"date_trunc('\1', \2)", sql)
-sql = re.sub(r"\{\{\s*cents_to_dollars\('(\w+)'\)\s*\}\}", r'(\1 / 100)::numeric(16, 2)', sql)
+sql = re.sub(r"\{\{\s*cents_to_dollars\('(\w+)'\)\s*\}\}", r'cents_to_dollars(\1)', sql)   # a macro here too
 ```
 
 `dbt.date_trunc` is a cross-database macro — a templating layer that exists to paper over
@@ -96,18 +96,43 @@ simply waits for it.
 
 ## Macros
 
-There is no macro layer, and that is the largest genuine gap. What replaces it depends on
-what the macro was doing.
+dbt writes `cents_to_dollars` five times — `default__`, `postgres__`, `bigquery__`, `fabric__`
+and the dispatcher — because Jinja renders *text*, and the text has to differ per engine.
 
-`cents_to_dollars` is a one-line cast with adapter dispatch. Three staging models just
-write the cast — a Python model to spell four tokens is a worse trade than the repetition.
+[`macros/jaffle.sql`](macros/jaffle.sql) writes it once:
 
-`dbt_utils.generate_surrogate_key` is a package macro, and there is no package to install
-it from. It is written once in [`models/staging/_macros.py`](models/staging/_macros.py) —
-a file starting with `_` is not a model, and a model can import one sitting next to it —
-and [`stg_supplies.py`](models/staging/stg_supplies.py) generates its SQL from it. That is
-the pattern when a macro earns a Python function: the value lives in one place, and the
-SQL it builds still runs in the engine.
+```sql
+CREATE MACRO cents_to_dollars(amount) AS (amount / 100)::numeric(16, 2);
+```
+
+Models call it as an ordinary function, and the call is expanded into the model's AST at
+compile time — so it is transpiled with everything else:
+
+| engine | rendered |
+| --- | --- |
+| DuckDB | `CAST((subtotal / 100) AS DECIMAL(16, 2))` |
+| Postgres | `CAST((CAST(subtotal AS DOUBLE PRECISION) / NULLIF(100, 0)) AS DECIMAL(16, 2))` |
+| BigQuery | `CAST((subtotal / NULLIF(100, 0)) AS NUMERIC)` |
+
+Postgres's variant is the one dbt hand-writes; it comes out of the same one line here.
+
+`dbt_utils.generate_surrogate_key` is the other case — a *package* macro, with no package to
+install it from. It is in the same file, as the twelve tokens the package ships, and
+`stg_supplies` calls it like any other function.
+
+Because expansion happens before fingerprinting, editing either macro re-plans every model
+that calls it:
+
+```
+ stg_orders     modified   breaking   rebuild
+ stg_products   modified   breaking   rebuild
+ stg_supplies   modified   breaking   rebuild
+ ... and everything downstream
+```
+
+A macro created in the warehouse would not do that — the callers' SQL would be unchanged, so
+nothing would rebuild. The trade is that these macros are a build-time abstraction: they do
+not exist in the warehouse for ad-hoc queries.
 
 ## Tests
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -467,6 +468,7 @@ async def _execute(
             restate=restate,
         )
         progress = _build_progress(plan_result)
+        started = time.perf_counter()
         try:
             with progress.progress if progress else contextlib.nullcontext():
                 result = await apply_plan(
@@ -487,7 +489,7 @@ async def _execute(
         await _render_empty_incrementals(result, compiled, engines)
         verb = "Restated" if restate else "Ran"
         console.print(
-            f"[green]{verb} {len(set(result.built))} model(s) ({len(result.built)} task(s)); "
+            f"[green]{verb} {len(set(result.built))} model(s) in {time.perf_counter() - started:.2f}s; "
             f"promoted {result.promoted} to '{environment}'.[/green]"
         )
     finally:

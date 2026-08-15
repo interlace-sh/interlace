@@ -733,16 +733,19 @@ async def apply(
         return found
 
     # Checks that read *other* models (relationships, sql) add scheduling edges the
-    # data DAG doesn't have — and may point "backwards", which would deadlock the
-    # per-model events. Keep a check edge only when it agrees with the topological
-    # order (dep built before the reader); a back edge is dropped (its check may run
-    # a beat early, far better than a hang). Data edges always agree, so they all stay.
-    topo = {name: index for index, name in enumerate(compiled.graph.topological_sort())}
+    # data DAG doesn't have. Keep one unless it would close a cycle — which it does
+    # exactly when the reader is already an ancestor of what its check reads (a check
+    # pointing downstream, e.g. order_items testing against orders, which is built
+    # from order_items). Those are dropped: the check runs before its target exists
+    # and fails, but a cycle would hang the whole apply, and the model can point its
+    # check at an upstream instead. Everything else is a plain sibling reference and
+    # is enforced — dropping those on a topological-order heuristic failed checks
+    # whose target simply happened to sort later.
     blocking: dict[str, set[str]] = {}
     for name in per_model:
         deps = in_plan_ancestors(name)
         for ref in _check_references(compiled.models[name], compiled):
-            if ref in per_model and topo.get(ref, -1) < topo.get(name, 0):
+            if ref in per_model and name not in compiled.graph.ancestors(ref):
                 deps.add(ref)
         blocking[name] = deps
 

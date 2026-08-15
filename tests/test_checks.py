@@ -212,3 +212,50 @@ def test_sql_check_substitutes_table() -> None:
         spec, TableRef(schema="s", name="t"), "m", "duckdb", lambda n: TableRef(schema="s", name=n)
     )
     assert "FROM s.t" in query.sql(dialect="duckdb")
+
+
+async def test_relationships_check_waits_for_a_sibling_that_sorts_later(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """`a_items` and `z_orders` are independent siblings, so their relative build order
+    is whatever the topological sort produces. The check edge must be enforced anyway —
+    it was previously dropped whenever the target happened to sort later, and the check
+    then ran against a table that did not exist yet."""
+    engine, store = env
+    models = compile_models(
+        [
+            ModelDef(name="z_orders", sql="SELECT * FROM (VALUES (1), (2)) AS t (order_id)"),
+            ModelDef(
+                name="a_items",
+                sql="SELECT * FROM (VALUES (10, 1), (11, 2)) AS t (item_id, order_id)",
+                checks=[{"relationships": {"column": "order_id", "to": "z_orders", "field": "order_id"}}],
+            ),
+        ]
+    )
+    result = await apply(await diff(models, "prod", store), compiled=models, engine=engine, state=store)
+
+    assert {c.name: c.status for c in result.checks} == {"relationships_order_id": "passed"}
+
+
+async def test_a_check_pointing_downstream_does_not_deadlock(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """The cycle case: `items` is checked against `orders`, which is built FROM `items`.
+    The edge cannot be enforced without hanging, so it is dropped — the apply completes
+    rather than waiting forever (the check itself fails, which is the honest outcome)."""
+    engine, store = env
+    models = compile_models(
+        [
+            ModelDef(
+                name="items",
+                sql="SELECT * FROM (VALUES (10, 1)) AS t (item_id, order_id)",
+                checks=[
+                    {"relationships": {"column": "order_id", "to": "orders", "field": "order_id", "severity": "warn"}}
+                ],
+            ),
+            ModelDef(name="orders", sql="SELECT DISTINCT order_id FROM items"),
+        ]
+    )
+    result = await apply(await diff(models, "prod", store), compiled=models, engine=engine, state=store)
+
+    assert set(result.built) == {"items", "orders"}

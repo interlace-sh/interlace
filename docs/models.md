@@ -167,6 +167,60 @@ If instead you want a *single* model carrying a `tenant` column (no per-tenant t
 just an ordinary model — but for the same logic applied per tenant with isolation, the loop
 above is the right shape.
 
+## Macros
+
+A macro is a named SQL expression, written once and called from any model. Definitions live
+in `macros/*.sql` (configurable with `macro_paths`) in the engine's own `CREATE MACRO` form:
+
+```sql
+-- macros/money.sql
+CREATE MACRO cents_to_dollars(amount) AS (amount / 100)::numeric(16, 2);
+```
+
+```sql
+-- models/stg_orders.sql
+SELECT order_id, cents_to_dollars(subtotal) AS subtotal FROM raw_orders
+```
+
+The call is **expanded into the model's AST while it compiles** — before the fingerprint,
+before lineage, before transpilation. That ordering is the design, and it buys three things:
+
+- **A macro edit rebuilds its callers.** A model's fingerprint is its canonical SQL, and the
+  expansion is part of it. Change `cents_to_dollars` and every model that calls it plans as
+  `modified`, along with everything downstream. A macro created in the warehouse instead
+  (`CREATE MACRO` on the engine) would be invisible to the fingerprint: the SQL of every
+  caller stays byte-identical, so nothing would rebuild and the tables would quietly disagree
+  with the definition.
+- **One definition per dialect, not one per adapter.** The expansion is dialect-agnostic AST,
+  so the transpiler renders it per engine. dbt writes `default__cents_to_dollars`,
+  `postgres__cents_to_dollars`, `bigquery__cents_to_dollars` and so on, because Jinja renders
+  *text* and the text has to differ. Here the one line above becomes:
+
+  | engine | rendered |
+  | --- | --- |
+  | DuckDB | `CAST((subtotal / 100) AS DECIMAL(16, 2))` |
+  | Postgres | `CAST((CAST(subtotal AS DOUBLE PRECISION) / NULLIF(100, 0)) AS DECIMAL(16, 2))` |
+  | BigQuery | `CAST((subtotal / NULLIF(100, 0)) AS NUMERIC)` |
+
+  Postgres would do integer division on `/`, and BigQuery spells the type differently. Neither
+  needs a second macro.
+- **Lineage sees through it.** Column lineage reads the AST, and by then there is no opaque
+  function call in it.
+
+Details:
+
+- **Scalar expressions only.** A table macro (`AS TABLE SELECT ...`) has no call site to expand
+  into — that is a model.
+- **Macros may call macros**, to a depth of 10; recursion is an error, not a hang.
+- **A macro body may reference a model**, and that counts as a dependency of every model that
+  calls it, because expansion runs before dependency resolution.
+- **Arity is checked** at compile time, naming the macro and the file it came from.
+- **The macro does not exist in the warehouse.** This is the real cost: someone querying the
+  built tables by hand cannot call `cents_to_dollars`. It is a build-time abstraction.
+
+`examples/jaffle-shop` uses macros for exactly the two cases dbt's does — a project macro and a
+`dbt_utils` one it has no package to install.
+
 ## Materialisations
 
 `materialise` is the destination/ownership plane. **Owned** planes (`virtual`/`view`/`ephemeral`)

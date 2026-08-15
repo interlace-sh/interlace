@@ -9,17 +9,18 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from interlace.config.config import CONFIG_FILE, EngineConfig, ProjectConfig, SecretConfig, load_config
 from interlace.dsl.decorators import REGISTRY, CheckDef, ModelDef, StreamDef
-from interlace.dsl.discovery import discover_models
+from interlace.dsl.discovery import discover_macros, discover_models
 from interlace.engines.base import EngineAdapter
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.engines.registry import EngineRegistry
 from interlace.exceptions import ConfigurationError
 from interlace.graph.project import CompiledProject, compile_models
+from interlace.ir.macros import Macro
 from interlace.state.store import SqliteStateStore
 from interlace.streaming.log import SqliteStreamLog
 
@@ -86,6 +87,7 @@ class Project:
     models: list[ModelDef]
     checks: list[CheckDef]
     streams: list[StreamDef]
+    macros: dict[str, Macro] = field(default_factory=dict)
 
     @classmethod
     def load(cls, root: Path | str) -> Project:
@@ -98,6 +100,7 @@ class Project:
             models=models,
             checks=list(REGISTRY.checks),
             streams=list(REGISTRY.streams.values()),
+            macros=discover_macros(root, config.macro_paths, config.default_dialect),
         )
 
     def compile(self) -> CompiledProject:
@@ -109,6 +112,7 @@ class Project:
             engine_dialects={name: cfg.resolved_dialect() for name, cfg in engine_cfgs.items()},
             known_engines=set(engine_cfgs),
             checks=self.checks,
+            macros=self.macros,
         )
 
     def open_engine(self, name: str | None = None) -> EngineAdapter:

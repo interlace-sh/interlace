@@ -20,6 +20,7 @@ from interlace.checks.spec import parse_checks
 from interlace.dsl.decorators import REGISTRY, ModelDef, _as_columns, _as_tuple, validate_materialise
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError, InterlaceError
+from interlace.ir.macros import Macro, parse_macros
 
 
 def discover_models(root: Path, model_paths: list[str], default_dialect: str) -> list[ModelDef]:
@@ -54,6 +55,26 @@ def _forget_project_modules(root: Path, before: set[str]) -> None:
         origin = getattr(module, "__file__", None)
         if origin and Path(origin).is_relative_to(root):
             del sys.modules[name]
+
+
+def discover_macros(root: Path, macro_paths: list[str], default_dialect: str) -> dict[str, Macro]:
+    """Parse every ``CREATE MACRO`` under the macro paths, keyed by casefolded name."""
+    macros: dict[str, Macro] = {}
+    for relative in macro_paths:
+        base = root / relative
+        if not base.is_dir():
+            continue
+        for macro_file in sorted(base.rglob("*.sql")):
+            source = str(macro_file.relative_to(root))
+            for macro in parse_macros(macro_file.read_text(), default_dialect, source):
+                key = macro.name.casefold()
+                if key in macros:
+                    raise DefinitionError(
+                        f"macro {macro.name!r} is defined twice: {macros[key].source} and {source}",
+                        details={"macro": macro.name},
+                    )
+                macros[key] = macro
+    return macros
 
 
 def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dialect: str) -> ModelDef:

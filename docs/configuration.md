@@ -16,6 +16,7 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 | `default_engine` | str | `default` | Which named engine models build on unless they set `engine:`. |
 | `engines` | map | `{}` | Named engines `{name: EngineConfig}` for multi-engine projects. The top-level `database`/`data_path`/etc. synthesize the `default` engine. |
 | `model_paths` | list | `["models"]` | Directories scanned for `*.sql` and `@model` `*.py`. |
+| `macro_paths` | list | `["macros"]` | Directories scanned for `CREATE MACRO` definitions, expanded into models at compile time (see [models](models.md#macros)). Missing directories are ignored. |
 | `parallelism` | int (≥1) | `4` | Max models built concurrently by `apply`/`run`. |
 | `state_path` | str | `.interlace/state.db` | SQLite control-plane database. |
 | `stream_path` | str | `.interlace/streams.db` | Durable stream log (SQLite WAL). |

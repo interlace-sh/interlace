@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import inspect
 import textwrap
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from sqlglot import exp
@@ -23,6 +23,7 @@ from interlace.exceptions import CompilationError, DefinitionError
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import parse, table_references
 from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint
+from interlace.ir.macros import Macro, expand_macros
 from interlace.ir.relation import TableRef
 
 _PHYSICAL_PREFIX = "interlace__"
@@ -93,7 +94,7 @@ def _physical_table(name: str, fingerprint: str, catalog: str | None) -> TableRe
 
 
 def _resolve_dependencies(
-    model: ModelDef, names: set[str], default_dialect: str
+    model: ModelDef, names: set[str], default_dialect: str, macros: Mapping[str, Macro]
 ) -> tuple[tuple[str, ...], exp.Expression | None, str]:
     dialect = model.dialect or default_dialect
     deps: list[str] = []
@@ -115,6 +116,10 @@ def _resolve_dependencies(
             raise CompilationError(
                 f"model {model.name!r}: {exc.message}", details={**exc.details, "model": model.name}
             ) from exc
+        # Before anything reads the AST: the fingerprint is canonical SQL, so expanding
+        # here is what makes a macro edit rebuild its callers, and what lets a macro body
+        # reference a model and have that count as a dependency.
+        ast = expand_macros(ast, macros, model.name)
         for ref in table_references(ast):
             if ref in names:
                 add(ref)
@@ -149,12 +154,14 @@ def compile_models(
     known_engines: set[str] | None = None,
     catalog: str | None = None,
     checks: Iterable[CheckDef] = (),
+    macros: Mapping[str, Macro] | None = None,
 ) -> CompiledProject:
     """Compile models into a fingerprinted, topologically-ordered project.
 
     ``checks`` are ``@check``-decorated Python functions, attached by model name.
     ``engine_dialects`` maps engine name → sqlglot dialect (used when a model
     omits ``dialect``). ``known_engines`` validates model ``engine`` pins.
+    ``macros`` are expanded into every model's AST before it is fingerprinted.
     """
     definitions = {m.name: m for m in models}
     names = set(definitions)
@@ -178,7 +185,7 @@ def compile_models(
             )
         # Authoring dialect: explicit model dialect, else the engine's, else project default.
         model_default_dialect = dialects_by_engine.get(engine, default_dialect)
-        deps, ast, dialect = _resolve_dependencies(definition, names, model_default_dialect)
+        deps, ast, dialect = _resolve_dependencies(definition, names, model_default_dialect, macros or {})
         resolved[name] = (deps, ast, dialect, engine)
         graph.add_node(name)
         for dep in deps:

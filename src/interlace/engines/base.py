@@ -30,6 +30,8 @@ class EngineCaps:
     supports_create_or_replace: bool = False
     supports_star_exclude: bool = False  # SELECT * EXCLUDE (...) — scd needs it
     supports_merge: bool = False  # native single-statement MERGE — merge upserts in place
+    # Multi-statement execute_all is one transaction (stream watermarks need this).
+    supports_transactions: bool = False
 
 
 class EngineAdapter(ABC):

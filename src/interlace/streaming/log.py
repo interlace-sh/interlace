@@ -6,7 +6,8 @@ before events are durable, so a 200-OK means "fsynced". Consumer offsets are
 committed transactionally with fencing tokens, which kills the read/ack race by
 construction. Idempotency keys give effectively-exactly-once.
 
-The default backend is SQLite (WAL, group commit); Postgres/Redpanda/NATS are
+The default backend is SQLite (WAL, ``synchronous=FULL``, one durable commit per
+append batch — there is no group-commit deque). Postgres/Redpanda/NATS remain
 optional backends behind this same Protocol.
 """
 

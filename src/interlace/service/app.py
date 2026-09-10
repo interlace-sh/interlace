@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -37,15 +38,17 @@ from litestar.static_files import create_static_files_router
 
 from interlace import __version__
 from interlace.dsl.decorators import StreamDef
-from interlace.exceptions import CheckError, QueryError, SelectionError, StreamError
+from interlace.exceptions import CheckError, LockError, QueryError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models, wants_state
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
+from interlace.plan.run import run_plan
 from interlace.project import Project
 from interlace.service.auth import auth_guard
 from interlace.sinks import target_ref
+from interlace.state.locks import hold_apply_lock
 from interlace.state.snapshot import ChangeCategory
 from interlace.streaming.log import Event
 from interlace.streaming.materializer import (
@@ -56,9 +59,12 @@ from interlace.streaming.materializer import (
     stream_watermark,
     sweep_streams,
 )
-from interlace.streaming.schema import partition_rows, validate_rows, validate_rows_evolve
+from interlace.streaming.schema import (
+    partition_rows,
+    validate_rows,
+    validate_rows_evolve,
+)  # ---- live reload ---------------------------------------------------------------
 
-# ---- live reload ---------------------------------------------------------------
 # The project is compiled once at startup, then recompiled on demand when a model
 # file changes on disk — so editing a `.sql`/`.py` model and pressing Plan/Apply in
 # the UI reflects the edit, matching what `interlace plan` (a fresh process) shows.
@@ -581,7 +587,7 @@ async def drop_environment_endpoint(name: FromPath[str], state: State, force: Fr
         raise ClientException(detail=f"{name!r} is the production environment; pass force=true to drop it")
     if not await state.store.get_environment(name):
         raise NotFoundException(detail=f"unknown environment: {name}")
-    async with state.apply_lock:
+    async with hold_apply_lock(state.store, owner=state.lock_owner):
         dropped = await drop_environment(state.store, engines=state.engines, environment=name)
     await state.store.append_event("environment.dropped", entity=name, payload={"views": dropped})
     return {"environment": name, "dropped_views": dropped}
@@ -602,7 +608,7 @@ async def rollback_environment_endpoint(name: FromPath[str], state: State, data:
 
     request = data or RollbackRequest()
     try:
-        async with state.apply_lock:
+        async with hold_apply_lock(state.store, owner=state.lock_owner):
             result = await rollback_environment(
                 state.store,
                 engines=state.engines,
@@ -729,7 +735,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         selected = select_models(data.selectors, compiled, promoted=promoted) if data.selectors else None
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
-    async with state.apply_lock:
+    async with hold_apply_lock(state.store, owner=state.lock_owner):
         if state.streams:  # an apply must see every event the publish path has accepted
             await flush_streams(state.flush_targets, state.stream_log, state.engine)
         plan = await diff(compiled, env, state.store, select=selected, forward_only=data.forward_only)
@@ -780,6 +786,108 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         built=result.built,
         promoted=result.promoted,
         breaking=breaking,
+        reused=result.reused,
+        transfers=result.transfers,
+        rows={
+            name: {"inserted": c.inserted, "updated": c.updated, "deleted": c.deleted}
+            for name, c in result.rows.items()
+        },
+        timings={name: round(seconds, 3) for name, seconds in result.timings.items()},
+        gated=result.gated,
+        checks=[
+            CheckOutcomeInfo(
+                model=outcome.model,
+                name=outcome.name,
+                check_type=outcome.type,
+                severity=outcome.severity,
+                status=outcome.status,
+                failures=outcome.failures,
+                message=outcome.message,
+            )
+            for outcome in result.checks
+        ],
+    )
+
+
+@post("/run", opt={"scope": "write"})
+async def post_run(data: CreateRun, state: State) -> ApplyResponse:
+    """Force-build models and promote immediately — CLI ``interlace run`` / ``restate``
+    parity. ``POST /runs`` remains the fire-and-forget enqueue path for the scheduler."""
+    await reload_if_stale(state)
+    compiled: CompiledProject = state.compiled
+    env = data.environment or state.environment
+    try:
+        promoted = await state.store.get_environment(env) if wants_state(data.selectors) else None
+        selected = (
+            select_models(data.selectors, compiled, promoted=promoted) if data.selectors else set(compiled.models)
+        )
+    except SelectionError as exc:
+        raise ClientException(detail=exc.message) from exc
+
+    from datetime import datetime
+
+    def _bound(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+    try:
+        window_start, window_end = _bound(data.start), _bound(data.end)
+    except ValueError as exc:
+        raise ClientException(detail=f"start/end must be ISO timestamps: {exc}") from exc
+
+    async with hold_apply_lock(state.store, owner=state.lock_owner):
+        if state.streams:
+            await flush_streams(state.flush_targets, state.stream_log, state.engine)
+        plan = await run_plan(
+            compiled,
+            env,
+            state.store,
+            start=window_start,
+            end=window_end,
+            select=selected,
+            restate=data.restate,
+        )
+        event = "restate.started" if data.restate else "run.started"
+        await state.store.append_event(event, entity=env, payload={"models": plan.promote, "restate": data.restate})
+        loop = asyncio.get_running_loop()
+        progress_tasks: set[asyncio.Task] = set()
+
+        def on_progress(model: str, progress_event: str) -> None:
+            task = loop.create_task(
+                state.store.append_event(f"model.{progress_event}", entity=model, payload={"environment": env})
+            )
+            progress_tasks.add(task)
+            task.add_done_callback(progress_tasks.discard)
+
+        try:
+            result = await apply_plan(
+                plan,
+                compiled=compiled,
+                engines=state.engines,
+                state=state.store,
+                base_path=state.root,
+                parallelism=state.parallelism,
+                on_progress=on_progress,
+            )
+        except CheckError as exc:
+            await state.store.append_event("run.blocked", entity=env, payload={"reason": exc.message})
+            raise ClientException(detail=exc.message) from exc
+        finally:
+            if progress_tasks:
+                await asyncio.gather(*progress_tasks, return_exceptions=True)
+        await state.store.append_event(
+            "run.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
+        )
+        state.describe_cache.clear()
+    return ApplyResponse(
+        environment=env,
+        built=result.built,
+        promoted=result.promoted,
+        breaking=False,
         reused=result.reused,
         transfers=result.transfers,
         rows={
@@ -944,9 +1052,6 @@ def _jsonable(value: object) -> object:
     return str(value)  # timestamps, decimals, structs — stringified for the wire
 
 
-# DuckDB table functions and scalar functions that read OUTSIDE the warehouse —
-# the console must never become a local-file reader or an HTTP client. Deny by
-# name pattern; the warehouse's own tables/views never match these shapes.
 _QUERY_MAX_CELL_BYTES = 8_000_000  # ~8 MB of rendered cells; the console inspects, never extracts
 
 
@@ -1287,7 +1392,7 @@ async def post_gc(state: State, data: GcRequest | None = None) -> GcResponse:
         grace = parse_grain(request.grace)
     except ValueError as exc:
         raise ClientException(detail=str(exc)) from exc
-    async with state.apply_lock:
+    async with hold_apply_lock(state.store, owner=state.lock_owner):
         result = await run_gc(state.store, engines=state.engines, grace=grace, dry_run=request.dry_run)
     if not request.dry_run:
         await state.store.trim_logs()  # event_log / check_results / terminal queue rows
@@ -1420,7 +1525,7 @@ def create_app(
         app.state.engine_configs = project.config.engine_configs()
         app.state.default_engine = project.config.default_engine
         app.state.describe_cache = {}  # (model, fingerprint) -> {column: type}, filled by /lineage
-        app.state.apply_lock = asyncio.Lock()  # serialise applies against the single warehouse connection
+        app.state.lock_owner = f"serve:{os.getpid()}"  # cross-process apply lock identity
         # Wake the scheduler's drain the instant a run is enqueued, instead of waiting
         # out the tick interval — an enqueue from the UI/API/stream picks up promptly.
         app.state.drain_wanted = asyncio.Event()
@@ -1481,7 +1586,7 @@ def create_app(
             # and defeat the 429 backpressure gate.
             pre_flush = {target.name: app.state.log_heads.get(target.name, 0) for target in targets}
             try:
-                async with app.state.apply_lock:
+                async with hold_apply_lock(store, owner=app.state.lock_owner):
                     flushed = await flush_streams(targets, stream_log, engine)
             except BaseException:
                 app.state.flush_dirty |= dirty  # nothing confirmed: keep them dirty
@@ -1525,7 +1630,7 @@ def create_app(
                         # every apply and flush; nothing else reclaims them
                         await store.trim_logs()
                         next_trim = asyncio.get_running_loop().time() + 6 * 3600
-                    async with app.state.apply_lock:  # one warehouse writer at a time
+                    async with hold_apply_lock(store, owner=app.state.lock_owner):  # one warehouse writer at a time
                         await drain(
                             store,
                             compiled,
@@ -1650,6 +1755,8 @@ def create_app(
         # user-caused errors (bad selector, unknown engine, contract violation)
         # are 4xx with their message — never anonymous 500s
         message = getattr(exc, "message", str(exc))
+        if isinstance(exc, LockError):
+            return Response(content={"detail": message}, status_code=409)
         status = 404 if "unknown" in message[:40].lower() else 400
         return Response(content={"detail": message}, status_code=status)
 
@@ -1676,6 +1783,7 @@ def create_app(
             create_run,
             cancel_run,
             post_apply,
+            post_run,
             get_checks,
             post_checks_run,
             get_streams,

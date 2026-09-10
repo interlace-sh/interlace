@@ -8,6 +8,7 @@ Compilation, planning, and execution happen later over the registry. UK spelling
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,6 +25,8 @@ ModelFn = Callable[..., Any]
 _MATERIALISATIONS = frozenset({"virtual", "view", "ephemeral", "table", "file"})
 _KEYED_STRATEGIES = frozenset({"merge", "full_merge", "hash_merge", "scd"})
 _DRIFT_MODES = frozenset({"evolve", "reject", "quarantine"})
+# Stream names become SQL identifiers / watermark keys — keep them safe to quote.
+_STREAM_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _as_tuple(value: str | Sequence[str]) -> tuple[str, ...]:
@@ -276,6 +279,10 @@ def stream(
     on_schema_drift: str = "reject",
 ) -> Callable[[ModelFn], ModelFn]:
     """Declare a durable ingestion stream with an HTTP publish endpoint."""
+    if not _STREAM_NAME.fullmatch(name):
+        raise DefinitionError(
+            f"stream name {name!r} must match [A-Za-z_][A-Za-z0-9_]* " "(it becomes streams.<name> and a watermark key)"
+        )
     if on_schema_drift not in _DRIFT_MODES:
         raise DefinitionError(f"unknown on_schema_drift {on_schema_drift!r}; expected one of {sorted(_DRIFT_MODES)}")
 

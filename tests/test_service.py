@@ -449,7 +449,8 @@ def test_query_console_selects_and_refuses_writes(client: TestClient) -> None:
 
 def test_query_console_cannot_read_local_files(client: TestClient) -> None:
     """The console must never become a local-file reader or HTTP client, however the
-    read is spelled — including DuckDB's dynamic-SQL query()/read_csv() escape hatches."""
+    read is spelled — including DuckDB's dynamic-SQL query()/read_csv() escape hatches
+    and path-as-table (FROM 'file.csv')."""
     client.post("/apply", json={"environment": "prod"})
     bypasses = [
         "SELECT * FROM read_csv('/etc/hostname')",
@@ -458,6 +459,10 @@ def test_query_console_cannot_read_local_files(client: TestClient) -> None:
         "SELECT * FROM query_table('main.raw_events')",
         "SELECT * FROM glob('/etc/*')",
         "SELECT * FROM some_future_reader('/etc/hostname')",  # unknown table fn: the allowlist still blocks it
+        "SELECT * FROM 'probe.csv'",
+        'SELECT * FROM "probe.parquet"',
+        "SELECT http_get('https://example.com')",
+        "SELECT * FROM pragma_database_list",
     ]
     for sql in bypasses:
         resp = client.post("/query", json={"sql": sql})
@@ -507,6 +512,49 @@ def test_apikey_lifecycle_over_http(client: TestClient) -> None:
 
     # unauthenticated is refused once keys exist
     assert client.get("/models").status_code in (401, 403)
+
+
+def test_refuse_revoking_the_last_api_key(client: TestClient) -> None:
+    """Revoking the sole key would re-open keyless admin mode — refuse it."""
+    created = client.post("/apikeys", json={"name": "only", "scopes": ["admin"]}).json()
+    auth = {"Authorization": f"Bearer {created['token']}"}
+    refused = client.delete("/apikeys/only", headers=auth)
+    assert refused.status_code == 400
+    assert len(client.get("/apikeys", headers=auth).json()) == 1
+
+
+def test_post_run_builds_synchronously(client: TestClient) -> None:
+    """POST /run mirrors CLI interlace run — immediate build, not enqueue."""
+    body = client.post("/run", json={"selectors": ["raw_events"], "environment": "prod"}).json()
+    assert body["environment"] == "prod"
+    assert body["promoted"] >= 1
+    assert isinstance(body["built"], list)
+
+
+def test_sse_token_query_is_accepted_once_keyed(tmp_path: Path) -> None:
+    """EventSource cannot send Authorization — ?token= on /events/stream authenticates."""
+    from unittest.mock import MagicMock
+
+    from interlace.service.auth import _bearer_token
+
+    project_dir = _make_project(tmp_path)
+    with TestClient(app=create_app(project_dir, "prod")) as client:
+        created = client.post("/apikeys", json={"name": "ui", "scopes": ["read"]}).json()
+        token = created["token"]
+        assert client.get("/events").status_code in (401, 403)
+        assert client.get("/events", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+    sse = MagicMock()
+    sse.headers = {}
+    sse.scope = {"path": "/events/stream"}
+    sse.query_params = {"token": token}
+    assert _bearer_token(sse) == token
+
+    other = MagicMock()
+    other.headers = {}
+    other.scope = {"path": "/events"}
+    other.query_params = {"token": token}
+    assert _bearer_token(other) is None  # query token is SSE-only
 
 
 def test_apply_emits_per_model_progress_events(client: TestClient) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +17,7 @@ from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from interlace.exceptions import CheckError, ConfigurationError, InterlaceError, QueryError, SelectionError
+from interlace.exceptions import CheckError, ConfigurationError, InterlaceError, LockError, QueryError, SelectionError
 from interlace.graph.column_lineage import column_impact, column_lineage, split_target
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
@@ -30,6 +31,7 @@ from interlace.scaffold import list_templates, scaffold_project
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
 from interlace.sinks import target_ref
+from interlace.state.locks import hold_apply_lock
 from interlace.streaming import ensure_stream_tables, flush_streams
 
 # pretty_exceptions_enable=False: let InterlaceError propagate out of app() so main()
@@ -108,9 +110,9 @@ _END = typer.Option("", "--end", help="Window end (ISO), for incremental models.
 _FORWARD_ONLY = typer.Option(
     False,
     "--forward-only",
-    help="Modified history-keeping models (merge/full_merge/scd/incremental) carry their history "
-    "forward: it is copied to the new version, the new logic applies to the copy, and checks gate "
-    "before views move. Requires a shape-compatible change.",
+    help="Modified history-keeping models (merge/full_merge/hash_merge/scd/incremental) carry their "
+    "history forward: it is copied to the new version, the new logic applies to the copy, and "
+    "checks gate before views move. Requires a shape-compatible change.",
 )
 _JSON = typer.Option(False, "--json", help="Emit JSON instead of a table (for scripts and CI).")
 _PARALLELISM = typer.Option(
@@ -371,16 +373,20 @@ async def _apply(
         progress = _build_progress(plan_result)
         try:
             with progress.progress if progress else contextlib.nullcontext():
-                result = await apply_plan(
-                    plan_result,
-                    compiled=compiled,
-                    engines=engines,
-                    state=state,
-                    base_path=project.root,
-                    on_progress=progress,
-                    parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
-                )
+                async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:apply"):
+                    result = await apply_plan(
+                        plan_result,
+                        compiled=compiled,
+                        engines=engines,
+                        state=state,
+                        base_path=project.root,
+                        on_progress=progress,
+                        parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
+                    )
         except CheckError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
+        except LockError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
         _render_build_results(result, compiled)
@@ -471,16 +477,20 @@ async def _execute(
         started = time.perf_counter()
         try:
             with progress.progress if progress else contextlib.nullcontext():
-                result = await apply_plan(
-                    plan_result,
-                    compiled=compiled,
-                    engines=engines,
-                    state=state,
-                    base_path=project.root,
-                    on_progress=progress,
-                    parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
-                )
+                async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:run"):
+                    result = await apply_plan(
+                        plan_result,
+                        compiled=compiled,
+                        engines=engines,
+                        state=state,
+                        base_path=project.root,
+                        on_progress=progress,
+                        parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
+                    )
         except CheckError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
+        except LockError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
         _render_build_results(result, compiled)
@@ -521,7 +531,8 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
     engines = project.open_engines()
     state = await project.open_state()
     try:
-        result = await run_gc(state, engines=engines, grace=parsed_grace, dry_run=dry_run)
+        async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:gc"):
+            result = await run_gc(state, engines=engines, grace=parsed_grace, dry_run=dry_run)
         verb = "Would remove" if dry_run else "Removed"
         console.print(
             f"{verb} {len(result.removed_snapshots)} snapshot(s), dropped {len(result.dropped_tables)} table(s); "
@@ -576,16 +587,17 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
             await trigger_engine.tick(datetime.now())
             # materialize anything published since the last tick, then run models
             # (an API-only `serve --no-scheduler` process relies on this loop to flush)
-            if stream_log is not None:
-                await flush_streams(project.streams, stream_log, engines.get())
-            ran = await drain(
-                state,
-                compiled,
-                engines=engines,
-                environment=environment,
-                base_path=project.root,
-                parallelism=project.config.parallelism,
-            )
+            async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:scheduler"):
+                if stream_log is not None:
+                    await flush_streams(project.streams, stream_log, engines.get())
+                ran = await drain(
+                    state,
+                    compiled,
+                    engines=engines,
+                    environment=environment,
+                    base_path=project.root,
+                    parallelism=project.config.parallelism,
+                )
             if ran:
                 console.print(f"[green]ran {ran} scheduled run(s) in '{environment}'[/green]")
             if stream_log is not None:
@@ -643,6 +655,11 @@ def serve(
         True, "--scheduler/--no-scheduler", help="Run the scheduler loop in this process (combined daemon)."
     ),
     interval: float = typer.Option(60.0, "--interval", help="Seconds between scheduler ticks."),
+    allow_open: bool = typer.Option(
+        False,
+        "--allow-open",
+        help="Permit a non-loopback bind with no API keys (insecure). Refused without this flag.",
+    ),
 ) -> None:
     """Run the interlace daemon: HTTP API + scheduler in one process (requires the `service` extra).
 
@@ -659,15 +676,22 @@ def serve(
     if bound != port:
         console.print(f"[yellow]port {port} is in use — serving on {bound}[/yellow]")
     port = bound
-    # Auth is open until the first API key exists (see auth.py). That's fine on
-    # loopback; on a routable bind it exposes every endpoint — including the SQL
-    # console and apply/gc — to the network unauthenticated. Warn loudly.
+    # Auth is open until the first API key exists (see auth.py). Fine on loopback;
+    # on a routable bind it exposes apply/gc/query unauthenticated — refuse unless
+    # --allow-open (or keys already exist).
     if host not in ("127.0.0.1", "localhost", "::1"):
         keyed = asyncio.run(_has_api_keys(path))
+        if not keyed and not allow_open:
+            console.print(
+                f"[bold red]refusing[/bold red] to serve on [bold]{host}[/bold] with no API keys — "
+                "create one ([bold]interlace apikey create <name> --scope admin[/bold]) or pass "
+                "[bold]--allow-open[/bold] (insecure)."
+            )
+            raise typer.Exit(1)
         if not keyed:
             console.print(
                 f"[bold red]WARNING[/bold red] serving on [bold]{host}[/bold] with no API keys — "
-                "the API is open to the network. Create one first: [bold]interlace apikey create <name> --scope admin[/bold]"
+                "the API is open to the network (--allow-open)."
             )
     console.print(f"UI at [bold cyan]http://{host}:{port}/ui[/bold cyan]")
     token = quack_token
@@ -821,7 +845,8 @@ async def _env_drop(name: str, path: Path, force: bool) -> None:
         if not await state.get_environment(name):
             console.print(f"No environment {name!r}.")
             raise typer.Exit(1)
-        dropped = await drop_environment(state, engines=engines, environment=name)
+        async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:env-drop"):
+            dropped = await drop_environment(state, engines=engines, environment=name)
         console.print(f"Dropped environment [bold]{name}[/bold] ({len(dropped)} view(s) removed).")
         console.print("[dim]Its snapshots are now unreferenced — `interlace gc` reclaims their tables.[/dim]")
     finally:
@@ -869,8 +894,12 @@ async def _env_rollback(name: str, path: Path, to: int | None, history: bool, as
             return
         engines = project.open_engines()
         try:
-            result = await rollback_environment(state, engines=engines, environment=name, to_generation=to)
+            async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:env-rollback"):
+                result = await rollback_environment(state, engines=engines, environment=name, to_generation=to)
         except PlanError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
+        except LockError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
         if as_json:

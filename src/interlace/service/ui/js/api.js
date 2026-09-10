@@ -77,10 +77,12 @@ function startPolling() {
 }
 
 function connect() {
-  // EventSource cannot send Authorization headers; with a token configured we
-  // poll instead (same events, ~1.5s cadence). Keyless local use gets SSE.
-  if (token.get()) return startPolling();
-  source = new EventSource(`/events/stream?after=${lastSeq}`);
+  // EventSource cannot send Authorization headers. Pass ?token= (auth.py accepts
+  // it on /events/stream only) so keyed clients still get a live SSE feed.
+  const auth = token.get();
+  const qs = new URLSearchParams({ after: String(lastSeq) });
+  if (auth) qs.set("token", auth);
+  source = new EventSource(`/events/stream?${qs}`);
   source.onopen = () => {
     sseBackoff = 1000; // a clean connection resets the backoff
     setFeedState("live");

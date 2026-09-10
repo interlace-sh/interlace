@@ -219,7 +219,18 @@ async def test_sql_model_reads_stream_table(log: SqliteStreamLog, tmp_path: Path
     engine.close()
 
 
-async def test_sweep_respects_watermark_and_retention(log: SqliteStreamLog) -> None:
+async def test_flush_refuses_a_non_transactional_engine(log: SqliteStreamLog) -> None:
+    from dataclasses import replace
+
+    from interlace.exceptions import ConfigurationError
+
+    engine = DuckDBAdapter.in_memory()
+    engine.caps = replace(engine.caps, supports_transactions=False)
+    await log.append("clicks", [Event({"event_id": "e1", "user": "u", "amount": 1.0})])
+    with pytest.raises(ConfigurationError, match="transactional execute_all"):
+        await flush_stream(CLICKS_PLAIN, log, engine)
+    engine.close()
+
     from interlace.streaming.materializer import quarantine_stream, sweep_streams
 
     kept = StreamDef(name="kept", schema={"event_id": "string"}, retention="7d")

@@ -26,6 +26,7 @@ _POSTGRES_CAPS = EngineCaps(
     supports_create_or_replace=False,  # no CREATE OR REPLACE TABLE -> DROP+CREATE fallback
     supports_star_exclude=False,  # no SELECT * EXCLUDE -> scd enumerates the model's columns instead
     supports_merge=True,  # MERGE ... (PostgreSQL >= 15)
+    supports_transactions=True,
 )
 
 
@@ -38,7 +39,7 @@ class PostgresAdapter(AdbcAdapter):
     @classmethod
     def connect(cls, dsn: str) -> PostgresAdapter:
         try:
-            import adbc_driver_postgresql.dbapi as dbapi  # type: ignore[import-untyped]
+            import adbc_driver_postgresql.dbapi as dbapi
         except ImportError as exc:  # pragma: no cover - import guard
             raise ConfigurationError(
                 "the postgres engine needs the 'adbc' extra: pip install 'interlaced[adbc]'"

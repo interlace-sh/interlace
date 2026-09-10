@@ -45,10 +45,14 @@ wrong scope = 403.
   previous_fingerprint, new_fingerprint, impacted_columns[], new_sql, previous_sql, reused`.
   Selector errors → 400.
 - **`POST /apply`** (write) → `ApplyResponse`. Body `ApplyRequest` `{selectors[], environment,
-  force, forward_only}`. Runs diff → build → promote under a warehouse lock (flushing streams
-  first). A breaking plan without `force` → 400 listing the breaking models. A blocking check
-  failure → 400 (`apply.blocked` event). Response: `{environment, built[], promoted, breaking,
-  reused[], transfers[], rows{model:{inserted,updated,deleted}}, timings{model:sec}}`.
+  force, forward_only}`. Runs diff → build → promote under a cross-process warehouse lock
+  (flushing streams first). A breaking plan without `force` → 409 listing the breaking models.
+  A blocking check failure → 400 (`apply.blocked` event). Lock contention → 409. Response:
+  `{environment, built[], promoted, breaking, reused[], transfers[],
+  rows{model:{inserted,updated,deleted}}, timings{model:sec}, gated[], checks[]}`.
+- **`POST /run`** (write) → `ApplyResponse`. Body `CreateRun` `{selectors[], environment,
+  start, end, restate}` — force-builds immediately (CLI `interlace run` / `restate` parity).
+  Prefer `POST /runs` to enqueue onto the durable queue.
 
 ### Environments
 - **`GET /environments`** (read) → `[EnvironmentInfo]` `{name, models, changed, promoted_at}`.
@@ -65,7 +69,8 @@ wrong scope = 403.
 - **`GET /runs/{id}`** (read) → `RunDetail` (adds `events: [EventInfo]`); 404 if unknown.
 - **`POST /runs`** (write) → `CreateRunResult {enqueued, models[]}`. Body `CreateRun
   {selectors[], environment, start, end, restate}` — enqueues onto the durable queue (a
-  running scheduler drains it). Empty selectors = all models. Emits `run.enqueued`.
+  running scheduler drains it). Empty selectors = all models. Emits `run.enqueued`. For a
+  synchronous force-build use `POST /run` instead.
 - **`POST /runs/{id}/cancel`** (write) → `{id, state}`; 404 if unknown/finished. Emits
   `run.cancel_requested`.
 
@@ -109,9 +114,9 @@ wrong scope = 403.
 
 ### Events (read)
 - **`GET /events?after=`** → `[EventInfo]` `{seq, ts, type, entity, payload}` after a cursor.
-- **`GET /events/stream?after=`** (SSE) → the live event tail. Reconnects resume from
+- **`GET /events/stream?after=&token=`** (SSE) → the live event tail. Reconnects resume from
   `Last-Event-ID`; a slow client is dropped and reconnects. Event types: `run.enqueued`,
-  `run.cancel_requested`, `apply.started/blocked/finished`, `model.*` (per-model build
-  progress), `stream.flushed`, `environment.dropped/rolled_back`, `gc.finished`.
-  (EventSource can't send an `Authorization` header, so keyed clients poll `GET /events`
-  instead.)
+  `run.cancel_requested`, `apply.started/blocked/finished`, `run.started/finished`,
+  `model.*` (per-model build progress), `stream.flushed`, `environment.dropped/rolled_back`,
+  `gc.finished`. EventSource cannot send an `Authorization` header — pass the API key as
+  `?token=` on this path only (the in-package UI does). Prefer the Bearer header everywhere else.

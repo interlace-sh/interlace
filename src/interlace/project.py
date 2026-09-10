@@ -7,6 +7,7 @@ and control-plane state store at the configured (root-relative) paths.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -26,6 +27,17 @@ from interlace.streaming.log import SqliteStreamLog
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _PG_HOST = re.compile(r"\b(host|hostaddr|service)\s*=")
+_log = logging.getLogger("interlace.engines")
+
+
+def _warn_engine_maturity(name: str, engine_type: str, tier: str) -> None:
+    """Surface alpha/beta engines at open so config alone cannot silently look production-ready."""
+    _log.warning(
+        "engine %r (type=%s) is %s — dialect-correct but not live-validated; do not lean on it in production yet",
+        name,
+        engine_type,
+        tier,
+    )
 
 
 def _require_explicit_pg_host(dsn: str, context: str) -> None:
@@ -174,6 +186,7 @@ class Project:
         if cfg.type == "spark":
             from interlace.engines.spark import SparkAdapter  # lazy: needs the spark extra
 
+            _warn_engine_maturity(name, "spark", "beta")
             return SparkAdapter.connect(cfg.database or "local[*]")
         if cfg.type not in ("duckdb", "ducklake", "quack", "motherduck"):
             raise ConfigurationError(
@@ -185,6 +198,7 @@ class Project:
             database = cfg.database or "md:"
             if not database.startswith("md:"):
                 database = f"md:{database}"
+            _warn_engine_maturity(name, "motherduck", "alpha")
             return DuckDBAdapter.connect(database)
         database = cfg.database or ".interlace/warehouse.duckdb"
         if cfg.type == "quack" or database.startswith("quack:"):
@@ -242,6 +256,7 @@ class Project:
             if cfg.type == "redshift":
                 from interlace.engines.redshift import RedshiftAdapter  # lazy: needs the adbc extra
 
+                _warn_engine_maturity(name, cfg.type, "alpha")
                 return RedshiftAdapter.connect(cfg.database)
             from interlace.engines.postgres import PostgresAdapter  # lazy: needs the adbc extra
 
@@ -249,9 +264,11 @@ class Project:
         if cfg.type == "snowflake":
             from interlace.engines.snowflake import SnowflakeAdapter  # lazy: needs the adbc-snowflake extra
 
+            _warn_engine_maturity(name, cfg.type, "alpha")
             return SnowflakeAdapter.connect(cfg.database)
         from interlace.engines.bigquery import BigQueryAdapter  # lazy: needs the adbc-bigquery extra
 
+        _warn_engine_maturity(name, cfg.type, "alpha")
         return BigQueryAdapter.connect(cfg.database)
 
     def _reject_unresolved_env(self, cfg: EngineConfig) -> None:

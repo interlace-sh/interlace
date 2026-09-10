@@ -138,6 +138,7 @@ module = [
     "sqlglot.*",
     "pyarrow.*",
     "yaml",
+    "adbc_driver_postgresql.*",  # optional 'adbc' extra — absent in the base env
     "adbc_driver_snowflake.*",  # optional 'adbc-snowflake' extra — absent in the base env
     "adbc_driver_bigquery.*",  # optional 'adbc-bigquery' extra — absent in the base env
     "pyspark.*",  # optional 'spark' extra — absent in the base env

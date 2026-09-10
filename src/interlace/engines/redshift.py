@@ -19,6 +19,7 @@ _REDSHIFT_CAPS = EngineCaps(
     supports_create_or_replace=False,  # DROP+CREATE fallback
     supports_star_exclude=False,  # scd enumerates the model's columns instead
     supports_merge=True,  # MERGE (Redshift, 2023)
+    supports_transactions=True,
 )
 
 

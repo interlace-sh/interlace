@@ -79,9 +79,9 @@ _TYPE_DIALECT = {
 class EngineConfig(BaseModel):
     """One named execution engine (warehouse gateway).
 
-    DuckDB-family types (``duckdb`` / ``ducklake`` / ``quack``) are fully supported.
-    Additional types are reserved for remote adapters (Postgres, Snowflake, …);
-    declaring them fails at open until an adapter ships.
+    DuckDB-family types (``duckdb`` / ``ducklake`` / ``quack``) and ``postgres`` are
+    the tested set. ``spark`` is beta; ``motherduck`` / ``redshift`` / ``snowflake`` /
+    ``bigquery`` are alpha (wired and dialect-correct, not yet live-validated).
     """
 
     type: str = "duckdb"

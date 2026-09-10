@@ -60,3 +60,7 @@ class StreamError(InterlaceError):
 
 class CheckError(InterlaceError):
     """A data check failed with error severity."""
+
+
+class LockError(InterlaceError):
+    """A cross-process advisory lock could not be acquired (or was lost)."""

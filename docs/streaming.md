@@ -3,7 +3,9 @@
 A `@stream` declares a durable ingestion endpoint. Publishing to it appends events to a
 SQLite WAL log that is **fsynced before the 200 response** (a 200-OK means the event is
 durable, surviving power loss, not just process crash). A micro-batch flusher then
-materialises events **exactly-once** into a warehouse table `streams.<name>`, which SQL
+materialises events **exactly-once into the warehouse** (data + watermark commit in
+one transactional ``execute_all`` on DuckDB/ADBC engines; the durable log itself is
+at-least-once) into a warehouse table `streams.<name>`, which SQL
 models read like any other table.
 
 ```python
@@ -22,7 +24,7 @@ endpoint, live rollups, and a load generator).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `name` | str | required | Stream identifier (positional); the table is `streams.<name>`. |
+| `name` | str | required | Stream identifier (positional); must match `[A-Za-z_][A-Za-z0-9_]*`. The table is `streams.<name>`. |
 | `schema` | map | required | `{field: type}` declared shape. Types: `int`/`integer`/`bigint`, `double`/`float`/`decimal`, `string`/`text`/`varchar`, `bool`/`boolean`, `timestamp`, `json`. |
 | `idempotency_key` | str | — | Payload field used to dedupe; a repeat publish of the same key is deduplicated. |
 | `retention` | str | — | Age after which materialised events are swept (e.g. `7d`); unset = kept forever. |

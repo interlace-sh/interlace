@@ -46,6 +46,7 @@ _DUCKDB_CAPS = EngineCaps(
     supports_create_or_replace=True,
     supports_star_exclude=True,
     supports_merge=True,  # MERGE INTO ... (DuckDB >= 1.3)
+    supports_transactions=True,  # execute_all wraps BEGIN/COMMIT
 )
 
 
@@ -258,7 +259,7 @@ class DuckDBAdapter(EngineAdapter):
     # warehouse connection without poisoning the writer (enable_external_access is
     # instance-wide and one-way, and a DuckLake catalog can be held by only one
     # connection per process). The untrusted /query path is fenced at parse time by
-    # the service's _guard_console_query instead — as the base contract expects.
+    # interlace.query.prepare_readonly — as the base contract expects.
 
     async def create_schema(self, name: str) -> None:
         await self.execute_sql(f"CREATE SCHEMA IF NOT EXISTS {exp.to_identifier(name).sql(dialect=self.dialect)}")

@@ -45,6 +45,7 @@ def test_spark_dialect_and_caps() -> None:
     assert SparkAdapter.caps.supports_merge  # native MERGE on Delta/Iceberg
     assert not SparkAdapter.caps.supports_star_exclude  # scd enumerates instead
     assert not SparkAdapter.caps.supports_create_or_replace  # DROP + CREATE
+    assert not SparkAdapter.caps.supports_transactions  # streams refuse Spark
 
 
 @pytest.mark.unit

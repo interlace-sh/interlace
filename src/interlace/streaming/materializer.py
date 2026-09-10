@@ -2,12 +2,13 @@
 
 A flush drains everything past the stream's watermark in ``batch_rows`` chunks;
 each chunk stages one Arrow batch and moves ``stage -> target table + watermark``
-in a single engine transaction. Crash anywhere leaves either the old watermark
-(events re-read, stage overwritten — no duplicates) or the new one —
-**exactly-once into the warehouse** without coordinating with the log. The
-watermark lives in the warehouse (``streams._watermarks``) precisely so it
-commits atomically with the data; the log's consumer-group lease/commit
-machinery is for external consumers, not this path.
+(plus any evolve ``ALTER``s) in a single engine transaction. Crash anywhere leaves
+either the old watermark (events re-read, stage overwritten — no duplicates) or
+the new one — **exactly-once landing into the warehouse** given a transactional
+``execute_all`` (DuckDB / ADBC), without coordinating with the log. The watermark
+lives in the warehouse (``streams._watermarks``) precisely so it commits atomically
+with the data; the log's consumer-group lease/commit machinery is for external
+consumers, not this path.
 
 Stream tables land in the ``streams`` schema (``streams.<name>``) with the
 declared fields plus ``_offset`` and ``_ingested_at``, so SQL models simply
@@ -24,6 +25,7 @@ from sqlglot import exp, parse_one
 
 from interlace.dsl.decorators import StreamDef
 from interlace.engines.base import EngineAdapter
+from interlace.exceptions import ConfigurationError
 from interlace.graph.project import CompiledProject
 from interlace.ir.relation import TableRef
 from interlace.state.interval import parse_grain
@@ -42,6 +44,11 @@ def _sql(table: TableRef) -> str:
     return exp.table_(table.name, db=table.schema).sql(dialect="duckdb")
 
 
+def _lit(value: str) -> str:
+    """A dialect-safe SQL string literal (never raw-interpolate stream names)."""
+    return exp.Literal.string(value).sql(dialect="duckdb")
+
+
 async def ensure_stream_tables(streams: Iterable[StreamDef], engine: EngineAdapter) -> None:
     """Create the streams schema, watermark table, and one table per stream."""
     await engine.create_schema(_SCHEMA)
@@ -56,7 +63,7 @@ async def ensure_stream_tables(streams: Iterable[StreamDef], engine: EngineAdapt
 
 async def stream_watermark(stream: StreamDef, engine: EngineAdapter) -> int:
     reader = await engine.fetch_sql(
-        f"SELECT max(committed_offset) AS offset FROM {_sql(_WATERMARKS)} WHERE stream = '{stream.name}'"
+        f"SELECT max(committed_offset) AS offset FROM {_sql(_WATERMARKS)} WHERE stream = {_lit(stream.name)}"
     )
     rows = reader.read_all().to_pylist()
     return int(rows[0]["offset"] or 0) if rows else 0
@@ -72,12 +79,22 @@ def quarantine_stream(stream: StreamDef) -> StreamDef:
     )
 
 
+def _require_txn_engine(engine: EngineAdapter) -> None:
+    if not engine.caps.supports_transactions:
+        raise ConfigurationError(
+            "stream materialisation requires transactional execute_all "
+            f"(engine dialect={engine.dialect!r} does not support it — use DuckDB/Postgres, not Spark)",
+            details={"dialect": engine.dialect},
+        )
+
+
 async def flush_stream(stream: StreamDef, log: StreamLog, engine: EngineAdapter, *, batch_rows: int = 5000) -> int:
     """Drain everything durable for ``stream`` into the warehouse in
     ``batch_rows`` micro-batches; returns rows materialized. Draining (not a
     single batch) is what lets callers — the flusher, an apply's pre-flush,
     shutdown — assume the warehouse has caught up with the log when this
     returns."""
+    _require_txn_engine(engine)
     total = 0
     watermark = await stream_watermark(stream, engine)
     while True:
@@ -111,21 +128,30 @@ async def _flush_batch(
     batch = pa.table(columns, schema=schema)
 
     target = _sql(target_table(stream))
-    for name, sql_type in extras.items():  # schema evolution: new fields become real columns
-        column = exp.column(name).sql(dialect="duckdb", identify=True)
-        await engine.execute_sql(f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS {column} {sql_type}")
+    # Evolve ALTERs land in the same execute_all txn as insert + watermark so a
+    # crash cannot leave a widened schema with a stale watermark mid-flush.
+    alters = [
+        parse_one(
+            f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS "
+            f"{exp.column(name).sql(dialect='duckdb', identify=True)} {sql_type}",
+            read="duckdb",
+        )
+        for name, sql_type in extras.items()
+    ]
 
     stage = TableRef(schema=_SCHEMA, name=f"_stage_{stream.name}")
     await engine.load(stage, batch.to_reader(), "create")
     last = events[-1].offset
     # BY NAME: an evolved batch has more columns than older target rows had
     insert = f"INSERT INTO {target} {'BY NAME ' if evolve else ''}SELECT * FROM {_sql(stage)}"
-    # data + watermark move together: crash-safe exactly-once into the warehouse
+    stream_lit = _lit(stream.name)
+    # data + watermark (+ evolve DDL) move together: crash-safe exactly-once landing
     await engine.execute_all(
         [
+            *alters,
             parse_one(insert, read="duckdb"),
-            parse_one(f"DELETE FROM {_sql(_WATERMARKS)} WHERE stream = '{stream.name}'"),
-            parse_one(f"INSERT INTO {_sql(_WATERMARKS)} VALUES ('{stream.name}', {last})"),
+            parse_one(f"DELETE FROM {_sql(_WATERMARKS)} WHERE stream = {stream_lit}"),
+            parse_one(f"INSERT INTO {_sql(_WATERMARKS)} VALUES ({stream_lit}, {last})"),
             parse_one(f"DROP TABLE {_sql(stage)}"),
         ]
     )

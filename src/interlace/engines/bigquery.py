@@ -22,6 +22,7 @@ _BIGQUERY_CAPS = EngineCaps(
     supports_create_or_replace=True,
     supports_star_exclude=True,  # SELECT * EXCEPT (...)
     supports_merge=True,
+    supports_transactions=True,
 )
 
 

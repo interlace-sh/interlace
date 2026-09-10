@@ -31,6 +31,18 @@ def test_allows_pure_generators(sql: str) -> None:
 @pytest.mark.parametrize(
     "sql",
     [
+        "SELECT * FROM main.orders",  # schema.table — not a file
+        'SELECT * FROM "Order Items"',  # quoted name without a path/extension
+        "SELECT * FROM information_schema.tables",
+    ],
+)
+def test_allows_ordinary_warehouse_relations(sql: str) -> None:
+    prepare_readonly(sql, "duckdb", 100)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
         "SELECT * FROM read_csv('/etc/hostname')",
         "SELECT * FROM read_parquet('/data/x.parquet')",
         "SELECT * FROM query('SELECT 1')",
@@ -38,6 +50,18 @@ def test_allows_pure_generators(sql: str) -> None:
         "SELECT * FROM glob('/etc/*')",
         "SELECT * FROM some_future_reader('/x')",  # unknown table function — the allowlist still blocks it
         "SELECT read_text('/etc/hostname')",  # scalar-position reader — the denylist backstop
+        # DuckDB path-as-table: quoted Identifier, no slash — previously a fence bypass
+        "SELECT * FROM 'test.csv'",
+        'SELECT * FROM "data.parquet"',
+        "SELECT * FROM 'events.jsonl'",
+        "SELECT * FROM './relative.parquet'",
+        # Network / HTTP readers
+        "SELECT http_get('https://example.com')",
+        "SELECT * FROM LATERAL http_get('https://example.com')",
+        "SELECT http_post('https://example.com', 'body')",
+        # System catalogs that leak warehouse paths
+        "SELECT * FROM pragma_database_list",
+        "SELECT * FROM duckdb_databases",
     ],
 )
 def test_rejects_reaching_outside_the_warehouse(sql: str) -> None:

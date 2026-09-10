@@ -5,10 +5,10 @@ framework, no external fonts (it renders air-gapped). It is driven entirely by t
 API](api.md) — every view is a thin client over the endpoints. Ten hash-routed views, plus a
 command palette (⌘K), a live event feed, and a build dock that mirrors the CLI's ✓/✗ rows.
 
-Live updates come over SSE (`GET /events/stream`); when a bearer token is configured the UI
-falls back to polling `GET /events` (EventSource can't send auth headers). Rail badges show
-pending plan changes and active runs; the build dock narrates per-model `model.*` events as
-apply runs.
+Live updates come over SSE (`GET /events/stream`). When a bearer token is configured the UI
+passes it as `?token=` (EventSource cannot set Authorization); polling `GET /events` remains
+available as a fallback. Rail badges show pending plan changes and active runs; the build dock
+narrates per-model `model.*` events as apply runs.
 
 ## Views
 

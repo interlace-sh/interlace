@@ -7,6 +7,12 @@ views are repointed at the new physical tables, and the environment is promoted
 to the full desired fingerprint set. Builds are DAG-scheduled: each model starts
 as soon as its in-plan ancestors finish (bounded by ``parallelism``), so upstream
 physical tables always exist before a downstream model builds against them.
+
+Cancellation / sibling failure (``asyncio.TaskGroup`` abort, worker lease loss)
+stops promotion: views stay on the previous fingerprints. Mid-strategy warehouse
+writes for the cancelled model may already have landed as an unreferenced
+physical table — the next successful apply rebuilds the fingerprint, and
+``interlace gc`` reclaims orphans after the grace period.
 """
 
 from __future__ import annotations

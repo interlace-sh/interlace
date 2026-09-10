@@ -223,10 +223,11 @@ Transfer execution picks the cheapest mechanism:
    fast lane, no Python hop.
 2. Otherwise → **ADBC**: `source.fetch()` → `pa.RecordBatchReader` → `target.load()`.
 
-Contract: `docs/architecture/MULTI_ENGINE.md`. Cloud-warehouse adapters (Snowflake,
-BigQuery) — and with them the "author in Snowflake SQL, run it in Snowflake" prod story
-— are **not built**; they are the primary multi-engine roadmap item (§14). The
-`fetch/load` contract is what admits them (and Arrow Flight) later without a redesign.
+Contract: `docs/architecture/MULTI_ENGINE.md`. Cloud-warehouse adapters (Redshift,
+Snowflake, BigQuery, MotherDuck) **ship as alpha** — wired and dialect-correct via the
+`fetch/load` / ADBC contract, but not yet run against a live account (§14). Promoting
+them out of alpha is the remaining multi-engine validation work; Arrow Flight can still
+land on the same contract later without a redesign.
 
 ---
 
@@ -458,7 +459,8 @@ read). `@stream` declarations publish at `POST /streams/{name}` — schema-valid
 (`on_schema_drift: reject` default; extra fields/wrong types → 400, missing → NULL),
 durable before the 200, deduplicated on retry. The materialiser flushes micro-batches
 into `streams.<name>` (declared fields + `_offset`/`_ingested_at`) with the watermark
-committed **in the same warehouse transaction** as the data — exactly-once without
+committed **in the same warehouse transaction** as the data — exactly-once *landing*
+given a transactional `execute_all` (DuckDB / ADBC; Spark is refused) — without
 coordinating with the log; SQL models just `FROM streams.<name>`. Publish only appends
 (durable ack, no warehouse work on the hot path); a signal-driven flusher coalesces
 publishes into one warehouse write moments later (`stream_flush_interval`, **50 ms**
@@ -531,9 +533,10 @@ A flush drains everything past the stream's **warehouse watermark** in `batch_ro
 chunks (default 5000). Each chunk stages one Arrow batch and moves `stage → target table
 + watermark` in a **single engine transaction** — so a crash leaves either the old
 watermark (events re-read, stage overwritten, no duplicates) or the new one:
-**exactly-once into the warehouse** without coordinating with the log. The watermark
+**exactly-once landing into the warehouse** (transactional `execute_all`) without
+coordinating with the log. The watermark
 lives in the warehouse (`streams._watermarks`) precisely so it commits atomically with
-the data.
+the data. Evolve-mode `ALTER ADD COLUMN` statements ride in the same batch.
 
 Note this path deliberately does **not** use the log's consumer-group lease/commit
 machinery — that is for external consumers. The flusher is signal-driven off publishes
@@ -604,7 +607,8 @@ would fire.
 
 **Litestar + msgspec + uvicorn** (the `service` extra):
 
-- First-class SSE with `Last-Event-ID` replay; OpenAPI 3.1 generated from typed handlers;
+- First-class SSE with `Last-Event-ID` replay (`?token=` accepted on `/events/stream`
+  because EventSource cannot send `Authorization`); OpenAPI 3.1 generated from typed handlers;
   msgspec-native serialisation (the publish endpoint shares msgspec structs with ingest
   validation); guards/DI for scoped auth.
 - **Auth:** scoped API keys (`read` / `write` / `admin`; `admin` satisfies any

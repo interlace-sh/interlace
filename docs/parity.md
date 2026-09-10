@@ -10,7 +10,8 @@ limited to one surface, the reason is given.
 | Column impact / blast radius | `impact` | `GET /models/{name}/impact` | models (per-column) |
 | Preview a plan | `plan` | `GET /plan` | plan |
 | Apply (build + promote) | `apply` | `POST /apply` | plan |
-| Force-run / restate | `run`, `restate` | `POST /runs` (queued) | runs (queued) |
+| Force-run / restate (sync) | `run`, `restate` | `POST /run` | — |
+| Force-run / restate (queued) | — | `POST /runs` | runs (queued) |
 | Environments: list / drift | `env list` | `GET /environments` | environments |
 | Environments: drop | `env drop` | `DELETE /environments/{name}` | environments |
 | Environments: rollback + history | `env rollback [--list]` | `POST .../rollback`, `GET .../history` | environments |
@@ -37,8 +38,8 @@ limited to one surface, the reason is given.
   running daemon; there's no `interlace publish`. Live **events** (`GET /events`) are an API/UI
   concern. (Ad-hoc read-only SQL is on **both** surfaces — `interlace query "SELECT …"` and the
   `POST /query` console share one parse-and-fence path.)
-- **Enqueue vs immediate** — `interlace run`/`restate` build **immediately** in the CLI
-  process; `POST /runs` (and the UI "run…") **enqueue** onto the durable queue for a running
+- **Enqueue vs immediate** — `interlace run`/`restate` and `POST /run` build **immediately**;
+  `POST /runs` (and the UI "run…") **enqueue** onto the durable queue for a running
   scheduler to drain. `POST /apply` (and the UI apply) build immediately in the daemon.
 
 Every HTTP endpoint is exercised by at least one UI view — there are no API features hidden

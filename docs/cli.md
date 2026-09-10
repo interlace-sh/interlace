@@ -1,12 +1,12 @@
 # CLI reference
 
-`interlace <command>`. Global: `--version` / `-v`. Shared options across commands:
+`interlace <command>`. Global: `--version` / `-v`. Shared options (not every command takes every one):
 
-- `--env` / `-e` (default `prod`, env `INTERLACE_ENV`) — target environment.
+- `--env` / `-e` (default `prod`, env `INTERLACE_ENV`) — plan/apply/run/restate/serve/scheduler/checks run.
 - `--path` / `-p` (default `.`) — project root.
-- `--select` / `-s` (repeatable) — model selectors (see [selectors](#selectors)).
-- `--json` — emit JSON instead of a table.
-- `--parallelism` (default 0 = the project's `parallelism`) — models built at once.
+- `--select` / `-s` (repeatable) — plan/apply/run/restate/models/checks run (see [selectors](#selectors)).
+- `--json` — plan/models/runs/streams/engines/impact/env/checks (and lineage via `--format json`).
+- `--parallelism` (default 0 = the project's `parallelism`) — apply/run/restate only.
 
 Exit codes: `0` ok; `1` selection error / breaking-plan-without-force / check failure /
 unknown target / guard tripped; `2` malformed input (bad ISO window, bad grace, bad format).
@@ -112,11 +112,12 @@ Cancel a run — queued cancels immediately, running cancels at the worker's nex
 Run the scheduler loop: tick triggers, flush streams, drain due runs, sweep stream retention.
 `--once` does a single tick and exits. Needs a live warehouse.
 
-### `interlace serve [--env] [--host 127.0.0.1] [--port 8000] [--scheduler/--no-scheduler] [--interval 60] [--quack] [--quack-token]`
+### `interlace serve [--env] [--host 127.0.0.1] [--port 8000] [--scheduler/--no-scheduler] [--interval 60] [--quack] [--quack-token] [--allow-open]`
 Run the daemon: HTTP API + web UI (`/ui`) + scheduler + streams in one process. Requires the
 `service` extra. `--no-scheduler` runs API-only (pair with a separate `interlace scheduler`).
-`--quack` also serves the warehouse over the quack protocol. Warns loudly if bound to a
-non-loopback host with no API keys configured (the API is then open).
+`--quack` also serves the warehouse over the quack protocol. A non-loopback bind with no API
+keys is **refused** unless `--allow-open` (insecure); create a key first with
+`interlace apikey create`.
 
 ## API keys — `interlace apikey ...`
 

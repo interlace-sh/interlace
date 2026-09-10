@@ -74,6 +74,13 @@ def test_stream_and_check_register() -> None:
     assert REGISTRY.checks[0].model == "orders_raw"
 
 
+def test_stream_name_must_be_a_safe_identifier() -> None:
+    with pytest.raises(DefinitionError, match="must match"):
+
+        @stream("bad-name", schema={"id": "string"})
+        def _bad() -> None: ...
+
+
 def test_model_def_normalises_dict_checks() -> None:
     """`@model(checks=…)` parses its shorthand, but a ModelDef built directly —
     the dynamic-model path a generated or migrated project uses — used to store

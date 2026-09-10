@@ -41,6 +41,7 @@ _SPARK_CAPS = EngineCaps(
     supports_create_or_replace=False,  # portable across catalogs -> DROP + CREATE TABLE AS
     supports_star_exclude=False,  # no portable SELECT * EXCLUDE -> scd enumerates the model's columns
     supports_merge=True,  # native MERGE (on a Delta/Iceberg catalog)
+    supports_transactions=False,  # execute_all is sequential; streams must not use Spark
 )
 
 # Spark type simpleString -> the planner's alignment/widening vocabulary (see plan.apply).

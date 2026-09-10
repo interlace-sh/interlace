@@ -6,6 +6,10 @@ project is open for local development, and creating a key (``interlace apikey
 create``) locks it down. ``/health`` and the OpenAPI docs (``/schema``) are
 always open. Routes declare a required scope via ``opt={"scope": "write"}``
 (default ``read``); an ``admin`` scope satisfies any requirement.
+
+``GET /events/stream`` also accepts ``?token=`` because EventSource cannot send
+an ``Authorization`` header. Prefer the header everywhere else (tokens in URLs
+can land in access logs).
 """
 
 from __future__ import annotations
@@ -19,7 +23,14 @@ _OPEN_PATHS = frozenset({"/health", "/"})
 
 def _bearer_token(connection: ASGIConnection) -> str | None:
     header = connection.headers.get("Authorization", "")
-    return header[7:] if header.startswith("Bearer ") else None
+    if header.startswith("Bearer "):
+        return header[7:]
+    # EventSource cannot set Authorization — allow ?token= on the SSE path only.
+    if connection.scope["path"] == "/events/stream":
+        raw = connection.query_params.get("token")
+        if isinstance(raw, str) and raw:
+            return raw
+    return None
 
 
 async def auth_guard(connection: ASGIConnection, route_handler: BaseRouteHandler) -> None:

@@ -152,6 +152,14 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_promotion_history_env ON promotion_history (environment, generation DESC);
     """,
+    # 0011 — cross-process advisory locks (CLI apply vs daemon flusher/apply)
+    """
+    CREATE TABLE advisory_locks (
+        name        TEXT PRIMARY KEY,
+        owner       TEXT NOT NULL,
+        expires_at  TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -1114,6 +1122,78 @@ class SqliteStateStore:
                 "INSERT OR REPLACE INTO trigger_state (trigger_id, last_fired_at) VALUES (?, ?)",
                 (trigger_id, when.isoformat()),
             )
+            self._conn.commit()
+
+    # --- advisory locks (cross-process warehouse serialisation) -------------
+
+    async def acquire_lock(self, name: str, *, owner: str, lease_seconds: float = 180.0, timeout: float = 60.0) -> bool:
+        """Take (or renew, if already owned) a named advisory lock. Returns False on timeout."""
+        return await asyncio.to_thread(self._acquire_lock_sync, name, owner, lease_seconds, timeout)
+
+    def _acquire_lock_sync(self, name: str, owner: str, lease_seconds: float, timeout: float) -> bool:
+        import time as _time
+
+        deadline = _time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    now = datetime.now(UTC)
+                    row = self._conn.execute(
+                        "SELECT owner, expires_at FROM advisory_locks WHERE name = ?", (name,)
+                    ).fetchone()
+                    held = row is not None and datetime.fromisoformat(row["expires_at"]) > now
+                    if held and row["owner"] != owner:
+                        self._conn.commit()
+                    else:
+                        expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+                        self._conn.execute(
+                            "INSERT INTO advisory_locks (name, owner, expires_at) VALUES (?, ?, ?) "
+                            "ON CONFLICT(name) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at",
+                            (name, owner, expires),
+                        )
+                        self._conn.commit()
+                        return True
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+            if _time.monotonic() >= deadline:
+                return False
+            _time.sleep(0.05)
+
+    async def renew_lock(self, name: str, *, owner: str, lease_seconds: float = 180.0) -> bool:
+        """Extend a lock only if ``owner`` still holds it. Returns False if lost."""
+        return await asyncio.to_thread(self._renew_lock_sync, name, owner, lease_seconds)
+
+    def _renew_lock_sync(self, name: str, owner: str, lease_seconds: float) -> bool:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                now = datetime.now(UTC)
+                row = self._conn.execute(
+                    "SELECT owner, expires_at FROM advisory_locks WHERE name = ?", (name,)
+                ).fetchone()
+                if row is None or row["owner"] != owner or datetime.fromisoformat(row["expires_at"]) <= now:
+                    self._conn.commit()
+                    return False
+                expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+                self._conn.execute(
+                    "UPDATE advisory_locks SET expires_at = ? WHERE name = ? AND owner = ?",
+                    (expires, name, owner),
+                )
+                self._conn.commit()
+                return True
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    async def release_lock(self, name: str, *, owner: str) -> None:
+        """Drop a lock if ``owner`` still holds it (no-op otherwise)."""
+        await asyncio.to_thread(self._release_lock_sync, name, owner)
+
+    def _release_lock_sync(self, name: str, owner: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM advisory_locks WHERE name = ? AND owner = ?", (name, owner))
             self._conn.commit()
 
 

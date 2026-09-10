@@ -21,6 +21,7 @@ _SNOWFLAKE_CAPS = EngineCaps(
     supports_create_or_replace=True,
     supports_star_exclude=True,  # SELECT * EXCLUDE (...)
     supports_merge=True,
+    supports_transactions=True,
 )
 
 

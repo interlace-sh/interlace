@@ -676,7 +676,7 @@ src/interlace/
   streaming/   # log (SqliteStreamLog), materializer (flush + watermark), schema (drift modes)
   service/     # app.py (litestar), auth.py, ui/ (the /ui web app)
   config/      # config load; ${VAR} + .env interpolation
-  cli/         # init plan apply run restate gc scheduler serve models lineage env runs
+  cli/         # init plan apply run restate gc reset scheduler serve models lineage env runs
                #   checks streams engines cancel apikey
   sinks.py     # terminal delivery helpers: external table target + file COPY
   project.py   # Project.load/compile; engine + state + stream-log opening

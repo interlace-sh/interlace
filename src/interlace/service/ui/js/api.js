@@ -1,6 +1,7 @@
-// API client: bearer-token fetch + one shared event feed (SSE with replay,
-// polling fallback). Every consumer subscribes to the same feed — one upstream
-// connection no matter how many views are listening.
+// API client: bearer-token fetch + one shared SSE event feed. Every consumer
+// subscribes to the same EventSource — one upstream connection no matter how
+// many views are listening. Reconnects resume from lastSeq (?after= and the
+// browser's Last-Event-ID); a daemon that's down is retried with backoff.
 
 const TOKEN_KEY = "interlace.token";
 
@@ -44,11 +45,13 @@ export const api = {
 
 const listeners = new Set();
 let lastSeq = 0;
-let feedState = "connecting"; // connecting | live | poll
+let feedState = "connecting"; // connecting | live
 let stateListeners = new Set();
 let source = null;
-let pollTimer = null;
+let reconnectTimer = null;
 let sseBackoff = 1000; // reconnect delay, grows to a cap and resets on a clean open
+let wanted = false; // false while the page is hidden — close() must not schedule a reconnect
+let generation = 0; // invalidate an in-flight EventSource when start/stop races
 
 function emit(event) {
   if (event.seq) lastSeq = Math.max(lastSeq, event.seq);
@@ -56,27 +59,21 @@ function emit(event) {
 }
 
 function setFeedState(next) {
+  if (feedState === next) return;
   feedState = next;
   for (const listener of stateListeners) listener(next);
 }
 
-function startPolling() {
-  if (pollTimer) return;
-  pollTimer = -1; // claimed synchronously: a second connect() in the first tick's await window must not double-start
-  setFeedState("poll");
-  const tick = async () => {
-    try {
-      const events = await api.get(`/events?after=${lastSeq}`);
-      for (const event of events) emit(event);
-    } catch {
-      /* daemon away; keep trying */
-    }
-    pollTimer = setTimeout(tick, 1500);
-  };
-  tick();
-}
-
 function connect() {
+  wanted = true;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  const mine = ++generation;
+  if (source) {
+    source.onerror = null; // close() fires error; this generation must not reconnect itself
+    source.close();
+    source = null;
+  }
   // EventSource cannot send Authorization headers. Pass ?token= (auth.py accepts
   // it on /events/stream only) so keyed clients still get a live SSE feed.
   const auth = token.get();
@@ -84,10 +81,12 @@ function connect() {
   if (auth) qs.set("token", auth);
   source = new EventSource(`/events/stream?${qs}`);
   source.onopen = () => {
+    if (mine !== generation) return;
     sseBackoff = 1000; // a clean connection resets the backoff
     setFeedState("live");
   };
   source.onmessage = (message) => {
+    if (mine !== generation) return;
     try {
       emit(JSON.parse(message.data));
     } catch {
@@ -95,12 +94,14 @@ function connect() {
     }
   };
   source.onerror = () => {
+    if (mine !== generation) return;
     source.close();
     source = null;
+    if (!wanted) return;
     setFeedState("connecting");
     // exponential backoff with a ceiling — a daemon that's down (or a proxy dropping
     // the stream) must not be hammered every 2s forever
-    setTimeout(connect, sseBackoff);
+    reconnectTimer = setTimeout(connect, sseBackoff);
     sseBackoff = Math.min(sseBackoff * 2, 30000);
   };
 }
@@ -109,12 +110,15 @@ function connect() {
 // EventSource can't keep the page out of the back/forward cache; start() restores it
 // (lastSeq is preserved, so the server replays anything missed in between).
 function stop() {
+  wanted = false;
+  generation += 1;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
   if (source) {
+    source.onerror = null;
     source.close();
     source = null;
   }
-  clearTimeout(pollTimer);
-  pollTimer = null;
   setFeedState("connecting");
 }
 

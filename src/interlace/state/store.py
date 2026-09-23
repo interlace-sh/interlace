@@ -631,6 +631,48 @@ class SqliteStateStore:
             self._conn.commit()
         return int(cursor.rowcount)
 
+    async def reset_control_plane(self, keep_models: Iterable[str] = ()) -> dict[str, int]:
+        """Wipe operational control-plane rows, keeping API keys, advisory locks,
+        trigger last-fired times, and snapshot/interval/environment rows for
+        ``keep_models`` (terminal table/file models — so the next apply does not
+        re-deliver into destinations we do not own)."""
+        return await asyncio.to_thread(self._reset_control_plane_sync, list(keep_models))
+
+    def _reset_control_plane_sync(self, keep_models: list[str]) -> dict[str, int]:
+        # snapshots / intervals / environments are filtered; the rest go entirely.
+        # api_keys and advisory_locks (the apply lock we hold) and trigger_state
+        # (so a live scheduler does not immediately force-run terminals) stay.
+        wipe_all = ("work_queue", "event_log", "check_results", "promotion_history")
+        counts: dict[str, int] = {}
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if keep_models:
+                    placeholders = ",".join("?" * len(keep_models))
+                    for table in ("snapshots", "intervals"):
+                        cursor = self._conn.execute(
+                            f"DELETE FROM {table} WHERE name NOT IN ({placeholders})",  # noqa: S608
+                            keep_models,
+                        )
+                        counts[table] = int(cursor.rowcount)
+                    cursor = self._conn.execute(
+                        f"DELETE FROM environments WHERE model_name NOT IN ({placeholders})",  # noqa: S608
+                        keep_models,
+                    )
+                    counts["environments"] = int(cursor.rowcount)
+                else:
+                    for table in ("snapshots", "intervals", "environments"):
+                        cursor = self._conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed names
+                        counts[table] = int(cursor.rowcount)
+                for table in wipe_all:
+                    cursor = self._conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed names
+                    counts[table] = int(cursor.rowcount)
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return counts
+
     async def environment_promoted_at(self) -> dict[str, str]:
         """Each environment's most recent promotion timestamp."""
         return await asyncio.to_thread(self._environment_promoted_at_sync)

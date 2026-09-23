@@ -1,4 +1,4 @@
-"""Garbage-collect unreferenced snapshots and their physical tables.
+"""Garbage-collect unreferenced snapshots, drop environments, and reset.
 
 A snapshot row is garbage when **no environment points at its fingerprint** and
 it is older than the grace window (protecting applies in flight and very recent
@@ -6,10 +6,15 @@ rollback targets). A physical table is dropped only when **no surviving
 snapshot row references it** — this is what makes GC safe under the rebuild-skip
 optimisation, where a newer fingerprint's snapshot can point at an *older*
 fingerprint's table: the old row goes, the shared table stays.
+
+``reset`` is the fresh-start counterpart: drop every Interlace-owned object and
+wipe the control plane, leaving ``materialise: table`` / ``file`` destinations
+untouched.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -17,8 +22,14 @@ from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
+from interlace.graph.project import PHYSICAL_SCHEMA_PREFIX
+from interlace.ir.relation import TableRef
 from interlace.plan.plan import XFER_SCHEMA
 from interlace.state.store import SqliteStateStore
+from interlace.streaming.log import StreamLog
+
+_STREAMS_SCHEMA = "streams"
+_STREAMS_WATERMARKS = TableRef(schema=_STREAMS_SCHEMA, name="_watermarks")
 
 
 @dataclass
@@ -29,9 +40,40 @@ class GcResult:
     swept_staging: list[str] = field(default_factory=list)  # engine:interlace__xfer.name
 
 
+@dataclass
+class ResetResult:
+    """What ``reset`` removed — or would remove, when ``dry_run``."""
+
+    dropped_views: list[str] = field(default_factory=list)  # engine:schema.name
+    dropped_schemas: list[str] = field(default_factory=list)  # engine:schema
+    cleared_snapshots: int = 0
+    kept_terminals: list[str] = field(default_factory=list)
+    environments: list[str] = field(default_factory=list)
+    stream_log_cleared: bool = False
+    dry_run: bool = False
+
+
 def _table_key(row: dict[str, str]) -> str:
     engine = row.get("engine") or "default"
     return f"{engine}:{row['physical_schema']}.{row['physical_name']}"
+
+
+def _quoted_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+async def _drop_schema(adapter: EngineAdapter, schema: str) -> None:
+    """Drop a schema we own. ``CASCADE`` is required: snapshot schemas hold tables
+    *and* views (``materialise: view``), and sandbox env schemas hold env views."""
+    await adapter.execute_sql(f"DROP SCHEMA IF EXISTS {_quoted_ident(schema)} CASCADE")
+
+
+async def _owned_schema_names(adapter: EngineAdapter) -> list[str]:
+    """Schemas whose names start with ``interlace__``. Filtered in Python so a
+    SQL ``LIKE`` cannot treat the underscores as wildcards."""
+    reader = await adapter.fetch_sql("SELECT schema_name FROM information_schema.schemata")
+    names = {str(row["schema_name"]) for row in reader.read_all().to_pylist()}
+    return sorted(name for name in names if name.startswith(PHYSICAL_SCHEMA_PREFIX))
 
 
 async def _drop_relation(adapter: EngineAdapter, schema: str, name: str) -> None:
@@ -157,9 +199,113 @@ async def drop_environment(
     for engine_name, names in schemas.items():
         adapter = registry.require(engine_name)
         for schema in sorted(names):  # exclusively env-owned (prefixed): safe to cascade
-            await adapter.execute_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await _drop_schema(adapter, schema)
     await state.delete_environment(environment)
     return dropped
+
+
+async def reset(
+    state: SqliteStateStore,
+    engine: EngineAdapter | None = None,
+    *,
+    engines: EngineRegistry | dict[str, EngineAdapter] | None = None,
+    keep_models: Iterable[str] = (),
+    stream_log: StreamLog | None = None,
+    clear_streams: bool = False,
+    dry_run: bool = False,
+) -> ResetResult:
+    """Wipe Interlace-owned warehouse objects and control-plane state.
+
+    Drops environment views, ``interlace__*`` snapshot schemas (and transfer
+    staging), and — when they look like ours — the ``streams`` landing schema.
+    Does **not** drop ``materialise: table`` / ``file`` destinations: those are
+    not ours. Snapshot, interval, and environment rows for ``keep_models``
+    (current terminal models) stay, so the next apply treats them as unchanged
+    and will not re-deliver into them. API keys, advisory locks, and trigger
+    last-fired times are kept (a live scheduler must not immediately force-run
+    terminals). The stream log is cleared when provided.
+    """
+    from interlace.plan.plan import PRODUCTION_ENV, env_view
+
+    registry = as_registry(engine, engines)
+    keep = frozenset(keep_models)
+    environments = await state.list_environments()
+    snapshot_rows = await state.list_snapshot_rows()
+    cleared_snapshots = sum(1 for row in snapshot_rows if row["name"] not in keep)
+
+    dropped_views: list[str] = []
+    sandbox_schemas: dict[str, set[str]] = {}  # engine -> env schemas
+    for environment in environments:
+        mapping = await state.get_environment(environment)
+        for model, fingerprint in mapping.items():
+            snapshot = await state.get_snapshot(model, fingerprint)
+            engine_name = snapshot.engine if snapshot is not None else registry.default
+            view = env_view(environment, model)
+            if model not in keep:
+                dropped_views.append(f"{engine_name}:{view.schema}.{view.name}")
+            if environment != PRODUCTION_ENV:
+                # drop the prefixed sandbox schema even if only terminals remain
+                sandbox_schemas.setdefault(engine_name, set()).add(view.schema)
+
+    owned_schemas: dict[str, set[str]] = {name: set() for name in registry}
+    for row in snapshot_rows:
+        schema = row["physical_schema"]
+        if schema.startswith(PHYSICAL_SCHEMA_PREFIX):
+            owned_schemas.setdefault(row.get("engine") or "default", set()).add(schema)
+    for engine_name in registry:
+        adapter = registry.require(engine_name)
+        for schema in await _owned_schema_names(adapter):
+            owned_schemas.setdefault(engine_name, set()).add(schema)
+
+    default_adapter = registry.require(registry.default)
+    drop_streams = clear_streams or await default_adapter.table_exists(_STREAMS_WATERMARKS)
+    dropped_schemas: list[str] = []
+    for engine_name, names in owned_schemas.items():
+        dropped_schemas.extend(f"{engine_name}:{schema}" for schema in sorted(names))
+    for engine_name, names in sandbox_schemas.items():
+        dropped_schemas.extend(f"{engine_name}:{schema}" for schema in sorted(names))
+    if drop_streams:
+        dropped_schemas.append(f"{registry.default}:{_STREAMS_SCHEMA}")
+    dropped_schemas = sorted(set(dropped_schemas))
+
+    result = ResetResult(
+        dropped_views=dropped_views,
+        dropped_schemas=dropped_schemas,
+        cleared_snapshots=cleared_snapshots,
+        kept_terminals=sorted(keep),
+        environments=list(environments),
+        stream_log_cleared=stream_log is not None,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        return result
+
+    for environment in environments:
+        mapping = await state.get_environment(environment)
+        for model, fingerprint in mapping.items():
+            if model in keep:
+                continue
+            snapshot = await state.get_snapshot(model, fingerprint)
+            engine_name = snapshot.engine if snapshot is not None else registry.default
+            view = env_view(environment, model)
+            adapter = registry.require(engine_name)
+            await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+    for engine_name, names in sandbox_schemas.items():
+        adapter = registry.require(engine_name)
+        for schema in sorted(names):
+            await _drop_schema(adapter, schema)
+    for engine_name, names in owned_schemas.items():
+        if engine_name not in registry:
+            continue  # snapshot from an engine no longer configured: leave its schema
+        adapter = registry.require(engine_name)
+        for schema in sorted(names):
+            await _drop_schema(adapter, schema)
+    if drop_streams:
+        await _drop_schema(default_adapter, _STREAMS_SCHEMA)
+    if stream_log is not None:
+        await stream_log.clear()
+    await state.reset_control_plane(keep)
+    return result
 
 
 async def gc(

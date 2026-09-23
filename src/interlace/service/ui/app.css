@@ -98,7 +98,6 @@ input, textarea, select { font: inherit; color: inherit; }
 .live { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--tx-dim); text-transform: uppercase; letter-spacing: 0.08em; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tx-faint); }
 .live[data-state="live"] .live-dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.live[data-state="poll"] .live-dot { background: var(--amber); }
 .live[data-state="connecting"] .live-dot { animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: 0.3; } }
 

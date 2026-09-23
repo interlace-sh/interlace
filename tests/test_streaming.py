@@ -49,6 +49,18 @@ async def test_append_assigns_monotonic_offsets_and_survives_reopen(tmp_path: Pa
     await reopened.close()
 
 
+async def test_clear_wipes_events_heads_and_consumers(log: SqliteStreamLog) -> None:
+    await log.append("s", [Event({"n": 1})])
+    lease = await log.lease("s", "g", ttl=30.0, owner="t")
+    assert lease is not None
+    await log.commit("s", "g", 1, lease.token)
+    await log.clear()
+    assert await log.head("s") == 0
+    assert await log.read("s", 0, 10) == []
+    fresh = await log.lease("s", "g", ttl=30.0, owner="t")
+    assert fresh is not None and fresh.committed_offset == 0
+
+
 async def test_idempotency_key_deduplicates(log: SqliteStreamLog) -> None:
     first = await log.append("s", [Event({"n": 1}, idempotency_key="a")])
     retry = await log.append("s", [Event({"n": 1}, idempotency_key="a"), Event({"n": 2}, idempotency_key="b")])

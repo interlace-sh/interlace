@@ -126,7 +126,8 @@ $ interlace plan
 - **`interlace env rollback`** repoints an environment's views at any earlier promotion — nothing
   rebuilds, the views move; every apply records a generation, so a bad deploy reverts in one
   command. `interlace gc` removes snapshots no environment references (reference-aware: tables
-  shared through reuse survive).
+  shared through reuse survive). `interlace reset --yes` wipes owned state for a fresh apply
+  without dropping `materialise: table` / `file` destinations.
 
 ## Streaming
 

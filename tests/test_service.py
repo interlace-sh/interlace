@@ -89,10 +89,45 @@ def test_ui_sends_security_headers(client: TestClient) -> None:
     assert "content-security-policy" not in client.get("/health").headers
 
 
+def test_ui_live_feed_is_sse_only() -> None:
+    """The in-package UI talks to the daemon over EventSource, not a poll loop."""
+    ui_dir = Path(__file__).resolve().parents[1] / "src" / "interlace" / "service" / "ui"
+    api_js = (ui_dir / "js" / "api.js").read_text()
+    assert "new EventSource" in api_js
+    assert "startPolling" not in api_js
+    assert "/events?after=" not in api_js
+    app_js = (ui_dir / "js" / "app.js").read_text()
+    assert "setInterval(refreshBadges" not in app_js
+    assert "poll: " not in app_js
+
+
 def test_environments_carry_promoted_at(client: TestClient) -> None:
     client.post("/apply", json={"environment": "prod"})
     envs = client.get("/environments").json()
     assert envs and envs[0]["promoted_at"]
+
+
+def test_reset_requires_confirm(client: TestClient) -> None:
+    refused = client.post("/reset", json={})
+    assert refused.status_code == 400
+    assert "confirm" in refused.json()["detail"]
+
+
+def test_reset_wipes_owned_state(client: TestClient) -> None:
+    client.post("/apply", json={"environment": "prod"})
+    assert client.get("/environments").json()
+    preview = client.post("/reset", json={"dry_run": True}).json()
+    assert preview["dry_run"] and preview["cleared_snapshots"] >= 1
+    assert client.get("/environments").json()  # dry-run left them
+
+    result = client.post("/reset", json={"confirm": True}).json()
+    assert result["cleared_snapshots"] >= 1
+    assert result["dropped_views"]
+    assert client.get("/environments").json() == []
+    plan = client.get("/plan", params={"environment": "prod"}).json()
+    assert {c["change_type"] for c in plan["changes"]} <= {"added"}
+    events = client.get("/events").json()
+    assert events and events[-1]["type"] == "reset.finished"
 
 
 def test_list_models(client: TestClient) -> None:
@@ -250,7 +285,7 @@ def test_cancel_run_endpoint(client: TestClient) -> None:
 
 def test_openapi_and_scalar_docs(client: TestClient) -> None:
     schema = client.get("/schema/openapi.json").json()
-    assert {"/models", "/runs", "/apply", "/environments"} <= schema["paths"].keys()
+    assert {"/models", "/runs", "/apply", "/environments", "/events/stream"} <= schema["paths"].keys()
     assert "/runs/{run_id}" in schema["paths"]
     assert client.get("/schema/scalar").status_code == 200  # Scalar UI
 

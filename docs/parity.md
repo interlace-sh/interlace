@@ -24,6 +24,7 @@ limited to one surface, the reason is given.
 | Schedules | (via `models`) | `GET /schedules` | system |
 | API keys | `apikey create/revoke/list` | `/apikeys` (GET/POST/DELETE) | system |
 | Garbage collection | `gc` | `POST /gc` | system |
+| Reset (fresh start) | `reset` | `POST /reset` | system |
 | Runs: list / cancel | `runs`, `cancel` | `GET /runs`, `POST .../cancel` | runs |
 | Events | — | `GET /events`, `/events/stream` | live feed |
 | Scaffold a project | `init` | — | — |
@@ -35,9 +36,9 @@ limited to one surface, the reason is given.
   that hosts the API), and `lineage --format dot` (a Graphviz export; the API returns lineage
   as JSON via `GET /lineage`, which the UI renders as an interactive canvas).
 - **API/UI-only** — stream **publish** (`POST /streams/{name}`) is an HTTP operation against a
-  running daemon; there's no `interlace publish`. Live **events** (`GET /events`) are an API/UI
-  concern. (Ad-hoc read-only SQL is on **both** surfaces — `interlace query "SELECT …"` and the
-  `POST /query` console share one parse-and-fence path.)
+  running daemon; there's no `interlace publish`. Live **events** (`GET /events/stream`; snapshot
+  `GET /events`) are an API/UI concern. (Ad-hoc read-only SQL is on **both** surfaces —
+  `interlace query "SELECT …"` and the `POST /query` console share one parse-and-fence path.)
 - **Enqueue vs immediate** — `interlace run`/`restate` and `POST /run` build **immediately**;
   `POST /runs` (and the UI "run…") **enqueue** onto the durable queue for a running
   scheduler to drain. `POST /apply` (and the UI apply) build immediately in the daemon.

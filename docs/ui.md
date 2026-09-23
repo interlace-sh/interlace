@@ -6,9 +6,10 @@ API](api.md) — every view is a thin client over the endpoints. Ten hash-routed
 command palette (⌘K), a live event feed, and a build dock that mirrors the CLI's ✓/✗ rows.
 
 Live updates come over SSE (`GET /events/stream`). When a bearer token is configured the UI
-passes it as `?token=` (EventSource cannot set Authorization); polling `GET /events` remains
-available as a fallback. Rail badges show pending plan changes and active runs; the build dock
-narrates per-model `model.*` events as apply runs.
+passes it as `?token=` (EventSource cannot set Authorization). Rail badges, the build dock,
+and the views that change with apply/run/stream activity follow that feed — there is no
+polling fallback and no websocket. Reconnects resume from `Last-Event-ID`. `GET /events`
+is the snapshot/replay API (the overview activity list loads its history from it once).
 
 ## Views
 
@@ -23,7 +24,7 @@ narrates per-model `model.*` events as apply runs.
 | **streams** | per-stream card: drift policy, lag, head, watermark, pending, retention, schema, target table | **peek** (`GET /streams/{name}`), **publish…** modal (`POST /streams/{name}`) |
 | **checks** | latest result per (model, check), split failing / passing | model links, **run checks** (`POST /checks/run`) |
 | **environments** | table (name, models, drift, promoted-at); prod marked | **new environment…** (`POST /apply` into a sandbox), **plan**, **history…** (generations → **roll back**, `POST /environments/{name}/rollback`), **drop** (type-to-confirm → `DELETE /environments/{name}`) |
-| **system** | engines (redacted DSNs), schedules (next/last fire), API keys | **new key…** (`POST /apikeys`, token shown once), **revoke** (`DELETE /apikeys/{name}`), **gc dry-run / now** (`POST /gc`), this-browser token field |
+| **system** | engines (redacted DSNs), schedules (next/last fire), API keys | **new key…** (`POST /apikeys`, token shown once), **revoke** (`DELETE /apikeys/{name}`), **gc dry-run / now** (`POST /gc`), **reset…** (type-to-confirm → `POST /reset`), this-browser token field |
 
 ## Command palette (⌘K)
 

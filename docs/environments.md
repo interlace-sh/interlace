@@ -62,3 +62,14 @@ their physical tables — reference-aware, so a table shared through reuse survi
 any environment still points at it. `gc` also trims the event log, check results, and
 finished runs older than 30 days, caps promotion history at the newest 50 generations per
 environment, and sweeps expired stream events per their retention.
+
+## Reset
+
+`interlace reset --yes` / `POST /reset` (`confirm: true`, admin) wipes Interlace-owned
+state so the next `apply` is a first build: environment views, `interlace__*` snapshot
+schemas, runs, events, check results, promotion history, and the stream log / `streams`
+landing tables. It does **not** drop `materialise: table` or `file` destinations, and it
+keeps those models' snapshot, interval, and environment rows so the next apply treats them
+as unchanged (no re-delivery). API keys and trigger last-fired times stay. `--dry-run` /
+`dry_run: true` previews without writing. The System UI exposes the same action behind a
+type-to-confirm modal.

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+**Reset: a fresh start that does not touch tables you own.** `interlace reset --yes`,
+`POST /reset`, and **reset…** on the System page wipe Interlace-owned state — environment
+views, snapshot tables, runs, events, and the stream log — so the next `apply` rebuilds
+from scratch. `materialise: table` / `file` destinations are not dropped, and those models
+stay recorded so the next apply will not re-deliver into them. API keys are kept. `--dry-run`
+previews; the UI requires typing `reset`.
+
+**UI live updates are SSE-only.** The in-package UI dropped its `GET /events` polling fallback
+and the 30-second badge poll. Keyed browsers already pass `?token=` on `/events/stream`
+because EventSource cannot set `Authorization`. `GET /events` remains the snapshot/replay API.
+The stream now sends a comment frame on connect (so EventSource opens on a quiet daemon) and
+15s keepalives.
+
 ## 2.4.1 (2026-08-15)
 
 **SQL macros.** `macros/*.sql` holds `CREATE MACRO` definitions, and any model can call them:

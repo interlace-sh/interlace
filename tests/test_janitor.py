@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from conftest import fetch_rows as _rows
@@ -168,3 +169,107 @@ async def test_drop_production_keeps_natural_schemas(env: tuple[DuckDBAdapter, S
     assert dropped == ["default:main.a"]
     # only the view went; the natural schema and user tables survive
     assert await _rows(engine, "SELECT keep FROM main.user_owned") == [{"keep": 1}]
+
+
+async def test_reset_drops_owned_state_and_keeps_user_tables(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    from datetime import UTC, datetime
+
+    from interlace.state.janitor import reset
+
+    engine, store = env
+    await engine.execute_sql("CREATE TABLE IF NOT EXISTS main.user_owned AS SELECT 1 AS keep")
+    await _apply(env, [sql_model("a", "SELECT 1 AS x")])
+    await store.create_api_key("ci", ["admin"])
+    await store.enqueue_run("run-1", ["a"], None)
+    await store.set_trigger_last_fired("a", datetime.now(UTC))
+    await store.append_event("apply.finished")
+    assert await _rows(engine, "SELECT x FROM main.a") == [{"x": 1}]
+    assert len(await _tables(engine, "a__%")) == 1
+
+    result = await reset(store, engine)
+
+    assert result.cleared_snapshots == 1
+    assert result.kept_terminals == []
+    assert await store.list_snapshot_rows() == []
+    assert await store.get_environment("prod") == {}
+    assert await store.list_runs() == []
+    assert await store.read_events() == []
+    assert await store.count_api_keys() == 1  # auth survives
+    assert await store.get_trigger_last_fired("a") is not None  # schedules don't immediately re-fire
+    assert await _tables(engine, "a__%") == []
+    leftover = await _rows(
+        engine, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_name = 'a'"
+    )
+    assert leftover == []  # env view gone
+    assert await _rows(engine, "SELECT keep FROM main.user_owned") == [{"keep": 1}]
+
+
+async def test_reset_preserves_table_sinks_and_does_not_redeliver(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """External destinations are not ours: reset must not drop them, and the next
+    apply must not re-deliver (the terminal stays recorded as unchanged)."""
+    from interlace.plan.plan import ChangeType
+    from interlace.state.janitor import reset
+
+    engine, store = env
+    engine.attach("ext", ":memory:")
+    models = [
+        sql_model("src", "SELECT 1 AS id"),
+        ModelDef(name="push", sql="SELECT id FROM src", materialise="table", target="ext.main.dest"),
+    ]
+    await _apply(env, models)
+    assert await _rows(engine, "SELECT id FROM ext.main.dest") == [{"id": 1}]
+
+    compiled = compile_models(models)
+    keep = [model.name for model in compiled.models.values() if model.is_terminal]
+    result = await reset(store, engine, keep_models=keep)
+
+    assert result.kept_terminals == ["push"]
+    assert await _rows(engine, "SELECT id FROM ext.main.dest") == [{"id": 1}]
+    assert await store.get_environment("prod") == {"push": compiled.models["push"].fingerprint}
+
+    plan = await diff(compiled, "prod", store)
+    types = {change.name: change.change_type for change in plan.changes}
+    assert types["src"] == ChangeType.ADDED
+    assert "push" not in types  # unchanged: will not re-deliver
+
+    applied = await apply(plan, compiled=compiled, engine=engine, state=store)
+    assert "push" not in applied.built
+    assert await _rows(engine, "SELECT id FROM ext.main.dest") == [{"id": 1}]
+
+
+async def test_reset_dry_run_touches_nothing(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    from interlace.state.janitor import reset
+
+    engine, store = env
+    await _apply(env, [sql_model("a", "SELECT 1 AS x")])
+
+    result = await reset(store, engine, dry_run=True)
+    assert result.dry_run and result.cleared_snapshots == 1
+    assert len(await _tables(engine, "a__%")) == 1
+    assert await _rows(engine, "SELECT x FROM main.a") == [{"x": 1}]
+    assert len(await store.list_snapshot_rows()) == 1
+
+
+async def test_reset_clears_stream_log_and_landing_tables(
+    env: tuple[DuckDBAdapter, SqliteStateStore], tmp_path: Path
+) -> None:
+    from interlace.dsl.decorators import StreamDef
+    from interlace.state.janitor import reset
+    from interlace.streaming.log import Event, SqliteStreamLog
+    from interlace.streaming.materializer import ensure_stream_tables
+
+    engine, store = env
+    stream = StreamDef(name="clicks", schema={"id": "text"})
+    await ensure_stream_tables([stream], engine)
+    log = await SqliteStreamLog.open(tmp_path / "streams.db")
+    try:
+        await log.append("clicks", [Event({"id": "1"})])
+        assert await log.head("clicks") == 1
+        await reset(store, engine, stream_log=log, clear_streams=True)
+        assert await log.head("clicks") == 0
+        tables = await _rows(engine, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'streams'")
+        assert tables == []
+    finally:
+        await log.close()

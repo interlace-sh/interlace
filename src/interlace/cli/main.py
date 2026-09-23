@@ -561,6 +561,77 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
 
 
 @app.command()
+def reset(
+    path: Path = _PATH,
+    yes: bool = typer.Option(False, "--yes", help="Required. Confirm the reset."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be removed without touching anything."),
+    as_json: bool = _JSON,
+) -> None:
+    """Wipe Interlace-owned state for a fresh apply.
+
+    Drops environment views, snapshot tables, runs, events, and the stream log.
+    External table/file destinations are not dropped; terminal models stay
+    recorded so the next apply will not re-deliver into them. API keys are kept.
+    """
+    asyncio.run(_reset(path, yes, dry_run, as_json))
+
+
+async def _reset(path: Path, yes: bool, dry_run: bool, as_json: bool) -> None:
+    from dataclasses import asdict
+
+    from interlace.state.janitor import reset as run_reset
+
+    if not yes and not dry_run:
+        console.print(
+            "This wipes Interlace-owned views, snapshot tables, runs, and stream state. "
+            "External table/file destinations are not dropped."
+        )
+        console.print("Pass [bold]--yes[/bold] to proceed (or [bold]--dry-run[/bold] to preview).")
+        raise typer.Exit(1)
+    project = Project.load(path)
+    compiled = project.compile()
+    keep = [model.name for model in compiled.models.values() if model.is_terminal]
+    engines = project.open_engines()
+    state = await project.open_state()
+    stream_log = None
+    stream_path = project.root / project.config.stream_path
+    if project.streams or stream_path.exists():
+        stream_log = await project.open_stream_log()
+    try:
+        async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:reset"):
+            result = await run_reset(
+                state,
+                engines=engines,
+                keep_models=keep,
+                stream_log=stream_log,
+                clear_streams=bool(project.streams),
+                dry_run=dry_run,
+            )
+        if as_json:
+            _emit_json(asdict(result))
+            return
+        verb = "Would drop" if dry_run else "Dropped"
+        console.print(
+            f"{verb} {len(result.dropped_views)} view(s), {len(result.dropped_schemas)} schema(s); "
+            f"{'would clear' if dry_run else 'cleared'} {result.cleared_snapshots} snapshot(s)."
+        )
+        if result.kept_terminals:
+            console.print(
+                f"[dim]Left {len(result.kept_terminals)} terminal model(s) recorded "
+                f"(table/file destinations were not dropped).[/dim]"
+            )
+        if result.stream_log_cleared:
+            console.print("[dim]Stream log cleared.[/dim]")
+        if not dry_run:
+            console.print("[dim]Next apply rebuilds owned models from scratch.[/dim]")
+    finally:
+        if stream_log is not None:
+            await stream_log.close()
+        await state.close()
+        engines.close()
+
+
+@app.command()
 def scheduler(
     environment: str = _ENV,
     path: Path = _PATH,

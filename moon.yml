@@ -14,8 +14,10 @@ tasks:
       cache: false
       runInCI: false
 
+  # Put this checkout's `interlace` on PATH (`~/.local/bin`), replacing a PyPI
+  # `uv tool install interlaced`. Does not touch .venv — that's `sync`.
   install:
-    command: 'uv pip install -e .'
+    command: 'uv tool install --editable --force ".[service]"'
     toolchain: 'system'
     options:
       cache: false

@@ -1,9 +1,9 @@
 // Checks: latest verdict per (model, check) — failures surfaced first, the
 // green wall below. Run the whole suite ad hoc from here.
 
-import { h, latestPerCheck, relTime, statusPill, table } from "../ui.js";
+import { debounce, h, latestPerCheck, relTime, statusPill, table } from "../ui.js";
 
-export async function render(el, { api, go, toast }) {
+export async function render(el, { api, feed, go, toast }) {
   const runBtn = h("button", { class: "btn primary" }, "run checks");
   const body = h("div", {});
 
@@ -95,4 +95,11 @@ export async function render(el, { api, go, toast }) {
 
   runBtn.addEventListener("click", runChecks);
   await refresh();
+  const scheduleRefresh = debounce(refresh, 150);
+  const offFeed = feed.on((event) => {
+    if (["apply.finished", "apply.blocked", "run.succeeded", "run.failed", "reset.finished"].includes(event.type)) {
+      scheduleRefresh();
+    }
+  });
+  return () => offFeed();
 }

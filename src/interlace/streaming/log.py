@@ -91,6 +91,10 @@ class StreamLog(Protocol):
         """Apply retention; returns the number of events removed."""
         ...
 
+    async def clear(self) -> None:
+        """Remove every event, head, and consumer offset. Used by reset."""
+        ...
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS stream_events (
@@ -324,3 +328,19 @@ class SqliteStreamLog:
             )  # noqa: S608
             self._conn.commit()
         return int(cursor.rowcount)
+
+    async def clear(self) -> None:
+        """Remove every event, head, and consumer offset — a fresh ingestion log."""
+        await asyncio.to_thread(self._clear_sync)
+
+    def _clear_sync(self) -> None:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM stream_events")
+                self._conn.execute("DELETE FROM stream_heads")
+                self._conn.execute("DELETE FROM consumer_state")
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise

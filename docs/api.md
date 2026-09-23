@@ -111,12 +111,19 @@ wrong scope = 403.
   the last key.
 - **`POST /gc`** (admin) → `GcResponse {removed_snapshots, dropped_tables[], kept_snapshots,
   dry_run}`. Body `{grace="7d", dry_run=false}`. Emits `gc.finished`.
+- **`POST /reset`** (admin) → `ResetResponse {dropped_views[], dropped_schemas[],
+  cleared_snapshots, kept_terminals[], environments[], stream_log_cleared, dry_run}`.
+  Body `{confirm=false, dry_run=false}`. Requires `confirm=true` unless `dry_run`. Wipes
+  Interlace-owned views/snapshots/runs/events/streams; does **not** drop table/file
+  destinations and keeps those models recorded so the next apply will not re-deliver.
+  Emits `reset.finished`.
 
 ### Events (read)
 - **`GET /events?after=`** → `[EventInfo]` `{seq, ts, type, entity, payload}` after a cursor.
 - **`GET /events/stream?after=&token=`** (SSE) → the live event tail. Reconnects resume from
-  `Last-Event-ID`; a slow client is dropped and reconnects. Event types: `run.enqueued`,
+  `Last-Event-ID`; a slow client is dropped and reconnects. A comment frame is sent on connect
+  so EventSource opens before any event, then every 15s as a keepalive. Event types: `run.enqueued`,
   `run.cancel_requested`, `apply.started/blocked/finished`, `run.started/finished`,
   `model.*` (per-model build progress), `stream.flushed`, `environment.dropped/rolled_back`,
-  `gc.finished`. EventSource cannot send an `Authorization` header — pass the API key as
+  `gc.finished`, `reset.finished`. EventSource cannot send an `Authorization` header — pass the API key as
   `?token=` on this path only (the in-package UI does). Prefer the Bearer header everywhere else.

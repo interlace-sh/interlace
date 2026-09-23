@@ -413,6 +413,21 @@ class GcResponse(msgspec.Struct):
     dry_run: bool
 
 
+class ResetRequest(msgspec.Struct):
+    confirm: bool = False  # required unless dry_run
+    dry_run: bool = False
+
+
+class ResetResponse(msgspec.Struct):
+    dropped_views: list[str]
+    dropped_schemas: list[str]
+    cleared_snapshots: int
+    kept_terminals: list[str]
+    environments: list[str]
+    stream_log_cleared: bool
+    dry_run: bool
+
+
 def _python_source(model: CompiledModel) -> str | None:
     if model.fn is None:
         return None
@@ -1409,6 +1424,48 @@ async def post_gc(state: State, data: GcRequest | None = None) -> GcResponse:
     )
 
 
+@post("/reset", opt={"scope": "admin"})
+async def post_reset(state: State, data: ResetRequest | None = None) -> ResetResponse:
+    """Wipe Interlace-owned state for a fresh apply. External table/file
+    destinations are not dropped; terminal models stay recorded so the next
+    apply will not re-deliver into them. Requires confirm=true (or dry_run)."""
+    from interlace.state.janitor import reset as run_reset
+
+    request = data or ResetRequest()
+    if not request.dry_run and not request.confirm:
+        raise ClientException(detail="pass confirm=true to reset (or dry_run=true to preview)")
+    await reload_if_stale(state)
+    keep = [model.name for model in state.compiled.models.values() if model.is_terminal]
+    async with hold_apply_lock(state.store, owner=state.lock_owner):
+        result = await run_reset(
+            state.store,
+            engines=state.engines,
+            keep_models=keep,
+            stream_log=state.stream_log,
+            clear_streams=bool(state.streams),
+            dry_run=request.dry_run,
+        )
+    if not request.dry_run:
+        await state.store.append_event(
+            "reset.finished",
+            payload={
+                "views": len(result.dropped_views),
+                "schemas": result.dropped_schemas,
+                "snapshots": result.cleared_snapshots,
+                "kept_terminals": result.kept_terminals,
+            },
+        )
+    return ResetResponse(
+        dropped_views=result.dropped_views,
+        dropped_schemas=result.dropped_schemas,
+        cleared_snapshots=result.cleared_snapshots,
+        kept_terminals=result.kept_terminals,
+        environments=result.environments,
+        stream_log_cleared=result.stream_log_cleared,
+        dry_run=result.dry_run,
+    )
+
+
 @get("/events")
 async def get_events(state: State, after: FromQuery[int] = 0) -> list[EventInfo]:
     return [EventInfo(**event) for event in await state.store.read_events(after)]
@@ -1428,6 +1485,9 @@ async def stream_events(state: State, request: Request, after: FromQuery[int] = 
         state.sse_subscribers.add(queue)
         cursor = after
         try:
+            # Comment frames flush headers immediately (EventSource onopen) and keep
+            # idle proxies from dropping a quiet stream — the UI is SSE-only.
+            yield ServerSentEventMessage(comment="ok", data=None)
             while True:
                 backlog = await state.store.read_events(cursor)
                 if not backlog:
@@ -1436,7 +1496,11 @@ async def stream_events(state: State, request: Request, after: FromQuery[int] = 
                     cursor = int(event["seq"])
                     yield ServerSentEventMessage(data=json.dumps(event), id=str(cursor))
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except TimeoutError:
+                    yield ServerSentEventMessage(comment="keepalive", data=None)
+                    continue
                 if item is None:  # poisoned: we fell behind — end the stream, the client replays on reconnect
                     return
                 seq, payload = item
@@ -1790,6 +1854,7 @@ def create_app(
             get_stream,
             publish,
             post_gc,
+            post_reset,
             post_query,
             get_engines,
             get_schedules,

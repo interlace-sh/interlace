@@ -1,11 +1,11 @@
 // Environments: prod plus the prefixed sandboxes — how many models each holds,
 // how far each has drifted from the compiled project, and a guarded drop.
 
-import { count, h, pill, relTime, table } from "../ui.js";
+import { count, debounce, h, pill, relTime, table } from "../ui.js";
 
 const PRODUCTION = "prod"; // the unprefixed namespace (PRODUCTION_ENV server-side)
 
-export async function render(el, { api, go, toast, modal }) {
+export async function render(el, { api, feed, go, toast, modal }) {
   const body = h("div", {});
 
   const newBtn = h("button", { class: "btn primary", onclick: () => createModal() }, "new environment…");
@@ -228,4 +228,12 @@ export async function render(el, { api, go, toast, modal }) {
   }
 
   await refresh();
+  const scheduleRefresh = debounce(refresh, 150);
+  const offFeed = feed.on((event) => {
+    const type = event.type || "";
+    if (type === "apply.finished" || type.startsWith("environment.") || type === "reset.finished") {
+      scheduleRefresh();
+    }
+  });
+  return () => offFeed();
 }

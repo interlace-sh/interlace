@@ -1,29 +1,43 @@
 // Overview: the room at a glance — drift, queue, streams, checks, and the live
-// event feed. Every number links to the view that explains it.
+// event feed. Every number links to the view that explains it. Stats and recent
+// runs refetch from SSE (not a timer); the activity list is incremental.
 
-import { clock, count, h, latestPerCheck, statusPill, table } from "../ui.js";
+import { clock, count, debounce, h, latestPerCheck, statusPill, table } from "../ui.js";
 import { episodeKey, feedItem, groupEpisodes } from "../timeline.js";
+
+function affectsOverview(event) {
+  const type = event.type || "";
+  return (
+    type.startsWith("run.") ||
+    type.startsWith("apply.") ||
+    type.startsWith("stream.") ||
+    type.startsWith("environment.") ||
+    type === "reset.finished"
+  );
+}
 
 export async function render(el, { api, feed, go }) {
   // /health is the liveness probe: if it rejects the daemon is down and the router
   // shows the error. The other five are wrapped so one flaky endpoint degrades to a
   // fallback instead of blanking the whole landing page.
   const safe = (promise, fallback) => promise.catch(() => fallback);
-  const [planBody, runsBody, streamsBody, envsBody, checksBody, health] = await Promise.all([
-    safe(api.get("/plan"), { changes: [] }),
-    safe(api.get("/runs"), []),
-    safe(api.get("/streams"), []),
-    safe(api.get("/environments"), []),
-    safe(api.get("/checks"), []),
-    api.get("/health"),
-  ]);
 
-  const active = runsBody.filter((run) => run.state === "running" || run.state === "queued");
-  const failed = runsBody.filter((run) => run.state === "failed").length;
-  const lag = streamsBody.reduce((sum, stream) => sum + Math.max(0, stream.head - stream.watermark), 0);
-  // one row per (model, check) first — /checks returns history, so raw filtering
-  // would count a check that failed earlier and passes now (matches the checks view)
-  const failingChecks = latestPerCheck(checksBody).filter((check) => check.status !== "passed").length;
+  const headSub = h("span", { class: "sub" }, "");
+  const statsRow = h("div", { class: "stat-row" });
+  const recentCard = h("div", { class: "card" });
+  const feedRows = h("div", { class: "feed" });
+  const liveCard = h(
+    "div",
+    { class: "card" },
+    h("div", { class: "card-head" }, "activity", h("span", { class: "spread" }), h("span", { class: "faint" }, "live")),
+    feedRows,
+  );
+
+  el.append(
+    h("div", { class: "view-head" }, h("h1", {}, "Overview"), headSub),
+    statsRow,
+    h("div", { class: "grid2" }, recentCard, liveCard),
+  );
 
   const stat = (label, value, { alert = false, route, small } = {}) => {
     const children = [
@@ -36,45 +50,46 @@ export async function render(el, { api, feed, go }) {
       : h("div", { class: `stat ${alert ? "alert" : ""}` }, ...children);
   };
 
-  el.append(
-    h("div", { class: "view-head" }, h("h1", {}, "Overview"), h("span", { class: "sub" }, `daemon v${health.version}`)),
-    h(
-      "div",
-      { class: "stat-row" },
+  async function refreshStats() {
+    const [planBody, runsBody, streamsBody, envsBody, checksBody, health] = await Promise.all([
+      safe(api.get("/plan"), { changes: [] }),
+      safe(api.get("/runs"), []),
+      safe(api.get("/streams"), []),
+      safe(api.get("/environments"), []),
+      safe(api.get("/checks"), []),
+      api.get("/health"),
+    ]);
+    const active = runsBody.filter((run) => run.state === "running" || run.state === "queued");
+    const failed = runsBody.filter((run) => run.state === "failed").length;
+    const lag = streamsBody.reduce((sum, stream) => sum + Math.max(0, stream.head - stream.watermark), 0);
+    // one row per (model, check) first — /checks returns history, so raw filtering
+    // would count a check that failed earlier and passes now (matches the checks view)
+    const failingChecks = latestPerCheck(checksBody).filter((check) => check.status !== "passed").length;
+    headSub.textContent = `daemon v${health.version}`;
+    statsRow.replaceChildren(
       stat("pending changes", planBody.changes.length, { alert: planBody.changes.length > 0, route: "plan" }),
       stat("active runs", active.length, { route: "runs" }),
       stat("failed runs", failed, { alert: failed > 0, route: "runs" }),
       stat("stream lag", count(lag), { alert: lag > 0, route: "streams", small: "events" }),
       stat("failing checks", failingChecks, { alert: failingChecks > 0, route: "checks" }),
       stat("environments", envsBody.length, { route: "environments" }),
-    ),
-  );
+    );
+    recentCard.replaceChildren(
+      h("div", { class: "card-head" }, "recent runs", h("span", { class: "spread" }), h("a", { href: "#/runs", style: "color:var(--violet)" }, "all")),
+      table(
+        [
+          { k: "id", label: "#", num: true },
+          { k: "flow_selector", label: "models", render: (run) => run.flow_selector.join(", ") || "all" },
+          { k: "state", label: "state", render: (run) => statusPill(run.state) },
+          { k: "enqueued_at", label: "when", render: (run) => h("span", { class: "dim" }, clock(run.enqueued_at)) },
+        ],
+        runsBody.slice(0, 8),
+        { onRow: (run) => go("runs", { r: run.id }), empty: "no runs yet", hint: "enqueue one from the runs view, or POST /runs" },
+      ),
+    );
+  }
 
-  const recentRuns = h(
-    "div",
-    { class: "card" },
-    h("div", { class: "card-head" }, "recent runs", h("span", { class: "spread" }), h("a", { href: "#/runs", style: "color:var(--violet)" }, "all")),
-    table(
-      [
-        { k: "id", label: "#", num: true },
-        { k: "flow_selector", label: "models", render: (run) => run.flow_selector.join(", ") || "all" },
-        { k: "state", label: "state", render: (run) => statusPill(run.state) },
-        { k: "enqueued_at", label: "when", render: (run) => h("span", { class: "dim" }, clock(run.enqueued_at)) },
-      ],
-      runsBody.slice(0, 8),
-      { onRow: (run) => go("runs", { r: run.id }), empty: "no runs yet", hint: "enqueue one from the runs view, or POST /runs" },
-    ),
-  );
-
-  const feedRows = h("div", { class: "feed" });
-  const liveCard = h(
-    "div",
-    { class: "card" },
-    h("div", { class: "card-head" }, "activity", h("span", { class: "spread" }), h("span", { class: "faint" }, "live")),
-    feedRows,
-  );
-
-  el.append(h("div", { class: "grid2" }, recentRuns, liveCard));
+  await refreshStats();
 
   // group the event stream into apply/run episodes (expandable), re-derived on every
   // event so it stays correct without incremental bookkeeping; `expanded` persists the
@@ -113,6 +128,12 @@ export async function render(el, { api, feed, go }) {
     /* fine — fills live */
   }
   renderFeed();
-  const offFeed = feed.on(ingest);
+  const scheduleStats = debounce(() => {
+    refreshStats().catch(() => {});
+  }, 150);
+  const offFeed = feed.on((event) => {
+    ingest(event);
+    if (affectsOverview(event)) scheduleStats();
+  });
   return () => offFeed();
 }

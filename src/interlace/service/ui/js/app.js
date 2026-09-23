@@ -2,7 +2,7 @@
 // Views are ES modules under views/ exporting render(el, ctx) -> cleanup?.
 
 import { api, feed, token } from "./api.js";
-import { glyph, h, seconds, toUtc } from "./ui.js";
+import { debounce, glyph, h, seconds, toUtc } from "./ui.js";
 
 // Views load on demand: only the module for the route you visit is fetched (and then
 // cached by the browser), so the initial payload is the shell + the first view, not
@@ -291,16 +291,27 @@ async function boot() {
   feed.onState((state) => {
     const pillEl = document.getElementById("livePill");
     pillEl.dataset.state = state;
-    pillEl.querySelector(".live-label").textContent = { live: "live", poll: "poll", connecting: "sync" }[state];
+    pillEl.querySelector(".live-label").textContent = { live: "live", connecting: "sync" }[state];
   });
+  // replayed history can dump many run/apply events at once — coalesce into one refetch
+  const scheduleBadges = debounce(refreshBadges, 150);
+  const BADGE_EVENTS = new Set([
+    "run.enqueued",
+    "run.started",
+    "run.succeeded",
+    "run.failed",
+    "run.cancelled",
+    "run.cancel_requested",
+    "apply.finished",
+    "apply.blocked",
+    "reset.finished",
+  ]);
   feed.on((event) => {
     // the dock narrates the build happening NOW — replayed history stays out of it
     const fresh = event.ts && Date.now() - toUtc(event.ts).getTime() < 15000;
     if (event.type === "model.start" && fresh) dock.start(event.entity);
     else if (event.type?.startsWith("model.") && fresh) dock.finish(event.entity, event.type.slice(6));
-    if (["run.enqueued", "run.started", "run.succeeded", "run.failed", "apply.finished"].includes(event.type)) {
-      refreshBadges();
-    }
+    if (BADGE_EVENTS.has(event.type)) scheduleBadges();
   });
   feed.start();
 
@@ -312,7 +323,6 @@ async function boot() {
     document.getElementById("railFoot").textContent = "offline";
   }
   refreshBadges();
-  setInterval(refreshBadges, 30000);
 
   window.addEventListener("hashchange", renderRoute);
   // let the page enter the back/forward cache: close the live feed as it's hidden,

@@ -5,7 +5,7 @@
 - `--env` / `-e` (default `prod`, env `INTERLACE_ENV`) — plan/apply/run/restate/serve/scheduler/checks run.
 - `--path` / `-p` (default `.`) — project root.
 - `--select` / `-s` (repeatable) — plan/apply/run/restate/models/checks run (see [selectors](#selectors)).
-- `--json` — plan/models/runs/streams/engines/impact/env/checks (and lineage via `--format json`).
+- `--json` — plan/models/runs/streams/engines/impact/env/checks/reset (and lineage via `--format json`).
 - `--parallelism` (default 0 = the project's `parallelism`) — apply/run/restate only.
 
 Exit codes: `0` ok; `1` selection error / breaking-plan-without-force / check failure /
@@ -48,6 +48,15 @@ correcting historical data.
 Garbage-collect snapshots no environment references and drop their physical tables
 (reference-aware). On a real run also trims the event log / check results / finished runs
 older than 30 days and sweeps expired stream events.
+
+### `interlace reset [--yes] [--dry-run] [--json]`
+Wipe Interlace-owned state so the next `apply` is a first build: environment views,
+`interlace__*` snapshot schemas, runs, events, check results, promotion history, and the
+stream log / `streams` landing tables. **Does not drop** `materialise: table` or `file`
+destinations — those are not ours — and keeps those models recorded so the next apply
+will not re-deliver into them. API keys and trigger last-fired times are kept (so a live
+scheduler does not immediately force-run terminals). `--yes` is required; `--dry-run`
+previews without `--yes`.
 
 ## Inspection (no warehouse)
 

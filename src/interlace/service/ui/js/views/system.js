@@ -224,6 +224,44 @@ export async function render(el, { api, go, toast, modal, token }) {
     });
   }
 
+  function resetModal() {
+    modal((box, close) => {
+      const confirm = h("input", { class: "in", placeholder: "reset", autocomplete: "off" });
+      const go = h("button", { class: "btn danger", disabled: true }, "reset");
+      confirm.addEventListener("input", () => {
+        go.disabled = confirm.value !== "reset";
+      });
+      go.addEventListener("click", async () => {
+        go.disabled = true;
+        try {
+          const result = await api.post("/reset", { confirm: true });
+          const kept = result.kept_terminals.length
+            ? `; ${result.kept_terminals.length} terminal(s) left recorded`
+            : "";
+          toast(
+            `reset: dropped ${result.dropped_views.length} view(s), ${result.dropped_schemas.length} schema(s)${kept}`,
+            "ok",
+          );
+          close();
+        } catch (error) {
+          toast(error.message, "err");
+          go.disabled = false;
+        }
+      });
+      box.append(
+        h("h2", {}, "Reset"),
+        h(
+          "p",
+          { class: "sub", style: "margin-bottom:10px" },
+          "wipes environment views, snapshot tables, runs, events, and the stream log. external table and file destinations are not dropped — terminal models stay recorded so the next apply will not re-deliver into them. api keys are kept.",
+        ),
+        h("label", { class: "field" }, h("span", {}, "type reset to confirm"), confirm),
+        h("div", { class: "actions" }, h("button", { class: "btn", onclick: close }, "cancel"), go),
+      );
+      confirm.focus();
+    });
+  }
+
   // ---- maintenance ----------------------------------------------------------------
 
   async function renderMaintenance() {
@@ -268,6 +306,8 @@ export async function render(el, { api, go, toast, modal, token }) {
         label,
       );
 
+    const resetBtn = h("button", { class: "btn small danger", onclick: resetModal }, "reset…");
+
     const versionLine = h("div", { class: "sub" }, "daemon: …");
     maintCard.replaceChildren(
       h("div", { class: "card-head" }, "maintenance"),
@@ -291,6 +331,17 @@ export async function render(el, { api, go, toast, modal, token }) {
             gcBtn("gc (dry run)", true),
             gcBtn("gc now", false),
           ),
+        ),
+        h(
+          "div",
+          { class: "field" },
+          h("span", {}, "reset — wipe owned state"),
+          h(
+            "p",
+            { class: "sub", style: "margin:0 0 8px" },
+            "environment views, snapshots, runs, and the stream log. does not drop table/file destinations.",
+          ),
+          resetBtn,
         ),
         versionLine,
       ),

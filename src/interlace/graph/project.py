@@ -26,7 +26,10 @@ from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_f
 from interlace.ir.macros import Macro, expand_macros
 from interlace.ir.relation import TableRef
 
-_PHYSICAL_PREFIX = "interlace__"
+# Snapshot tables live in `interlace__<logical schema>` — exclusively owned, never a
+# `materialise: table` destination. Reset/gc drop these schemas; they must not
+# match a user schema.
+PHYSICAL_SCHEMA_PREFIX = "interlace__"
 
 
 @dataclass(frozen=True)
@@ -90,7 +93,7 @@ def _split_name(name: str) -> tuple[str, str]:
 
 def _physical_table(name: str, fingerprint: str, catalog: str | None) -> TableRef:
     schema, base = _split_name(name)
-    return TableRef(schema=f"{_PHYSICAL_PREFIX}{schema}", name=f"{base}__{fingerprint}", catalog=catalog)
+    return TableRef(schema=f"{PHYSICAL_SCHEMA_PREFIX}{schema}", name=f"{base}__{fingerprint}", catalog=catalog)
 
 
 def _resolve_dependencies(

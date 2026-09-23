@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -115,3 +116,68 @@ def test_apply_blocks_breaking_changes_without_force(tmp_path: Path) -> None:
 
     forced = runner.invoke(app, ["apply", "--force", "--path", str(tmp_path)])
     assert forced.exit_code == 0 and "promoted" in forced.output
+
+
+def test_reset_requires_yes(tmp_path: Path) -> None:
+    _project(tmp_path)
+    assert runner.invoke(app, ["apply", "--path", str(tmp_path)]).exit_code == 0
+    refused = runner.invoke(app, ["reset", "--path", str(tmp_path)])
+    assert refused.exit_code == 1
+    assert "--yes" in refused.output
+
+
+def test_reset_wipes_owned_state_then_plan_is_all_added(tmp_path: Path) -> None:
+    _project(tmp_path)
+    applied = runner.invoke(app, ["apply", "--path", str(tmp_path)])
+    assert applied.exit_code == 0, applied.output
+
+    preview = runner.invoke(app, ["reset", "--dry-run", "--path", str(tmp_path)])
+    assert preview.exit_code == 0
+    assert "Would drop" in _plain(preview.output)
+    con = duckdb.connect(str(tmp_path / ".interlace" / "warehouse.duckdb"))
+    try:
+        assert con.execute("SELECT id, v2 FROM main.b").fetchall() == [(1, 20)]  # dry-run left it
+    finally:
+        con.close()
+
+    wiped = runner.invoke(app, ["reset", "--yes", "--path", str(tmp_path)])
+    assert wiped.exit_code == 0, wiped.output
+    assert "cleared" in _plain(wiped.output)
+
+    plan = runner.invoke(app, ["plan", "--json", "--path", str(tmp_path)])
+    assert plan.exit_code == 0, plan.output
+    types = {change["name"]: change["change_type"] for change in json.loads(plan.output)["changes"]}
+    assert types["a"] == "added" and types["b"] == "added"
+
+
+def test_reset_leaves_table_sink_in_place(tmp_path: Path) -> None:
+    (tmp_path / "models").mkdir()
+    (tmp_path / "interlace.yaml").write_text("name: rst\nattach:\n  crm: crm.duckdb\n")
+    (tmp_path / "models" / "src.sql").write_text("SELECT 1 AS id")
+    (tmp_path / "models" / "push.sql").write_text(
+        "/* interlace: {materialise: table, target: crm.main.contacts, strategy: replace} */\n" "SELECT id FROM src"
+    )
+    applied = runner.invoke(app, ["apply", "--path", str(tmp_path)])
+    assert applied.exit_code == 0, applied.output
+
+    external = duckdb.connect(str(tmp_path / "crm.duckdb"))
+    try:
+        assert external.execute("SELECT id FROM contacts").fetchall() == [(1,)]
+    finally:
+        external.close()
+
+    wiped = runner.invoke(app, ["reset", "--yes", "--path", str(tmp_path)])
+    assert wiped.exit_code == 0, wiped.output
+    assert "terminal" in _plain(wiped.output)
+
+    external = duckdb.connect(str(tmp_path / "crm.duckdb"))
+    try:
+        assert external.execute("SELECT id FROM contacts").fetchall() == [(1,)]  # not dropped
+    finally:
+        external.close()
+
+    plan = runner.invoke(app, ["plan", "--json", "--path", str(tmp_path)])
+    assert plan.exit_code == 0, plan.output
+    types = {change["name"]: change["change_type"] for change in json.loads(plan.output)["changes"]}
+    assert types["src"] == "added"
+    assert "push" not in types  # unchanged: next apply will not re-deliver

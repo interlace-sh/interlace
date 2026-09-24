@@ -26,14 +26,17 @@ credentials it needs. Filesystem only. Bundled templates:
 | `postgres` | Incremental pull from a Postgres source (bundled seeded docker-compose) | Docker + `[postgres]` extra |
 
 ### `interlace plan [--env] [--select] [--forward-only] [--json]`
-Preview what `apply` would change in an environment, without building. Opens the state store
-only (no warehouse). `--json` mirrors the HTTP `PlanResponse` shape. `--forward-only` previews
-history-inheriting plans.
+Preview what `apply` would change in an environment, without building. Connects to the
+engines to report live indexes and column drift, but does not write. `--json` mirrors the
+HTTP `PlanResponse` shape, including `physical` (`+ index` / `- constraint` lines that do
+not rebuild data) and `drift`. Exit 1 when `schema.columns: reject` finds a blocking
+mismatch. `--forward-only` previews history-inheriting plans.
 
 ### `interlace apply [--env] [--select] [--forward-only] [--force] [--parallelism]`
-Build changed models, run their checks, and promote the environment. Refuses to proceed on a
-**breaking** plan unless `--force`. Shows live per-model build rows (✓/✗/⊘). A blocking check
-failure aborts before promotion (exit 1). Needs a live warehouse.
+Build changed models, reconcile indexes and constraints, run checks, and promote the
+environment. Refuses to proceed on a **breaking** plan unless `--force`. Blocking schema
+drift exits 1 before any write (`force` does not bypass it). Shows live per-model build
+rows (✓/✗/⊘). A blocking check failure aborts before promotion (exit 1). Needs a live warehouse.
 
 ### `interlace run [--env] [--select] [--start] [--end] [--parallelism]`
 Force-build models regardless of change detection, then promote. `--start`/`--end` set the

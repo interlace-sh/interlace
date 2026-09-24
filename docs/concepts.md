@@ -44,13 +44,17 @@ fingerprint against the one promoted in the target environment and classifies th
 
 These are the differ's internal labels; the `category` shown in `interlace plan` is only
 `breaking` / `non_breaking` / `forward_only` (additive and clean both surface as `non_breaking`
-— the rebuild-vs-reuse distinction shows in the plan's Build column).
+— the rebuild-vs-reuse distinction shows in the plan's Build column). Indexes, constraints,
+and the external `schema` policy are a separate **physical hash**. They show up as their own
+`+ index` / `- constraint` lines and are reconciled on the existing table. They do not change
+the data fingerprint, so they do not rebuild a model or invalidate downstream.
 
 `apply` then, under a lock so one writer touches the warehouse at a time: builds the changed
 snapshots (DAG-scheduled — each model starts when its in-plan ancestors finish, bounded by
-`parallelism`), runs each model's checks, and — only if error-severity checks pass — repoints
-the environment views and records the new promotion generation. A plan with breaking changes
-refuses to apply without `--force`.
+`parallelism`), reconciles indexes and constraints on that table, runs each model's checks,
+and — only if error-severity checks pass — repoints the environment views and records the
+new promotion generation. A plan with breaking changes refuses to apply without `--force`.
+Blocking external-table drift (`schema.columns: reject`) refuses before any write.
 
 ## The state store
 

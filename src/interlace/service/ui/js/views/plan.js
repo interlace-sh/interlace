@@ -72,7 +72,7 @@ export async function render(el, { api, toast, modal, go }) {
 
   function renderPlan() {
     body.replaceChildren();
-    if (!current.changes.length) {
+    if (!current.changes.length && !(current.physical || []).length && !(current.drift || []).length) {
       body.append(
         h("div", { class: "card" }, h("div", { class: "empty" }, `nothing to do — ${current.environment} is up to date`)),
       );
@@ -83,6 +83,24 @@ export async function render(el, { api, toast, modal, go }) {
       body.append(
         h("div", { class: "card" }, h("div", { class: "card-body" }, "cross-engine transfers: ", current.transfers.join(", "))),
       );
+    }
+    const physical = current.physical || [];
+    const drift = current.drift || [];
+    if (physical.length || drift.length) {
+      const parts = [];
+      if (physical.length) {
+        parts.push(
+          h("div", { class: "card-head" }, "indexes and constraints"),
+          h("div", { class: "card-body" }, ...physical.map((line) => h("div", {}, line))),
+        );
+      }
+      if (drift.length) {
+        parts.push(
+          h("div", { class: "card-head" }, "drift"),
+          h("div", { class: "card-body" }, ...drift.map((line) => h("div", { class: "sub" }, line))),
+        );
+      }
+      body.append(h("div", { class: "card" }, ...parts));
     }
     for (const change of current.changes) {
       const headBits = [

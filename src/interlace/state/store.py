@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, NotRequired, Protocol, TypedDict
 
 from interlace.ir.relation import TableRef
+from interlace.physical.spec import PhysicalObject
 from interlace.state.interval import Interval, IntervalSet
 from interlace.state.snapshot import ChangeCategory, Snapshot
 
@@ -160,6 +161,11 @@ _MIGRATIONS: list[str] = [
         expires_at  TEXT NOT NULL
     );
     """,
+    # 0012 — physical DDL (indexes/constraints) tracked separately from the data fingerprint
+    """
+    ALTER TABLE snapshots ADD COLUMN physical_hash TEXT NOT NULL DEFAULT '';
+    ALTER TABLE snapshots ADD COLUMN physical_objects TEXT NOT NULL DEFAULT '[]';
+    """,
 ]
 
 
@@ -203,7 +209,7 @@ def _now_iso() -> str:
 
 def _snapshot_to_row(
     snapshot: Snapshot,
-) -> tuple[str, str, str, str, str | None, str | None, str, str, str, str, str]:
+) -> tuple[str, str, str, str, str | None, str | None, str, str, str, str, str, str, str]:
     t = snapshot.physical_table
     return (
         snapshot.name,
@@ -217,6 +223,23 @@ def _snapshot_to_row(
         snapshot.change_category.value,
         _now_iso(),
         snapshot.engine,
+        snapshot.physical_hash,
+        _objects_to_json(snapshot.physical_objects),
+    )
+
+
+def _objects_to_json(objects: tuple[PhysicalObject, ...]) -> str:
+    return json.dumps(
+        [{"kind": obj.kind, "name": obj.name, "column": obj.column} for obj in objects],
+        separators=(",", ":"),
+    )
+
+
+def _objects_from_json(raw: str | None) -> tuple[PhysicalObject, ...]:
+    if not raw:
+        return ()
+    return tuple(
+        PhysicalObject(kind=item["kind"], name=item["name"], column=item.get("column")) for item in json.loads(raw)
     )
 
 
@@ -234,6 +257,8 @@ def _snapshot_from_row(row: sqlite3.Row, intervals: IntervalSet) -> Snapshot:
         local_fingerprint=row["local_fingerprint"],
         definition_sql=row["definition_sql"],
         engine=row["engine"] if "engine" in keys else "default",
+        physical_hash=row["physical_hash"] if "physical_hash" in keys else "",
+        physical_objects=_objects_from_json(row["physical_objects"]) if "physical_objects" in keys else (),
     )
 
 
@@ -299,8 +324,9 @@ class SqliteStateStore:
             self._conn.execute(
                 "INSERT OR REPLACE INTO snapshots "
                 "(name, fingerprint, local_fingerprint, metadata_hash, definition_sql, physical_catalog, "
-                " physical_schema, physical_name, change_category, created_at, engine) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " physical_schema, physical_name, change_category, created_at, engine, physical_hash, "
+                " physical_objects) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _snapshot_to_row(snapshot),
             )
             self._conn.execute(

@@ -39,7 +39,19 @@ from sqlglot import exp
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.canonicalize import is_star_projection, parse
 from interlace.ir.fingerprint import canonical_sql
-from interlace.plan.plan import ChangeType, ModelChange, Plan, ViewSwap, collect_transfers, env_view, schedule_build
+from interlace.physical.reconcile import LOGICAL_CAPS, model_objects, object_changes
+from interlace.physical.spec import PhysicalObject
+from interlace.plan.plan import (
+    ChangeType,
+    ModelChange,
+    PhysicalAction,
+    PhysicalChange,
+    Plan,
+    ViewSwap,
+    collect_transfers,
+    env_view,
+    schedule_build,
+)
 from interlace.state.snapshot import ChangeCategory, Snapshot
 from interlace.state.store import StateStore
 
@@ -55,6 +67,7 @@ def snapshot_of(model: CompiledModel, category: ChangeCategory) -> Snapshot:
         local_fingerprint=model.local_fingerprint,
         definition_sql=model.definition_sql,
         engine=model.engine,
+        physical_hash=model.physical_hash,
     )
 
 
@@ -227,6 +240,32 @@ def _consumed_columns(ast: exp.Expression | None, dependency: str) -> frozenset[
     return frozenset(consumed)
 
 
+def _queue_physical(plan: Plan, model: CompiledModel, previous: tuple[PhysicalObject, ...]) -> None:
+    """Attach a non-standalone physical action when a build should also reconcile DDL."""
+    action = _physical_action(model, previous, standalone=False)
+    if action is not None:
+        plan.physical.append(action)
+
+
+def _physical_action(
+    model: CompiledModel, previous: tuple[PhysicalObject, ...], *, standalone: bool
+) -> PhysicalAction | None:
+    """A plan line for index/constraint changes. ``previous`` is what interlace
+    recorded on the *same* table; a new snapshot table passes an empty tuple so
+    nothing on the old table is dropped."""
+    desired, warnings = model_objects(model, LOGICAL_CAPS)
+    changes, _drops = object_changes(desired, previous)
+    if not changes and not warnings:
+        return None
+    return PhysicalAction(
+        name=model.name,
+        standalone=standalone,
+        previous=previous,
+        changes=tuple(PhysicalChange(op, kind, name) for op, kind, name in changes),
+        warnings=tuple(warnings),
+    )
+
+
 def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, environment: str) -> None:
     """Record the new fingerprint over the previous physical table; build nothing."""
     if model.materialise == "ephemeral":
@@ -235,8 +274,14 @@ def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, enviro
         snapshot_of(model, ChangeCategory.NON_BREAKING),
         physical_table=previous.physical_table,
         intervals=previous.intervals,
+        physical_objects=previous.physical_objects if previous.physical_hash == model.physical_hash else (),
     )
     plan.reuses.append(snapshot)
+    if previous.physical_hash != model.physical_hash:
+        action = _physical_action(model, previous.physical_objects, standalone=True)
+        plan.physical.append(
+            action or PhysicalAction(name=model.name, standalone=True, previous=previous.physical_objects)
+        )
     if model.materialise in ("virtual", "view"):  # terminal table/file has no env view to repoint
         plan.virtual_updates.append(
             ViewSwap(env_view(environment, model.name), previous.physical_table, engine=model.engine)
@@ -307,6 +352,13 @@ async def diff(
     # environment): building these again would recompute an identical, content-addressed
     # table, so schedule a reuse (record + view-swap) instead of a rebuild.
     already_built = await state.get_snapshots((name, compiled.models[name].fingerprint) for name in selected)
+    # Unchanged data fingerprints may still need a physical-DDL pass. Load those
+    # snapshots so an index-only edit can diff against the objects we recorded.
+    same_fingerprint = await state.get_snapshots(
+        (name, fingerprint)
+        for name, fingerprint in current.items()
+        if name in selected and name in compiled.models and fingerprint == compiled.models[name].fingerprint
+    )
 
     def is_materialised(model: CompiledModel) -> bool:
         return (model.name, model.fingerprint) in already_built
@@ -325,10 +377,20 @@ async def diff(
                     environment,
                     reuse_existing=is_materialised(model),
                 )
+                _queue_physical(plan, model, ())
             continue
 
         if previous_fingerprint == model.fingerprint:
-            continue  # unchanged
+            if model.name in selected:
+                recorded = same_fingerprint.get((model.name, previous_fingerprint))
+                recorded_hash = recorded.physical_hash if recorded else ""
+                if recorded_hash != model.physical_hash:
+                    recorded_objects = recorded.physical_objects if recorded else ()
+                    action = _physical_action(model, recorded_objects, standalone=True)
+                    plan.physical.append(
+                        action or PhysicalAction(name=model.name, standalone=True, previous=recorded_objects)
+                    )
+            continue  # data unchanged — no downstream impact
 
         previous = previous_snapshots.get((model.name, previous_fingerprint))
         added: tuple[str, ...] = ()
@@ -385,10 +447,15 @@ async def diff(
                 intervals=previous.intervals,  # type: ignore[union-attr]
             )
             schedule_build(plan, model, snapshot, environment, seed_from=previous.physical_table)  # type: ignore[union-attr]
+            _queue_physical(plan, model, ())
         elif rebuild:
             schedule_build(
                 plan, model, snapshot_of(model, category), environment, reuse_existing=is_materialised(model)
             )
+            previous_objects = (
+                previous.physical_objects if previous is not None and model.materialise == "table" else ()
+            )
+            _queue_physical(plan, model, previous_objects)
         else:
             _schedule_reuse(plan, model, previous, environment)  # type: ignore[arg-type]  # previous is not None here
 

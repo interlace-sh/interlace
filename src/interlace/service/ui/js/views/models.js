@@ -269,6 +269,56 @@ export async function render(el, { api, go, toast, modal, params }) {
         h("span", { style: "color:var(--tx-faint); width:90px; flex-shrink:0" }, label),
         names.length ? joinLinks(names) : h("span", { style: "color:var(--tx-faint)" }, none),
       );
+    const indexes = detail.indexes || [];
+    const constraints = detail.constraints || [];
+    if (indexes.length || constraints.length || detail.is_terminal) {
+      const lines = [
+        ...indexes.map((index) =>
+          h(
+            "div",
+            {},
+            h("span", { class: "dim" }, index.unique ? "unique index" : "index"),
+            " ",
+            index.name,
+            h("span", { class: "faint" }, `  ${index.columns.join(", ")}`),
+          ),
+        ),
+        ...constraints.map((constraint) => {
+          const extra = constraint.expression
+            ? constraint.expression
+            : constraint.reference
+              ? `${constraint.columns.join(", ")} → ${constraint.reference}`
+              : constraint.columns.join(", ");
+          return h(
+            "div",
+            {},
+            h("span", { class: "dim" }, constraint.type.replace("_", " ")),
+            " ",
+            constraint.name,
+            extra ? h("span", { class: "faint" }, `  ${extra}`) : null,
+          );
+        }),
+      ];
+      if (detail.is_terminal && detail.schema) {
+        const policy = detail.schema;
+        lines.push(
+          h(
+            "div",
+            { class: "sub", style: "margin-top:6px" },
+            `schema: columns ${policy.columns} · indexes ${policy.indexes} · constraints ${policy.constraints}`,
+          ),
+        );
+      }
+      cards.push(
+        h(
+          "div",
+          { class: "card" },
+          h("div", { class: "card-head" }, "indexes and constraints"),
+          h("div", { class: "card-body" }, ...lines),
+        ),
+      );
+    }
+
     cards.push(
       h(
         "div",

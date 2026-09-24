@@ -146,6 +146,9 @@ def test_model_detail_with_lineage(client: TestClient) -> None:
     assert "top_kind" in body["downstream"]
     assert body["columns"]["total_amount"] == ["raw_events.amount"]
     assert "from raw_events" in body["sql"].lower()
+    assert body["indexes"] == []
+    assert body["constraints"] == []
+    assert body["schema"] == {"columns": "additive", "indexes": "manage", "constraints": "manage"}
 
 
 def test_column_impact_endpoint(client: TestClient) -> None:

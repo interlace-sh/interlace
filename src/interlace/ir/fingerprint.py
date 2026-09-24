@@ -53,3 +53,15 @@ def data_fingerprint(
 def metadata_fingerprint(metadata: dict[str, Any]) -> str:
     """Fingerprint over non-semantic metadata (comments, owner, tags)."""
     return _digest(_stable_json(metadata))
+
+
+def physical_fingerprint(spec: dict[str, Any]) -> str:
+    """Fingerprint over indexes, constraints, and schema policy.
+
+    Empty when the model declares none of them, so it matches snapshots written
+    before this hash existed. It is deliberately not part of :func:`data_fingerprint`:
+    adding an index must not rebuild the table or invalidate downstream models.
+    """
+    if not spec:
+        return ""
+    return _digest(_stable_json(spec))

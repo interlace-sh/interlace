@@ -40,7 +40,13 @@ statement's affected-row count (`row_counts`).
 Delivering into an external `table` that another system also writes — a firm-owned table
 where your model supplies some columns and its owner maintains the rest — depends on the
 strategy, because `apply` first stages the model's output and **aligns** it to the existing
-target (additive `ALTER` for new columns, widening type promotions, casts for type drift):
+target (additive `ALTER` for new columns, widening type promotions, casts for type drift).
+That is `schema.columns: additive`, the default. `reject` fails the plan before any write
+when the live table is not a compatible superset (a widen is still allowed; extra columns
+are reported, not dropped). `ignore` issues no `ALTER` and lets the engine reject an insert
+that does not fit. There is no mode that drops a column. `schema.indexes` and
+`schema.constraints` are `manage` (reconcile names interlace created) or `ignore`. See
+[models](models.md#indexes-and-constraints).
 
 - **Named-column strategies** (`merge`, `hash_merge`, `append`) are handed only the columns
   the model actually produces. A matched row keeps every other column, and an inserted row

@@ -17,6 +17,8 @@ Requires the ``adbc`` extra (``pip install 'interlaced[adbc]'``).
 
 from __future__ import annotations
 
+from sqlglot import exp
+
 from interlace.engines.adbc import AdbcAdapter
 from interlace.engines.base import EngineCaps
 from interlace.exceptions import ConfigurationError
@@ -27,6 +29,7 @@ _POSTGRES_CAPS = EngineCaps(
     supports_star_exclude=False,  # no SELECT * EXCLUDE -> scd enumerates the model's columns instead
     supports_merge=True,  # MERGE ... (PostgreSQL >= 15)
     supports_transactions=True,
+    enforced_constraints=frozenset({"primary_key", "unique", "not_null", "check", "foreign_key"}),
 )
 
 
@@ -72,3 +75,28 @@ class PostgresAdapter(AdbcAdapter):
             rows = cur.fetchall()
             self._conn.commit()
         return dict(rows)
+
+    async def list_indexes(self, table: TableRef) -> list[str]:
+        schema = exp.Literal.string(table.schema).sql(dialect=self.dialect)
+        name = exp.Literal.string(table.name).sql(dialect=self.dialect)
+        try:
+            reader = await self.fetch_sql(
+                f"SELECT indexname FROM pg_indexes WHERE schemaname = {schema} AND tablename = {name}"
+            )
+        except Exception:
+            return []
+        return [str(row["indexname"]) for row in reader.read_all().to_pylist() if row.get("indexname")]
+
+    async def list_constraints(self, table: TableRef) -> list[str]:
+        schema = exp.Literal.string(table.schema).sql(dialect=self.dialect)
+        name = exp.Literal.string(table.name).sql(dialect=self.dialect)
+        try:
+            reader = await self.fetch_sql(
+                "SELECT con.conname AS name FROM pg_constraint con "
+                "JOIN pg_class rel ON rel.oid = con.conrelid "
+                "JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace "
+                f"WHERE nsp.nspname = {schema} AND rel.relname = {name}"
+            )
+        except Exception:
+            return []
+        return [str(row["name"]) for row in reader.read_all().to_pylist() if row.get("name")]

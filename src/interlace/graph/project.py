@@ -22,9 +22,10 @@ from interlace.dsl.decorators import CheckDef, ModelDef, ModelFn
 from interlace.exceptions import CompilationError, DefinitionError
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import parse, table_references
-from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint
+from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint, physical_fingerprint
 from interlace.ir.macros import Macro, expand_macros
 from interlace.ir.relation import TableRef
+from interlace.physical.spec import ConstraintSpec, IndexSpec, SchemaPolicy, physical_payload
 
 # Snapshot tables live in `interlace__<logical schema>` — exclusively owned, never a
 # `materialise: table` destination. Reset/gc drop these schemas; they must not
@@ -65,6 +66,10 @@ class CompiledModel:
     description: str | None = None
     fn: ModelFn | None = None  # the Python model function (source is fingerprinted; None for SQL)
     checks: tuple[CheckSpec, ...] = ()  # metadata-fingerprinted: changing a check never rebuilds data
+    indexes: tuple[IndexSpec, ...] = ()  # physical; hashed separately from the data fingerprint
+    constraints: tuple[ConstraintSpec, ...] = ()
+    schema_policy: SchemaPolicy = SchemaPolicy()
+    physical_hash: str = ""  # empty when the model declares no indexes, constraints, or schema policy
     backfill: str = "auto"  # incremental first-build window policy: auto | none | <ISO start>
 
     @property
@@ -255,6 +260,9 @@ def compile_models(
                 ],
             }
         )
+        physical_hash = physical_fingerprint(
+            physical_payload(definition.indexes, definition.constraints, definition.schema_policy)
+        )
         compiled[name] = CompiledModel(
             name=name,
             dialect=dialect,
@@ -284,6 +292,10 @@ def compile_models(
             description=definition.description,
             fn=definition.fn,
             checks=definition.checks,
+            indexes=definition.indexes,
+            constraints=definition.constraints,
+            schema_policy=definition.schema_policy,
+            physical_hash=physical_hash,
         )
 
     python_checks: dict[str, tuple[CheckDef, ...]] = {}

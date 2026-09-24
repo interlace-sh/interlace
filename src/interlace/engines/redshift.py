@@ -20,6 +20,8 @@ _REDSHIFT_CAPS = EngineCaps(
     supports_star_exclude=False,  # scd enumerates the model's columns instead
     supports_merge=True,  # MERGE (Redshift, 2023)
     supports_transactions=True,
+    # PRIMARY KEY / UNIQUE / FOREIGN KEY are informational. NOT NULL is enforced.
+    enforced_constraints=frozenset({"not_null"}),
 )
 
 

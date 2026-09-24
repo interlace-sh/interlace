@@ -21,6 +21,7 @@ from interlace.dsl.decorators import REGISTRY, ModelDef, _as_columns, _as_tuple,
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError, InterlaceError
 from interlace.ir.macros import Macro, parse_macros
+from interlace.physical.spec import parse_constraints, parse_indexes, parse_schema_policy
 
 
 def discover_models(root: Path, model_paths: list[str], default_dialect: str) -> list[ModelDef]:
@@ -116,6 +117,9 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         environments=_as_tuple(config.get("environments") or ("prod",)),
         schedule=config.get("schedule"),
         checks=parse_checks(config.get("checks"), default_name),
+        indexes=parse_indexes(config.get("indexes"), name),
+        constraints=parse_constraints(config.get("constraints"), name),
+        schema_policy=parse_schema_policy(config.get("schema"), name),
     )
 
 

@@ -3,7 +3,10 @@
 Checks run against a model's built table **before its environment view moves**. An
 error-severity failure blocks promotion; a warning is recorded but doesn't block. Results
 are stored in the state store (`check_results`) and surfaced by `interlace checks list`,
-`GET /checks`, and the UI Checks view.
+`GET /checks`, and the UI Checks view. A check is not a warehouse constraint: `constraints:`
+on a model is physical DDL (see [models](models.md#indexes-and-constraints)), enforced only
+where the engine enforces it. Checks stay the portable gate and are not promoted into
+constraints.
 
 Checks apply to `virtual`/`view` models (against the snapshot) and to a terminal `table`
 (against the delivered external table — they're skipped in an environment the model doesn't

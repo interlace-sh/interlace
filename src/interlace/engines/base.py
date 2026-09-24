@@ -32,6 +32,12 @@ class EngineCaps:
     supports_merge: bool = False  # native single-statement MERGE — merge upserts in place
     # Multi-statement execute_all is one transaction (stream watermarks need this).
     supports_transactions: bool = False
+    # Constraint kinds this engine actually enforces. The rest are not emitted as
+    # constraints (a primary key the warehouse ignores would look like a guarantee).
+    # Names: primary_key, unique, not_null, check, foreign_key.
+    enforced_constraints: frozenset[str] = frozenset()
+    # DuckDB rejects ADD CONSTRAINT; NOT NULL is ALTER COLUMN … SET NOT NULL.
+    not_null_as_column: bool = False
 
 
 class EngineAdapter(ABC):
@@ -64,6 +70,18 @@ class EngineAdapter(ABC):
     @abstractmethod
     async def describe(self, table: TableRef) -> dict[str, str]:
         """Return a table or view's columns as an ordered ``{name: type}`` mapping."""
+
+    async def list_indexes(self, table: TableRef) -> list[str]:
+        """Index names on ``table``. Empty when the engine has no catalog probe.
+
+        Used to *report* indexes interlace did not create. Drops never consult this —
+        only names recorded when interlace created the object are dropped.
+        """
+        return []
+
+    async def list_constraints(self, table: TableRef) -> list[str]:
+        """Constraint names on ``table``. Empty when the engine has no catalog probe."""
+        return []
 
     async def table_exists(self, table: TableRef) -> bool:
         """Whether the table (or view) exists. Adapters override with a direct probe."""

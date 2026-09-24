@@ -21,6 +21,7 @@ from interlace.exceptions import CheckError, ConfigurationError, InterlaceError,
 from interlace.graph.column_lineage import column_impact, column_lineage, split_target
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
+from interlace.physical.annotate import annotate_plan
 from interlace.plan.apply import ApplyResult
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
@@ -304,17 +305,22 @@ async def _plan(
     project = Project.load(path)
     compiled = project.compile()
     state = await project.open_state()
+    engines = project.open_engines()
     try:
         promoted = await _promoted_if_needed(state, environment, select)
         result = await diff(
             compiled, environment, state, select=_selection(compiled, select, promoted), forward_only=forward_only
         )
+        await annotate_plan(result, compiled, engines)
         if as_json:
             _emit_json(_plan_dict(result, environment))
         else:
             _render(result, environment)
+        if result.blocking:
+            raise typer.Exit(1)
     finally:
         await state.close()
+        engines.close()
 
 
 def _plan_dict(plan: Plan, environment: str) -> dict:
@@ -337,6 +343,12 @@ def _plan_dict(plan: Plan, environment: str) -> dict:
             f"{t.model}: {t.source.name} -> {t.target.name} ({t.via} -> {t.table.schema}.{t.table.name})"
             for t in plan.transfers
         ],
+        "physical": [
+            f"{'+' if change.op == 'add' else '-'} {change.kind} {change.name}"
+            for action in plan.physical
+            for change in action.changes
+        ],
+        "drift": [note.message for note in plan.drift],
     }
 
 
@@ -361,6 +373,7 @@ async def _apply(
         plan_result = await diff(
             compiled, environment, state, select=_selection(compiled, select, promoted), forward_only=forward_only
         )
+        await annotate_plan(plan_result, compiled, engines)
         _render(plan_result, environment)
         if plan_result.is_empty:
             return
@@ -1509,39 +1522,55 @@ async def _apikey_list(path: Path) -> None:
 
 
 def _render(plan: Plan, environment: str) -> None:
-    if plan.is_empty:
+    if not plan.changes and not plan.physical and not plan.transfers and not plan.drift and not plan.warnings:
         console.print(f"No changes for [bold]{environment}[/bold].")
         return
     reused = {snapshot.name for snapshot in plan.reuses}
-    table = _table(f"Plan · {environment}")
-    table.add_column("Model")
-    table.add_column("Change")
-    table.add_column("Category")
-    table.add_column("Build")
-    change_colours = {"added": "green", "removed": "red", "modified": "yellow"}
-    category_colours = {"breaking": "red", "non_breaking": "green", "forward_only": "cyan"}
-    for change in plan.changes:
-        build = (
-            "[cyan]reuse[/]"
-            if change.name in reused
-            else ("[dim]—[/]" if change.change_type is ChangeType.REMOVED else "rebuild")
-        )
-        kind = change.change_type.value
-        category = change.category.value if change.category else None
-        table.add_row(
-            change.name,
-            f"[{change_colours.get(kind, 'white')}]{kind}[/]",
-            f"[{category_colours.get(category, 'white')}]{category}[/]" if category else "[dim]—[/]",
-            build,
-        )
-    console.print(table)
+    if plan.changes:
+        table = _table(f"Plan · {environment}")
+        table.add_column("Model")
+        table.add_column("Change")
+        table.add_column("Category")
+        table.add_column("Build")
+        change_colours = {"added": "green", "removed": "red", "modified": "yellow"}
+        category_colours = {"breaking": "red", "non_breaking": "green", "forward_only": "cyan"}
+        for change in plan.changes:
+            build = (
+                "[cyan]reuse[/]"
+                if change.name in reused
+                else ("[dim]—[/]" if change.change_type is ChangeType.REMOVED else "rebuild")
+            )
+            kind = change.change_type.value
+            category = change.category.value if change.category else None
+            table.add_row(
+                change.name,
+                f"[{change_colours.get(kind, 'white')}]{kind}[/]",
+                f"[{category_colours.get(category, 'white')}]{category}[/]" if category else "[dim]—[/]",
+                build,
+            )
+        console.print(table)
     if reused:
         console.print(f"[dim]{len(reused)} model(s) have provably identical output — reusing existing tables.[/dim]")
+    for action in plan.physical:
+        for physical in action.changes:
+            mark = "[green]+[/]" if physical.op == "add" else "[red]-[/]"
+            console.print(f"{mark} {physical.kind} {physical.name}  [dim]{action.name}[/]")
+        for warning in action.warnings:
+            console.print(f"[yellow]note:[/yellow] {warning}")
     for transfer in plan.transfers:
         console.print(
             f"[cyan]transfer[/cyan] {transfer.model}: {transfer.source.name} → {transfer.target.name} "
             f"({transfer.via} → {transfer.table.schema}.{transfer.table.name})"
         )
+    for note in plan.drift:
+        style = "red" if note.blocking else "yellow"
+        console.print(f"[{style}]drift:[/{style}] {note.message}")
+    for warning in plan.warnings:
+        if any(warning == note.message for note in plan.drift):
+            continue
+        if any(warning in action.warnings for action in plan.physical):
+            continue
+        console.print(f"[yellow]note:[/yellow] {warning}")
 
 
 def _flatten_exceptions(exc: BaseException) -> list[BaseException]:

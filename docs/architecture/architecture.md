@@ -364,13 +364,25 @@ is external-only. `view` is virtual-only. `resolve_strategy(materialise, strateg
 single dispatch; `plan.apply` routes a terminal build to `_deliver_table` (stage → align →
 strategy) or the file COPY instead of a snapshot build + view swap.
 
+**Indexes and constraints** are a third hash (`physical_hash`), not part of the data
+fingerprint. Apply reconciles them after the table exists and before checks: create missing
+`il__*` (or explicitly named) objects, drop only names previously recorded. Hand-added
+indexes, grants, and RLS are never dropped. Where the engine will not enforce a constraint
+(DuckDB enforces `NOT NULL` only; Postgres enforces primary key, unique, not-null, check,
+and foreign key), a primary key, unique, or foreign key becomes a non-unique index plus a
+plan note, and checks remain the portable gate. On an external table the same spec applies
+with a narrower column policy (`schema.columns`: `additive` default, `reject`, or `ignore`);
+there is still no drop-column mode.
+
 **Why the six virtual-plane powers can't apply to a terminal.** The snapshot+view layer works
 only because interlace owns its tables — it shadow-builds `model__<fp>` beside the live one
 and atomically repoints a view. A terminal target conflates the build target with the read
 target, so a **breaking change cannot apply to a `table`**: there is no old version to serve
 during the build and no atomic cutover. A terminal table therefore evolves **additively only**
 (new columns via `ALTER … ADD COLUMN`, widening, NULL-fill/cast in `_align_stage_to_target`)
-and is never dropped; a definition change simply re-delivers. Reuse-skip, sandboxes, rollback,
+and is never dropped; a definition change simply re-delivers. `schema.columns: reject` stops
+that delivery when the live table is not a compatible superset; `ignore` skips `ALTER`
+entirely. Reuse-skip, sandboxes, rollback,
 gc, and forward-only are likewise inherent to content-addressing and do not exist for a
 terminal (its phantom snapshot row exists only so an unchanged fingerprint isn't re-delivered).
 This mirrors how Census/Hightouch split "model in the warehouse" from "sync to destination".

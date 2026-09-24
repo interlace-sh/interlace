@@ -23,6 +23,8 @@ _BIGQUERY_CAPS = EngineCaps(
     supports_star_exclude=True,  # SELECT * EXCEPT (...)
     supports_merge=True,
     supports_transactions=True,
+    # PRIMARY KEY / FOREIGN KEY are unenforced hints. NOT NULL is enforced.
+    enforced_constraints=frozenset({"not_null"}),
 )
 
 

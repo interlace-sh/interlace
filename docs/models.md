@@ -262,10 +262,33 @@ Every key below is settable in the SQL comment block or as a `@model(...)` argum
 | `columns` | map | — | Output contract `{column: type|null}`; a built table violating it blocks promotion (`SchemaError`). |
 | `schedule` | map | — | `{cron: "0 * * * *"}` or `{every: "5m"}` for the scheduler. |
 | `checks` | list | — | Data-quality [checks](checks.md). |
+| `indexes` | list | — | Indexes created after the table exists. A change does not rebuild data. See below. |
+| `constraints` | list | — | `primary_key`, `unique`, `not_null`, `check`, `foreign_key`. Enforced only where the engine enforces them; otherwise a non-unique index (or a plan note) and checks stay the portable gate. |
+| `schema` | map | `columns: additive`, `indexes: manage`, `constraints: manage` | External `table` drift policy. `columns`: `additive` (today's ALTER / cast / leave extras), `reject` (fail before writing if the live table is not a compatible superset), `ignore` (no ALTER). `indexes` / `constraints`: `manage` (reconcile names interlace created) or `ignore`. |
 | `target` | str | — | `materialise: table`: external `<alias>.<schema>.<table>` to deliver into. |
 | `path` | str | — | `materialise: file`: output path. |
 | `format` | str | — | `materialise: file`: `parquet` \| `csv` \| `json`. |
 | `environments` | list | `[prod]` | Terminal models: which environments actually deliver (the side-effect gate). |
+
+## Indexes and constraints
+
+Declared on `virtual` and `table` models (not `view`, `ephemeral`, or `file`). Interlace creates them after the table exists and names them `il__<model>__…` unless `name` is set. A later plan drops only names it recorded. Grants, RLS, and any index it did not create are left in place — including on an external table, which is still never dropped.
+
+```sql
+/*
+interlace:
+  indexes:
+    - columns: [customer_id, ordered_at]
+  constraints:
+    - not_null: status
+  schema:                 # materialise: table only; owned snapshots ignore columns
+    columns: additive     # additive | reject | ignore
+    indexes: manage       # manage | ignore
+*/
+SELECT customer_id, ordered_at, status FROM orders
+```
+
+`key:` stays the upsert grain. `checks:` stay post-build queries. A constraint the engine does not enforce (DuckDB primary keys, for example) becomes a non-unique index plus a plan note, and a check is still what fails the apply.
 
 ## Fingerprints and rebuild-skip
 
@@ -273,7 +296,10 @@ Each model gets a **data fingerprint** — a hash of its canonical SQL (or Pytho
 strategy config, and the sorted fingerprints of its upstreams. Any change that could affect
 output changes the fingerprint, which changes the physical table name
 (`interlace__<schema>.<base>__<fp>`, where `<base>` is the schema-stripped model name). This is
-how `plan` knows what to rebuild.
+how `plan` knows what to rebuild. Indexes, constraints, and `schema` policy are a separate
+**physical hash**: `plan` shows them as their own `+ index` / `- constraint` lines and apply
+reconciles them on the existing table. They never change the data fingerprint, so they never
+rebuild a model or invalidate downstream.
 
 The differ classifies each changed model internally as **breaking** (data may differ — rebuild),
 **additive** (only new columns appeared — rebuild, downstream stays non-breaking), or **clean**

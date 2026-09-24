@@ -15,6 +15,15 @@ from typing import Any
 
 from interlace.checks.spec import CheckSpec, parse_checks
 from interlace.exceptions import DefinitionError
+from interlace.physical.spec import (
+    ConstraintSpec,
+    IndexSpec,
+    SchemaPolicy,
+    parse_constraints,
+    parse_indexes,
+    parse_schema_policy,
+    validate_physical_allowed,
+)
 from interlace.sinks import FILE_FORMATS
 
 ModelFn = Callable[..., Any]
@@ -116,6 +125,9 @@ class ModelDef:
     environments: tuple[str, ...] = ("prod",)  # which environments actually deliver a terminal model
     schedule: dict[str, str] | None = None  # {"cron": "0 * * * *"} or {"every": "5m"} for `interlace serve`
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
+    indexes: tuple[IndexSpec, ...] = ()  # physical indexes; not part of the data fingerprint
+    constraints: tuple[ConstraintSpec, ...] = ()  # physical constraints; engine-enforced, not checks
+    schema_policy: SchemaPolicy = SchemaPolicy()  # external-table drift: columns / indexes / constraints
 
     def __post_init__(self) -> None:
         # `@model(checks=…)` normalises through parse_checks, but a ModelDef built
@@ -128,6 +140,10 @@ class ModelDef:
         # (TypeError on a CheckSpec; a dict silently degraded to its keys). Always run,
         # so `checks=[]` normalises to the declared tuple rather than staying a list.
         self.checks = parse_checks(self.checks, self.name)
+        self.indexes = parse_indexes(self.indexes, self.name)
+        self.constraints = parse_constraints(self.constraints, self.name)
+        self.schema_policy = parse_schema_policy(self.schema_policy, self.name)
+        validate_physical_allowed(self.name, self.materialise, self.indexes, self.constraints, self.schema_policy)
 
     @property
     def is_terminal(self) -> bool:
@@ -205,6 +221,9 @@ def model(
     columns: dict[str, str | None] | Sequence[str] | None = None,
     schedule: dict[str, str] | None = None,
     checks: Sequence[dict[str, Any] | CheckSpec] | None = None,
+    indexes: Sequence[dict[str, Any] | IndexSpec] | None = None,
+    constraints: Sequence[dict[str, Any] | ConstraintSpec] | None = None,
+    schema: dict[str, str] | None = None,
     export: Any = None,  # removed in 2.0 — kept only to raise a migration error
 ) -> Callable[[ModelFn], ModelFn]:
     """Declare a Python model. The function returns a ``Relation`` (or composes one).
@@ -221,6 +240,10 @@ def model(
     spelling for both surfaces — e.g. ``checks=[{"not_null": "customer_id"},
     {"row_count": {"min": 1}}]``. A :class:`~interlace.CheckSpec` also works if you
     prefer the typed form.
+
+    ``indexes`` and ``constraints`` are physical DDL applied after the table
+    exists. They do not change the data fingerprint. ``schema`` is the external
+    table drift policy (``columns`` / ``indexes`` / ``constraints``).
     """
     model_name = name or "<model>"
     if export is not None:
@@ -263,6 +286,9 @@ def model(
                 columns=_as_columns(columns),
                 schedule=schedule,
                 checks=parse_checks(checks, name or fn.__name__),
+                indexes=parse_indexes(indexes, name or fn.__name__),
+                constraints=parse_constraints(constraints, name or fn.__name__),
+                schema_policy=parse_schema_policy(schema, name or fn.__name__),
             )
         )
         return fn
@@ -281,7 +307,7 @@ def stream(
     """Declare a durable ingestion stream with an HTTP publish endpoint."""
     if not _STREAM_NAME.fullmatch(name):
         raise DefinitionError(
-            f"stream name {name!r} must match [A-Za-z_][A-Za-z0-9_]* " "(it becomes streams.<name> and a watermark key)"
+            f"stream name {name!r} must match [A-Za-z_][A-Za-z0-9_]* (it becomes streams.<name> and a watermark key)"
         )
     if on_schema_drift not in _DRIFT_MODES:
         raise DefinitionError(f"unknown on_schema_drift {on_schema_drift!r}; expected one of {sorted(_DRIFT_MODES)}")

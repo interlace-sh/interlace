@@ -37,11 +37,14 @@ from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, ExecutionError, InterlaceError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import SqlRelation, TableRef
+from interlace.physical.reconcile import model_objects, object_changes, reconcile_statements
+from interlace.physical.spec import PhysicalObject
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.sinks import file_statements, target_ref
 from interlace.state.interval import Interval
+from interlace.state.snapshot import Snapshot
 from interlace.state.store import StateStore
 from interlace.strategies import Incremental, Strategy, resolve_strategy
 from interlace.strategies.base import RowCounts
@@ -152,6 +155,8 @@ class Alignment:
     produced_source: exp.Query
     produced: list[str]
     unproduced: list[str]
+    added: list[str] = field(default_factory=list)  # columns the model has that the target does not
+    casts: list[str] = field(default_factory=list)  # type mismatches that are not numeric widens
 
     def for_strategy(self, strategy: Strategy) -> tuple[exp.Query, list[str]]:
         """The (source, column list) pair this strategy should be planned against."""
@@ -184,8 +189,10 @@ async def _align_stage_to_target(
         )
     target_expr = target.to_expr()
     pre_statements: list[exp.Expression] = []
+    added: list[str] = []
     for column, dtype in stage_columns.items():
         if column not in target_columns:
+            added.append(column)
             pre_statements.append(
                 exp.Alter(
                     this=target_expr.copy(),
@@ -214,12 +221,14 @@ async def _align_stage_to_target(
     produced_projection: list[exp.Expression] = []
     produced: list[str] = []
     unproduced: list[str] = []
+    casts: list[str] = []
     for column, dtype in target_columns.items():
         if column not in stage_columns:
             projection.append(exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column))
             unproduced.append(column)
             continue
         if stage_columns[column] != dtype:
+            casts.append(f"{column} {stage_columns[column]} -> {dtype}")
             fitted: exp.Expression = exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column)
         else:
             fitted = exp.column(column)
@@ -233,6 +242,8 @@ async def _align_stage_to_target(
         produced_source=exp.select(*produced_projection).from_(stage.to_expr()),
         produced=produced,
         unproduced=unproduced,
+        added=added,
+        casts=casts,
     )
 
 
@@ -266,23 +277,56 @@ def _require_managed_columns(strategy: Strategy, target: TableRef, target_column
         )
 
 
+async def _physical_ddl(
+    engine: EngineAdapter,
+    model: CompiledModel,
+    table: TableRef,
+    previous: tuple[PhysicalObject, ...],
+    *,
+    same_table: bool,
+) -> tuple[list[exp.Expression], tuple[PhysicalObject, ...], list[str]]:
+    """Statements that reconcile interlace-owned indexes and constraints, plus the set to record.
+
+    ``same_table`` is false for a brand-new snapshot table: the previous table's
+    indexes die with it (or with gc) and must not be dropped here.
+    """
+    desired, warnings = model_objects(model, engine.caps)
+    drops = object_changes(desired, previous)[1] if same_table else ()
+    existing = set(await engine.list_constraints(table)) if same_table else set()
+    statements = reconcile_statements(table, model, desired, drops, existing_constraints=existing)
+    return statements, desired, warnings
+
+
+def _remember(notes: list[str] | None, warning: str) -> None:
+    if notes is not None and warning not in notes:
+        notes.append(warning)
+
+
 async def _deliver_table(
     model: CompiledModel,
     engine: EngineAdapter,
     resolved: exp.Expression,
     strategy: Strategy,
     interval: Interval | None,
-) -> RowCounts:
+    previous: tuple[PhysicalObject, ...] = (),
+    notes: list[str] | None = None,
+) -> tuple[RowCounts, tuple[PhysicalObject, ...]]:
     """Deliver ``resolved`` into an external table (``materialise: table``) via
     ``strategy`` (replace / append / merge / full_merge / incremental).
 
     The external target is never dropped (grants and readers survive). When it already
     exists the source is staged in the warehouse and aligned to the target (additive
     ALTERs, widening, casts) so a model that grows or reorders columns evolves the
-    destination instead of breaking it or positionally corrupting it. A strategy that
-    names its columns is then planned against the model's own columns alone, leaving the
-    rest of the target untouched (see :class:`Alignment`); a whole-row one gets the source
-    widened to the target with NULLs, and binds positionally in the target's order.
+    destination instead of breaking it or positionally corrupting it. ``schema.columns``
+    selects that behaviour: ``additive`` (default), ``reject`` (fail before writing if
+    the live table is not a compatible superset), or ``ignore`` (no ALTER; the insert
+    fails if it does not fit). A strategy that names its columns is then planned against
+    the model's own columns alone, leaving the rest of the target untouched (see
+    :class:`Alignment`); a whole-row one gets the source widened to the target with
+    NULLs, and binds positionally in the target's order.
+
+    Indexes and constraints interlace recorded are reconciled in the same transaction
+    as the delivery. Anything else on the table is left alone.
 
     Two cases skip staging and run the strategy directly against the target: the first
     delivery (the ensure-create matches the source), and any windowed ``incremental``
@@ -290,38 +334,98 @@ async def _deliver_table(
     schema-stable within a fingerprint, so staging the *whole* source once per window
     would make a wide backfill/restate O(windows × source) — the pathological case."""
     target = target_ref(model.target or "")
-    if interval is not None or not await engine.table_exists(target):
-        counts = await engine.execute_all(
-            strategy.plan_statements(SqlRelation(ast=resolved), target, engine.caps, interval)
-        )
-        return strategy.row_counts(counts)
+    exists = await engine.table_exists(target)
+    policy = model.schema_policy.columns
+    if interval is not None or not exists:
+        if exists and interval is not None and policy == "reject" and model.columns:
+            from interlace.physical.drift import column_drift
+
+            blocking = [
+                note.message
+                for note in column_drift(
+                    model.name, model.target or "", policy, await engine.describe(target), model.columns
+                )
+                if note.blocking
+            ]
+            if blocking:
+                raise PlanError(
+                    f"{model.name}: schema.columns is reject — {'; '.join(blocking)}",
+                    details={"model": model.name, "target": model.target},
+                )
+        ddl, objects, warnings = await _physical_ddl(engine, model, target, previous, same_table=exists)
+        for warning in warnings:
+            _remember(notes, warning)
+        statements = strategy.plan_statements(SqlRelation(ast=resolved), target, engine.caps, interval)
+        counts = await engine.execute_all([*statements, *ddl])
+        return strategy.row_counts(counts[: len(statements)]), objects
     stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
-    alignment = await _align_stage_to_target(engine, stage, target, strategy)
-    pre_statements = alignment.pre_statements
-    aligned, columns = alignment.for_strategy(strategy)
-    if alignment.unproduced and not strategy.writes_named_columns:
-        # A whole-row strategy rewrites rows entire, so any column the model doesn't
-        # produce is reset on every run — and the deleting ones (replace, full_merge)
-        # drop rows it doesn't supply at all. Fine when interlace owns the table (this
-        # is just a widened source); destructive when it shares it with another writer.
-        logger.warning(
-            "%s: strategy %s writes whole rows into %s — it resets columns this model does not "
-            "produce (%s) on every delivery, and (replace, full_merge) deletes rows it does not "
-            "supply. Use merge, hash_merge or append if another writer owns part of this table.",
-            model.name,
-            model.strategy,
-            target.to_expr().sql(),
-            ", ".join(alignment.unproduced),
-        )
-    statements = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval, columns)
-    # One transaction may write only ONE attached database: the delivery batch writes the
-    # external target; the stage lives in the warehouse and is dropped separately (a
-    # leftover is harmless — the next delivery CREATE OR REPLACEs it).
-    counts = await engine.execute_all([*pre_statements, *statements])
-    await engine.execute(exp.Drop(this=stage.to_expr(), kind="TABLE", exists=True))
-    return strategy.row_counts(counts[len(pre_statements) :])
+    try:
+        pre_statements: list[exp.Expression]
+        aligned: exp.Query
+        columns: list[str] | None
+        if policy == "ignore":
+            stage_map = await engine.describe(stage)
+            target_columns = await engine.describe(target)
+            _require_managed_columns(strategy, target, target_columns)
+            extras = [
+                column
+                for column in target_columns
+                if column not in stage_map and column not in strategy.managed_columns
+            ]
+            if extras:
+                _remember(
+                    notes,
+                    f"{model.name}: {target.to_expr().sql()} has columns the model does not produce "
+                    f"({', '.join(extras)}); left in place",
+                )
+            pre_statements = []
+            aligned = exp.select("*").from_(stage.to_expr())
+            columns = list(stage_map) if strategy.writes_named_columns else None
+        else:
+            alignment = await _align_stage_to_target(engine, stage, target, strategy)
+            if policy == "reject" and (alignment.added or alignment.casts):
+                missing = ", ".join(alignment.added) or "none"
+                drifted = ", ".join(alignment.casts) or "none"
+                raise PlanError(
+                    f"{model.name}: schema.columns is reject and {target.to_expr().sql()} is not a compatible "
+                    f"superset (missing columns: {missing}; type drift: {drifted})",
+                    details={"model": model.name, "target": model.target},
+                )
+            pre_statements = alignment.pre_statements
+            aligned, columns = alignment.for_strategy(strategy)
+            if alignment.unproduced:
+                _remember(
+                    notes,
+                    f"{model.name}: {target.to_expr().sql()} has columns the model does not produce "
+                    f"({', '.join(alignment.unproduced)}); left in place",
+                )
+            if alignment.unproduced and not strategy.writes_named_columns:
+                # A whole-row strategy rewrites rows entire, so any column the model doesn't
+                # produce is reset on every run — and the deleting ones (replace, full_merge)
+                # drop rows it doesn't supply at all. Fine when interlace owns the table (this
+                # is just a widened source); destructive when it shares it with another writer.
+                logger.warning(
+                    "%s: strategy %s writes whole rows into %s — it resets columns this model does not "
+                    "produce (%s) on every delivery, and (replace, full_merge) deletes rows it does not "
+                    "supply. Use merge, hash_merge or append if another writer owns part of this table.",
+                    model.name,
+                    model.strategy,
+                    target.to_expr().sql(),
+                    ", ".join(alignment.unproduced),
+                )
+        ddl, objects, warnings = await _physical_ddl(engine, model, target, previous, same_table=True)
+        for warning in warnings:
+            _remember(notes, warning)
+        statements = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval, columns)
+        # One transaction may write only ONE attached database: the delivery batch writes the
+        # external target; the stage lives in the warehouse and is dropped separately (a
+        # leftover is harmless — the next delivery CREATE OR REPLACEs it).
+        counts = await engine.execute_all([*pre_statements, *ddl, *statements])
+    finally:
+        await engine.execute(exp.Drop(this=stage.to_expr(), kind="TABLE", exists=True))
+    return strategy.row_counts(counts[len(pre_statements) + len(ddl) :]), objects
 
 
 async def _stage_cross_engine_inputs(
@@ -501,6 +605,50 @@ def _check_references(model: CompiledModel, compiled: CompiledProject) -> set[st
     return refs
 
 
+async def _external_objects(
+    state: StateStore, environment: str, name: str, fingerprint: str
+) -> tuple[PhysicalObject, ...]:
+    """Objects interlace recorded for this external table.
+
+    The environment still points at the previous fingerprint until promote, which
+    is the set to drop from. A re-delivery of the same fingerprint (``run``)
+    reads that snapshot instead.
+    """
+    promoted = await state.get_environment(environment)
+    recorded_fp = promoted.get(name) or fingerprint
+    recorded = await state.get_snapshot(name, recorded_fp)
+    if recorded is None and recorded_fp != fingerprint:
+        recorded = await state.get_snapshot(name, fingerprint)
+    return recorded.physical_objects if recorded else ()
+
+
+async def _stamp_owned(
+    snapshot: Snapshot,
+    model: CompiledModel,
+    engine: EngineAdapter,
+    state: StateStore,
+    notes: list[str],
+) -> Snapshot:
+    """Reconcile indexes and constraints on an owned snapshot table and record what was created.
+
+    A new fingerprint is a new table, so objects on the previous table are not dropped.
+    A later interval window of the same fingerprint reconciles against what that
+    snapshot already recorded.
+    """
+    recorded = await state.get_snapshot(snapshot.name, snapshot.fingerprint)
+    table_ready = await engine.table_exists(snapshot.physical_table)
+    if not table_ready:
+        return replace(snapshot, physical_hash=model.physical_hash)
+    same = recorded is not None and recorded.physical_table == snapshot.physical_table
+    previous = recorded.physical_objects if same and recorded is not None else ()
+    ddl, objects, warnings = await _physical_ddl(engine, model, snapshot.physical_table, previous, same_table=same)
+    for warning in warnings:
+        _remember(notes, warning)
+    if ddl:
+        await engine.execute_all(ddl)
+    return replace(snapshot, physical_hash=model.physical_hash, physical_objects=objects)
+
+
 async def _run_backfill(
     task: BackfillTask,
     plan: Plan,
@@ -528,7 +676,7 @@ async def _run_backfill(
         # is what makes the differ's optimistic reuse safe: a snapshot row can outlive its
         # table (an in-memory warehouse across processes, a gc'd table) — then we fall
         # through and build for real.
-        await state.add_snapshot(snapshot)  # idempotent — the row may already exist
+        await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
         if snapshot.name not in result.built and snapshot.name not in result.reused:
             result.reused.append(snapshot.name)
         await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
@@ -583,7 +731,7 @@ async def _run_backfill(
                 snapshot = replace(snapshot, intervals=filled.add(filled_window))
         if model.columns:
             validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
-        await state.add_snapshot(snapshot)
+        await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
         result.built.append(snapshot.name)
         await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
         result.timings[snapshot.name] = time.perf_counter() - task_started
@@ -611,7 +759,12 @@ async def _run_backfill(
             interval = task.interval
             if task.bootstrap:  # incremental first delivery: fill the source's whole range in one window
                 interval = await _bootstrap_window(model, resolved, target_engine)
-            result.record_rows(snapshot.name, await _deliver_table(model, target_engine, resolved, strategy, interval))
+            previous_objects = await _external_objects(state, plan.environment, snapshot.name, snapshot.fingerprint)
+            delivered, objects = await _deliver_table(
+                model, target_engine, resolved, strategy, interval, previous_objects, plan.warnings
+            )
+            result.record_rows(snapshot.name, delivered)
+            snapshot = replace(snapshot, physical_hash=model.physical_hash, physical_objects=objects)
             if interval is not None:  # incremental terminal: accumulate the filled window in the ledger
                 filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
                 for carried in snapshot.intervals:  # forward-only N/A, but keep the ledger contract uniform
@@ -661,7 +814,7 @@ async def _run_backfill(
         for carried in snapshot.intervals:  # forward-only: the INHERITED ledger must persist too
             filled = filled.add(carried)
         snapshot = replace(snapshot, intervals=filled.add(interval))
-    await state.add_snapshot(snapshot)
+    await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
     if snapshot.name not in result.built:  # one entry per model, however many interval windows ran
         result.built.append(snapshot.name)
     await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
@@ -688,6 +841,11 @@ async def apply(
     build starts / finishes: events are ``"start"``, ``"done"``, ``"failed"``.
     """
     registry = as_registry(engine, engines)
+    from interlace.physical.annotate import annotate_plan
+
+    await annotate_plan(plan, compiled, registry)
+    if plan.blocking:
+        raise PlanError("schema drift blocks apply: " + "; ".join(plan.blocking))
     result = ApplyResult()
 
     # Where each model's data actually lives: recorded snapshots win over the
@@ -806,6 +964,33 @@ async def apply(
     for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing
         await state.add_snapshot(reuse)
         result.reused.append(reuse.name)
+
+    built_now = {task.snapshot.name for task in plan.backfills}
+    for action in plan.physical:
+        if not action.standalone or action.name in built_now:
+            continue
+        model = compiled.models[action.name]
+        if model.materialise == "file":
+            continue
+        target_engine = registry.require(model.engine, model=model.name)
+        if model.is_terminal:
+            if plan.environment not in model.environments or not model.target:
+                continue
+            table = target_ref(model.target)
+        else:
+            recorded = await state.get_snapshot(model.name, model.fingerprint)
+            table = recorded.physical_table if recorded is not None else model.physical_table
+        if not await target_engine.table_exists(table):
+            continue
+        ddl, objects, warnings = await _physical_ddl(target_engine, model, table, action.previous, same_table=True)
+        for warning in warnings:
+            _remember(plan.warnings, warning)
+        if ddl:
+            await target_engine.execute_all(ddl)
+        recorded = await state.get_snapshot(model.name, model.fingerprint)
+        if recorded is None:
+            continue
+        await state.add_snapshot(replace(recorded, physical_hash=model.physical_hash, physical_objects=objects))
 
     ensured: set[tuple[str, str]] = set()  # (engine, schema): one CREATE SCHEMA per pair, not per view
     for swap in plan.virtual_updates:

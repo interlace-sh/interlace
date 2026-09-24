@@ -31,7 +31,10 @@ wrong scope = 403.
 - **`GET /models`** → `[ModelInfo]` (topo-sorted). `ModelInfo`: `name, output, materialise,
   strategy, is_terminal, fingerprint, depends_on[], tags[], owner, schedule, engine, language`.
 - **`GET /models/{name}`** → `ModelDetail` (404 if unknown): adds `upstream[], downstream[],
-  columns{col: [sources]}, sql, source` (Python source).
+  columns{col: [sources]}, sql, source` (Python source), `indexes[]` (`columns, unique, name`),
+  `constraints[]` (`type, name, columns, expression, reference, fields`), and `schema`
+  (`columns` / `indexes` / `constraints` drift policy). `name` on an index or constraint is
+  the object interlace will create (`il__<model>__…` unless the model set one).
 - **`GET /models/{name}/impact?column=COL`** → `ImpactResponse` `{source, impacted:
   [{model, column, via}], opaque_consumers[]}` — the column blast radius (mirrors
   `interlace impact`).
@@ -41,13 +44,17 @@ wrong scope = 403.
 
 ### Plan & apply
 - **`GET /plan?environment=&select=&forward_only=`** (read) → `PlanResponse` `{environment,
-  changes: [Change], transfers[]}`. `Change`: `name, change_type, category,
+  changes: [Change], transfers[], physical[], drift[]}`. `physical` is `"+ index <name>"` /
+  `"- constraint <name>"` lines that do not rebuild data. `drift` reports external-table
+  differences (extra columns, unmanaged indexes); a `schema.columns: reject` mismatch fails
+  the plan before any write. `Change`: `name, change_type, category,
   previous_fingerprint, new_fingerprint, impacted_columns[], new_sql, previous_sql, reused`.
   Selector errors → 400.
 - **`POST /apply`** (write) → `ApplyResponse`. Body `ApplyRequest` `{selectors[], environment,
   force, forward_only}`. Runs diff → build → promote under a cross-process warehouse lock
   (flushing streams first). A breaking plan without `force` → 409 listing the breaking models.
-  A blocking check failure → 400 (`apply.blocked` event). Lock contention → 409. Response:
+  Blocking schema drift (`schema.columns: reject`) → 400 before any write; `force` does not
+  bypass it. A blocking check failure → 400 (`apply.blocked` event). Lock contention → 409. Response:
   `{environment, built[], promoted, breaking, reused[], transfers[],
   rows{model:{inserted,updated,deleted}}, timings{model:sec}, gated[], checks[]}`.
 - **`POST /run`** (write) → `ApplyResponse`. Body `CreateRun` `{selectors[], environment,

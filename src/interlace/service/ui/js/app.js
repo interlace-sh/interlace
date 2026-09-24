@@ -188,7 +188,7 @@ async function renderRoute() {
 async function refreshBadges() {
   try {
     const [planBody, runsBody] = await Promise.all([api.get("/plan"), api.get("/runs")]);
-    const changes = planBody.changes.length;
+    const changes = planBody.changes.length + (planBody.physical || []).length;
     const planBadge = document.querySelector('[data-badge="plan"]');
     planBadge.textContent = changes || "";
     const driftChip = document.getElementById("driftChip");

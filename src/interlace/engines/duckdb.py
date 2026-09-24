@@ -47,6 +47,10 @@ _DUCKDB_CAPS = EngineCaps(
     supports_star_exclude=True,
     supports_merge=True,  # MERGE INTO ... (DuckDB >= 1.3)
     supports_transactions=True,  # execute_all wraps BEGIN/COMMIT
+    # PRIMARY KEY / UNIQUE / FOREIGN KEY / CHECK are accepted and not enforced.
+    # NOT NULL is enforced, and only via ALTER COLUMN (ADD CONSTRAINT is unimplemented).
+    enforced_constraints=frozenset({"not_null"}),
+    not_null_as_column=True,
 )
 
 
@@ -269,6 +273,27 @@ class DuckDBAdapter(EngineAdapter):
 
     async def describe(self, table: TableRef) -> dict[str, str]:
         return await asyncio.to_thread(self._describe_sync, table)
+
+    async def list_indexes(self, table: TableRef) -> list[str]:
+        return await self._catalog_names(table, "duckdb_indexes()", "index_name")
+
+    async def list_constraints(self, table: TableRef) -> list[str]:
+        return await self._catalog_names(table, "duckdb_constraints()", "constraint_name")
+
+    async def _catalog_names(self, table: TableRef, function: str, column: str) -> list[str]:
+        schema = exp.Literal.string(table.schema).sql(dialect=self.dialect)
+        name = exp.Literal.string(table.name).sql(dialect=self.dialect)
+        catalog = exp.Literal.string(table.catalog).sql(dialect=self.dialect) if table.catalog else "current_database()"
+        sql = (
+            f"SELECT {column} FROM {function} "
+            f"WHERE schema_name = {schema} AND table_name = {name} "
+            f"AND database_name = coalesce({catalog}, current_database())"
+        )
+        try:
+            reader = await self.fetch_sql(sql)
+        except Exception:
+            return []
+        return [str(row[column]) for row in reader.read_all().to_pylist() if row.get(column)]
 
     # --- sync workers (run in a thread) -------------------------------------
 

@@ -14,6 +14,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from interlace.ir.relation import EngineRef, TableRef
+from interlace.physical.spec import PhysicalObject
 from interlace.state.interval import Interval
 from interlace.state.snapshot import ChangeCategory, Snapshot
 
@@ -28,6 +29,40 @@ class ChangeType(Enum):
     MODIFIED = "modified"
     REMOVED = "removed"
     UNCHANGED = "unchanged"
+
+
+@dataclass(frozen=True)
+class PhysicalChange:
+    """One index or constraint to add or drop. ``kind`` is ``index`` or ``constraint``."""
+
+    op: str  # add | drop
+    kind: str
+    name: str
+
+
+@dataclass(frozen=True)
+class PhysicalAction:
+    """Reconcile interlace-owned indexes and constraints on one model's table.
+
+    ``standalone`` means the data fingerprint did not change, so apply runs this
+    without rebuilding. Otherwise the build path applies it and these lines are
+    what ``plan`` shows.
+    """
+
+    name: str
+    standalone: bool
+    previous: tuple[PhysicalObject, ...] = ()
+    changes: tuple[PhysicalChange, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DriftNote:
+    """Schema drift on an external table. Blocking notes fail the plan before any write."""
+
+    model: str
+    message: str
+    blocking: bool = False
 
 
 @dataclass(frozen=True)
@@ -201,10 +236,17 @@ class Plan:
     # Human-facing planning caveats (e.g. an incremental run defaulting its
     # window) — surfaced by the CLI/API, never blocking.
     warnings: list[str] = field(default_factory=list)
+    # Index/constraint reconcile, separate from row-changing changes.
+    physical: list[PhysicalAction] = field(default_factory=list)
+    # External-table drift (extra columns, unexpected indexes). Blocking entries
+    # also live in ``blocking`` so apply can refuse before any write.
+    drift: list[DriftNote] = field(default_factory=list)
+    blocking: list[str] = field(default_factory=list)
+    annotated: bool = False  # engine caps and live drift have been filled in
 
     @property
     def is_empty(self) -> bool:
-        return not (self.changes or self.backfills or self.virtual_updates)
+        return not (self.changes or self.backfills or self.virtual_updates or self.physical or self.blocking)
 
     @property
     def has_breaking_changes(self) -> bool:

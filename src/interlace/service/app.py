@@ -42,6 +42,7 @@ from interlace.exceptions import CheckError, LockError, QueryError, SelectionErr
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models, wants_state
+from interlace.physical.annotate import annotate_plan
 from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.run import run_plan
@@ -127,6 +128,29 @@ class ModelInfo(msgspec.Struct):
     has_checks: bool = False  # declares SQL or Python checks — the runs view flags per-model check status
 
 
+class IndexInfo(msgspec.Struct):
+    columns: list[str]
+    name: str  # resolved object name (explicit, or il__<model>__…)
+    unique: bool = False
+
+
+class ConstraintInfo(msgspec.Struct):
+    type: str
+    name: str
+    columns: list[str] = msgspec.field(default_factory=list)
+    expression: str | None = None  # check
+    reference: str | None = None  # foreign_key target, as written
+    fields: list[str] = msgspec.field(default_factory=list)
+
+
+class SchemaPolicyInfo(msgspec.Struct):
+    """External-table drift policy. ``columns`` is unused on an owned snapshot."""
+
+    columns: str = "additive"  # additive | reject | ignore
+    indexes: str = "manage"  # manage | ignore
+    constraints: str = "manage"
+
+
 class ModelDetail(msgspec.Struct):
     name: str
     output: str
@@ -144,6 +168,9 @@ class ModelDetail(msgspec.Struct):
     sql: str | None = None  # canonical SQL; None for Python models
     language: str = "sql"  # "sql" | "python"
     source: str | None = None  # dedented function source for Python models
+    indexes: list[IndexInfo] = msgspec.field(default_factory=list)
+    constraints: list[ConstraintInfo] = msgspec.field(default_factory=list)
+    schema: SchemaPolicyInfo = msgspec.field(default_factory=SchemaPolicyInfo)
 
 
 class Change(msgspec.Struct):
@@ -162,6 +189,8 @@ class PlanResponse(msgspec.Struct):
     environment: str
     changes: list[Change]
     transfers: list[str] = msgspec.field(default_factory=list)  # explicit cross-engine movement
+    physical: list[str] = msgspec.field(default_factory=list)  # "+ index il__orders__id"
+    drift: list[str] = msgspec.field(default_factory=list)  # external-table drift; blocking drift is a 400
 
 
 class RunInfo(msgspec.Struct):
@@ -490,6 +519,7 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
         raise NotFoundException(detail=f"unknown model: {name}")
     model = compiled.models[name]
     cols = state.lineage.get(name, {})
+    policy = model.schema_policy
     return ModelDetail(
         name=name,
         output=_output(model),
@@ -507,6 +537,22 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
         sql=model.definition_sql,
         language="python" if model.ast is None else "sql",
         source=_python_source(model),
+        indexes=[
+            IndexInfo(columns=list(spec.columns), name=spec.object_name(name), unique=spec.unique)
+            for spec in model.indexes
+        ],
+        constraints=[
+            ConstraintInfo(
+                type=spec.type,
+                name=spec.object_name(name),
+                columns=list(spec.columns),
+                expression=spec.expression,
+                reference=spec.reference,
+                fields=list(spec.fields),
+            )
+            for spec in model.constraints
+        ],
+        schema=SchemaPolicyInfo(columns=policy.columns, indexes=policy.indexes, constraints=policy.constraints),
     )
 
 
@@ -548,6 +594,7 @@ async def get_plan(
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
     plan = await diff(compiled, env, state.store, select=selected, forward_only=forward_only)
+    await annotate_plan(plan, compiled, state.engines)
     reused = {snapshot.name for snapshot in plan.reuses}
     previous_snapshots = await state.store.get_snapshots(
         (c.name, c.previous_fingerprint) for c in plan.changes if c.previous_fingerprint is not None
@@ -576,6 +623,12 @@ async def get_plan(
         environment=env,
         changes=changes,
         transfers=[f"{t.model}: {t.source.name} -> {t.target.name} ({t.via})" for t in plan.transfers],
+        physical=[
+            f"{'+' if change.op == 'add' else '-'} {change.kind} {change.name}"
+            for action in plan.physical
+            for change in action.changes
+        ],
+        drift=[note.message for note in plan.drift],
     )
 
 
@@ -754,6 +807,9 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         if state.streams:  # an apply must see every event the publish path has accepted
             await flush_streams(state.flush_targets, state.stream_log, state.engine)
         plan = await diff(compiled, env, state.store, select=selected, forward_only=data.forward_only)
+        await annotate_plan(plan, compiled, state.engines)
+        if plan.blocking:
+            raise ClientException(detail="schema drift blocks apply: " + "; ".join(plan.blocking))
         breaking = plan.has_breaking_changes
         if breaking and not data.force:
             names = ", ".join(c.name for c in plan.changes if c.category is ChangeCategory.BREAKING)
@@ -1389,8 +1445,7 @@ async def delete_apikey(name: FromPath[str], state: State) -> dict:
         # zero keys = keyless mode = every request is admin. Revoking the last
         # key must never silently disable authentication.
         raise ClientException(
-            detail="refusing to revoke the last key(s) — that would disable authentication; "
-            "create a replacement first"
+            detail="refusing to revoke the last key(s) — that would disable authentication; create a replacement first"
         )
     removed = await state.store.revoke_api_key(name)
     return {"name": name, "removed": removed}

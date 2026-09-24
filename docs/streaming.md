@@ -89,4 +89,6 @@ SELECT customer_id, score FROM customer_value
   at the external table: `replace` (DELETE all + INSERT — the live table is never dropped, so
   grants and readers survive), `append`, `merge`, `full_merge`, `incremental`
   (windowed DELETE + INSERT), and `scd`. The external table is only ever created,
-  appended, or evolved additively — never dropped, and never mutated by a breaking change.
+  appended, or evolved under `schema.columns` (additive by default) — never dropped, and never
+  rewritten by a breaking change. `reject` stops delivery when the live table is not a
+  compatible superset; `ignore` issues no `ALTER`. See [models](models.md#indexes-and-constraints).

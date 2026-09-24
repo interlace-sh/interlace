@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased
+## 2.5.0 (2026-09-24)
+
+**Indexes and constraints, separate from the data fingerprint.** A `virtual` or `table`
+model can declare `indexes` and `constraints` (`primary_key`, `unique`, `not_null`,
+`check`, `foreign_key`). Interlace creates them after the table exists, names them
+`il__<model>__…` unless `name` is set, and a later plan drops only names it recorded.
+Grants, row-level security, and any index it did not create stay in place. The declaration
+is a physical hash, not part of the data fingerprint, so adding an index does not rebuild
+the model or invalidate downstream. `plan` shows `+ index` / `- constraint` lines; the model
+page and `GET /models/{name}` list them.
+
+Enforcement follows the engine. Postgres creates real primary keys, unique, not-null, check,
+and foreign keys. DuckDB enforces `NOT NULL` only; a primary key, unique, or foreign key
+becomes a non-unique index plus a plan note. Checks stay the portable gate and are not
+promoted into constraints. `key:` stays the upsert grain.
+
+**External tables: a column policy, and no drop mode.** `schema.columns` is `additive`
+(the default: add a column, widen a numeric type, cast other drift, leave extras), `reject`
+(fail the plan before any write when the live table is not a compatible superset; `force`
+does not bypass it), or `ignore` (no `ALTER`). `schema.indexes` and `schema.constraints`
+are `manage` or `ignore`. There is still no mode that drops a column or the table.
 
 **Reset: a fresh start that does not touch tables you own.** `interlace reset --yes`,
 `POST /reset`, and **reset…** on the System page wipe Interlace-owned state — environment

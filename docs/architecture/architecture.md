@@ -468,9 +468,11 @@ pitch is "self-hosted Cloudflare Pipelines that lands in DuckDB/DuckLake."
 
 **Current state.** `SqliteStreamLog` (WAL; offsets from 1, idempotency-key dedup via a
 partial unique index, consumer-group lease/commit with fencing tokens, trim, long-poll
-read). `@stream` declarations publish at `POST /streams/{name}` — schema-validated
+read, `renew`/`release` for a held lease). `@stream` declarations publish at `POST /streams/{name}` — schema-validated
 (`on_schema_drift: reject` default; extra fields/wrong types → 400, missing → NULL),
-durable before the 200, deduplicated on retry. The materialiser flushes micro-batches
+durable before the 200, deduplicated on retry. External consumers tail that log with
+`GET /streams/{name}/events` (SSE; `?group=` leases a consumer group) and ack with
+`POST /streams/{name}/commit` — a delivered frame is not an ack. The materialiser flushes micro-batches
 into `streams.<name>` (declared fields + `_offset`/`_ingested_at`) with the watermark
 committed **in the same warehouse transaction** as the data — exactly-once *landing*
 given a transactional `execute_all` (DuckDB / ADBC; Spark is refused) — without
@@ -565,8 +567,10 @@ idempotency key.
 re-run when a flush enqueues them — one execution engine, no separate streaming runtime.
 There is **no** `kind="incremental_stream"`, `on_stream(...)` trigger,
 `ctx.stream_batch(...)` accessor, outbound webhook/RabbitMQ consumer, `<stream>__dlq`
-dead-letter, or GCRA rate-limiting today. A first-class incremental-stream model kind and
-outbound consumers are roadmap (§14); the micro-batch-over-a-log design is what admits a
+dead-letter, or GCRA rate-limiting today. External consumers subscribe over SSE
+(`GET /streams/{name}/events`) and ack with the log's lease/commit. A first-class
+incremental-stream model kind and push-style outbound consumers (webhook, RabbitMQ) are
+roadmap (§14); the micro-batch-over-a-log design is what admits a
 DBSP-style incremental engine as an optional accelerator later.
 
 ---

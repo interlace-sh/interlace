@@ -19,9 +19,11 @@ import contextlib
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import msgspec
@@ -51,7 +53,7 @@ from interlace.service.auth import auth_guard
 from interlace.sinks import target_ref
 from interlace.state.locks import hold_apply_lock
 from interlace.state.snapshot import ChangeCategory
-from interlace.streaming.log import Event
+from interlace.streaming.log import Event, Lease, StoredEvent
 from interlace.streaming.materializer import (
     ensure_stream_tables,
     flush_streams,
@@ -320,6 +322,19 @@ class PublishResult(msgspec.Struct):
     deduplicated: int
     last_offset: int | None
     quarantined: int = 0  # events diverted to <stream>__quarantine (quarantine mode)
+
+
+class StreamCommit(msgspec.Struct):
+    """Advance a consumer group's committed offset. The token comes from the SSE lease frame."""
+
+    group: str
+    offset: int
+    token: str
+
+
+class StreamCommitResult(msgspec.Struct):
+    group: str
+    committed_offset: int
 
 
 class QueryRequest(msgspec.Struct):
@@ -1277,6 +1292,132 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
     )
 
 
+# External consumers tail the durable log. Sending a frame does not ack it —
+# the client commits the offsets it has handled. A grouped tail holds the
+# consumer lease and renews it; ``lease()`` itself rotates the fencing token,
+# so the heartbeat goes through ``renew``.
+_CONSUMER_LEASE_TTL_S = 30.0
+_CONSUMER_RENEW_S = 10.0
+_CONSUMER_KEEPALIVE_S = 15.0
+_CONSUMER_POLL_S = 0.05
+_CONSUMER_BATCH = 100
+
+
+def _log_name_or_404(state: State, name: str) -> None:
+    """A declared stream, or its ``<name>__quarantine`` shadow log."""
+    if name in state.streams:
+        return
+    parent = name.removesuffix("__quarantine")
+    if parent != name and parent in state.streams:
+        return
+    raise NotFoundException(detail=f"unknown stream: {name}")
+
+
+async def _poll_log(state: State, name: str, after_offset: int) -> list[StoredEvent]:
+    """Events after ``after_offset``, or nothing once the keepalive interval elapses.
+
+    The wait is ``asyncio.sleep``, not the log's blocking long-poll, so a client
+    disconnect cancels the tail promptly and releases the consumer lease.
+    """
+    quiet = 0.0
+    while quiet < _CONSUMER_KEEPALIVE_S:
+        batch = cast(list[StoredEvent], await state.stream_log.read(name, after_offset, _CONSUMER_BATCH, wait=0))
+        if batch:
+            return batch
+        await asyncio.sleep(_CONSUMER_POLL_S)
+        quiet += _CONSUMER_POLL_S
+    return []
+
+
+@get("/streams/{name:str}/events", opt={"no_compress": True})
+async def stream_log_events(
+    name: FromPath[str],
+    state: State,
+    request: Request,
+    after: FromQuery[int | None] = None,
+    group: FromQuery[str | None] = None,
+) -> ServerSentEvent:
+    """SSE tail of a durable stream log for external consumers.
+
+    With no ``after`` and no ``Last-Event-ID``, a plain tail starts at the current
+    head (live only). ``after=0`` replays from the first offset. A ``group`` takes
+    the consumer lease and, unless a cursor was given, resumes from that group's
+    committed offset. Delivery is at-least-once: frames are not auto-committed.
+    """
+    _log_name_or_404(state, name)
+    raw_id = request.headers.get("Last-Event-ID")
+    if raw_id:
+        try:
+            after = int(raw_id)
+        except ValueError as exc:
+            raise ClientException(detail="Last-Event-ID must be an integer offset") from exc
+
+    group_name = group.strip() if group else ""
+    held: Lease | None = None
+    if group_name:
+        held = await state.stream_log.lease(name, group_name, ttl=_CONSUMER_LEASE_TTL_S, owner=f"sse-{uuid4().hex}")
+        if held is None:
+            raise ClientException(status_code=409, detail=f"consumer group {group_name!r} on {name!r} is held")
+    if held is not None and after is None:
+        start = held.committed_offset
+    elif after is not None:
+        start = after
+    else:
+        start = await state.stream_log.head(name)
+
+    async def tail() -> AsyncIterator[ServerSentEventMessage]:
+        cursor = start
+        renewed = time.monotonic()
+        try:
+            # Comment frame first so EventSource onopen fires before any event.
+            yield ServerSentEventMessage(comment="ok", data=None)
+            if held is not None:
+                yield ServerSentEventMessage(
+                    event="lease",
+                    data=json.dumps(
+                        {"group": group_name, "token": held.token, "committed_offset": held.committed_offset}
+                    ),
+                )
+            while True:
+                if held is not None and time.monotonic() - renewed >= _CONSUMER_RENEW_S:
+                    if not await state.stream_log.renew(name, group_name, held.token, ttl=_CONSUMER_LEASE_TTL_S):
+                        yield ServerSentEventMessage(event="error", data=json.dumps({"detail": "lease lost"}))
+                        return
+                    renewed = time.monotonic()
+                batch = await _poll_log(state, name, cursor)
+                if not batch:
+                    yield ServerSentEventMessage(comment="keepalive", data=None)
+                    continue
+                for event in batch:
+                    cursor = event.offset
+                    yield ServerSentEventMessage(
+                        id=event.offset,
+                        data=json.dumps(
+                            {
+                                "offset": event.offset,
+                                "ts": event.ts.isoformat(),
+                                "payload": event.payload,
+                                "idempotency_key": event.idempotency_key,
+                                "headers": event.headers,
+                            }
+                        ),
+                    )
+        finally:
+            if held is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(state.stream_log.release(name, group_name, held.token))
+
+    return ServerSentEvent(tail())
+
+
+@post("/streams/{name:str}/commit", opt={"scope": "write"})
+async def commit_stream(name: FromPath[str], data: StreamCommit, state: State) -> StreamCommitResult:
+    """Ack a consumer group's offset. A stale fencing token is rejected (400)."""
+    _log_name_or_404(state, name)
+    await state.stream_log.commit(name, data.group, data.offset, data.token)
+    return StreamCommitResult(group=data.group, committed_offset=data.offset)
+
+
 def _jsonable(value: object) -> object:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -2049,7 +2190,12 @@ def create_app(
         # gzip the served modules/CSS/JSON (no build step, so this is where transfer
         # size is won). The SSE stream is excluded — compressing it would buffer and
         # stall live events. minimum_size skips tiny bodies where framing costs more.
-        compression_config=CompressionConfig(backend="gzip", exclude=["/events/stream"]),
+        compression_config=CompressionConfig(
+            backend="gzip",
+            exclude=["/events/stream"],
+            # /streams/{name}/events is parameterized, so the route opts out by key.
+            exclude_opt_key="no_compress",
+        ),
         route_handlers=[
             ui_router,
             ui_redirect,
@@ -2075,6 +2221,8 @@ def create_app(
             get_streams,
             get_stream,
             publish,
+            stream_log_events,
+            commit_stream,
             post_gc,
             post_reset,
             post_query,

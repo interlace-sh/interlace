@@ -114,6 +114,22 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
   quarantined}`. Body: a JSON object or an array of objects (raw, not a struct). Durable before
   it returns. **429** when unmaterialised pending > 100 000. Drift handled per the stream's
   `on_schema_drift` (`reject` → 400 on bad data; `evolve`; `quarantine`).
+- **`GET /streams/{name}/events?after=&group=&token=`** (read, SSE) → a tail of the durable
+  log for external consumers. Each data frame is `{offset, ts, payload, idempotency_key,
+  headers}` with `id` set to the offset. A comment frame is sent on connect so EventSource
+  opens before any event, then every 15s as a keepalive. No cursor (`after` / `Last-Event-ID`)
+  starts at the current head (live only); `after=0` replays from the first offset. Reconnects
+  resume from `Last-Event-ID`. `<name>__quarantine` is the shadow log when the stream's drift
+  mode is `quarantine`. Sending a frame does **not** ack it.
+  With `group`, the tail takes that consumer group's lease (409 if another owner holds it)
+  and, unless a cursor was given, resumes from the group's committed offset. The first frame
+  is `event: lease` with `{group, token, committed_offset}` and no `id`. The lease lasts 30s
+  and is renewed while the connection is open; disconnect releases it without moving the
+  committed offset. Pass the API key as `?token=` on this path (EventSource cannot send
+  `Authorization`).
+- **`POST /streams/{name}/commit`** (write) → **201** `StreamCommitResult {group,
+  committed_offset}`. Body `{group, offset, token}`. The token is the one from the lease
+  frame. A stale token (the lease was released, expired, or taken by someone else) is **400**.
 
 ### Query console
 - **`POST /query`** (read) → `QueryResponse {columns, types, rows, row_count, truncated,
@@ -150,4 +166,5 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
   `run.cancel_requested`, `apply.started/blocked/finished`, `run.started/finished`,
   `model.*` (per-model build progress), `stream.flushed`, `environment.dropped/rolled_back`,
   `gc.finished`, `reset.finished`. EventSource cannot send an `Authorization` header — pass the API key as
-  `?token=` on this path only (the in-package UI does). Prefer the Bearer header everywhere else.
+  `?token=` on this path and on `GET /streams/{name}/events` (the in-package UI does, for the
+  operator feed). Prefer the Bearer header everywhere else.

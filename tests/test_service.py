@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
+import httpx
 import pytest
-from litestar.testing import TestClient
+from litestar.testing import AsyncTestClient, TestClient
 
 from interlace.project import Project
 from interlace.service.app import create_app
@@ -288,7 +291,9 @@ def test_cancel_run_endpoint(client: TestClient) -> None:
 
 def test_openapi_and_scalar_docs(client: TestClient) -> None:
     schema = client.get("/schema/openapi.json").json()
-    assert {"/models", "/runs", "/apply", "/environments", "/events/stream"} <= schema["paths"].keys()
+    assert {"/models", "/runs", "/apply", "/environments", "/events/stream", "/streams/{name}/events"} <= schema[
+        "paths"
+    ].keys()
     assert "/runs/{run_id}" in schema["paths"]
     assert client.get("/schema/scalar").status_code == 200  # Scalar UI
 
@@ -341,6 +346,195 @@ def test_stream_publish_and_inspect(tmp_path: Path) -> None:
         _wait_for(lambda: any(e["type"] == "stream.flushed" for e in client.get("/events").json()))
 
 
+def _sse_frames(buffer: str) -> tuple[list[str], str]:
+    """Split a byte stream of SSE into frames. Litestar separates frames with CRLF."""
+    buffer = buffer.replace("\r\n", "\n")
+    frames: list[str] = []
+    while "\n\n" in buffer:
+        frame, buffer = buffer.split("\n\n", 1)
+        frames.append(frame)
+    return frames, buffer
+
+
+def _parse_sse(frame: str) -> dict[str, str]:
+    record: dict[str, str] = {}
+    for line in frame.splitlines():
+        if not line or line.startswith(":"):
+            continue
+        key, _, value = line.partition(":")
+        record[key] = value.lstrip()
+    return record
+
+
+async def _drive_sse(
+    app: object,
+    path: str,
+    *,
+    query: str = "",
+    headers: list[tuple[bytes, bytes]] | None = None,
+    stop_after: int,
+    on_ready: Callable[[list[dict[str, str]]], Awaitable[None]] | None = None,
+) -> tuple[int, dict[str, str], str, list[dict[str, str]]]:
+    """Read an SSE response as frames arrive, then cancel it.
+
+    Litestar's TestClient and httpx's ASGI transport both buffer until the body
+    ends, and this tail does not end. ``stop_after`` counts data frames; 0 stops
+    at the opening comment. ``on_ready`` runs before the tail is cancelled, so a
+    commit can land while the lease is still held.
+    """
+    queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    status = 0
+    response_headers: dict[str, str] = {}
+    request_sent = False
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": query.encode(),
+        "headers": [(b"host", b"testserver"), *(headers or [])],
+        "client": ("127.0.0.1", 123),
+        "server": ("testserver", 80),
+        "root_path": "",
+    }
+
+    async def receive() -> dict[str, object]:
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        nonlocal status
+        if message["type"] == "http.response.start":
+            status = int(message["status"])  # type: ignore[arg-type]
+            raw_headers = message.get("headers", [])
+            if isinstance(raw_headers, list):
+                response_headers.update({key.decode().lower(): value.decode() for key, value in raw_headers})
+        elif message["type"] == "http.response.body":
+            body = message.get("body", b"")
+            if isinstance(body, bytes) and body:
+                await queue.put(body)
+            if not message.get("more_body", False):
+                await queue.put(None)
+
+    task = asyncio.create_task(app(scope, receive, send))  # type: ignore[operator]
+    records: list[dict[str, str]] = []
+    first = ""
+    buffer = ""
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=5)
+            except TimeoutError:
+                if task.done():
+                    error = task.exception()
+                    if error is not None:
+                        raise error from None
+                break
+            if chunk is None:
+                break
+            buffer += chunk.decode()
+            frames, buffer = _sse_frames(buffer)
+            for frame in frames:
+                if not first:
+                    first = frame
+                record = _parse_sse(frame)
+                if "data" in record:
+                    records.append(record)
+            if (stop_after == 0 and first) or len(records) >= stop_after:
+                if on_ready is not None:
+                    await on_ready(records)
+                break
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    return status, response_headers, first, records
+
+
+async def test_stream_consumer_sse_replays_and_acks(tmp_path: Path) -> None:
+    """External consumers tail the durable log over SSE and ack with a fenced commit.
+
+    A frame is not an ack. A grouped tail holds the lease until the connection
+    closes; another subscriber to that group is refused while it is held.
+    """
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "clicks_stream.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream("clicks", schema={"event_id": "string", "amount": "double"})\n'
+        "def clicks(event):\n    return event\n"
+    )
+    app = create_app(project_dir, "dev")
+    async with AsyncTestClient(app=app) as client:
+        await client.post("/streams/clicks", json={"event_id": "e1", "amount": 1.0})
+        await client.post("/streams/clicks", json={"event_id": "e2", "amount": 2.0})
+        assert (await client.get("/streams/nope/events")).status_code == 404
+        missing = await client.post("/streams/nope/commit", json={"group": "g", "offset": 1, "token": "x"})
+        assert missing.status_code == 404
+
+        status, headers, first, live = await _drive_sse(app, "/streams/clicks/events", stop_after=0)
+        assert status == 200
+        assert headers["content-type"].startswith("text/event-stream")
+        assert headers.get("content-encoding") != "gzip"
+        assert first.startswith(": ok")
+        assert live == []  # no cursor: already-durable events are not replayed
+
+        _status, _headers, _first, replay = await _drive_sse(
+            app, "/streams/clicks/events", query="after=0", stop_after=2
+        )
+        assert [frame["id"] for frame in replay] == ["1", "2"]
+        assert [json.loads(frame["data"])["payload"]["event_id"] for frame in replay] == ["e1", "e2"]
+
+        _status, _headers, _first, resumed = await _drive_sse(
+            app, "/streams/clicks/events", headers=[(b"last-event-id", b"1")], stop_after=1
+        )
+        assert json.loads(resumed[0]["data"])["offset"] == 2
+
+        async def ack(records: list[dict[str, str]]) -> None:
+            lease = json.loads(records[0]["data"])
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as other:
+                held = await other.get("/streams/clicks/events", params={"group": "billing"})
+                assert held.status_code == 409
+                acked = await other.post(
+                    "/streams/clicks/commit",
+                    json={"group": "billing", "offset": 2, "token": lease["token"]},
+                )
+                assert acked.status_code == 201
+                assert acked.json() == {"group": "billing", "committed_offset": 2}
+
+        _status, _headers, _first, grouped = await _drive_sse(
+            app, "/streams/clicks/events", query="group=billing", stop_after=3, on_ready=ack
+        )
+        assert grouped[0]["event"] == "lease"
+        lease = json.loads(grouped[0]["data"])
+        assert lease["group"] == "billing" and lease["committed_offset"] == 0
+        assert "id" not in grouped[0]
+        assert [json.loads(frame["data"])["offset"] for frame in grouped[1:]] == [1, 2]
+
+        stale = await client.post(
+            "/streams/clicks/commit",
+            json={"group": "billing", "offset": 2, "token": lease["token"]},
+        )
+        assert stale.status_code == 400  # the tail released the lease when it was cancelled
+
+        await client.post("/streams/clicks", json={"event_id": "e3", "amount": 3.0})
+        _status, _headers, _first, again = await _drive_sse(
+            app, "/streams/clicks/events", query="group=billing", stop_after=2
+        )
+        assert json.loads(again[0]["data"])["committed_offset"] == 2
+        assert json.loads(again[1]["data"])["offset"] == 3
+
+
 def test_stream_evolve_mode_over_http(tmp_path: Path) -> None:
     project_dir = _make_project(tmp_path)
     (project_dir / "models" / "signals_stream.py").write_text(
@@ -368,7 +562,8 @@ def test_stream_quarantine_mode_over_http(tmp_path: Path) -> None:
         '@stream("orders", schema={"id": "string", "total": "double"}, on_schema_drift="quarantine")\n'
         "def orders(event):\n    return event\n"
     )
-    with TestClient(app=create_app(project_dir, "dev")) as client:
+    app = create_app(project_dir, "dev")
+    with TestClient(app=app) as client:
         result = client.post(
             "/streams/orders",
             json=[
@@ -382,6 +577,12 @@ def test_stream_quarantine_mode_over_http(tmp_path: Path) -> None:
         _wait_for(_drained(client, "orders"))
         detail = client.get("/streams/orders").json()
         assert detail["head"] == 1 and detail["watermark"] == 1  # only the good event flowed
+
+        _status, _headers, _first, frames = asyncio.run(
+            _drive_sse(app, "/streams/orders__quarantine/events", query="after=0", stop_after=2)
+        )
+        assert len(frames) == 2
+        assert client.get("/streams/nope__quarantine/events").status_code == 404
 
 
 def test_stream_flush_enqueues_consumer_models(tmp_path: Path) -> None:
@@ -570,7 +771,7 @@ def test_post_run_builds_synchronously(client: TestClient) -> None:
 
 
 def test_sse_token_query_is_accepted_once_keyed(tmp_path: Path) -> None:
-    """EventSource cannot send Authorization — ?token= on /events/stream authenticates."""
+    """EventSource cannot send Authorization — ?token= on the SSE tails authenticates."""
     from unittest.mock import MagicMock
 
     from interlace.service.auth import _bearer_token
@@ -588,11 +789,23 @@ def test_sse_token_query_is_accepted_once_keyed(tmp_path: Path) -> None:
     sse.query_params = {"token": token}
     assert _bearer_token(sse) == token
 
+    stream_tail = MagicMock()
+    stream_tail.headers = {}
+    stream_tail.scope = {"path": "/streams/clicks/events"}
+    stream_tail.query_params = {"token": token}
+    assert _bearer_token(stream_tail) == token
+
     other = MagicMock()
     other.headers = {}
     other.scope = {"path": "/events"}
     other.query_params = {"token": token}
     assert _bearer_token(other) is None  # query token is SSE-only
+
+    inspect = MagicMock()
+    inspect.headers = {}
+    inspect.scope = {"path": "/streams/clicks"}
+    inspect.query_params = {"token": token}
+    assert _bearer_token(inspect) is None
 
 
 def test_apply_emits_per_model_progress_events(client: TestClient) -> None:

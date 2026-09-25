@@ -82,6 +82,20 @@ async def test_lease_fencing(log: SqliteStreamLog) -> None:
         await log.commit("s", "mat", 9, lease.token)  # old fencing token rejected
 
 
+async def test_renew_keeps_the_token_and_release_frees_the_group(log: SqliteStreamLog) -> None:
+    lease = await log.lease("s", "g", ttl=30, owner="a")
+    assert lease is not None
+    assert await log.renew("s", "g", lease.token, ttl=30) is True
+    assert await log.renew("s", "g", "nope", ttl=30) is False  # stale token does not extend
+    await log.commit("s", "g", 1, lease.token)  # the original token still fences
+
+    await log.release("s", "g", lease.token)
+    again = await log.lease("s", "g", ttl=30, owner="b")
+    assert again is not None and again.committed_offset == 1
+    with pytest.raises(StreamError, match="stale lease"):
+        await log.commit("s", "g", 2, lease.token)
+
+
 async def test_trim(log: SqliteStreamLog) -> None:
     await log.append("s", [Event({"n": i}) for i in range(5)])
     assert await log.trim("s") == 0  # refuses a bare trim

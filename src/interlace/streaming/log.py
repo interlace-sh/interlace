@@ -87,6 +87,18 @@ class StreamLog(Protocol):
         """Commit a consumer offset atomically; rejects a stale fencing token."""
         ...
 
+    async def renew(self, stream: str, group: str, lease_token: str, *, ttl: float) -> bool:
+        """Extend a lease without rotating its fencing token. False if the token is stale.
+
+        ``lease`` always issues a new token, including for the current owner, so a
+        heartbeat must call this instead — otherwise an in-flight commit fails.
+        """
+        ...
+
+    async def release(self, stream: str, group: str, lease_token: str) -> None:
+        """Drop the lease so another owner can take the group. Leaves ``committed_offset``."""
+        ...
+
     async def trim(self, stream: str, *, before_offset: int | None = None, before_ts: datetime | None = None) -> int:
         """Apply retention; returns the number of events removed."""
         ...
@@ -307,6 +319,31 @@ class SqliteStreamLog:
             self._conn.commit()
         if cursor.rowcount == 0:
             raise StreamError(f"stale lease token for {stream!r} group {group!r}; another consumer holds the lease")
+
+    async def renew(self, stream: str, group: str, lease_token: str, *, ttl: float) -> bool:
+        return await asyncio.to_thread(self._renew_sync, stream, group, lease_token, ttl)
+
+    def _renew_sync(self, stream: str, group: str, lease_token: str, ttl: float) -> bool:
+        expires = (datetime.now(UTC) + timedelta(seconds=ttl)).isoformat()
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE consumer_state SET lease_expires_at = ? WHERE stream = ? AND grp = ? AND lease_token = ?",
+                (expires, stream, group, lease_token),
+            )
+            self._conn.commit()
+        return cursor.rowcount == 1
+
+    async def release(self, stream: str, group: str, lease_token: str) -> None:
+        await asyncio.to_thread(self._release_sync, stream, group, lease_token)
+
+    def _release_sync(self, stream: str, group: str, lease_token: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE consumer_state SET lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL "
+                "WHERE stream = ? AND grp = ? AND lease_token = ?",
+                (stream, group, lease_token),
+            )
+            self._conn.commit()
 
     async def trim(self, stream: str, *, before_offset: int | None = None, before_ts: datetime | None = None) -> int:
         return await asyncio.to_thread(self._trim_sync, stream, before_offset, before_ts)

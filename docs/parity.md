@@ -21,6 +21,7 @@ limited to one surface, the reason is given.
 | Checks: run ad hoc | `checks run` | `POST /checks/run` | checks |
 | Streams: inspect | `streams` | `GET /streams`, `/streams/{name}` | streams |
 | Streams: publish | — | `POST /streams/{name}` | streams |
+| Streams: consume | — | `GET /streams/{name}/events` (SSE), `POST /streams/{name}/commit` | streams |
 | Query console | — | `POST /query` | query |
 | Engines | `engines` | `GET /engines` | system |
 | Schedules | (via `models`) | `GET /schedules` | system |
@@ -39,14 +40,16 @@ limited to one surface, the reason is given.
   that hosts the API), `mcp` (a stdio server over the same project; `apply` refuses unless
   `confirm` is true), and `lineage --format dot` (a Graphviz export; the API returns lineage
   as JSON via `GET /lineage`, which the UI renders as an interactive canvas).
-- **API/UI-only** — stream **publish** (`POST /streams/{name}`) is an HTTP operation against a
-  running daemon; there's no `interlace publish`. Live **events** (`GET /events/stream`; snapshot
-  `GET /events`) are an API/UI concern. (Ad-hoc read-only SQL is on **both** surfaces —
+- **API/UI-only** — stream **publish** (`POST /streams/{name}`) and the external **consumer
+  tail** (`GET /streams/{name}/events`, acked with `POST /streams/{name}/commit`) are HTTP
+  operations against a running daemon; there's no `interlace publish`. Live **operator events**
+  (`GET /events/stream`; snapshot `GET /events`) are an API/UI concern. (Ad-hoc read-only SQL is on **both** surfaces —
   `interlace query "SELECT …"` and the `POST /query` console share one parse-and-fence path.)
 - **Enqueue vs immediate** — `interlace run`/`restate` and `POST /run` build **immediately**;
   `POST /runs` (and the UI "run…") **enqueue** onto the durable queue for a running
   scheduler to drain. `POST /apply` (and the UI apply) build immediately in the daemon.
 
-Every HTTP endpoint is exercised by at least one UI view — there are no API features hidden
-from the UI. Some response fields (e.g. a check's `message`, a run's `priority`) are carried
-on the wire but not yet rendered; those are display gaps, not capability gaps.
+Every HTTP endpoint is exercised by at least one UI view, except the external consumer tail
+(`GET /streams/{name}/events` and `POST /streams/{name}/commit`), which is for subscribers
+outside the operator UI. Some response fields (e.g. a check's `message`, a run's `priority`)
+are carried on the wire but not yet rendered; those are display gaps, not capability gaps.

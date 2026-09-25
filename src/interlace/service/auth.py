@@ -7,9 +7,9 @@ create``) locks it down. ``/health`` and the OpenAPI docs (``/schema``) are
 always open. Routes declare a required scope via ``opt={"scope": "write"}``
 (default ``read``); an ``admin`` scope satisfies any requirement.
 
-``GET /events/stream`` also accepts ``?token=`` because EventSource cannot send
-an ``Authorization`` header. Prefer the header everywhere else (tokens in URLs
-can land in access logs).
+The SSE tails (``GET /events/stream`` and ``GET /streams/{name}/events``) also
+accept ``?token=`` because EventSource cannot send an ``Authorization`` header.
+Prefer the header everywhere else (tokens in URLs can land in access logs).
 """
 
 from __future__ import annotations
@@ -25,8 +25,9 @@ def _bearer_token(connection: ASGIConnection) -> str | None:
     header = connection.headers.get("Authorization", "")
     if header.startswith("Bearer "):
         return header[7:]
-    # EventSource cannot set Authorization — allow ?token= on the SSE path only.
-    if connection.scope["path"] == "/events/stream":
+    # EventSource cannot set Authorization — allow ?token= on the SSE tails only.
+    path = connection.scope["path"]
+    if path == "/events/stream" or (path.startswith("/streams/") and path.endswith("/events")):
         raw = connection.query_params.get("token")
         if isinstance(raw, str) and raw:
             return raw

@@ -42,6 +42,41 @@ flush interval. There is no CLI publish — publishing is an HTTP operation.
 pending backlog. When the pending count exceeds `stream_max_pending` (100 000), the publish
 endpoint returns **HTTP 429** — the warehouse is behind; retry with backoff.
 
+## Consuming
+
+`GET /streams/<name>/events` is a Server-Sent Events tail of the durable log, for a
+consumer that is not an Interlace model. Warehouse materialisation is separate and does
+not use this cursor.
+
+```bash
+# live only — events already in the log are not replayed
+curl -N localhost:8000/streams/orders/events
+
+# replay from the start, then follow
+curl -N 'localhost:8000/streams/orders/events?after=0'
+```
+
+Each data frame is `{"offset", "ts", "payload", "idempotency_key", "headers"}` and its
+SSE `id` is the offset, so a reconnect with `Last-Event-ID` resumes there. A comment
+frame is sent on connect, then every 15s while the tail is quiet. Delivery is
+**at-least-once**: sending a frame does not acknowledge it.
+
+A `group` query parameter takes that consumer group's lease and, unless you also pass a
+cursor, resumes from the group's committed offset. The first frame is `event: lease`
+with `{group, token, committed_offset}`. Ack with the token while the tail is still
+open:
+
+```bash
+curl -X POST localhost:8000/streams/orders/commit \
+  -H 'content-type: application/json' \
+  -d '{"group": "billing", "offset": 42, "token": "<from the lease frame>"}'
+```
+
+A second subscriber to the same group gets **409** until the first disconnects (the
+lease is released then, and the committed offset stays). A commit with a stale token is
+**400**. The lease lasts 30s and is renewed for as long as the connection is open.
+`<name>__quarantine` is the same kind of tail for rows the drift policy diverted.
+
 **Exactly-once.** The flusher drains everything past the watermark in micro-batches; each
 batch stages an Arrow batch and moves `stage → target table + watermark` in one engine
 transaction. A crash leaves either the old watermark (events re-read, stage overwritten — no

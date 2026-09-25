@@ -3,7 +3,7 @@
 // run. One /lineage payload — no request per node.
 
 import { createDag } from "../dag.js";
-import { debounce, h } from "../ui.js";
+import { debounce, h, previewPanel } from "../ui.js";
 
 export async function render(el, { api, feed, go, params }) {
   const data = await api.get("/lineage");
@@ -83,12 +83,34 @@ export async function render(el, { api, feed, go, params }) {
   const wrap = h("div", { class: "canvas-wrap" });
   const tools = h("div", { class: "canvas-tools" }, searchWrap, fitBtn);
   const detail = h("span", { class: "sub" });
+  const preview = h("div", { class: "lineage-preview" });
+  let previewSeq = 0;
 
   el.append(
     h("div", { class: "view-head" }, h("h1", {}, "Lineage"), detail, h("span", { class: "spread" })),
     wrap,
+    preview,
   );
   wrap.append(tools, hintEl);
+
+  async function showPreview(name) {
+    const seq = ++previewSeq;
+    const node = data.models.find((model) => model.name === name);
+    if (!name || node?.is_stream) {
+      preview.replaceChildren();
+      return;
+    }
+    preview.replaceChildren(h("div", { class: "card" }, h("div", { class: "empty" }, "loading…")));
+    try {
+      const body = await api.get(`/models/${encodeURIComponent(name)}/preview`);
+      if (seq !== previewSeq) return;
+      preview.replaceChildren(
+        h("div", { class: "card" }, h("div", { class: "card-head" }, name), h("div", { class: "card-body" }, previewPanel(body))),
+      );
+    } catch (error) {
+      if (seq === previewSeq) preview.replaceChildren(h("div", { class: "card" }, h("div", { class: "empty" }, error.message)));
+    }
+  }
 
   const dag = createDag(wrap, data, {
     onSelect(name) {
@@ -100,6 +122,7 @@ export async function render(el, { api, feed, go, params }) {
           h("a", { href: `#/models?m=${encodeURIComponent(name)}`, style: "color: var(--violet)" }, "open model"),
         );
       }
+      showPreview(name);
     },
   });
 

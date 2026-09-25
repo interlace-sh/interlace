@@ -63,6 +63,10 @@ The policy for fields that don't match the declared schema:
   (durable, with the error + raw payload) while the good rows proceed; the publish reports
   `quarantined: N`.
 
+`interlace reset --yes` (or `POST /reset`) clears the durable stream log and the
+`streams` landing tables so ingestion starts empty again. It does not drop terminal
+`table`/`file` destinations.
+
 ## Reverse-ETL: terminal `table` / `file`
 
 A `materialise: table` or `materialise: file` model is **terminal** — it delivers its

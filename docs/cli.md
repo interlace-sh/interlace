@@ -36,7 +36,8 @@ mismatch. `--forward-only` previews history-inheriting plans.
 Build changed models, reconcile indexes and constraints, run checks, and promote the
 environment. Refuses to proceed on a **breaking** plan unless `--force`. Blocking schema
 drift exits 1 before any write (`force` does not bypass it). Shows live per-model build
-rows (✓/✗/⊘). A blocking check failure aborts before promotion (exit 1). Needs a live warehouse.
+rows (✓/✗/⊘). A blocking check failure aborts before promotion (exit 1). When a model
+fails inside the engine, the SQL that failed is printed under the error line. Needs a live warehouse.
 
 ### `interlace run [--env] [--select] [--start] [--end] [--parallelism]`
 Force-build models regardless of change detection, then promote. `--start`/`--end` set the
@@ -130,6 +131,14 @@ Run the daemon: HTTP API + web UI (`/ui`) + scheduler + streams in one process. 
 `--quack` also serves the warehouse over the quack protocol. A non-loopback bind with no API
 keys is **refused** unless `--allow-open` (insecure); create a key first with
 `interlace apikey create`.
+
+### `interlace mcp`
+Serve this project to an MCP client on stdio (JSON-RPC 2.0, `Content-Length` framing).
+Tools: `list_models`, `get_model`, `preview_model`, `plan`, `apply`, `query`, `lineage`,
+`list_checks`, `failing_rows`, `list_runs`. `apply` does nothing unless the client passes
+`confirm: true` — call `plan` first. stdout is the protocol; tracebacks go to stderr.
+It opens the project the way the CLI does, so a running `interlace serve` still holds the
+DuckDB writer lock on the same file.
 
 ## API keys — `interlace apikey ...`
 

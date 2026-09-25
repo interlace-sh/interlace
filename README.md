@@ -206,7 +206,7 @@ fast lane when possible). Contract: `docs/architecture/MULTI_ENGINE.md`.
   with column-level tracing, models, plan/apply with SQL diffs, live runs, query console,
   streams, checks, environments, and system — live over SSE;
 - the **HTTP API** (Litestar + msgspec, OpenAPI at `/schema/scalar`) with the same surface as
-  the CLI: plan/apply, runs, checks, streams, engines, schedules, lineage, query, gc;
+  the CLI: plan/apply, runs, checks, streams, engines, schedules, lineage, query, gc, reset;
 - the **scheduler**: cron/interval triggers enqueue onto a **durable run queue** (leases,
   retries, cooperative cancellation — `interlace cancel <id>` or `POST /runs/{id}/cancel`);
 - **stream ingestion** and retention.

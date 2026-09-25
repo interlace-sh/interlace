@@ -60,7 +60,7 @@ class _BuildProgress:
         )
         self._rows: dict[str, TaskID] = {}
 
-    def __call__(self, model: str, event: str) -> None:
+    def __call__(self, model: str, event: str, detail: dict[str, Any] | None = None) -> None:
         if event == "start":
             self._rows[model] = self.progress.add_task(model, total=1, status="")
             return
@@ -859,6 +859,19 @@ def _render_query(columns: list[str], records: list[dict], cap: int) -> None:
     console.print(f"[dim]{note}[/dim]")
 
 
+@app.command()
+def mcp(path: Path = _PATH) -> None:
+    """Serve this project to an MCP client on stdio.
+
+    Tools list models, preview rows, plan, apply, query, lineage, checks, and runs.
+    ``apply`` does nothing unless the client passes ``confirm: true`` after reading
+    a plan. stdout is the protocol; logs stay on stderr.
+    """
+    from interlace.mcp_server import serve_stdio
+
+    serve_stdio(path)
+
+
 @app.command("models")
 def list_models(path: Path = _PATH, select: list[str] = _SELECT, as_json: bool = _JSON) -> None:
     """List models with their materialisation, strategy, engine, and dependencies."""
@@ -1581,11 +1594,18 @@ def _flatten_exceptions(exc: BaseException) -> list[BaseException]:
     return [exc]
 
 
+def _print_error(exc: InterlaceError) -> None:
+    err_console.print(f"[red]error:[/red] {escape(exc.message)}")
+    statement = exc.details.get("statement")
+    if isinstance(statement, str) and statement:
+        err_console.print(escape(statement))
+
+
 def main() -> None:
     try:
         app()
     except InterlaceError as exc:  # expected, user-facing errors: one clean line, no traceback
-        err_console.print(f"[red]error:[/red] {escape(exc.message)}")
+        _print_error(exc)
         raise SystemExit(1) from None
     except BaseExceptionGroup as group:
         # A parallel apply surfaces failures as an ExceptionGroup. When every leaf is a
@@ -1594,7 +1614,7 @@ def main() -> None:
         # internal error in the mix still propagates with its trace.
         leaves = _flatten_exceptions(group)
         if leaves and all(isinstance(leaf, InterlaceError) for leaf in leaves):
-            for message in dict.fromkeys(leaf.message for leaf in leaves if isinstance(leaf, InterlaceError)):
-                err_console.print(f"[red]error:[/red] {escape(message)}")
+            for leaf in dict.fromkeys(leaf for leaf in leaves if isinstance(leaf, InterlaceError)):
+                _print_error(leaf)
             raise SystemExit(1) from None
         raise

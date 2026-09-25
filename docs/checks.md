@@ -77,7 +77,10 @@ models to build first so the check runs against fresh data.
 ## Running checks
 
 - **During `apply`** — every model's checks run after it builds; a blocking failure stops
-  the apply before promotion.
+  the apply before promotion. The rows a check rejected stay readable
+  (`GET /models/{name}/checks/{check}/rows`, and the checks view's "show failing rows")
+  from the snapshot the check ran against, even though nothing was promoted. `row_count`
+  and `freshness` have no row set; a Python check does not keep the rows it returned.
 - **Ad hoc** — `interlace checks run [--env E] [--select ...]` (CLI) or `POST /checks/run`
   (API) re-run checks against an environment's already-promoted tables without rebuilding,
   recording the results. Both use each snapshot's recorded engine, exit non-zero / report

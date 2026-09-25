@@ -1,7 +1,7 @@
 // Checks: latest verdict per (model, check) — failures surfaced first, the
 // green wall below. Run the whole suite ad hoc from here.
 
-import { debounce, h, latestPerCheck, relTime, statusPill, table } from "../ui.js";
+import { dataGrid, debounce, h, latestPerCheck, relTime, statusPill, table } from "../ui.js";
 
 export async function render(el, { api, feed, go, toast }) {
   const runBtn = h("button", { class: "btn primary" }, "run checks");
@@ -34,6 +34,41 @@ export async function render(el, { api, feed, go, toast }) {
     { k: "executed_at", label: "when", render: (row) => h("span", { class: "dim" }, relTime(row.executed_at)) },
   ];
 
+  function failingDetail(row) {
+    if (row.status === "passed" && !row.message) return null;
+    const box = h("div", { style: "display:flex; flex-direction:column; gap:8px" });
+    if (row.message) box.append(h("div", { class: "sub", style: "white-space:normal" }, row.message));
+    if (row.status === "failed" && row.failures) {
+      const sample = h("div", {});
+      box.append(
+        h(
+          "button",
+          {
+            class: "btn small",
+            onclick: async () => {
+              sample.replaceChildren(h("div", { class: "dim" }, "loading…"));
+              try {
+                const body = await api.get(
+                  `/models/${encodeURIComponent(row.model)}/checks/${encodeURIComponent(row.check_name)}/rows`,
+                );
+                sample.replaceChildren(
+                  body.available
+                    ? dataGrid(body)
+                    : h("div", { class: "dim" }, body.message || "no rows"),
+                );
+              } catch (error) {
+                sample.replaceChildren(h("div", { style: "color:var(--red)" }, error.message));
+              }
+            },
+          },
+          "show failing rows",
+        ),
+        sample,
+      );
+    }
+    return box.childNodes.length ? box : null;
+  }
+
   async function refresh() {
     let rows;
     try {
@@ -61,7 +96,7 @@ export async function render(el, { api, feed, go, toast }) {
           h("div", { class: "card-head", style: "color:var(--red)" }, `failing · ${failing.length}`),
           // surface WHY each check failed, full-width under its row (server `message`)
           table(columns, failing, {
-            expandRow: (row) => (row.message ? h("div", { class: "sub", style: "white-space:normal" }, row.message) : null),
+            expandRow: (row) => failingDetail(row),
           }),
         ),
       );

@@ -299,7 +299,8 @@ prod; `--env dev` opts into a sandbox.
   pairs — unchanged models in dev **reuse prod's physical tables** via views (instant
   dev environments, zero duplicate compute); `promote` repoints prod views (atomic,
   instant); `rollback` repoints back (`promotion_history` records the swaps). A janitor
-  GCs unreferenced snapshots past `retention: 14d`.
+  GCs unreferenced snapshots past `retention: 14d`; `reset` wipes Interlace-owned state
+  (views, snapshots, runs, streams) without dropping terminal `table`/`file` destinations.
 
 **Interval ledger** (sqlmesh, adopted): per snapshot, a compact set of filled
 `[start, end)` ranges at the model's declared grain (`interval="1d"`). Backfill, catchup
@@ -644,7 +645,8 @@ would fire.
 - **The web UI** ships inside the package (`service/ui/`, plain ES modules, zero build
   step), served at `/ui`: overview, lineage canvas with column-level tracing, models,
   plan/apply with SQL diffs, live runs, query console, streams, checks, environments, and
-  system — live over the SSE spine.
+  system — live over the SSE spine. A selected model (and the lineage node) shows a row
+  sample, a short column profile, and the SQL of the last failed statement.
 
 ---
 
@@ -677,18 +679,20 @@ src/interlace/
   dsl/         # @model @stream @check decorators; SQL file loader; project discovery
   ir/          # Relation types; canonicalisation; fingerprints; Arrow schema handling
   graph/       # dag (toposort, stdlib), column_lineage, selectors
-  state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc)
+  state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc, reset)
   plan/        # differ (sqlglot.diff + classification), plan, apply, run
   engines/     # base (EngineAdapter, EngineCaps); adbc (shared ADBC base); duckdb (+ DuckLake),
                #   postgres, redshift/snowflake/bigquery (alpha), spark (beta), quack, registry
   strategies/  # replace, view, full_merge, incremental, merge, scd
   checks/      # built-in check types + @check decorator — results gate promotion
+  inspect.py   # row sample, column profile, and the rows a check rejected
+  mcp_server.py # stdio MCP server; apply refuses unless confirm is true
   scheduler/   # triggers (cron/interval), engine (TriggerEngine), worker (leases/retries/cancel)
   runtime/     # execution context for Python models (Arrow handles)
   streaming/   # log (SqliteStreamLog), materializer (flush + watermark), schema (drift modes)
   service/     # app.py (litestar), auth.py, ui/ (the /ui web app)
   config/      # config load; ${VAR} + .env interpolation
-  cli/         # init plan apply run restate gc reset scheduler serve models lineage env runs
+  cli/         # init plan apply run restate gc reset scheduler serve mcp models lineage env runs
                #   checks streams engines cancel apikey
   sinks.py     # terminal delivery helpers: external table target + file COPY
   project.py   # Project.load/compile; engine + state + stream-log opening

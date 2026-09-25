@@ -7,6 +7,7 @@ limited to one surface, the reason is given.
 | Capability | CLI | API | UI |
 |---|---|---|---|
 | List / inspect models | `models`, `lineage` | `GET /models`, `/models/{name}`, `/lineage` | models, lineage |
+| Row sample and column profile | `mcp` `preview_model` | `GET /models/{name}/preview` | models, lineage (selected node) |
 | Column impact / blast radius | `impact` | `GET /models/{name}/impact` | models (per-column) |
 | Preview a plan | `plan` | `GET /plan` | plan |
 | Apply (build + promote) | `apply` | `POST /apply` | plan |
@@ -16,6 +17,7 @@ limited to one surface, the reason is given.
 | Environments: drop | `env drop` | `DELETE /environments/{name}` | environments |
 | Environments: rollback + history | `env rollback [--list]` | `POST .../rollback`, `GET .../history` | environments |
 | Checks: history | `checks list` | `GET /checks` | checks |
+| Checks: failing rows | `mcp` `failing_rows` | `GET /models/{name}/checks/{check}/rows` | checks |
 | Checks: run ad hoc | `checks run` | `POST /checks/run` | checks |
 | Streams: inspect | `streams` | `GET /streams`, `/streams/{name}` | streams |
 | Streams: publish | — | `POST /streams/{name}` | streams |
@@ -29,11 +31,13 @@ limited to one surface, the reason is given.
 | Events | — | `GET /events`, `/events/stream` | live feed |
 | Scaffold a project | `init` | — | — |
 | Run the daemon | `serve`, `scheduler` | — | — |
+| MCP (stdio) | `mcp` | — | — |
 
 ## Intentionally surface-specific
 
 - **CLI-only** — `init` (scaffolds files on disk), `serve`/`scheduler` (they *are* the process
-  that hosts the API), and `lineage --format dot` (a Graphviz export; the API returns lineage
+  that hosts the API), `mcp` (a stdio server over the same project; `apply` refuses unless
+  `confirm` is true), and `lineage --format dot` (a Graphviz export; the API returns lineage
   as JSON via `GET /lineage`, which the UI renders as an interactive canvas).
 - **API/UI-only** — stream **publish** (`POST /streams/{name}`) is an HTTP operation against a
   running daemon; there's no `interlace publish`. Live **events** (`GET /events/stream`; snapshot

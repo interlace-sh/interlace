@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from sqlglot import exp, parse_one
 
@@ -65,33 +65,23 @@ def _interval(max_age: str) -> exp.Interval:
     return exp.Interval(this=exp.Literal.string(match.group(1)), unit=exp.Var(this=_AGE_UNITS[match.group(2)]))
 
 
-def build_check_query(
-    spec: CheckSpec, table: TableRef, model: str, dialect: str, resolve: ResolveTable
-) -> exp.Expression:
-    """Compile ``spec`` against ``table`` into a query returning ``failures``."""
+def _row_predicate(spec: CheckSpec, model: str, dialect: str, resolve: ResolveTable) -> exp.Expression | None:
+    """A WHERE predicate that is true for a violating row.
+
+    ``None`` for checks that are not a per-row filter (``unique`` counts groups,
+    ``row_count`` / ``freshness`` judge the table, ``sql`` is its own query)."""
     cols = [exp.column(c) for c in spec.columns]
     params: dict[str, Any] = spec.params
 
     if spec.type == "not_null":
         _require(spec, model, columns=1)
-        condition: exp.Expression = exp.or_(*[col.is_(exp.null()) for col in cols])
-        return _count_where(table, condition)
-
-    if spec.type == "unique":
-        _require(spec, model, columns=1)
-        grouped = (
-            exp.select(*cols)
-            .from_(_table(table))
-            .group_by(*cols)
-            .having(exp.GT(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(1)))
-        )
-        return exp.select(exp.alias_(exp.Count(this=exp.Star()), _FAILURES)).from_(grouped.subquery("dup"))
+        return exp.or_(*[col.is_(exp.null()) for col in cols])
 
     if spec.type == "accepted_values":
         _require(spec, model, columns=1, params=("values",))
         values = [exp.Literal.string(v) if isinstance(v, str) else exp.Literal.number(v) for v in params["values"]]
         col = cols[0]
-        return _count_where(table, exp.and_(col.is_(exp.null()).not_(), exp.In(this=col, expressions=values).not_()))
+        return exp.and_(col.is_(exp.null()).not_(), exp.In(this=col, expressions=values).not_())
 
     if spec.type == "range":
         _require(spec, model, columns=1)
@@ -103,25 +93,47 @@ def build_check_query(
             bounds.append(exp.LT(this=col, expression=exp.Literal.number(params["min"])))
         if "max" in params:
             bounds.append(exp.GT(this=col, expression=exp.Literal.number(params["max"])))
-        return _count_where(table, exp.or_(*bounds))
+        return exp.or_(*bounds)
 
     if spec.type == "pattern":
         _require(spec, model, columns=1, params=("regex",))
         col = cols[0]
         matches = exp.RegexpLike(this=col, expression=exp.Literal.string(str(params["regex"])))
-        return _count_where(table, exp.and_(col.is_(exp.null()).not_(), matches.not_()))
+        return exp.and_(col.is_(exp.null()).not_(), matches.not_())
 
     if spec.type == "expression":
         _require(spec, model, params=("expression",))
-        predicate = _parse_expr(str(params["expression"]), dialect)
-        return _count_where(table, exp.paren(predicate).not_())
+        return cast(exp.Expression, exp.paren(_parse_expr(str(params["expression"]), dialect)).not_())
 
     if spec.type == "relationships":
         _require(spec, model, columns=1, params=("to", "field"))
         col = cols[0]
         parent = exp.select(exp.column(str(params["field"]))).from_(_table(resolve(str(params["to"]))))
         orphan = exp.In(this=col, query=exp.Subquery(this=parent)).not_()
-        return _count_where(table, exp.and_(col.is_(exp.null()).not_(), orphan))
+        return exp.and_(col.is_(exp.null()).not_(), orphan)
+
+    return None
+
+
+def build_check_query(
+    spec: CheckSpec, table: TableRef, model: str, dialect: str, resolve: ResolveTable
+) -> exp.Expression:
+    """Compile ``spec`` against ``table`` into a query returning ``failures``."""
+    cols = [exp.column(c) for c in spec.columns]
+    params: dict[str, Any] = spec.params
+    predicate = _row_predicate(spec, model, dialect, resolve)
+    if predicate is not None:
+        return _count_where(table, predicate)
+
+    if spec.type == "unique":
+        _require(spec, model, columns=1)
+        grouped = (
+            exp.select(*cols)
+            .from_(_table(table))
+            .group_by(*cols)
+            .having(exp.GT(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(1)))
+        )
+        return exp.select(exp.alias_(exp.Count(this=exp.Star()), _FAILURES)).from_(grouped.subquery("dup"))
 
     if spec.type == "row_count":
         if "min" not in params and "max" not in params:
@@ -150,3 +162,34 @@ def build_check_query(
         )
 
     raise DefinitionError(f"unknown check type {spec.type!r} on {model!r}")
+
+
+def build_failing_rows(
+    spec: CheckSpec, table: TableRef, model: str, dialect: str, resolve: ResolveTable
+) -> exp.Expression | None:
+    """The rows a check rejected, or ``None`` when the check has no row set.
+
+    ``row_count`` and ``freshness`` judge the whole table. ``unique`` returns the
+    duplicate rows (the failure *count* stays the number of duplicate groups).
+    A ``sql`` check's query is already the failing rows."""
+    if spec.type in ("row_count", "freshness"):
+        return None
+    if spec.type == "sql":
+        _require(spec, model, params=("query",))
+        sql = str(spec.params["query"]).replace("{table}", _table(table).sql(dialect=dialect))
+        return _parse_expr(sql, dialect)
+    if spec.type == "unique":
+        _require(spec, model, columns=1)
+        cols = [exp.column(c) for c in spec.columns]
+        grouped = (
+            exp.select(*cols)
+            .from_(_table(table))
+            .group_by(*cols)
+            .having(exp.GT(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(1)))
+        )
+        key: exp.Expression = exp.Tuple(expressions=cols) if len(cols) > 1 else cols[0]
+        return exp.select(exp.Star()).from_(_table(table)).where(exp.In(this=key, query=exp.Subquery(this=grouped)))
+    predicate = _row_predicate(spec, model, dialect, resolve)
+    if predicate is None:
+        return None
+    return exp.select(exp.Star()).from_(_table(table)).where(predicate)

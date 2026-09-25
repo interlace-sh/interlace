@@ -82,7 +82,7 @@ async def test_apply_reports_progress_events(env: tuple[DuckDBAdapter, SqliteSta
         compiled=project,
         engine=engine,
         state=store,
-        on_progress=lambda model, event: events.append((model, event)),
+        on_progress=lambda model, event, _detail: events.append((model, event)),
     )
 
     for name in ("a", "b"):
@@ -103,10 +103,12 @@ async def test_apply_reports_failed_progress_event(env: tuple[DuckDBAdapter, Sql
             compiled=project,
             engine=engine,
             state=store,
-            on_progress=lambda model, event: events.append((model, event)),
+            on_progress=lambda model, event, _detail: events.append((model, event)),
         )
 
     assert "broken" in excinfo.value.message and excinfo.value.details.get("model") == "broken"
+    statement = excinfo.value.details.get("statement")
+    assert isinstance(statement, str) and "does_not_exist_anywhere" in statement
     assert excinfo.value.__cause__ is not None  # original engine error preserved for --debug
     assert events == [("broken", "start"), ("broken", "failed")]
 

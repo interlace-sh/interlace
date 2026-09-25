@@ -684,3 +684,69 @@ def test_runs_list_carries_environment_and_duration_fields(client: TestClient) -
     client.post("/runs", json={"selectors": ["event_totals"], "environment": "prod"})
     run = client.get("/runs").json()[0]
     assert "environment" in run and "duration" in run  # populated once the worker drains it
+
+
+def test_model_preview_before_and_after_apply(client: TestClient) -> None:
+    before = client.get("/models/raw_events/preview")
+    assert before.status_code == 200
+    assert before.json()["available"] is False
+    assert client.get("/models/no_such_model/preview").status_code == 404
+
+    assert client.post("/apply", json={}).status_code in (200, 201)
+    body = client.get("/models/raw_events/preview").json()
+    assert body["available"] is True
+    assert body["row_count"] == 5
+    assert body["columns"] == ["event_id", "kind", "amount"]
+    event_id = next(column for column in body["profile"] if column["column"] == "event_id")
+    kind = next(column for column in body["profile"] if column["column"] == "kind")
+    assert event_id["nulls"] == 0
+    assert event_id["distinct"] == 5
+    assert kind["distinct"] == 3  # click, view, purchase — not a plain COUNT
+    assert body["last_build"]["status"] == "done"
+    assert body["last_build"]["rows"]["inserted"] == 5
+
+
+def _project(tmp_path: Path, models: dict[str, str]) -> Path:
+    root = tmp_path / "proj"
+    (root / "models").mkdir(parents=True)
+    (root / "interlace.yaml").write_text("name: inspect\ndefault_dialect: duckdb\n")
+    for name, sql in models.items():
+        (root / "models" / name).write_text(sql)
+    return root
+
+
+def test_failed_apply_returns_the_statement(tmp_path: Path) -> None:
+    root = _project(tmp_path, {"broken.sql": "SELECT * FROM does_not_exist_anywhere\n"})
+    with TestClient(app=create_app(root, "dev")) as client:
+        response = client.post("/apply", json={})
+        assert response.status_code == 400
+        body = response.json()
+        assert "does_not_exist_anywhere" in body["statement"]
+        failed = [
+            event
+            for event in client.get("/events").json()
+            if event["type"] == "model.failed" and event["entity"] == "broken"
+        ]
+        assert failed
+        assert "does_not_exist_anywhere" in failed[-1]["payload"]["statement"]
+
+
+def test_failing_check_rows_are_readable_when_promotion_is_blocked(tmp_path: Path) -> None:
+    root = _project(
+        tmp_path,
+        {
+            "events.sql": (
+                "/* interlace: {checks: [{not_null: event_id}]} */\n"
+                "SELECT * FROM (VALUES (1, 'a'), (NULL, 'b')) AS t (event_id, kind)\n"
+            )
+        },
+    )
+    with TestClient(app=create_app(root, "dev")) as client:
+        assert client.post("/apply", json={}).status_code == 400
+        rows = client.get("/models/events/checks/not_null_event_id/rows")
+        assert rows.status_code == 200
+        body = rows.json()
+        assert body["available"] is True
+        assert body["row_count"] == 1
+        kind = body["columns"].index("kind")
+        assert body["rows"][0][kind] == "b"

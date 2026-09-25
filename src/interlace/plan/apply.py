@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import sqlglot
@@ -32,7 +33,7 @@ from sqlglot import exp
 
 from interlace.checks.runner import CheckOutcome, run_checks
 from interlace.contracts import validate_contract
-from interlace.engines.base import EngineAdapter
+from interlace.engines.base import EngineAdapter, statement_of
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, ExecutionError, InterlaceError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
@@ -81,6 +82,30 @@ def _widens(current: str, incoming: str) -> bool:
 
 
 logger = logging.getLogger("interlace.apply")
+
+ProgressCallback = Callable[[str, str, dict[str, Any]], None]
+
+
+def _build_detail(result: ApplyResult, name: str) -> dict[str, Any]:
+    """What a finished model did: wall-clock seconds and the row delta."""
+    detail: dict[str, Any] = {"seconds": round(result.timings.get(name, 0.0), 3)}
+    counts = result.rows.get(name)
+    if counts is not None:
+        detail["rows"] = {"inserted": counts.inserted, "updated": counts.updated, "deleted": counts.deleted}
+    return detail
+
+
+def _failure_detail(exc: BaseException) -> dict[str, Any]:
+    """The message and, when an engine statement failed, the SQL that failed."""
+    if isinstance(exc, InterlaceError):
+        message = exc.message
+    else:
+        message = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+    detail: dict[str, Any] = {"message": message}
+    statement = statement_of(exc)
+    if statement:
+        detail["statement"] = statement
+    return detail
 
 
 def _resolve_export_path(base_path: Path | None, path: str) -> str:
@@ -830,15 +855,17 @@ async def apply(
     state: StateStore,
     base_path: Path | None = None,
     parallelism: int = 4,
-    on_progress: Callable[[str, str], None] | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> ApplyResult:
     """Execute a plan and record the result in ``state``.
 
     Pass either a single ``engine`` (single-engine projects / tests) or an
     ``engines`` registry / mapping. Each model builds on ``model.engine``.
     ``base_path`` is the project root used to resolve relative export paths.
-    ``on_progress`` (model, event) fires on the event loop as each model's
-    build starts / finishes: events are ``"start"``, ``"done"``, ``"failed"``.
+    ``on_progress`` (model, event, detail) fires on the event loop as each model's
+    build starts / finishes: events are ``"start"``, ``"done"``, ``"failed"``,
+    ``"cancelled"``. ``detail`` carries seconds and row deltas on done, and the
+    message plus the failed statement on failed.
     """
     registry = as_registry(engine, engines)
     from interlace.physical.annotate import annotate_plan
@@ -922,32 +949,37 @@ async def apply(
                 await finished[dep].wait()
             async with build_slots:
                 if on_progress is not None:
-                    on_progress(name, "start")
+                    on_progress(name, "start", {})
                 for model_task in per_model[name]:
                     await _run_backfill(
                         model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
                     )
         except asyncio.CancelledError:  # a SIBLING failed; this model is collateral
             if on_progress is not None:
-                on_progress(name, "cancelled")
+                on_progress(name, "cancelled", {})
             raise
         except BaseException as exc:
             # Name the failing model as live feedback; the full message is surfaced once
             # by the caller (the CLI prints it, the API returns it) — don't duplicate it here.
             logger.warning("model %s failed (%s)", name, type(exc).__name__)
+            detail = _failure_detail(exc)
             if on_progress is not None:
-                on_progress(name, "failed")
+                on_progress(name, "failed", detail)
             # Wrap a plain build error (engine/SQL/Python-model exception) so it reads as one
             # clean "error: model … failed: …" line, not a raw traceback. InterlaceErrors
             # (checks, contracts) already carry a good message; other BaseExceptions
             # (KeyboardInterrupt, CancelledError) must propagate untouched.
             if isinstance(exc, Exception) and not isinstance(exc, InterlaceError):
-                message = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
-                raise ExecutionError(f"model {name!r} failed: {message}", details={"model": name}) from exc
+                wrapped = {"model": name}
+                if "statement" in detail:
+                    wrapped["statement"] = detail["statement"]
+                raise ExecutionError(f"model {name!r} failed: {detail['message']}", details=wrapped) from exc
+            if isinstance(exc, InterlaceError) and "statement" in detail:
+                exc.details.setdefault("statement", detail["statement"])
             raise
         finished[name].set()
         if on_progress is not None:
-            on_progress(name, "done")
+            on_progress(name, "done", _build_detail(result, name))
 
     try:
         async with asyncio.TaskGroup() as group:

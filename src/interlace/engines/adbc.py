@@ -22,7 +22,7 @@ from typing import Any
 import pyarrow as pa
 from sqlglot import exp
 
-from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode
+from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement
 from interlace.ir.relation import TableRef
 
 
@@ -108,7 +108,11 @@ class AdbcAdapter(EngineAdapter):
 
     def _execute_sync(self, sql: str) -> None:
         with self._lock, self._conn.cursor() as cur:
-            cur.execute(sql)
+            try:
+                cur.execute(sql)
+            except Exception as exc:
+                note_statement(exc, sql)
+                raise
             self._conn.commit()
 
     def _execute_all_sync(self, sqls: list[str]) -> list[int]:
@@ -117,7 +121,11 @@ class AdbcAdapter(EngineAdapter):
             try:
                 with self._conn.cursor() as cur:
                     for sql in sqls:
-                        cur.execute(sql)
+                        try:
+                            cur.execute(sql)
+                        except Exception as exc:
+                            note_statement(exc, sql)
+                            raise
                         rowcount = getattr(cur, "rowcount", -1)
                         counts.append(rowcount if isinstance(rowcount, int) and rowcount > 0 else 0)
                 self._conn.commit()  # ADBC autocommit is off: this is one transaction

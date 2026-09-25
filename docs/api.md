@@ -19,7 +19,10 @@ requires `read`.
 
 `InterlaceError` → 404 if "unknown" appears in the first 40 characters of the message, else 400.
 `ClientException` = 400, `NotFoundException` = 404, missing/invalid token (once keyed) = 401,
-wrong scope = 403.
+wrong scope = 403. When an engine statement fails, the error body also includes `statement`
+(the SQL that failed, capped at 12 000 characters). The same text is stored on the
+`model.failed` event (`payload.message`, `payload.statement`). `model.done` carries
+`payload.seconds` and `payload.rows` `{inserted, updated, deleted}`.
 
 ## Endpoints
 
@@ -38,6 +41,20 @@ wrong scope = 403.
 - **`GET /models/{name}/impact?column=COL`** → `ImpactResponse` `{source, impacted:
   [{model, column, via}], opaque_consumers[]}` — the column blast radius (mirrors
   `interlace impact`).
+- **`GET /models/{name}/preview?environment=&limit=`** → `SampleResponse`. Reads the
+  environment view when it exists, otherwise the snapshot table for the current fingerprint
+  (a blocked promotion can still be inspected). `limit` defaults to 25 and is capped at 100.
+  `{available, message, relation, columns, types, rows, row_count, truncated, profile[],
+  last_build}`. `profile[]` is `{column, type, nulls, distinct, min, max}` from one aggregate;
+  min/max are omitted when the engine cannot cast them. `last_build` is the newest
+  `model.done` / `model.failed` / `model.cancelled` (`status, at, seconds, rows, message,
+  statement`). Ephemeral and file outputs set `available` false. Unknown model → 404.
+- **`GET /models/{name}/checks/{check}/rows?environment=&limit=`** → the same
+  `SampleResponse`, with an empty profile. The rows that check rejected, from the snapshot
+  the check ran against. `row_count` and `freshness` (they judge the table) and Python
+  checks set `available` false. `unique` returns the duplicate rows; the recorded failure
+  count stays the number of duplicate groups. Unknown check → 404. Does not change the
+  promotion gate.
 - **`GET /lineage`** → `LineageResponse` `{models[], edges[[up,down]], columns{...}, streams[]}` —
   the whole graph in one payload (nodes carry warehouse-described column types, schedule/check
   flags; streams appear as source nodes).

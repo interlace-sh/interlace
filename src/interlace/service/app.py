@@ -336,6 +336,39 @@ class QueryResponse(msgspec.Struct):
     elapsed_ms: float
 
 
+class ProfileColumn(msgspec.Struct):
+    column: str
+    type: str
+    nulls: int
+    distinct: int
+    min: str | None = None
+    max: str | None = None
+
+
+class BuildInfo(msgspec.Struct):
+    status: str  # done | failed | cancelled
+    at: str
+    seconds: float | None = None
+    rows: dict[str, int] | None = None
+    message: str | None = None
+    statement: str | None = None
+
+
+class SampleResponse(msgspec.Struct):
+    """A bounded read of a model, or of the rows one check rejected."""
+
+    available: bool
+    message: str | None = None
+    relation: str | None = None
+    columns: list[str] = msgspec.field(default_factory=list)
+    types: list[str] = msgspec.field(default_factory=list)
+    rows: list[list] = msgspec.field(default_factory=list)
+    row_count: int = 0
+    truncated: bool = False
+    profile: list[ProfileColumn] = msgspec.field(default_factory=list)
+    last_build: BuildInfo | None = None
+
+
 class EngineInfo(msgspec.Struct):
     name: str
     type: str
@@ -572,6 +605,135 @@ async def get_model_impact(name: FromPath[str], state: State, column: FromQuery[
         impacted=[ImpactColumn(**row) for row in result["impacted"]],
         opaque_consumers=result["opaque_consumers"],
     )
+
+
+def _build_info(build: object) -> BuildInfo | None:
+    from interlace.inspect import LastBuild
+
+    if not isinstance(build, LastBuild):
+        return None
+    return BuildInfo(
+        status=build.status,
+        at=build.at,
+        seconds=build.seconds,
+        rows=build.rows,
+        message=build.message,
+        statement=build.statement,
+    )
+
+
+def _sample(preview: object, *, profile: bool) -> SampleResponse:
+    from interlace.inspect import FailingRows, ModelPreview
+
+    if isinstance(preview, ModelPreview):
+        sample = preview.sample
+        return SampleResponse(
+            available=preview.available,
+            message=preview.message,
+            relation=preview.relation,
+            columns=sample.columns,
+            types=sample.types,
+            rows=sample.rows,
+            row_count=len(sample.rows),
+            truncated=sample.truncated,
+            profile=(
+                [
+                    ProfileColumn(
+                        column=column.column,
+                        type=column.type,
+                        nulls=column.nulls,
+                        distinct=column.distinct,
+                        min=column.min,
+                        max=column.max,
+                    )
+                    for column in preview.profile
+                ]
+                if profile
+                else []
+            ),
+            last_build=_build_info(preview.last_build),
+        )
+    if isinstance(preview, FailingRows):
+        sample = preview.sample
+        return SampleResponse(
+            available=preview.available,
+            message=preview.message,
+            columns=sample.columns,
+            types=sample.types,
+            rows=sample.rows,
+            row_count=len(sample.rows),
+            truncated=sample.truncated,
+        )
+    raise TypeError(type(preview).__name__)
+
+
+@get("/models/{name:str}/preview")
+async def get_model_preview(
+    name: FromPath[str],
+    state: State,
+    environment: FromQuery[str | None] = None,
+    limit: FromQuery[int] = 25,
+) -> SampleResponse:
+    """A row sample and a column profile of the model as promoted in ``environment``.
+
+    Ephemeral and file models, and anything not built yet, come back with
+    ``available`` false and a ``message`` — the last build is still attached, so a
+    failure can be read before a table exists."""
+    from interlace.exceptions import DefinitionError
+    from interlace.inspect import preview_model
+
+    await reload_if_stale(state)
+    compiled: CompiledProject = state.compiled
+    if name not in compiled.models:
+        raise NotFoundException(detail=f"unknown model: {name}")
+    model = compiled.models[name]
+    try:
+        preview = await preview_model(
+            compiled,
+            state.store,
+            state.engines.require(model.engine, model=name),
+            name,
+            environment or state.environment,
+            limit,
+        )
+    except DefinitionError as exc:
+        raise ClientException(detail=exc.message) from exc
+    return _sample(preview, profile=True)
+
+
+@get("/models/{name:str}/checks/{check:str}/rows")
+async def get_check_rows(
+    name: FromPath[str],
+    check: FromPath[str],
+    state: State,
+    environment: FromQuery[str | None] = None,
+    limit: FromQuery[int] = 25,
+) -> SampleResponse:
+    """The rows a check rejected. Table-level checks and Python checks set
+    ``available`` false — they have no row set. The promotion gate is unchanged."""
+    from interlace.exceptions import DefinitionError
+    from interlace.inspect import failing_rows
+
+    await reload_if_stale(state)
+    compiled: CompiledProject = state.compiled
+    if name not in compiled.models:
+        raise NotFoundException(detail=f"unknown model: {name}")
+    model = compiled.models[name]
+    try:
+        sample = await failing_rows(
+            compiled,
+            state.store,
+            state.engines.require(model.engine, model=name),
+            name,
+            check,
+            environment or state.environment,
+            limit,
+        )
+    except DefinitionError as exc:
+        if "unknown" in exc.message[:40].lower():
+            raise NotFoundException(detail=exc.message) from exc
+        raise ClientException(detail=exc.message) from exc
+    return _sample(sample, profile=False)
 
 
 @get("/plan")
@@ -823,12 +985,11 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
         loop = asyncio.get_running_loop()
         progress_tasks: set[asyncio.Task] = set()
 
-        def on_progress(model: str, event: str) -> None:
+        def on_progress(model: str, event: str, detail: dict | None = None) -> None:
             # fire-and-forget telemetry, but hold a strong ref: an unreferenced task
             # can be GC'd mid-write and its exception silently vanishes
-            task = loop.create_task(
-                state.store.append_event(f"model.{event}", entity=model, payload={"environment": env})
-            )
+            payload: dict = {"environment": env, **(detail or {})}
+            task = loop.create_task(state.store.append_event(f"model.{event}", entity=model, payload=payload))
             progress_tasks.add(task)
             task.add_done_callback(progress_tasks.discard)
 
@@ -927,10 +1088,9 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
         loop = asyncio.get_running_loop()
         progress_tasks: set[asyncio.Task] = set()
 
-        def on_progress(model: str, progress_event: str) -> None:
-            task = loop.create_task(
-                state.store.append_event(f"model.{progress_event}", entity=model, payload={"environment": env})
-            )
+        def on_progress(model: str, progress_event: str, detail: dict | None = None) -> None:
+            payload: dict = {"environment": env, **(detail or {})}
+            task = loop.create_task(state.store.append_event(f"model.{progress_event}", entity=model, payload=payload))
             progress_tasks.add(task)
             task.add_done_callback(progress_tasks.discard)
 
@@ -1874,10 +2034,15 @@ def create_app(
         # user-caused errors (bad selector, unknown engine, contract violation)
         # are 4xx with their message — never anonymous 500s
         message = getattr(exc, "message", str(exc))
+        body: dict[str, object] = {"detail": message}
+        details = getattr(exc, "details", None)
+        statement = details.get("statement") if isinstance(details, dict) else None
+        if isinstance(statement, str) and statement:
+            body["statement"] = statement
         if isinstance(exc, LockError):
-            return Response(content={"detail": message}, status_code=409)
+            return Response(content=body, status_code=409)
         status = 404 if "unknown" in message[:40].lower() else 400
-        return Response(content={"detail": message}, status_code=status)
+        return Response(content=body, status_code=status)
 
     return Litestar(
         exception_handlers={_InterlaceError: _domain_error},
@@ -1892,6 +2057,8 @@ def create_app(
             get_models,
             get_model,
             get_model_impact,
+            get_model_preview,
+            get_check_rows,
             get_plan,
             get_environments,
             drop_environment_endpoint,

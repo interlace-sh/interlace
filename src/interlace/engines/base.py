@@ -18,9 +18,45 @@ import pyarrow as pa
 import sqlglot
 from sqlglot import exp
 
+from interlace.exceptions import InterlaceError
 from interlace.ir.relation import TableRef
 
 LoadMode = Literal["create", "append"]
+_STATEMENT_LIMIT = 12_000
+
+
+def note_statement(exc: BaseException, sql: str) -> None:
+    """Remember which SQL statement failed, on the exception the caller already has.
+
+    Interlace errors keep it in ``details``. Engine errors grow a ``statement``
+    attribute. The engine's own message stays the message."""
+    text = sql if len(sql) <= _STATEMENT_LIMIT else sql[:_STATEMENT_LIMIT] + "\n-- truncated --"
+    if isinstance(exc, InterlaceError):
+        exc.details.setdefault("statement", text)
+        return
+    if isinstance(getattr(exc, "statement", None), str):
+        return
+    try:
+        object.__setattr__(exc, "statement", text)
+    except (AttributeError, TypeError):
+        return
+
+
+def statement_of(exc: BaseException) -> str | None:
+    """The SQL attached to ``exc`` or to the error it was raised from."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, InterlaceError):
+            found = current.details.get("statement")
+            if isinstance(found, str) and found:
+                return found
+        found = getattr(current, "statement", None)
+        if isinstance(found, str) and found:
+            return found
+        current = current.__cause__
+    return None
 
 
 @dataclass(frozen=True)

@@ -7,30 +7,58 @@ import { diffBlock, h, pill, rowsDelta, seconds, sqlBlock, table } from "../ui.j
 
 const CATEGORY_TONE = { breaking: "red", non_breaking: "green", forward_only: "amber" };
 
-export async function render(el, { api, toast, modal, go }) {
-  const envInput = h("input", {
+export async function render(el, { api, toast, modal }) {
+  const envSelect = h("select", {
     class: "in",
-    placeholder: "environment",
-    title: "target environment (blank = the daemon's default; prod = the unprefixed namespace)",
-    style: "width:110px",
+    "aria-label": "environment",
+    title: "target environment. prod is the unprefixed namespace",
+    style: "width:140px",
   });
-  const selectInput = h("input", {
-    class: "in",
-    placeholder: "selectors: name, +name, name+, tag:x, state:modified",
-    style: "width:300px",
-  });
-  const modifiedBtn = h(
-    "button",
-    {
-      class: "btn small",
-      title: "scope to models whose fingerprint drifted from this environment, plus everything downstream",
-      onclick: () => {
-        selectInput.value = "state:modified+";
-        preview();
-      },
-    },
-    "changed only",
-  );
+  const picked = new Set();
+  let upstream = false;
+  let downstream = false;
+  let changedOnly = false;
+  let models = [];
+
+  function token(name) {
+    return `${upstream ? "+" : ""}${name}${downstream ? "+" : ""}`;
+  }
+
+  function currentSelectors() {
+    if (changedOnly) return ["state:modified+"];
+    return models.filter((model) => picked.has(model.name)).map((model) => token(model.name));
+  }
+
+  const pickBtn = h("button", {
+    class: "btn",
+    type: "button",
+    "aria-haspopup": "listbox",
+    "aria-expanded": "false",
+    title: "models to plan. empty means every model",
+  }, "all models");
+  const filter = h("input", { class: "in", placeholder: "filter models", "aria-label": "filter models" });
+  const modelList = h("div", { class: "plan-models", role: "listbox", "aria-label": "models", "aria-multiselectable": "true" });
+  const menu = h("div", { class: "plan-menu", hidden: true }, filter, modelList);
+  const pick = h("div", { class: "plan-pick" }, pickBtn, menu);
+
+  const upstreamBtn = h("button", {
+    class: "btn small",
+    type: "button",
+    "aria-pressed": "false",
+    title: "include ancestors of each selected model (+model)",
+  }, "upstream");
+  const downstreamBtn = h("button", {
+    class: "btn small",
+    type: "button",
+    "aria-pressed": "false",
+    title: "include descendants of each selected model (model+)",
+  }, "downstream");
+  const modifiedBtn = h("button", {
+    class: "btn small",
+    type: "button",
+    "aria-pressed": "false",
+    title: "models whose fingerprint drifted from this environment, plus everything downstream (state:modified+)",
+  }, "changed only");
   const forwardOnly = h("input", { type: "checkbox" });
   const previewBtn = h("button", { class: "btn" }, "preview");
   const applyBtn = h("button", { class: "btn primary" }, "apply");
@@ -43,8 +71,10 @@ export async function render(el, { api, toast, modal, go }) {
       h("h1", {}, "Plan"),
       h("span", { class: "sub" }, "what would change, and why"),
       h("span", { class: "spread" }),
-      envInput,
-      selectInput,
+      envSelect,
+      pick,
+      upstreamBtn,
+      downstreamBtn,
       modifiedBtn,
       h("label", { class: "check" }, forwardOnly, "forward-only"),
       previewBtn,
@@ -54,19 +84,23 @@ export async function render(el, { api, toast, modal, go }) {
   );
 
   let current = null;
+  let previewSeq = 0;
 
   async function preview() {
+    const mine = ++previewSeq;
     body.replaceChildren(h("div", { class: "empty" }, "planning…"));
     const query = new URLSearchParams();
-    if (envInput.value.trim()) query.set("environment", envInput.value.trim());
-    if (selectInput.value.trim()) query.set("select", selectInput.value.trim());
+    if (envSelect.value) query.set("environment", envSelect.value);
+    const selectors = currentSelectors();
+    if (selectors.length) query.set("select", selectors.join(","));
     if (forwardOnly.checked) query.set("forward_only", "true");
     try {
       current = await api.get(`/plan${query.toString() ? "?" + query : ""}`);
     } catch (error) {
-      body.replaceChildren(h("div", { class: "empty" }, error.message));
+      if (mine === previewSeq) body.replaceChildren(h("div", { class: "empty" }, error.message));
       return;
     }
+    if (mine !== previewSeq) return;
     renderPlan();
   }
 
@@ -146,8 +180,9 @@ export async function render(el, { api, toast, modal, go }) {
     applyBtn.disabled = true;
     applyBtn.textContent = "applying…";
     const payload = { force, forward_only: forwardOnly.checked };
-    if (envInput.value.trim()) payload.environment = envInput.value.trim();
-    if (selectInput.value.trim()) payload.selectors = selectInput.value.split(",").map((s) => s.trim()).filter(Boolean);
+    if (envSelect.value) payload.environment = envSelect.value;
+    const selectors = currentSelectors();
+    if (selectors.length) payload.selectors = selectors;
     try {
       const result = await api.post("/apply", payload);
       renderResult(result);
@@ -166,6 +201,16 @@ export async function render(el, { api, toast, modal, go }) {
         });
       } else {
         toast(error.message, "err");
+        if (error.statement) {
+          body.prepend(
+            h(
+              "div",
+              { class: "card", style: "margin-bottom:12px" },
+              h("div", { class: "card-head", style: "color:var(--red)" }, "failed statement"),
+              h("div", { class: "card-body" }, sqlBlock(error.statement)),
+            ),
+          );
+        }
       }
     } finally {
       applyBtn.disabled = false;
@@ -201,7 +246,109 @@ export async function render(el, { api, toast, modal, go }) {
     body.append(h("div", { class: "card" }, h("div", { class: "card-body sub" }, "preview again to confirm the plan is clean")));
   }
 
+  function syncScope() {
+    const selectors = currentSelectors();
+    pickBtn.textContent = !selectors.length ? "all models" : selectors.length === 1 ? selectors[0] : `${selectors.length} models`;
+    pickBtn.title = selectors.join(", ") || "every model";
+    for (const [button, on] of [[upstreamBtn, upstream], [downstreamBtn, downstream], [modifiedBtn, changedOnly]]) {
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+    }
+    upstreamBtn.disabled = changedOnly;
+    downstreamBtn.disabled = changedOnly;
+  }
+
+  function paintModels() {
+    const needle = filter.value.trim().toLowerCase();
+    const rows = models
+      .filter((model) => !needle || model.name.toLowerCase().includes(needle))
+      .map((model) => {
+        const box = h("input", { type: "checkbox", checked: picked.has(model.name) });
+        box.addEventListener("change", () => {
+          if (box.checked) picked.add(model.name);
+          else picked.delete(model.name);
+          changedOnly = false;
+          syncScope();
+          preview();
+        });
+        return h("label", {}, box, model.name);
+      });
+    modelList.replaceChildren(...(rows.length ? rows : [h("div", { class: "empty" }, "no models")]));
+  }
+
+  function closeMenu() {
+    menu.hidden = true;
+    pickBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function onDocClick(event) {
+    if (!pick.contains(event.target)) closeMenu();
+  }
+
+  function onKey(event) {
+    if (event.key === "Escape") closeMenu();
+  }
+
+  pickBtn.addEventListener("click", () => {
+    menu.hidden = !menu.hidden;
+    pickBtn.setAttribute("aria-expanded", String(!menu.hidden));
+    if (!menu.hidden) filter.focus();
+  });
+  filter.addEventListener("input", paintModels);
+  upstreamBtn.addEventListener("click", () => {
+    if (changedOnly) return;
+    upstream = !upstream;
+    syncScope();
+    if (picked.size) preview();
+  });
+  downstreamBtn.addEventListener("click", () => {
+    if (changedOnly) return;
+    downstream = !downstream;
+    syncScope();
+    if (picked.size) preview();
+  });
+  modifiedBtn.addEventListener("click", () => {
+    changedOnly = !changedOnly;
+    if (changedOnly) {
+      picked.clear();
+      upstream = false;
+      downstream = false;
+      paintModels();
+    }
+    syncScope();
+    closeMenu();
+    preview();
+  });
+  envSelect.addEventListener("change", preview);
+  document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", onKey);
+
   previewBtn.addEventListener("click", preview);
   applyBtn.addEventListener("click", () => runApply(false));
+
+  try {
+    const [health, envs, modelList] = await Promise.all([
+      api.get("/health"),
+      api.get("/environments").catch(() => []),
+      api.get("/models"),
+    ]);
+    models = modelList;
+    const names = [...new Set([health.environment, ...envs.map((env) => env.name)])].filter(Boolean);
+    envSelect.replaceChildren(
+      ...names.map((name) => h("option", { value: name, selected: name === health.environment }, name)),
+    );
+  } catch (error) {
+    body.replaceChildren(h("div", { class: "empty" }, error.message));
+    return () => {
+      document.removeEventListener("click", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }
+  paintModels();
+  syncScope();
   await preview();
+  return () => {
+    document.removeEventListener("click", onDocClick);
+    document.removeEventListener("keydown", onKey);
+  };
 }

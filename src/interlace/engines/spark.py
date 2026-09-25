@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 from sqlglot import exp
 
-from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode
+from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
@@ -124,7 +124,14 @@ class SparkAdapter(EngineAdapter):
         await self.execute_sql(f"CREATE SCHEMA IF NOT EXISTS {exp.to_identifier(name).sql(dialect=self.dialect)}")
 
     async def execute_sql(self, sql: str) -> None:
-        await asyncio.to_thread(self._spark.sql, sql)
+        def run() -> None:
+            try:
+                self._spark.sql(sql)
+            except Exception as exc:
+                note_statement(exc, sql)
+                raise
+
+        await asyncio.to_thread(run)
 
     async def fetch_sql(self, sql: str) -> pa.RecordBatchReader:
         return await asyncio.to_thread(self._fetch_sync, sql)
@@ -142,7 +149,11 @@ class SparkAdapter(EngineAdapter):
 
     def _run_all_sync(self, sqls: list[str]) -> None:
         for sql in sqls:
-            self._spark.sql(sql)
+            try:
+                self._spark.sql(sql)
+            except Exception as exc:
+                note_statement(exc, sql)
+                raise
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
         table = self._spark.sql(sql).toArrow()

@@ -2,7 +2,19 @@
 // column lineage, graph neighbours, canonical SQL, latest check results — and
 // act from there: trace it, run it, query it.
 
-import { copy, debounce, h, latestPerCheck, pill, pythonBlock, relTime, sqlBlock, statusPill, table } from "../ui.js";
+import {
+  copy,
+  debounce,
+  h,
+  latestPerCheck,
+  pill,
+  previewPanel,
+  pythonBlock,
+  relTime,
+  sqlBlock,
+  statusPill,
+  table,
+} from "../ui.js";
 
 const OUTPUT_TONE = { sink: "cyan", view: "violet" };
 
@@ -99,7 +111,15 @@ export async function render(el, { api, go, toast, modal, params }) {
       return;
     }
     if (seq !== detailSeq) return;
-    detailBody.replaceChildren(...detailCards(detail, checkRows));
+    const previewCard = h("div", { class: "card" }, h("div", { class: "card-head" }, "preview"), h("div", { class: "empty" }, "loading…"));
+    detailBody.replaceChildren(...detailCards(detail, checkRows), previewCard);
+    try {
+      const preview = await api.get(`/models/${encodeURIComponent(name)}/preview`);
+      if (seq !== detailSeq) return;
+      previewCard.replaceChildren(h("div", { class: "card-head" }, "preview"), h("div", { class: "card-body" }, previewPanel(preview)));
+    } catch (error) {
+      if (seq === detailSeq) previewCard.replaceChildren(h("div", { class: "empty" }, error.message));
+    }
     if (scroll) detailBody.scrollIntoView({ block: "start" });
   }
 

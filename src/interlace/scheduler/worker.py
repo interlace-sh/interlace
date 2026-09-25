@@ -127,10 +127,11 @@ async def _execute_run(
         loop = asyncio.get_running_loop()
         background: set[asyncio.Task] = set()
 
-        def on_progress(model: str, event: str) -> None:
+        def on_progress(model: str, event: str, detail: dict | None = None) -> None:
             # fire-and-forget telemetry — but hold a strong ref: an unreferenced
             # task can be GC'd mid-write and its exception silently vanishes
-            task = loop.create_task(store.append_event(f"model.{event}", entity=model, payload={"run": run.id}))
+            payload: dict = {"run": run.id, **(detail or {})}
+            task = loop.create_task(store.append_event(f"model.{event}", entity=model, payload=payload))
             background.add(task)
             task.add_done_callback(background.discard)
 

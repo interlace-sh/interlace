@@ -27,7 +27,7 @@ built-in orchestration, and durable streaming ingestion. Published to PyPI as `i
 ## Operating
 
 - **[Environments](environments.md)** — production vs sandboxes, promotion, rollback, drift,
-  and garbage collection.
+  garbage collection, and reset.
 - **[Engines](engines.md)** — DuckLake / DuckDB / quack / Postgres, capabilities, and
   cross-engine transfers.
 - **[Configuration](configuration.md)** — the full `interlace.yaml` reference.
@@ -37,8 +37,8 @@ built-in orchestration, and durable streaming ingestion. Published to PyPI as `i
 - **[CLI](cli.md)** — every command, option, and the selector grammar.
 - **[HTTP API](api.md)** — every endpoint, auth scopes, and wire types.
 - **[Web UI](ui.md)** — the ten views served at `/ui` and what each does.
-- **[Surface parity](parity.md)** — the CLI ↔ API ↔ UI map and what's intentionally
-  surface-specific.
+- **[Surface parity](parity.md)** — the CLI ↔ API ↔ UI map, plus `interlace mcp`, and
+  what's intentionally surface-specific.
 
 ## Quick start
 

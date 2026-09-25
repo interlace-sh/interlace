@@ -33,3 +33,4 @@ Things to try:
   dropped, so grants and readers survive.
 - `interlace checks run` — re-validate the promoted tables without rebuilding.
 - `interlace gc --dry-run` after a few changes — superseded snapshots to reap.
+- `interlace reset --dry-run` — owned snapshots and views would go; `customer_scores` would stay.

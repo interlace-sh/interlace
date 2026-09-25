@@ -142,6 +142,8 @@ main#view { grid-area: view; overflow: auto; padding: 18px 22px 80px; position: 
 @keyframes route-load { 0% { left: -35%; } 100% { left: 100%; } }
 main#view[data-route="lineage"] { overflow: hidden; padding-bottom: 22px; display: flex; flex-direction: column; }
 main#view[data-route="lineage"] .view-head { flex-shrink: 0; }
+main#view[data-route="lineage"] .lineage-preview { flex-shrink: 0; max-height: 280px; overflow: auto; margin-top: 10px; }
+main#view[data-route="lineage"] .lineage-preview:empty { display: none; }
 .view-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .view-head h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
 .view-head .sub { color: var(--tx-dim); font-size: 11.5px; }
@@ -230,6 +232,24 @@ table.t { width: 100%; border-collapse: collapse; font-size: 12px; }
 .btn.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); background: none; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.small { padding: 2px 8px; font-size: 11px; }
+.btn.on { border-color: var(--violet); background: var(--violet-soft); color: var(--tx); }
+
+.plan-pick { position: relative; }
+.plan-pick > .btn { min-width: 9em; text-align: left; }
+.plan-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 6; width: 240px;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  background: var(--ink-1); border: 1px solid var(--line); border-radius: var(--r);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.5);
+}
+.plan-menu[hidden] { display: none; }
+.plan-menu .in { width: 100%; }
+.plan-models { overflow-y: auto; max-height: 260px; }
+.plan-models label {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px;
+  font-size: 12px; cursor: pointer; border-radius: 4px;
+}
+.plan-models label:hover { background: var(--violet-soft); }
 
 .field { display: flex; flex-direction: column; gap: 3px; }
 .field span { font-size: 10.5px; color: var(--tx-faint); text-transform: uppercase; letter-spacing: 0.06em; }

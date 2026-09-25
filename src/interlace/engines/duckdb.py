@@ -38,7 +38,7 @@ import pyarrow as pa
 import tenacity
 from sqlglot import exp
 
-from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode
+from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
@@ -303,6 +303,9 @@ class DuckDBAdapter(EngineAdapter):
             cur = self._cursor()
             try:
                 cur.execute(sql)
+            except Exception as exc:
+                note_statement(exc, sql)
+                raise
             finally:
                 cur.close()
 
@@ -314,7 +317,11 @@ class DuckDBAdapter(EngineAdapter):
             try:
                 cur.execute("BEGIN")
                 for sql in sqls:
-                    cur.execute(sql)
+                    try:
+                        cur.execute(sql)
+                    except Exception as exc:
+                        note_statement(exc, sql)
+                        raise
                     counts.append(_affected(cur))
                 cur.execute("COMMIT")
             except Exception:

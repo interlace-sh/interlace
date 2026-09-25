@@ -995,6 +995,20 @@ class SqliteStateStore:
     async def events_for_entity(self, entity: str) -> list[dict[str, object]]:
         return await asyncio.to_thread(self._events_for_entity_sync, entity)
 
+    async def latest_model_build(self, model: str) -> dict[str, object] | None:
+        """The newest terminal build event for a model (done / failed / cancelled)."""
+        return await asyncio.to_thread(self._latest_model_build_sync, model)
+
+    def _latest_model_build_sync(self, model: str) -> dict[str, object] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT seq, ts, type, entity, payload FROM event_log "
+                "WHERE entity = ? AND type IN ('model.done', 'model.failed', 'model.cancelled') "
+                "ORDER BY seq DESC LIMIT 1",
+                (model,),
+            ).fetchone()
+        return self._event_row(row) if row else None
+
     def _events_for_entity_sync(self, entity: str) -> list[dict[str, object]]:
         with self._lock:
             rows = self._conn.execute(

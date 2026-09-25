@@ -3,7 +3,7 @@
 // engine / depends on / checks / rows / time), a header line (env · duration · models,
 // plus the backfill window and attempt when they apply), and the summary line.
 
-import { debounce, glyph, h, relTime, rowsDelta, seconds, statusPill, table } from "../ui.js";
+import { debounce, glyph, h, relTime, rowsDelta, seconds, sqlBlock, statusPill, table } from "../ui.js";
 
 const _MARK = { done: glyph.ok, failed: glyph.fail, cancelled: glyph.skip, skip: glyph.skip };
 const _TONE = { done: "glyph-ok", failed: "glyph-fail", cancelled: "glyph-skip", skip: "glyph-skip" };
@@ -195,6 +195,21 @@ export async function render(el, { api, feed, toast, modal, params }) {
     const header = detailHeader(run);
     if (header) parts.push(header);
     if (openDetail.error) parts.push(h("div", { style: "color:var(--red); margin:6px 0" }, openDetail.error));
+    const seenStatements = new Set();
+    for (const event of openDetail.events) {
+      const statement = event.type === "model.failed" ? event.payload?.statement : "";
+      if (statement && !seenStatements.has(statement)) {
+        seenStatements.add(statement);
+        parts.push(
+          h(
+            "div",
+            { style: "margin:6px 0" },
+            h("div", { class: "dim" }, `${event.entity} · failed statement`),
+            sqlBlock(event.payload.statement),
+          ),
+        );
+      }
+    }
     const built = buildTable(payload, openDetail.events);
     if (built) parts.push(built);
     if (!built && !openDetail.error) {

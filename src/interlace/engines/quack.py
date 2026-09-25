@@ -18,7 +18,7 @@ import duckdb
 import pyarrow as pa
 from sqlglot import exp
 
-from interlace.engines.base import LoadMode
+from interlace.engines.base import LoadMode, note_statement
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.ir.relation import TableRef
 
@@ -54,6 +54,9 @@ class QuackAdapter(DuckDBAdapter):
         cur = self._conn.cursor()
         try:
             self._remote_sync(cur, sql)
+        except Exception as exc:
+            note_statement(exc, sql)
+            raise
         finally:
             cur.close()
 

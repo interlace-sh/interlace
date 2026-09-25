@@ -11,9 +11,10 @@ export const token = {
 };
 
 class ApiError extends Error {
-  constructor(status, detail) {
+  constructor(status, detail, statement) {
     super(detail || `HTTP ${status}`);
     this.status = status;
+    this.statement = statement || "";
   }
 }
 
@@ -24,12 +25,15 @@ async function call(method, path, body) {
   const response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   if (!response.ok) {
     let detail = response.statusText;
+    let statement = "";
     try {
-      detail = (await response.json()).detail || detail;
+      const body = await response.json();
+      detail = body.detail || detail;
+      statement = body.statement || "";
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(response.status, detail);
+    throw new ApiError(response.status, detail, statement);
   }
   if (response.status === 204) return null;
   return response.json();

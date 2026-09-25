@@ -162,8 +162,80 @@ export function highlightSql(sql) {
   return out;
 }
 
+/** A typed result grid. Shared by the query console, model preview, and check rows. */
+export function dataGrid(response) {
+  const columns = response?.columns ?? [];
+  if (!columns.length) return h("div", { class: "empty" }, "no rows");
+  const head = h(
+    "tr",
+    {},
+    columns.map((column, index) =>
+      h("th", {}, column, response.types?.[index] ? h("small", {}, response.types[index]) : null),
+    ),
+  );
+  const body = (response.rows ?? []).map((row) =>
+    h(
+      "tr",
+      {},
+      row.map((value) => {
+        if (value === null || value === undefined) return h("td", { class: "null" }, "∅");
+        if (typeof value === "number") return h("td", { class: "num" }, String(value));
+        return h("td", {}, String(value));
+      }),
+    ),
+  );
+  if (!body.length) {
+    body.push(h("tr", {}, h("td", { class: "null", colspan: columns.length }, "no rows")));
+  }
+  return h("div", { class: "q-grid" }, h("table", {}, h("thead", {}, head), h("tbody", {}, body)));
+}
+
 export function sqlBlock(sql) {
   return h("pre", { class: "sql", html: highlightSql(sql) });
+}
+
+/** Last build, column profile, and a row sample. `preview` is a SampleResponse. */
+export function previewPanel(preview) {
+  const parts = [];
+  const build = preview.last_build;
+  if (build) {
+    const bits = [build.status];
+    if (build.seconds != null) bits.push(seconds(build.seconds));
+    parts.push(
+      h(
+        "div",
+        { class: "sub", style: "display:flex; gap:8px; align-items:baseline; padding:4px 0" },
+        bits.join(" · "),
+        build.rows ? rowsDelta(build.rows) : null,
+      ),
+    );
+    if (build.message) parts.push(h("div", { style: "color:var(--red); padding:2px 0" }, build.message));
+    if (build.statement) parts.push(sqlBlock(build.statement));
+  }
+  if (!preview.available) {
+    parts.push(h("div", { class: "empty" }, preview.message || "not available"));
+    return h("div", {}, ...parts);
+  }
+  if (preview.relation) parts.push(h("div", { class: "sub" }, preview.relation));
+  if (preview.profile?.length) {
+    parts.push(
+      table(
+        [
+          { k: "column", label: "column" },
+          { k: "type", label: "type", render: (row) => h("span", { class: "dim" }, row.type) },
+          { k: "nulls", label: "nulls", num: true },
+          { k: "distinct", label: "distinct", num: true },
+          { k: "min", label: "min", render: (row) => h("span", { class: "dim" }, row.min ?? "—") },
+          { k: "max", label: "max", render: (row) => h("span", { class: "dim" }, row.max ?? "—") },
+        ],
+        preview.profile,
+        { class: "compact" },
+      ),
+    );
+  }
+  parts.push(dataGrid(preview));
+  if (preview.truncated) parts.push(h("div", { class: "hint", style: "padding:6px 2px" }, "sample truncated"));
+  return h("div", {}, ...parts);
 }
 
 const PY_KEYWORDS = new RegExp(

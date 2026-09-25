@@ -19,11 +19,9 @@ import contextlib
 import json
 import logging
 import os
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import cast
 from uuid import uuid4
 
 import msgspec
@@ -53,7 +51,7 @@ from interlace.service.auth import auth_guard
 from interlace.sinks import target_ref
 from interlace.state.locks import hold_apply_lock
 from interlace.state.snapshot import ChangeCategory
-from interlace.streaming.log import Event, Lease, StoredEvent
+from interlace.streaming.log import Event, Lease
 from interlace.streaming.materializer import (
     ensure_stream_tables,
     flush_streams,
@@ -1294,12 +1292,11 @@ async def publish(name: FromPath[str], data: dict | list, state: State) -> Publi
 
 # External consumers tail the durable log. Sending a frame does not ack it —
 # the client commits the offsets it has handled. A grouped tail holds the
-# consumer lease and renews it; ``lease()`` itself rotates the fencing token,
-# so the heartbeat goes through ``renew``.
+# consumer lease and renews it on each read; ``lease()`` itself rotates the
+# fencing token, so the heartbeat goes through ``renew``. The read blocks
+# until an append wakes it or the keepalive interval elapses. It does not poll.
 _CONSUMER_LEASE_TTL_S = 30.0
-_CONSUMER_RENEW_S = 10.0
 _CONSUMER_KEEPALIVE_S = 15.0
-_CONSUMER_POLL_S = 0.05
 _CONSUMER_BATCH = 100
 
 
@@ -1313,23 +1310,7 @@ def _log_name_or_404(state: State, name: str) -> None:
     raise NotFoundException(detail=f"unknown stream: {name}")
 
 
-async def _poll_log(state: State, name: str, after_offset: int) -> list[StoredEvent]:
-    """Events after ``after_offset``, or nothing once the keepalive interval elapses.
-
-    The wait is ``asyncio.sleep``, not the log's blocking long-poll, so a client
-    disconnect cancels the tail promptly and releases the consumer lease.
-    """
-    quiet = 0.0
-    while quiet < _CONSUMER_KEEPALIVE_S:
-        batch = cast(list[StoredEvent], await state.stream_log.read(name, after_offset, _CONSUMER_BATCH, wait=0))
-        if batch:
-            return batch
-        await asyncio.sleep(_CONSUMER_POLL_S)
-        quiet += _CONSUMER_POLL_S
-    return []
-
-
-@get("/streams/{name:str}/events", opt={"no_compress": True})
+@get("/streams/{name:str}/events", opt={"no_compress": True, "query_token": True})
 async def stream_log_events(
     name: FromPath[str],
     state: State,
@@ -1367,7 +1348,6 @@ async def stream_log_events(
 
     async def tail() -> AsyncIterator[ServerSentEventMessage]:
         cursor = start
-        renewed = time.monotonic()
         try:
             # Comment frame first so EventSource onopen fires before any event.
             yield ServerSentEventMessage(comment="ok", data=None)
@@ -1379,12 +1359,14 @@ async def stream_log_events(
                     ),
                 )
             while True:
-                if held is not None and time.monotonic() - renewed >= _CONSUMER_RENEW_S:
-                    if not await state.stream_log.renew(name, group_name, held.token, ttl=_CONSUMER_LEASE_TTL_S):
-                        yield ServerSentEventMessage(event="error", data=json.dumps({"detail": "lease lost"}))
-                        return
-                    renewed = time.monotonic()
-                batch = await _poll_log(state, name, cursor)
+                # Renew on the same tick as the read. Idle tails wake every
+                # keepalive interval, which is half the lease TTL.
+                if held is not None and not await state.stream_log.renew(
+                    name, group_name, held.token, ttl=_CONSUMER_LEASE_TTL_S
+                ):
+                    yield ServerSentEventMessage(event="error", data=json.dumps({"detail": "lease lost"}))
+                    return
+                batch = await state.stream_log.read(name, cursor, _CONSUMER_BATCH, wait=_CONSUMER_KEEPALIVE_S)
                 if not batch:
                     yield ServerSentEventMessage(comment="keepalive", data=None)
                     continue
@@ -1827,7 +1809,7 @@ async def get_events(state: State, after: FromQuery[int] = 0) -> list[EventInfo]
     return [EventInfo(**event) for event in await state.store.read_events(after)]
 
 
-@get("/events/stream")
+@get("/events/stream", opt={"no_compress": True, "query_token": True})
 async def stream_events(state: State, request: Request, after: FromQuery[int] = 0) -> ServerSentEvent:
     # reconnects carry Last-Event-ID (set from the id: field); fresh connections
     # pass ?after= so a page load doesn't replay the whole event log
@@ -2188,14 +2170,9 @@ def create_app(
     return Litestar(
         exception_handlers={_InterlaceError: _domain_error},
         # gzip the served modules/CSS/JSON (no build step, so this is where transfer
-        # size is won). The SSE stream is excluded — compressing it would buffer and
-        # stall live events. minimum_size skips tiny bodies where framing costs more.
-        compression_config=CompressionConfig(
-            backend="gzip",
-            exclude=["/events/stream"],
-            # /streams/{name}/events is parameterized, so the route opts out by key.
-            exclude_opt_key="no_compress",
-        ),
+        # size is won). SSE routes set no_compress — compressing them would buffer
+        # and stall live events. minimum_size skips tiny bodies where framing costs more.
+        compression_config=CompressionConfig(backend="gzip", exclude_opt_key="no_compress"),
         route_handlers=[
             ui_router,
             ui_redirect,

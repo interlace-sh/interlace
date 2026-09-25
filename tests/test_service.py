@@ -771,41 +771,29 @@ def test_post_run_builds_synchronously(client: TestClient) -> None:
 
 
 def test_sse_token_query_is_accepted_once_keyed(tmp_path: Path) -> None:
-    """EventSource cannot send Authorization — ?token= on the SSE tails authenticates."""
-    from unittest.mock import MagicMock
-
-    from interlace.service.auth import _bearer_token
+    """EventSource cannot send Authorization — SSE routes opt in to ?token=."""
+    from urllib.parse import urlencode
 
     project_dir = _make_project(tmp_path)
-    with TestClient(app=create_app(project_dir, "prod")) as client:
+    app = create_app(project_dir, "prod")
+    with TestClient(app=app) as client:
         created = client.post("/apikeys", json={"name": "ui", "scopes": ["read"]}).json()
         token = created["token"]
         assert client.get("/events").status_code in (401, 403)
+        assert client.get("/events", params={"token": token}).status_code in (401, 403)
         assert client.get("/events", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+        # the stream tail opts in: a missing stream is 404 once the token is accepted
+        assert client.get("/streams/nope/events", params={"token": token}).status_code == 404
+        assert client.get("/streams/nope/events").status_code in (401, 403)
 
-    sse = MagicMock()
-    sse.headers = {}
-    sse.scope = {"path": "/events/stream"}
-    sse.query_params = {"token": token}
-    assert _bearer_token(sse) == token
+        async def operator_tail() -> int:
+            status, _headers, first, _records = await _drive_sse(
+                app, "/events/stream", query=urlencode({"token": token}), stop_after=0
+            )
+            assert first.startswith(": ok")
+            return status
 
-    stream_tail = MagicMock()
-    stream_tail.headers = {}
-    stream_tail.scope = {"path": "/streams/clicks/events"}
-    stream_tail.query_params = {"token": token}
-    assert _bearer_token(stream_tail) == token
-
-    other = MagicMock()
-    other.headers = {}
-    other.scope = {"path": "/events"}
-    other.query_params = {"token": token}
-    assert _bearer_token(other) is None  # query token is SSE-only
-
-    inspect = MagicMock()
-    inspect.headers = {}
-    inspect.scope = {"path": "/streams/clicks"}
-    inspect.query_params = {"token": token}
-    assert _bearer_token(inspect) is None
+        assert asyncio.run(operator_tail()) == 200
 
 
 def test_apply_emits_per_model_progress_events(client: TestClient) -> None:

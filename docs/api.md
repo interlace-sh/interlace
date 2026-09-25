@@ -117,7 +117,8 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
 - **`GET /streams/{name}/events?after=&group=&token=`** (read, SSE) → a tail of the durable
   log for external consumers. Each data frame is `{offset, ts, payload, idempotency_key,
   headers}` with `id` set to the offset. A comment frame is sent on connect so EventSource
-  opens before any event, then every 15s as a keepalive. No cursor (`after` / `Last-Event-ID`)
+  opens before any event. The tail blocks until an append wakes it, and sends a keepalive
+  comment after 15s of quiet. No cursor (`after` / `Last-Event-ID`)
   starts at the current head (live only); `after=0` replays from the first offset. Reconnects
   resume from `Last-Event-ID`. `<name>__quarantine` is the shadow log when the stream's drift
   mode is `quarantine`. Sending a frame does **not** ack it.

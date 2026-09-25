@@ -7,8 +7,8 @@ create``) locks it down. ``/health`` and the OpenAPI docs (``/schema``) are
 always open. Routes declare a required scope via ``opt={"scope": "write"}``
 (default ``read``); an ``admin`` scope satisfies any requirement.
 
-The SSE tails (``GET /events/stream`` and ``GET /streams/{name}/events``) also
-accept ``?token=`` because EventSource cannot send an ``Authorization`` header.
+Routes with ``opt={"query_token": True}`` (the SSE tails) also accept
+``?token=`` because EventSource cannot send an ``Authorization`` header.
 Prefer the header everywhere else (tokens in URLs can land in access logs).
 """
 
@@ -21,13 +21,12 @@ from litestar.handlers.base import BaseRouteHandler
 _OPEN_PATHS = frozenset({"/health", "/"})
 
 
-def _bearer_token(connection: ASGIConnection) -> str | None:
+def _bearer_token(connection: ASGIConnection, route_handler: BaseRouteHandler) -> str | None:
     header = connection.headers.get("Authorization", "")
     if header.startswith("Bearer "):
         return header[7:]
-    # EventSource cannot set Authorization — allow ?token= on the SSE tails only.
-    path = connection.scope["path"]
-    if path == "/events/stream" or (path.startswith("/streams/") and path.endswith("/events")):
+    # EventSource cannot set Authorization. The route opts in; other paths do not.
+    if route_handler.opt.get("query_token"):
         raw = connection.query_params.get("token")
         if isinstance(raw, str) and raw:
             return raw
@@ -44,7 +43,7 @@ async def auth_guard(connection: ASGIConnection, route_handler: BaseRouteHandler
     if await store.count_api_keys() == 0:
         return  # no keys configured -> open (local dev)
 
-    token = _bearer_token(connection)
+    token = _bearer_token(connection, route_handler)
     scopes = await store.verify_api_key(token) if token else None
     if scopes is None:
         raise NotAuthorizedException(detail="missing or invalid API key")

@@ -72,7 +72,11 @@ class StreamLog(Protocol):
         ...
 
     async def read(self, stream: str, after_offset: int, limit: int, wait: float | None = None) -> list[StoredEvent]:
-        """Read up to ``limit`` events after ``after_offset``; optionally long-poll for ``wait`` seconds."""
+        """Read up to ``limit`` events after ``after_offset``.
+
+        With ``wait``, block until an append lands or the deadline passes. The
+        wait is woken by the append, not by polling the log.
+        """
         ...
 
     async def heads(self) -> dict[str, int]:
@@ -148,6 +152,12 @@ class SqliteStreamLog:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection
         self._lock = threading.Lock()
+        # Waiting reads block on an Event. Append bumps the generation and wakes
+        # them, so a tail does not poll. The generation check closes the gap
+        # between a read that missed a row and the waiter being registered.
+        self._generation = 0
+        self._waiters: list[asyncio.Event] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @classmethod
     async def open(cls, path: str | Path) -> SqliteStreamLog:
@@ -214,10 +224,29 @@ class SqliteStreamLog:
                     "INSERT OR REPLACE INTO stream_heads (stream, next_offset) VALUES (?, ?)", (stream, offset)
                 )
                 self._conn.commit()  # durable before the publisher sees 200
+                if any(not flag for flag in deduped):
+                    self._wake_readers()
             except BaseException:  # a poisoned txn on the shared connection is a publish outage
                 self._conn.rollback()
                 raise
         return AppendResult(offsets=offsets, deduped=deduped)
+
+    def _wake_readers(self) -> None:
+        """Under ``self._lock``. A committed append wakes every waiting read."""
+        self._generation += 1
+        loop = self._loop
+        waiters = tuple(self._waiters)
+        if loop is None or not waiters:
+            return
+
+        def wake() -> None:
+            for event in waiters:
+                event.set()
+
+        try:
+            loop.call_soon_threadsafe(wake)
+        except RuntimeError:
+            return  # the loop shut down between the read and the append
 
     async def heads(self) -> dict[str, int]:
         return await asyncio.to_thread(self._heads_sync)
@@ -230,12 +259,33 @@ class SqliteStreamLog:
     # --- consumers ----------------------------------------------------------
 
     async def read(self, stream: str, after_offset: int, limit: int, wait: float | None = None) -> list[StoredEvent]:
-        deadline = asyncio.get_event_loop().time() + wait if wait else None
+        if not wait:
+            return await asyncio.to_thread(self._read_sync, stream, after_offset, limit)
+        loop = asyncio.get_running_loop()
+        self._loop = loop
+        deadline = loop.time() + wait
         while True:
+            with self._lock:
+                seen = self._generation
             events = await asyncio.to_thread(self._read_sync, stream, after_offset, limit)
-            if events or deadline is None or asyncio.get_event_loop().time() >= deadline:
+            if events or loop.time() >= deadline:
                 return events
-            await asyncio.sleep(0.05)  # long-poll: cheap WAL reads until data or deadline
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return events
+            signal = asyncio.Event()
+            with self._lock:
+                if self._generation != seen:
+                    continue  # a row landed while we were reading
+                self._waiters.append(signal)
+            try:
+                await asyncio.wait_for(signal.wait(), timeout=remaining)
+            except TimeoutError:
+                return await asyncio.to_thread(self._read_sync, stream, after_offset, limit)
+            finally:
+                with self._lock:
+                    if signal in self._waiters:
+                        self._waiters.remove(signal)
 
     def _read_sync(self, stream: str, after_offset: int, limit: int) -> list[StoredEvent]:
         with self._lock:

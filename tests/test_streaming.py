@@ -3,6 +3,7 @@ materializer, and the HTTP publish path."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -94,6 +95,25 @@ async def test_renew_keeps_the_token_and_release_frees_the_group(log: SqliteStre
     assert again is not None and again.committed_offset == 1
     with pytest.raises(StreamError, match="stale lease"):
         await log.commit("s", "g", 2, lease.token)
+
+
+async def test_read_wakes_on_append_and_expires_without_one(log: SqliteStreamLog) -> None:
+    loop = asyncio.get_running_loop()
+
+    async def publish_soon() -> None:
+        await asyncio.sleep(0.05)
+        await log.append("s", [Event({"n": 1})])
+
+    started = loop.time()
+    publisher = asyncio.create_task(publish_soon())
+    found = await log.read("s", 0, 10, wait=2)
+    await publisher
+    assert [event.payload["n"] for event in found] == [1]
+    assert loop.time() - started < 1  # woken by the append, not by a poll interval
+
+    started = loop.time()
+    assert await log.read("s", 1, 10, wait=0.2) == []
+    assert loop.time() - started >= 0.15
 
 
 async def test_trim(log: SqliteStreamLog) -> None:

@@ -57,8 +57,9 @@ curl -N 'localhost:8000/streams/orders/events?after=0'
 ```
 
 Each data frame is `{"offset", "ts", "payload", "idempotency_key", "headers"}` and its
-SSE `id` is the offset, so a reconnect with `Last-Event-ID` resumes there. A comment
-frame is sent on connect, then every 15s while the tail is quiet. Delivery is
+SSE `id` is the offset, so a reconnect with `Last-Event-ID` resumes there. The server
+blocks until an event is appended; it does not poll the log. A comment frame is sent
+on connect, and again after 15s of quiet, so a proxy keeps the connection. Delivery is
 **at-least-once**: sending a frame does not acknowledge it.
 
 A `group` query parameter takes that consumer group's lease and, unless you also pass a

@@ -467,8 +467,9 @@ Vocabulary deliberately mirrors Cloudflare's **Streams → Pipelines → Sinks**
 pitch is "self-hosted Cloudflare Pipelines that lands in DuckDB/DuckLake."
 
 **Current state.** `SqliteStreamLog` (WAL; offsets from 1, idempotency-key dedup via a
-partial unique index, consumer-group lease/commit with fencing tokens, trim, long-poll
-read, `renew`/`release` for a held lease). `@stream` declarations publish at `POST /streams/{name}` — schema-validated
+partial unique index, consumer-group lease/commit with fencing tokens, trim, a waiting
+read woken on append, `renew`/`release` for a held lease). `@stream` declarations publish at
+`POST /streams/{name}` — schema-validated
 (`on_schema_drift: reject` default; extra fields/wrong types → 400, missing → NULL),
 durable before the 200, deduplicated on retry. External consumers tail that log with
 `GET /streams/{name}/events` (SSE; `?group=` leases a consumer group) and ack with

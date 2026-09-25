@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 from interlace.ir.relation import TableRef
 from interlace.state.interval import Interval, IntervalSet
 from interlace.state.snapshot import ChangeCategory, Snapshot
-from interlace.state.store import SqliteStateStore
+from interlace.state.store import SqliteStateStore, event_actor
 
 pytestmark = pytest.mark.unit
 
@@ -121,6 +122,25 @@ async def test_list_runs_enriches_duration_and_environment(store: SqliteStateSto
     enriched = (await store.list_runs())[0]
     assert enriched["environment"] == "prod"
     assert enriched["started_at"] and enriched["finished_at"]  # both endpoints of the span recorded
+
+
+async def test_ndjson_mirror_stamps_apply_actor(tmp_path: Path) -> None:
+    store = await SqliteStateStore.open(tmp_path / "state.db")
+    mirror = tmp_path / "events.ndjson"
+    store.event_log_path = str(mirror)
+    token = event_actor.set("cli")
+    try:
+        await store.append_event("apply.finished", entity="prod", payload={"built": 1})
+        await store.append_event("stream.flushed", entity="orders", payload={"rows": 1})
+    finally:
+        event_actor.reset(token)
+    stored = await store.read_events()
+    await store.close()
+    assert stored[0]["payload"] == {"built": 1, "api_key": "cli"}
+    assert stored[1]["payload"] == {"rows": 1}
+    lines = [json.loads(line) for line in mirror.read_text().splitlines()]
+    assert [line["type"] for line in lines] == ["apply.finished", "stream.flushed"]
+    assert lines[0]["payload"]["api_key"] == "cli"
 
 
 async def test_list_runs_leaves_derived_fields_none_before_a_run(store: SqliteStateStore) -> None:

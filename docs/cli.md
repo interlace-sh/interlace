@@ -4,8 +4,8 @@
 
 - `--env` / `-e` (default `prod`, env `INTERLACE_ENV`) — plan/apply/run/restate/serve/scheduler/checks run.
 - `--path` / `-p` (default `.`) — project root.
-- `--select` / `-s` (repeatable) — plan/apply/run/restate/models/checks run (see [selectors](#selectors)).
-- `--json` — plan/models/runs/streams/engines/impact/env/checks/reset (and lineage via `--format json`).
+- `--select` / `-s` (repeatable) — plan/apply/run/restate/models/checks run/`test` (see [selectors](#selectors)).
+- `--json` — plan/models/runs/streams/engines/connections/impact/env/checks/reset (and lineage via `--format json`).
 - `--parallelism` (default 0 = the project's `parallelism`) — apply/run/restate only.
 
 Exit codes: `0` ok; `1` selection error / breaking-plan-without-force / check failure /
@@ -80,6 +80,17 @@ only. (Same data as the HTTP `GET /models/{name}/impact`.)
 ### `interlace engines [--json]`
 Configured engines (name, type, dialect, DSN with credentials redacted). Config read only.
 
+### `interlace connections [--json]`
+Named `http` and `postgres` connections. Secret header values and DSN credentials are
+replaced with `…`. Same data as `GET /connections`. Config read only.
+
+### `interlace test [--select] [--update-golden]`
+Build the selected models in an ephemeral DuckDB and diff them against
+`tests/golden/<model>.csv`. `tests/fixtures/<model>.csv` stands in for an upstream that
+is not itself selected. `--update-golden` rewrites the expected file. A mismatch exits 1.
+Does not run live checks or the promotion gate. With no `--select`, it tests every
+model that already has a golden. With neither goldens nor `--select`, it exits 1.
+
 ### `interlace streams [--json]`
 Declared streams with drift policy, retention, log head, warehouse watermark, and pending
 backlog. Opens the warehouse + stream log.
@@ -127,7 +138,8 @@ Run the scheduler loop: tick triggers, flush streams, drain due runs, sweep stre
 
 ### `interlace serve [--env] [--host 127.0.0.1] [--port 8000] [--scheduler/--no-scheduler] [--interval 60] [--quack] [--quack-token] [--allow-open]`
 Run the daemon: HTTP API + web UI (`/ui`) + scheduler + streams in one process. Requires the
-`service` extra. `--no-scheduler` runs API-only (pair with a separate `interlace scheduler`).
+`service` extra. A `cdc:` block is read in this process: each Postgres slot appends into
+its `@stream`. `--no-scheduler` runs API-only (pair with a separate `interlace scheduler`).
 `--quack` also serves the warehouse over the quack protocol. A non-loopback bind with no API
 keys is **refused** unless `--allow-open` (insecure); create a key first with
 `interlace apikey create`.

@@ -104,9 +104,7 @@ export async function render(el, { api, feed, go, params }) {
     try {
       const body = await api.get(`/models/${encodeURIComponent(name)}/preview`);
       if (seq !== previewSeq) return;
-      preview.replaceChildren(
-        h("div", { class: "card" }, h("div", { class: "card-head" }, name), h("div", { class: "card-body" }, previewPanel(body))),
-      );
+      preview.replaceChildren(previewPanel(body, { name }));
     } catch (error) {
       if (seq === previewSeq) preview.replaceChildren(h("div", { class: "card" }, h("div", { class: "empty" }, error.message)));
     }

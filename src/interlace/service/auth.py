@@ -18,6 +18,8 @@ from litestar.connection import ASGIConnection
 from litestar.exceptions import NotAuthorizedException, PermissionDeniedException
 from litestar.handlers.base import BaseRouteHandler
 
+from interlace.state.store import event_actor
+
 _OPEN_PATHS = frozenset({"/health", "/"})
 
 
@@ -41,12 +43,15 @@ async def auth_guard(connection: ASGIConnection, route_handler: BaseRouteHandler
 
     store = connection.app.state.store
     if await store.count_api_keys() == 0:
+        event_actor.set("anonymous")
         return  # no keys configured -> open (local dev)
 
     token = _bearer_token(connection, route_handler)
-    scopes = await store.verify_api_key(token) if token else None
-    if scopes is None:
+    verified = await store.verify_api_key(token) if token else None
+    if verified is None:
         raise NotAuthorizedException(detail="missing or invalid API key")
+    name, scopes = verified
+    event_actor.set(name)
 
     required = route_handler.opt.get("scope", "read")
     if required not in scopes and "admin" not in scopes:

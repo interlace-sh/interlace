@@ -78,7 +78,7 @@ export function pill(text, tone = "") {
 
 export function statusPill(status) {
   const tone =
-    { succeeded: "green", passed: "green", running: "amber", queued: "", failed: "red", error: "red", cancelled: "" }[
+    { done: "green", succeeded: "green", passed: "green", running: "amber", queued: "", failed: "red", error: "red", cancelled: "" }[
       status
     ] ?? "";
   return pill(status, tone);
@@ -194,48 +194,57 @@ export function sqlBlock(sql) {
   return h("pre", { class: "sql", html: highlightSql(sql) });
 }
 
-/** Last build, column profile, and a row sample. `preview` is a SampleResponse. */
-export function previewPanel(preview) {
-  const parts = [];
+const PROFILE_COLUMNS = [
+  { k: "column", label: "column" },
+  { k: "type", label: "type", render: (row) => h("span", { class: "dim" }, row.type) },
+  { k: "nulls", label: "nulls", num: true },
+  { k: "distinct", label: "distinct", num: true },
+  { k: "min", label: "min", render: (row) => h("span", { class: "dim" }, row.min ?? "—") },
+  { k: "max", label: "max", render: (row) => h("span", { class: "dim" }, row.max ?? "—") },
+];
+
+/** Row sample and column profile for one model. `preview` is a SampleResponse.
+ * The bar carries the name, relation, last status, and duration; Preview (rows)
+ * is the default tab and Schema is the column profile. */
+export function previewPanel(preview, { name } = {}) {
   const build = preview.last_build;
-  if (build) {
-    const bits = [build.status];
-    if (build.seconds != null) bits.push(seconds(build.seconds));
-    parts.push(
-      h(
-        "div",
-        { class: "sub", style: "display:flex; gap:8px; align-items:baseline; padding:4px 0" },
-        bits.join(" · "),
-        build.rows ? rowsDelta(build.rows) : null,
-      ),
-    );
-    if (build.message) parts.push(h("div", { style: "color:var(--red); padding:2px 0" }, build.message));
-    if (build.statement) parts.push(sqlBlock(build.statement));
-  }
+  const moved = build?.rows && (build.rows.inserted || build.rows.updated || build.rows.deleted);
+  const previewTab = h("button", { class: "btn small on", type: "button" }, "preview");
+  const schemaTab = h("button", { class: "btn small", type: "button" }, "schema");
+  const bar = h(
+    "div",
+    { class: "card-head preview-bar" },
+    name ? h("span", { class: "preview-name" }, `[${String(name).replaceAll("_", " ")}]`) : null,
+    preview.relation ? h("span", { class: "preview-relation" }, `(${preview.relation})`) : null,
+    build ? statusPill(build.status) : null,
+    build?.seconds != null ? h("span", { class: "sub" }, seconds(build.seconds)) : null,
+    moved ? rowsDelta(build.rows) : null,
+    h("span", { class: "spread" }),
+    h("div", { class: "preview-tabs" }, previewTab, schemaTab),
+  );
+
+  const previewPane = h("div");
+  if (build?.message) previewPane.append(h("div", { class: "preview-error" }, build.message));
+  if (build?.statement) previewPane.append(sqlBlock(build.statement));
   if (!preview.available) {
-    parts.push(h("div", { class: "empty" }, preview.message || "not available"));
-    return h("div", {}, ...parts);
+    previewPane.append(h("div", { class: "empty" }, preview.message || "not available"));
+  } else {
+    previewPane.append(dataGrid(preview));
+    if (preview.truncated) previewPane.append(h("div", { class: "hint", style: "padding:6px 2px" }, "sample truncated"));
   }
-  if (preview.relation) parts.push(h("div", { class: "sub" }, preview.relation));
-  if (preview.profile?.length) {
-    parts.push(
-      table(
-        [
-          { k: "column", label: "column" },
-          { k: "type", label: "type", render: (row) => h("span", { class: "dim" }, row.type) },
-          { k: "nulls", label: "nulls", num: true },
-          { k: "distinct", label: "distinct", num: true },
-          { k: "min", label: "min", render: (row) => h("span", { class: "dim" }, row.min ?? "—") },
-          { k: "max", label: "max", render: (row) => h("span", { class: "dim" }, row.max ?? "—") },
-        ],
-        preview.profile,
-        { class: "compact" },
-      ),
-    );
+  const schemaPane = preview.profile?.length
+    ? table(PROFILE_COLUMNS, preview.profile, { class: "compact" })
+    : h("div", { class: "empty" }, "no column profile");
+  const body = h("div", { class: "card-body" }, previewPane);
+
+  function select(which) {
+    previewTab.classList.toggle("on", which === "preview");
+    schemaTab.classList.toggle("on", which === "schema");
+    body.replaceChildren(which === "schema" ? schemaPane : previewPane);
   }
-  parts.push(dataGrid(preview));
-  if (preview.truncated) parts.push(h("div", { class: "hint", style: "padding:6px 2px" }, "sample truncated"));
-  return h("div", {}, ...parts);
+  previewTab.addEventListener("click", () => select("preview"));
+  schemaTab.addEventListener("click", () => select("schema"));
+  return h("div", { class: "card preview-card" }, bar, body);
 }
 
 const PY_KEYWORDS = new RegExp(

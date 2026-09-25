@@ -18,15 +18,18 @@ import contextlib
 import logging
 import os
 import socket
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry
 from interlace.graph.project import CompiledProject
 from interlace.plan.apply import apply
 from interlace.plan.run import run_plan
-from interlace.state.store import QueuedRun, SqliteStateStore
+from interlace.project import Project
+from interlace.state.store import QueuedRun, SqliteStateStore, event_actor
 
 logger = logging.getLogger("interlace.worker")
 
@@ -50,42 +53,54 @@ async def drain(
     task_timeout: float | None = None,
     slots: int = 1,
     parallelism: int = 4,
+    connections: Mapping[str, Any] | None = None,
+    loaded: Project | None = None,
+    on_compiled: Any | None = None,
 ) -> int:
     """Execute up to ``limit`` queued (or lease-expired) runs; returns how many ran."""
-    worker = owner or default_owner()
-    runs = await store.claim_runs(limit, owner=worker, lease_seconds=lease_seconds, max_attempts=max_attempts)
-    semaphore = asyncio.Semaphore(max(1, slots))
+    actor = event_actor.set("scheduler")
+    try:
+        worker = owner or default_owner()
+        runs = await store.claim_runs(limit, owner=worker, lease_seconds=lease_seconds, max_attempts=max_attempts)
+        semaphore = asyncio.Semaphore(max(1, slots))
 
-    async def bounded(run: QueuedRun) -> None:
-        async with semaphore:
-            # the lease was taken at CLAIM time; a run that queued behind a long
-            # sibling may have expired and been reclaimed — re-verify before
-            # executing, or two workers run the same plan for a heartbeat window
-            verdict = await store.renew_lease(run.id, owner=worker, lease_seconds=lease_seconds)
-            if verdict == "lost":
-                return
-            if verdict == "cancel":
-                if await store.finish_run(run.id, success=False, error="cancelled", status="cancelled", owner=worker):
-                    await store.append_event("run.cancelled", entity=str(run.id), payload={})
-                return
-            await _execute_run(
-                run,
-                store,
-                project,
-                engine,
-                environment,
-                engines=engines,
-                base_path=base_path,
-                owner=worker,
-                lease_seconds=lease_seconds,
-                max_attempts=max_attempts,
-                task_timeout=task_timeout,
-                parallelism=parallelism,
-            )
+        async def bounded(run: QueuedRun) -> None:
+            async with semaphore:
+                # the lease was taken at CLAIM time; a run that queued behind a long
+                # sibling may have expired and been reclaimed — re-verify before
+                # executing, or two workers run the same plan for a heartbeat window
+                verdict = await store.renew_lease(run.id, owner=worker, lease_seconds=lease_seconds)
+                if verdict == "lost":
+                    return
+                if verdict == "cancel":
+                    if await store.finish_run(
+                        run.id, success=False, error="cancelled", status="cancelled", owner=worker
+                    ):
+                        await store.append_event("run.cancelled", entity=str(run.id), payload={})
+                    return
+                await _execute_run(
+                    run,
+                    store,
+                    project,
+                    engine,
+                    environment,
+                    engines=engines,
+                    base_path=base_path,
+                    connections=connections,
+                    loaded=loaded,
+                    on_compiled=on_compiled,
+                    owner=worker,
+                    lease_seconds=lease_seconds,
+                    max_attempts=max_attempts,
+                    task_timeout=task_timeout,
+                    parallelism=parallelism,
+                )
 
-    if runs:
-        await asyncio.gather(*(bounded(run) for run in runs))
-    return len(runs)
+        if runs:
+            await asyncio.gather(*(bounded(run) for run in runs))
+        return len(runs)
+    finally:
+        event_actor.reset(actor)
 
 
 async def _execute_run(
@@ -97,6 +112,9 @@ async def _execute_run(
     *,
     engines: EngineRegistry | dict[str, EngineAdapter] | None,
     base_path: Path | None,
+    connections: Mapping[str, Any] | None,
+    loaded: Project | None,
+    on_compiled: Any | None,
     owner: str,
     lease_seconds: float,
     max_attempts: int,
@@ -144,6 +162,9 @@ async def _execute_run(
             base_path=base_path,
             parallelism=parallelism,
             on_progress=on_progress,
+            connections=connections,
+            loaded=loaded,
+            on_compiled=on_compiled,
         )
         if background:  # let the progress events land before the run is marked done
             await asyncio.gather(*background, return_exceptions=True)

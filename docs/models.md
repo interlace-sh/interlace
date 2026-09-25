@@ -93,6 +93,10 @@ Sync functions run in a worker thread; async functions run on the event loop. A 
 must materialise as `virtual` and can't be terminal (`table`/`file`). To deliver a Python
 model's output to an external table/file, write a SQL `materialise: table`/`file` model over it.
 
+`interlace.connections.connection(name)` returns a named `http` or `postgres` connection
+while the model is building. It is bound for that apply or queued run only. Secret values
+are on the object the model receives; `interlace connections` and `GET /connections` redact them.
+
 `incremental` works **with a `key`**: the Arrow output is staged and the window's rows are
 upserted into it. Without a key it is refused, and deliberately — a SQL model has the window
 predicate pushed into its query so the engine only computes that window, whereas a Python
@@ -149,17 +153,27 @@ for t in get_tenants():
 
 Things to know:
 
-- **Names must be unique** — `register_model` raises on a duplicate, so put the tenant in the
-  name.
+- **Names must be unique** — `register_model` raises when a name is already defined by a
+  source file. Put the tenant in the name. A run may register the same dynamic name again;
+  that replaces the model an earlier run created.
 - **Closure late-binding** — the classic Python trap; bind the loop variable via a factory or
   a default argument (as above), or every generated function filters on the *last* value.
 - **`depends_on` for Python models** — a function's parameters must each be a declared
   dependency (SQL models auto-discover dependencies from their table references; Python models
   don't).
-- **The generator runs on every command** — `get_tenants()` is called each time `interlace`
-  loads the project (plan, apply, models, serve). Keep it fast and deterministic; if it queries
-  a database, every CLI call pays that cost. **`interlace serve` compiles once at startup**, so
-  a tenant added while the daemon is running only appears after it re-compiles/restarts.
+- **The generator runs on every load** — `get_tenants()` is called each time the project is
+  discovered (every CLI command, and `interlace serve` again when a model file or
+  `interlace.yaml` changes on disk). Keep it fast and deterministic; if it queries a
+  database, every load pays that cost.
+- **Registering during a run** — a Python model can call `REGISTRY.register_model` while it
+  is building, for example after reading tenants from a database. Those models are compiled
+  and built in the same apply. SQL definitions are written to `.interlace/dynamic/<name>.sql`
+  and show up in the next plan, the UI, and a restart. Re-registering that name updates the
+  SQL, so a later run rebuilds it. A Python function registered this way is built in the
+  current process only; it is not written to disk. The generator has to actually run
+  (`interlace run`, or a `schedule:` the scheduler force-runs). A plan of an unchanged
+  fingerprint does not call the function. Register the set you still want on each run: a
+  name this run leaves out stays as it is. Delete `.interlace/dynamic/<name>.sql` to retire one.
 - **Quote interpolated values** — for a trusted internal list, string interpolation into SQL is
   fine; for untrusted input, quote via sqlglot or parameterise.
 
@@ -260,13 +274,13 @@ Every key below is settable in the SQL comment block or as a `@model(...)` argum
 | `owner` | str | — | Surfaced in the catalog / API. |
 | `description` | str | — | Free text (metadata; not fingerprinted into data). |
 | `columns` | map | — | Output contract `{column: type|null}`; a built table violating it blocks promotion (`SchemaError`). |
-| `schedule` | map | — | `{cron: "0 * * * *"}` or `{every: "5m"}` for the scheduler. |
+| `schedule` | map | — | `{cron: "0 * * * *"}`, `{every: "5m"}`, `{watch: "inbox/*.csv"}`, or `{webhook: name}`. |
 | `checks` | list | — | Data-quality [checks](checks.md). |
 | `indexes` | list | — | Indexes created after the table exists. A change does not rebuild data. See below. |
 | `constraints` | list | — | `primary_key`, `unique`, `not_null`, `check`, `foreign_key`. Enforced only where the engine enforces them; otherwise a non-unique index (or a plan note) and checks stay the portable gate. |
 | `schema` | map | `columns: additive`, `indexes: manage`, `constraints: manage` | External `table` drift policy. `columns`: `additive` (today's ALTER / cast / leave extras), `reject` (fail before writing if the live table is not a compatible superset), `ignore` (no ALTER). `indexes` / `constraints`: `manage` (reconcile names interlace created) or `ignore`. |
 | `target` | str | — | `materialise: table`: external `<alias>.<schema>.<table>` to deliver into. |
-| `path` | str | — | `materialise: file`: output path. |
+| `path` | str | — | `materialise: file`: output path. `${date}` (`YYYY-MM-DD`), `${datetime}` (`YYYYMMDDTHHMMSSZ`, UTC), and `${workspace}` (project directory name) expand at apply. |
 | `format` | str | — | `materialise: file`: `parquet` \| `csv` \| `json`. |
 | `environments` | list | `[prod]` | Terminal models: which environments actually deliver (the side-effect gate). |
 

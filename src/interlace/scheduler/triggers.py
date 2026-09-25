@@ -1,15 +1,19 @@
 """Triggers — when a model should run.
 
-One abstraction (``Trigger.due``) for all kinds; v1 ships cron and interval.
-Cron expressions are parsed by ``cronsim`` (we own the loop — see TriggerEngine —
-rather than delegating scheduling to APScheduler). A trigger is pure: given the
-current time and when it last fired, it returns the runs that are now due.
+One abstraction (``Trigger.due``) for all kinds: cron, interval, and a file-watch
+sensor. Cron expressions are parsed by ``cronsim`` (we own the loop — see
+TriggerEngine — rather than delegating scheduling to APScheduler). A cron or
+interval trigger is pure: given the current time and when it last fired, it
+returns the runs that are now due. A file watch hashes matching files instead.
+Inbound webhooks are not triggers; ``POST /hooks/{name}`` enqueues them.
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 
 from cronsim import CronSim
@@ -82,3 +86,42 @@ class IntervalTrigger:
             stamp = datetime.fromtimestamp(slot, tz=UTC).isoformat()
             return [RunRequest([self.model], idempotency_key=f"interval:{self.model}:{stamp}")]
         return []
+
+
+def file_fingerprint(root: Path, pattern: str) -> str | None:
+    """Hash of each matching file's path, size, and mtime. ``None`` when nothing matches.
+
+    Stdlib glob only — a directory watcher is deliberately not a dependency.
+    """
+    if Path(pattern).is_absolute():
+        raise DefinitionError(f"watch pattern {pattern!r} must be relative to the project")
+    matches = sorted(path for path in root.glob(pattern) if path.is_file())
+    if not matches:
+        return None
+    digest = hashlib.sha256()
+    for path in matches:
+        stat = path.stat()
+        relative = path.relative_to(root).as_posix()
+        digest.update(f"{relative}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+    return digest.hexdigest()[:16]
+
+
+@dataclass
+class WatchTrigger:
+    """Enqueues when the files matching ``pattern`` change (path, size, or mtime)."""
+
+    model: str
+    pattern: str
+    root: Path
+    id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.id = f"watch:{self.model}"
+        file_fingerprint(self.root, self.pattern)  # reject an absolute pattern at construction
+
+    def due(self, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
+        del now, last_fired
+        digest = file_fingerprint(self.root, self.pattern)
+        if digest is None:
+            return []
+        return [RunRequest([self.model], idempotency_key=f"watch:{self.model}:{digest}")]

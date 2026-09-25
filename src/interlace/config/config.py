@@ -16,9 +16,10 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from interlace.exceptions import ConfigurationError
 
@@ -76,6 +77,79 @@ _TYPE_DIALECT = {
 }
 
 
+def _require_resolved(value: str, field: str) -> None:
+    """A connection that still contains ``${VAR}`` was not given that variable."""
+    found = _ENV_REF.search(value)
+    if found:
+        raise ValueError(f"{field} references ${{{found.group(1)}}} but it is not set")
+
+
+class HttpConnection(BaseModel):
+    """A named HTTP base URL and headers, for Python models that call a REST API."""
+
+    type: Literal["http"]
+    base_url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _env_resolved(self) -> HttpConnection:
+        _require_resolved(self.base_url, "base_url")
+        for key, value in self.headers.items():
+            _require_resolved(value, f"headers.{key}")
+        return self
+
+
+class PostgresConnection(BaseModel):
+    """A named Postgres DSN that is not a warehouse engine (CDC, ad-hoc reads)."""
+
+    type: Literal["postgres"]
+    dsn: str
+
+    @model_validator(mode="after")
+    def _env_resolved(self) -> PostgresConnection:
+        _require_resolved(self.dsn, "dsn")
+        return self
+
+
+ConnectionConfig = Annotated[HttpConnection | PostgresConnection, Field(discriminator="type")]
+
+_PATH_TOKENS = frozenset({"date", "datetime", "workspace"})
+
+
+def _require_resolved_path(value: str, field: str) -> None:
+    """Reject an unset ``${VAR}``. Date tokens are expanded later, on the file path."""
+    for found in _ENV_REF.finditer(value):
+        if found.group(1) not in _PATH_TOKENS:
+            raise ValueError(f"{field} references ${{{found.group(1)}}} but it is not set")
+
+
+class CdcConfig(BaseModel):
+    """A Postgres logical slot copied into a ``@stream``.
+
+    The slot and publication already exist. The daemon reads ``pgoutput`` and
+    appends one row per change; ``_change`` is ``insert``, ``update``, or ``delete``.
+    """
+
+    connection: str
+    slot: str
+    publication: str
+    tables: list[str]
+    stream: str
+
+
+class InputConfig(BaseModel):
+    """A file or table format DuckDB scans for models. Not a warehouse engine."""
+
+    format: Literal["parquet", "csv", "json", "delta", "iceberg"]
+    path: str
+    connection: str | None = None  # http connection or an engine secret, for remote paths
+
+    @model_validator(mode="after")
+    def _env_resolved(self) -> InputConfig:
+        _require_resolved_path(self.path, "path")
+        return self
+
+
 class EngineConfig(BaseModel):
     """One named execution engine (warehouse gateway).
 
@@ -117,6 +191,9 @@ class ProjectConfig(BaseModel):
     default_engine: str = "default"
     engines: dict[str, EngineConfig] = Field(default_factory=dict)
     state_path: str = ".interlace/state.db"  # SQLite control-plane database
+    # Optional NDJSON mirror of the operator event log. Unset writes nowhere.
+    # One JSON line is appended after each SQLite commit (CLI and daemon share it).
+    event_log_path: str | None = None
     # The warehouse. Default is a plain DuckDB file — simplest, single-process.
     # Also accepted: a DuckLake catalog (``ducklake:.interlace/warehouse.ducklake``, or
     # hosted in a SQL DB: ``ducklake:postgres:dbname=... host=...`` — pair with
@@ -152,6 +229,26 @@ class ProjectConfig(BaseModel):
     # when diagnosing a crash or a warehouse that dislikes parallel writers; `run`
     # and `apply` also take --parallelism, which wins over this.
     parallelism: int = Field(default=4, ge=1)
+    # Sources that are not warehouse engines: REST bases and Postgres used for CDC
+    # or other reads the model does itself. ``engines`` and ``secrets`` stay as they are.
+    connections: dict[str, ConnectionConfig] = Field(default_factory=dict)
+    # External files DuckDB scans as relations models can FROM. Other engines reject them.
+    inputs: dict[str, InputConfig] = Field(default_factory=dict)
+    # Postgres logical replication into a declared @stream. Empty means the daemon
+    # does not open a replication connection.
+    cdc: dict[str, CdcConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _cdc_uses_postgres(self) -> ProjectConfig:
+        for name, source in self.cdc.items():
+            conn = self.connections.get(source.connection)
+            if not isinstance(conn, PostgresConnection):
+                raise ValueError(f"cdc {name!r} connection {source.connection!r} must be a postgres connection")
+            if not source.tables:
+                raise ValueError(f"cdc {name!r} needs at least one table")
+            if not source.slot or not source.publication or not source.stream:
+                raise ValueError(f"cdc {name!r} needs a slot, a publication, and a stream")
+        return self
 
     def engine_configs(self) -> dict[str, EngineConfig]:
         """Resolved engine map: explicit ``engines`` plus a synthesised ``default``

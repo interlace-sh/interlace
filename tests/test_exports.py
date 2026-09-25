@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -16,7 +17,7 @@ from interlace.exceptions import DefinitionError, PlanError
 from interlace.graph.project import compile_models
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
-from interlace.sinks import file_statements
+from interlace.sinks import expand_path_tokens, file_statements
 from interlace.state.store import SqliteStateStore
 
 pytestmark = pytest.mark.unit
@@ -34,6 +35,17 @@ def test_file_requires_path_and_format() -> None:
         validate_materialise("m", materialise="file", strategy="replace", target=None, path="x", format=None, key=())
     with pytest.raises(DefinitionError, match="only strategy: replace"):
         validate_materialise("m", materialise="file", strategy="append", target=None, path="x", format="csv", key=())
+
+
+def test_file_path_tokens_expand_at_apply_time() -> None:
+    now = datetime(2026, 9, 25, 15, 4, 5, tzinfo=UTC)
+    assert expand_path_tokens("out/${date}/orders.parquet", workspace="demo", now=now) == (
+        "out/2026-09-25/orders.parquet"
+    )
+    assert expand_path_tokens("out/${datetime}.csv", workspace="demo", now=now) == "out/20260925T150405Z.csv"
+    assert expand_path_tokens("${workspace}/x.csv", workspace="demo", now=now) == "demo/x.csv"
+    with pytest.raises(PlanError, match="unknown path token"):
+        expand_path_tokens("out/${hour}/x", workspace="demo", now=now)
 
 
 def test_file_statements_rejects_unknown_format() -> None:
@@ -65,6 +77,16 @@ async def test_file_to_parquet(env: tuple[DuckDBAdapter, SqliteStateStore], tmp_
         assert con.execute(f"SELECT id, name FROM '{out}'").fetchall() == [(1, "a")]
     finally:
         con.close()
+
+
+async def test_file_date_token_writes_under_the_project(
+    env: tuple[DuckDBAdapter, SqliteStateStore], tmp_path: Path
+) -> None:
+    engine, store = env
+    project = compile_models([file_model("dump", "SELECT 1 AS id", "csv", "out/${date}/data.csv")])
+    await apply(await diff(project, "prod", store), compiled=project, engine=engine, state=store, base_path=tmp_path)
+    written = tmp_path / "out" / datetime.now(UTC).strftime("%Y-%m-%d") / "data.csv"
+    assert written.read_text() == "id\n1\n"
 
 
 async def test_file_to_csv(env: tuple[DuckDBAdapter, SqliteStateStore], tmp_path: Path) -> None:

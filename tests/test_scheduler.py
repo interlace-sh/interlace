@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 from interlace.cli.main import app
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
+from interlace.exceptions import DefinitionError
 from interlace.graph.project import compile_models
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.triggers import CronTrigger, IntervalTrigger
@@ -48,6 +49,40 @@ def test_interval_trigger_key_is_stable_within_a_slot() -> None:
     assert first.idempotency_key == retry.idempotency_key
     later = trigger.due(datetime(2026, 1, 1, 12, 5, 1), None)[0]  # next slot: a new firing
     assert later.idempotency_key != first.idempotency_key
+
+
+async def test_watch_trigger_enqueues_on_change_and_dedupes(
+    env: tuple[DuckDBAdapter, SqliteStateStore], tmp_path: Path
+) -> None:
+    _, store = env
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.csv").write_text("id\n1\n")
+    project = compile_models([ModelDef(name="m", sql="SELECT 1 AS x", schedule={"watch": "inbox/*.csv"})])
+    engine = TriggerEngine(build_triggers(project, root=tmp_path), store)
+    now = datetime(2026, 1, 1, 12, 0)
+    assert await engine.tick(now) == 1
+    assert await engine.tick(now) == 0  # same path, size, and mtime
+    (inbox / "a.csv").write_text("id\n1\n2\n")
+    assert await engine.tick(now) == 1
+    assert await store.count_pending_runs() == 2
+
+
+def test_watch_pattern_must_be_relative(tmp_path: Path) -> None:
+    project = compile_models([ModelDef(name="m", sql="SELECT 1", schedule={"watch": "/tmp/*.csv"})])
+    with pytest.raises(DefinitionError, match="relative"):
+        build_triggers(project, root=tmp_path)
+
+
+def test_webhook_names_must_be_unique() -> None:
+    project = compile_models(
+        [
+            ModelDef(name="a", sql="SELECT 1", schedule={"webhook": "landed"}),
+            ModelDef(name="b", sql="SELECT 1", schedule={"webhook": "landed"}),
+        ]
+    )
+    with pytest.raises(DefinitionError, match="both"):
+        build_triggers(project)
 
 
 async def test_engine_tick_enqueues_then_dedupes(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

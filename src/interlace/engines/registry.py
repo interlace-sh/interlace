@@ -71,6 +71,10 @@ class EngineRegistry(Mapping[str, EngineAdapter]):
             self._cache[key] = self._opener(key)
         return self._cache[key]
 
+    def opened(self) -> list[EngineAdapter]:
+        """Adapters opened so far. Does not open anything new."""
+        return list(self._cache.values())
+
     def require(self, name: str, *, model: str | None = None) -> EngineAdapter:
         """Like :meth:`get`, but raise :class:`PlanError` when the engine is missing."""
         if name not in self._names:

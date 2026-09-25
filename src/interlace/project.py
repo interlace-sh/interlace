@@ -116,9 +116,16 @@ class Project:
         )
 
     def compile(self) -> CompiledProject:
+        return self._compile(self.models)
+
+    def compile_registered(self) -> CompiledProject:
+        """Compile the live registry, including models a run registered after load."""
+        return self._compile(list(REGISTRY.models.values()))
+
+    def _compile(self, models: list[ModelDef]) -> CompiledProject:
         engine_cfgs = self.config.engine_configs()
-        return compile_models(
-            self.models,
+        compiled = compile_models(
+            models,
             default_dialect=self.config.default_dialect,
             default_engine=self.config.default_engine,
             engine_dialects={name: cfg.resolved_dialect() for name, cfg in engine_cfgs.items()},
@@ -126,6 +133,12 @@ class Project:
             checks=self.checks,
             macros=self.macros,
         )
+        from interlace.inputs import reject_inputs_on_other_engines
+
+        reject_inputs_on_other_engines(
+            compiled, self.config.inputs, {name: cfg.type for name, cfg in engine_cfgs.items()}
+        )
+        return compiled
 
     def open_engine(self, name: str | None = None) -> EngineAdapter:
         """Open one engine (default: ``config.default_engine``). Prefer
@@ -232,6 +245,26 @@ class Project:
         # is only the same thing when you happen to run from the root — not under
         # `--path`, `interlace serve`, or the scheduler.
         engine.search_files_from(str(self.root))
+        if self.config.inputs and isinstance(engine, DuckDBAdapter):
+            from interlace.inputs import install_inputs
+
+            def refresh(
+                target: DuckDBAdapter = engine,
+                configured: EngineConfig = cfg,
+            ) -> None:
+                install_inputs(
+                    target,
+                    self.config.inputs,
+                    workspace=self.root.name,
+                    connections=self.config.connections,
+                    secret_sql={
+                        secret_name: _secret_sql(secret_name, secret)
+                        for secret_name, secret in configured.secrets.items()
+                    },
+                )
+
+            engine.refresh_inputs = refresh
+            refresh()
         for alias, uri in cfg.attach.items():
             target = uri
             if uri.startswith(("postgres:", "postgres://", "postgresql://")):
@@ -320,7 +353,11 @@ class Project:
     async def open_state(self) -> SqliteStateStore:
         path = self.root / self.config.state_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        return await SqliteStateStore.open(path)
+        store = await SqliteStateStore.open(path)
+        if self.config.event_log_path:
+            target = Path(self.config.event_log_path)
+            store.event_log_path = str(target if target.is_absolute() else self.root / target)
+        return store
 
     async def open_stream_log(self) -> SqliteStreamLog:
         path = self.root / self.config.stream_path

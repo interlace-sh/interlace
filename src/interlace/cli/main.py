@@ -90,11 +90,17 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def _root(
+    ctx: typer.Context,
     version: bool = typer.Option(
         False, "--version", "-v", callback=_version_callback, is_eager=True, help="Show the version and exit."
     ),
 ) -> None:
-    pass
+    from interlace.state.store import event_actor
+
+    # Reset when the command returns so a test process does not keep labelling
+    # later events as cli. `serve` holds the process, so its requests still inherit this.
+    token = event_actor.set("cli")
+    ctx.call_on_close(lambda: event_actor.reset(token))
 
 
 _ENV = typer.Option(
@@ -299,6 +305,33 @@ def apply(
     asyncio.run(_apply(environment, path, select, forward_only, force, parallelism))
 
 
+@app.command()
+def test(
+    path: Path = _PATH,
+    select: list[str] = _SELECT,
+    update_golden: bool = typer.Option(False, "--update-golden", help="Rewrite tests/golden from the actual result."),
+) -> None:
+    """Build selected models in an ephemeral DuckDB and diff tests/golden."""
+    project = Project.load(path)
+    compiled = project.compile()
+    from interlace.testing.golden import run_fixture_tests
+
+    chosen = _selection(compiled, select) if select else None
+    try:
+        report = run_fixture_tests(compiled, project.root, select=chosen, update=update_golden)
+    except InterlaceError as exc:
+        console.print(f"[red]{escape(exc.message)}[/red]")
+        raise typer.Exit(1) from exc
+    if update_golden:
+        console.print(f"[green]updated {len(report.passed)} golden file(s)[/green]")
+        return
+    for message in report.messages:
+        console.print(f"[red]{escape(message)}[/red]")
+    if report.messages:
+        raise typer.Exit(1)
+    console.print(f"[green]{len(report.passed)} golden test(s) passed[/green]")
+
+
 async def _plan(
     environment: str, path: Path, select: list[str], forward_only: bool = False, as_json: bool = False
 ) -> None:
@@ -394,7 +427,9 @@ async def _apply(
                         state=state,
                         base_path=project.root,
                         on_progress=progress,
+                        connections=project.config.connections,
                         parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
+                        loaded=project,
                     )
         except CheckError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
@@ -498,7 +533,9 @@ async def _execute(
                         state=state,
                         base_path=project.root,
                         on_progress=progress,
+                        connections=project.config.connections,
                         parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
+                        loaded=project,
                     )
         except CheckError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
@@ -665,7 +702,7 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
     stream_log = await project.open_stream_log() if project.streams else None
     if project.streams:
         await ensure_stream_tables(project.streams, engines.get())
-    trigger_engine = TriggerEngine(build_triggers(compiled), state)
+    trigger_engine = TriggerEngine(build_triggers(compiled, root=project.root), state)
     try:
         while True:
             await trigger_engine.tick(datetime.now())
@@ -674,6 +711,12 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
             async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:scheduler"):
                 if stream_log is not None:
                     await flush_streams(project.streams, stream_log, engines.get())
+
+                def publish(fresh: CompiledProject) -> None:
+                    nonlocal compiled, trigger_engine
+                    compiled = fresh
+                    trigger_engine = TriggerEngine(build_triggers(compiled, root=project.root), state)
+
                 ran = await drain(
                     state,
                     compiled,
@@ -681,6 +724,9 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
                     environment=environment,
                     base_path=project.root,
                     parallelism=project.config.parallelism,
+                    connections=project.config.connections,
+                    loaded=project,
+                    on_compiled=publish,
                 )
             if ran:
                 console.print(f"[green]ran {ran} scheduled run(s) in '{environment}'[/green]")
@@ -748,6 +794,7 @@ def serve(
     """Run the interlace daemon: HTTP API + scheduler in one process (requires the `service` extra).
 
     Use --no-scheduler for an API-only process (run `interlace scheduler` separately).
+    A `cdc:` block in the project config is read here: each Postgres slot appends into its stream.
     """
     try:
         import uvicorn
@@ -1323,6 +1370,26 @@ def engines(path: Path = _PATH, as_json: bool = _JSON) -> None:
     for row in rows:
         marker = " (default)" if row["default"] else ""
         table.add_row(f"{row['name']}{marker}", row["type"], row["dialect"], row["database"] or "—")
+    console.print(table)
+
+
+@app.command()
+def connections(path: Path = _PATH, as_json: bool = _JSON) -> None:
+    """Named HTTP and Postgres connections (secrets redacted)."""
+    from interlace.connections import redacted
+
+    project = Project.load(path)
+    rows = [redacted(name, item) for name, item in sorted(project.config.connections.items())]
+    if as_json:
+        _emit_json(rows)
+        return
+    table = _table("Connections")
+    table.add_column("Connection")
+    table.add_column("Type", style="dim")
+    table.add_column("Target", style="dim")
+    for row in rows:
+        target = str(row.get("dsn") or row.get("base_url") or "—")
+        table.add_row(str(row["name"]), str(row["type"]), target)
     console.print(table)
 
 

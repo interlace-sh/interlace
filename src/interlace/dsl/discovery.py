@@ -18,6 +18,7 @@ from typing import Any
 
 from interlace.checks.spec import parse_checks
 from interlace.dsl.decorators import REGISTRY, ModelDef, _as_columns, _as_tuple, validate_materialise
+from interlace.dsl.dynamic import DYNAMIC_ROOT
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError, InterlaceError
 from interlace.ir.macros import Macro, parse_macros
@@ -33,12 +34,15 @@ def discover_models(root: Path, model_paths: list[str], default_dialect: str) ->
             if not base.is_dir():
                 continue
             for sql_file in sorted(base.rglob("*.sql")):
+                if _under_dynamic(root, sql_file):
+                    continue  # loaded below, marked replaceable by a later run
                 config, sql = extract_sql_config(sql_file.read_text())
                 REGISTRY.register_model(_sql_model(_model_name(base, sql_file), sql, config, default_dialect))
             for py_file in sorted(base.rglob("*.py")):
                 if py_file.name.startswith("_"):
                     continue
                 _import_module(base, py_file)
+        _load_dynamic(root, default_dialect)
     finally:
         _forget_project_modules(root, imported)
     return list(REGISTRY.models.values())
@@ -76,6 +80,21 @@ def discover_macros(root: Path, macro_paths: list[str], default_dialect: str) ->
                     )
                 macros[key] = macro
     return macros
+
+
+def _under_dynamic(root: Path, file: Path) -> bool:
+    dynamic = (root / DYNAMIC_ROOT).resolve()
+    return file.resolve().is_relative_to(dynamic)
+
+
+def _load_dynamic(root: Path, default_dialect: str) -> None:
+    """SQL models a previous run registered, stored beside the state database."""
+    base = root / DYNAMIC_ROOT
+    if not base.is_dir():
+        return
+    for sql_file in sorted(base.rglob("*.sql")):
+        config, sql = extract_sql_config(sql_file.read_text())
+        REGISTRY.register_model(_sql_model(sql_file.stem, sql, config, default_dialect), dynamic=True)
 
 
 def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dialect: str) -> ModelDef:

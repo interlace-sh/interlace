@@ -214,7 +214,7 @@ def test_events_endpoint_records_enqueue(client: TestClient) -> None:
 
     events = client.get("/events").json()
     assert [e["type"] for e in events] == ["run.enqueued"]
-    assert events[0]["payload"] == {"models": ["raw_events"]}
+    assert events[0]["payload"] == {"models": ["raw_events"], "api_key": "anonymous"}
     assert events[0]["seq"] == 1
     # replay from a cursor returns nothing new
     assert client.get("/events", params={"after": events[0]["seq"]}).json() == []
@@ -725,11 +725,32 @@ def test_engines_schedules_lineage_endpoints(client: TestClient) -> None:
     assert all("@" not in e["database"] or "…" in e["database"] for e in engines)
 
     assert isinstance(client.get("/schedules").json(), list)  # example has no schedules; shape only
+    assert client.get("/connections").json() == []
 
     lineage = client.get("/lineage").json()
     names = {m["name"] for m in lineage["models"]}
     assert {"raw_events", "event_totals"} <= names
     assert ["raw_events", "event_totals"] in lineage["edges"]
+
+
+def test_webhook_enqueues_its_model_and_dedupes(tmp_path: Path) -> None:
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "landed.sql").write_text(
+        "/* interlace: {schedule: {webhook: orders_landed}} */\nSELECT 1 AS id"
+    )
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        missing = client.post("/hooks/nope")
+        assert missing.status_code == 404
+        first = client.post("/hooks/orders_landed", headers={"Idempotency-Key": "delivery-1"})
+        assert first.status_code == 201
+        body = first.json()
+        assert body["model"] == "landed"
+        assert body["enqueued"] is True
+        again = client.post("/hooks/orders_landed", headers={"Idempotency-Key": "delivery-1"})
+        assert again.json()["enqueued"] is False
+        fresh = client.post("/hooks/orders_landed")
+        assert fresh.json()["enqueued"] is True
+        assert fresh.json()["idempotency_key"] != "delivery-1"
 
 
 def test_checks_run_endpoint(client: TestClient) -> None:

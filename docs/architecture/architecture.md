@@ -134,12 +134,14 @@ class RunRequest:
 ```
 
 A trigger is pure: given the current time and when it last fired, it returns the runs
-now due. **Two implementations ship: `CronTrigger` (parsed by `cronsim`) and
-`IntervalTrigger`.** Both key their `RunRequest` on the schedule slot so a crash between
+now due. **Three implementations ship: `CronTrigger` (parsed by `cronsim`),
+`IntervalTrigger`, and `WatchTrigger`** (a glob hashed from path, size, and mtime on
+the same tick — no directory watcher). Each keys its `RunRequest` so a crash between
 enqueue and the last-fired write re-lands on the same idempotency key and the durable
-queue dedupes instead of double-running. Stream arrival does *not* go through a trigger:
-a flush enqueues the stream's downstream consumers directly (§9). Sensor-style triggers
-(freshness, upstream-completion, webhook, manual) are roadmap (§14).
+queue dedupes instead of double-running. An inbound `{webhook: name}` is not a tick:
+`POST /hooks/{name}` enqueues that model. Stream arrival does *not* go through a trigger:
+a flush enqueues the stream's downstream consumers directly (§9). Freshness and
+upstream-completion sensors are roadmap (§14).
 
 ---
 
@@ -590,7 +592,7 @@ class WorkQueue(Protocol):
 ```
 
 **Current state.** A `TriggerEngine` ticks `Trigger`s (`CronTrigger` via `cronsim`,
-`IntervalTrigger`) against durable per-trigger state in the state DB; due runs enqueue
+`IntervalTrigger`, `WatchTrigger`) against durable per-trigger state in the state DB; due runs enqueue
 (idempotency-keyed) onto a **durable run queue** (`work_queue` table). `worker.drain`
 claims runs under a **lease**, heartbeats while executing (the heartbeat doubles as the
 cooperative **cancellation** channel — `interlace cancel <id>` / `POST /runs/{id}/
@@ -598,8 +600,9 @@ cancel`), retries durably up to `max_attempts` with a per-attempt timeout, and e
 them as forced runs (so they pick up new data). Stream flushes enqueue the consuming
 models with the watermark as the idempotency key. `interlace serve` ties tick → enqueue →
 drain in one process (`interlace scheduler --once` for a single pass). No APScheduler — we
-own the loop; `cronsim` only parses. Models declare `schedule: {cron: …}` or
-`{every: …}`.
+own the loop; `cronsim` only parses. Models declare `schedule: {cron: …}`,
+`{every: …}`, `{watch: "inbox/*.csv"}` (a glob of path, size, and mtime on the
+existing tick — no directory watcher), or `{webhook: name}` (`POST /hooks/{name}`).
 
 The lease columns on `work_queue` provide crash-reclaim of *work items* (a dead worker's
 lease expires and the task is re-claimed). This is **not** leader election: there is no
@@ -616,8 +619,7 @@ executor ecosystems.
 
 **Not yet built (roadmap, §14):** SLA monitors + alerting (`@model(sla=…)`, an
 `AlertRouter`, an `alerts` table), leader election for multi-node singleton loops, and
-the sensor triggers (freshness, upstream-completion, webhook) that a richer scheduler
-would fire.
+freshness / upstream-completion sensors. File-watch and inbound webhook schedules ship.
 
 ---
 
@@ -639,7 +641,10 @@ would fire.
 - **Durable event spine:** events are rows in `event_log(seq, ts, type, entity, payload)`
   with in-process fanout. SSE reconnect and `GET /events?after=N` replay from the table —
   the UI never misses a transition across restarts. The same log records
-  apply/run/stream/gc lifecycle: one spine.
+  apply/run/stream/gc lifecycle: one spine. Set `event_log_path` and each committed
+  event is also one NDJSON line (the operator SSE poll stays, because a CLI apply
+  is another process). Apply and run events carry `api_key`: the HTTP key name,
+  `cli`, `scheduler`, `mcp`, or `anonymous`.
 - **Process composition:** `interlace serve` runs everything as supervised background
   tasks inside the app lifespan — the event tail (one store poller feeds every SSE
   client), the stream flusher, and the scheduler loop. Background loops never die on an
@@ -692,7 +697,7 @@ src/interlace/
   checks/      # built-in check types + @check decorator — results gate promotion
   inspect.py   # row sample, column profile, and the rows a check rejected
   mcp_server.py # stdio MCP server; apply refuses unless confirm is true
-  scheduler/   # triggers (cron/interval), engine (TriggerEngine), worker (leases/retries/cancel)
+  scheduler/   # triggers (cron/interval/watch), engine (TriggerEngine), worker (leases/retries/cancel)
   runtime/     # execution context for Python models (Arrow handles)
   streaming/   # log (SqliteStreamLog), materializer (flush + watermark), schema (drift modes)
   service/     # app.py (litestar), auth.py, ui/ (the /ui web app)
@@ -753,8 +758,8 @@ Everything above (unless a note says otherwise) is shipped in v2.0. The followin
 *designed for* but **not implemented**; they are collected here so the body can describe
 only shipped behaviour:
 
-- **Sensor triggers** — freshness (table-staleness), upstream-completion, webhook, and
-  manual triggers beyond the shipped cron/interval (§2.6).
+- **Sensor triggers** — freshness (table-staleness) and upstream-completion, beyond the
+  shipped cron, interval, file-watch, and inbound webhook (§2.6, §10).
 - **SLA + alerting** — `@model(sla=…)` sensors emitting breach events, an `AlertRouter`
   fanning out to Slack/webhook/email with a firing/resolved state machine, an `alerts`
   table, and UI alert history (§10).

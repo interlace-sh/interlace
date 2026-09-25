@@ -127,3 +127,7 @@ the same Postgres wire and driver that the test suite already covers. Databricks
 its Python connector is Arrow-native (so the transport would fit) but there's no ADBC bulk-load
 (`adbc_ingest`) path, so `load()` needs a bespoke staged-COPY implementation — deferred until a
 user needs it.
+
+Named `connections:` (HTTP clients and Postgres DSNs a Python model or a CDC block reads),
+`inputs:` (DuckDB file scans), and `cdc:` are not engines. They are project config; see
+[configuration](configuration.md).

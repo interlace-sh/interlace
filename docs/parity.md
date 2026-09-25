@@ -24,7 +24,11 @@ limited to one surface, the reason is given.
 | Streams: consume | — | `GET /streams/{name}/events` (SSE), `POST /streams/{name}/commit` | streams |
 | Query console | — | `POST /query` | query |
 | Engines | `engines` | `GET /engines` | system |
+| Connections | `connections` | `GET /connections` | system |
 | Schedules | (via `models`) | `GET /schedules` | system |
+| Inbound webhook | — | `POST /hooks/{name}` | — |
+| Fixture tests | `test` | `POST /tests/run` | — |
+| Postgres CDC | `serve` (when `cdc:` is set) | — | — |
 | API keys | `apikey create/revoke/list` | `/apikeys` (GET/POST/DELETE) | system |
 | Garbage collection | `gc` | `POST /gc` | system |
 | Reset (fresh start) | `reset` | `POST /reset` | system |
@@ -42,14 +46,18 @@ limited to one surface, the reason is given.
   as JSON via `GET /lineage`, which the UI renders as an interactive canvas).
 - **API/UI-only** — stream **publish** (`POST /streams/{name}`) and the external **consumer
   tail** (`GET /streams/{name}/events`, acked with `POST /streams/{name}/commit`) are HTTP
-  operations against a running daemon; there's no `interlace publish`. Live **operator events**
+  operations against a running daemon; there's no `interlace publish`. An inbound **webhook**
+  (`POST /hooks/{name}`) is the same: the caller is outside the process. Live **operator events**
   (`GET /events/stream`; snapshot `GET /events`) are an API/UI concern. (Ad-hoc read-only SQL is on **both** surfaces —
   `interlace query "SELECT …"` and the `POST /query` console share one parse-and-fence path.)
+  Fixture tests are CLI and `POST /tests/run`; the operator UI does not run them. Postgres CDC
+  runs inside `interlace serve` when `cdc:` is set; there is no separate command or route.
 - **Enqueue vs immediate** — `interlace run`/`restate` and `POST /run` build **immediately**;
   `POST /runs` (and the UI "run…") **enqueue** onto the durable queue for a running
   scheduler to drain. `POST /apply` (and the UI apply) build immediately in the daemon.
 
 Every HTTP endpoint is exercised by at least one UI view, except the external consumer tail
-(`GET /streams/{name}/events` and `POST /streams/{name}/commit`), which is for subscribers
-outside the operator UI. Some response fields (e.g. a check's `message`, a run's `priority`)
+(`GET /streams/{name}/events` and `POST /streams/{name}/commit`), inbound webhooks
+(`POST /hooks/{name}`), and fixture tests (`POST /tests/run`). Those are for callers outside
+the operator UI. Some response fields (e.g. a check's `message`, a run's `priority`)
 are carried on the wire but not yet rendered; those are display gaps, not capability gaps.

@@ -1,5 +1,5 @@
-// System: the daemon's plumbing on one page — engines, schedules, API keys,
-// and maintenance (this browser's token, snapshot gc, daemon version).
+// System: the daemon's plumbing on one page — engines, connections, schedules,
+// API keys, and maintenance (this browser's token, snapshot gc, daemon version).
 
 import { copy, h, pill, relTime, table } from "../ui.js";
 
@@ -8,6 +8,7 @@ export async function render(el, { api, go, toast, modal, token }) {
   // maintenance are compact and pair up.
   const pair = h("div", { class: "grid2", style: "margin-top:12px" });
   const enginesCard = h("div", { class: "card" });
+  const connectionsCard = h("div", { class: "card" });
   const schedulesCard = h("div", { class: "card" });
   const keysCard = h("div", { class: "card", style: "margin-top:0" });
   const maintCard = h("div", { class: "card", style: "margin-top:0" });
@@ -17,9 +18,10 @@ export async function render(el, { api, go, toast, modal, token }) {
       "div",
       { class: "view-head" },
       h("h1", {}, "System"),
-      h("span", { class: "sub" }, "engines, schedules, keys, maintenance"),
+      h("span", { class: "sub" }, "engines, connections, schedules, keys, maintenance"),
     ),
     enginesCard,
+    connectionsCard,
     schedulesCard,
     pair,
   );
@@ -57,6 +59,37 @@ export async function render(el, { api, go, toast, modal, token }) {
     }
   }
 
+  // ---- connections ------------------------------------------------------------
+
+  async function renderConnections() {
+    connectionsCard.replaceChildren(h("div", { class: "card-head" }, "connections"));
+    try {
+      const connections = await api.get("/connections");
+      connectionsCard.append(
+        table(
+          [
+            { k: "name", label: "connection" },
+            { k: "type", label: "type" },
+            {
+              k: "target",
+              label: "target",
+              render: (row) =>
+                h(
+                  "span",
+                  { class: "dim", style: "word-break:break-all" },
+                  row.type === "postgres" ? row.dsn || "—" : row.base_url || "—",
+                ),
+            },
+          ],
+          connections,
+          { empty: "no connections configured", hint: "add connections: to interlace.yaml for HTTP or Postgres sources" },
+        ),
+      );
+    } catch (error) {
+      connectionsCard.append(h("div", { class: "empty" }, error.message));
+    }
+  }
+
   // ---- schedules --------------------------------------------------------------
 
   async function renderSchedules() {
@@ -81,7 +114,10 @@ export async function render(el, { api, go, toast, modal, token }) {
             { k: "last_fired", label: "last", render: (row) => h("span", { class: "dim" }, relTime(row.last_fired)) },
           ],
           schedules,
-          { empty: "no scheduled models", hint: "add schedule: {cron: …} to a model" },
+          {
+            empty: "no scheduled models",
+            hint: "add schedule: {cron: …}, {every: …}, {watch: …}, or {webhook: name}",
+          },
         ),
       );
     } catch (error) {
@@ -354,5 +390,5 @@ export async function render(el, { api, go, toast, modal, token }) {
     }
   }
 
-  await Promise.all([renderEngines(), renderSchedules(), renderKeys(), renderMaintenance()]);
+  await Promise.all([renderEngines(), renderConnections(), renderSchedules(), renderKeys(), renderMaintenance()]);
 }

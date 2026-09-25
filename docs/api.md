@@ -89,7 +89,8 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
 
 ### Runs
 - **`GET /runs`** (read) → `[RunInfo]` `{id, flow_selector[], state, attempts, error,
-  enqueued_at, priority, partition, restate, idempotency_key}`.
+  enqueued_at, priority, partition, restate, idempotency_key}`. The key's prefix names
+  the trigger: `cron:`, `interval:`, `watch:`, `webhook:`, `api:`, or `stream:`.
 - **`GET /runs/{id}`** (read) → `RunDetail` (adds `events: [EventInfo]`); 404 if unknown.
 - **`POST /runs`** (write) → `CreateRunResult {enqueued, models[]}`. Body `CreateRun
   {selectors[], environment, start, end, restate}` — enqueues onto the durable queue (a
@@ -141,10 +142,20 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
   same fence backs `interlace query` on the CLI. 30s timeout; ~8 MB cell cap.
 
 ### System (admin)
+- **`GET /connections`** (read) → `[ConnectionInfo]` `{name, type, base_url?, headers?, dsn?}`.
+  Header values whose names look like secrets, and credentials inside a URL or DSN,
+  are replaced with `…`.
 - **`GET /engines`** (read) → `[EngineInfo]` `{name, type, dialect, database (redacted),
   default}`.
 - **`GET /schedules`** (read) → `[ScheduleInfo]` `{model, kind, expression, next_fire,
-  last_fired}`.
+  last_fired}`. `kind` is `cron`, `every`, `watch`, or `webhook`.
+- **`POST /tests/run`** (write) → `FixtureTestResponse {ok, passed[], messages[]}`. Builds the
+  selected models in an ephemeral DuckDB. `tests/fixtures/<model>.csv` replaces an
+  upstream build; `tests/golden/<model>.csv` is the expected result. `update_golden`
+  rewrites the golden file. Does not run live checks or the promotion gate.
+- **`POST /hooks/{name}`** (write) → `HookResult {model, idempotency_key, enqueued}`.
+  Enqueues the model whose `schedule.webhook` is `name`. `Idempotency-Key` dedupes a
+  retried delivery; without it every POST is a new run. Unknown name is 404.
 - **`GET /apikeys`** (admin) → `[ApiKeyInfo]` `{name, scopes, created_at}`.
 - **`POST /apikeys`** (admin) → `{name, scopes, token}` (token shown once). Body `{name,
   scopes=["read"]}`.
@@ -168,4 +179,7 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
   `model.*` (per-model build progress), `stream.flushed`, `environment.dropped/rolled_back`,
   `gc.finished`, `reset.finished`. EventSource cannot send an `Authorization` header — pass the API key as
   `?token=` on this path and on `GET /streams/{name}/events` (the in-package UI does, for the
-  operator feed). Prefer the Bearer header everywhere else.
+  operator feed). Prefer the Bearer header everywhere else. Apply and run payloads
+  include `api_key` (the key name, or `cli` / `scheduler` / `mcp` / `anonymous`).
+  `event_log_path` in project config mirrors every event as one NDJSON line after
+  the SQLite commit; the SSE poll stays so a CLI apply in another process still appears.

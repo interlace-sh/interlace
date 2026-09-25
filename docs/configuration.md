@@ -68,6 +68,40 @@ attach:
   crm: "postgresql://etl@crm.internal:5432/crm"   # a reverse-ETL (materialise: table) target
 ```
 
+`connections:` names sources that are not warehouse engines. A Python model
+resolves one with `interlace.connections.connection` while it is building:
+
+```yaml
+connections:
+  billing:
+    type: http
+    base_url: https://api.example.com
+    headers: {Authorization: "Bearer ${BILLING_TOKEN}"}
+  source:
+    type: postgres
+    dsn: "postgresql://etl:${SRC_PASSWORD}@db.internal:5432/app"
+```
+
+A `${VAR}` that is unset is a config error. `interlace connections` and `GET /connections`
+list names and types with those secret values redacted.
+
+`inputs:` are files DuckDB scans as relations a model can `FROM`. Other engines
+reject a model that reads one. `${date}`, `${datetime}`, and `${workspace}` expand
+in `path` the same way as a file materialisation. `connection` is an `http`
+connection (sent as an httpfs secret) or the name of an engine `secrets:` entry.
+
+```yaml
+inputs:
+  events:
+    format: parquet
+    path: s3://bucket/events/${date}/*.parquet
+    connection: lake
+```
+
+`cdc:` copies a Postgres logical slot into a `@stream`. See [streaming](streaming.md).
+`event_log_path` (unset by default) mirrors the operator event log as NDJSON, one
+JSON object per line, written after the SQLite commit.
+
 Models then pin `engine: reporting` to build in Postgres, or deliver into
 `crm.<schema>.<table>` with `materialise: table, target: crm.<schema>.<table>`.
 Anything that dials a database must name its host explicitly — a Postgres DSN without a host

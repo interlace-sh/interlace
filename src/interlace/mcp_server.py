@@ -209,6 +209,8 @@ async def _apply(path: Path, args: dict[str, Any]) -> Any:
                 state=state,
                 base_path=project.root,
                 parallelism=project.config.parallelism,
+                connections=project.config.connections,
+                loaded=project,
             )
     finally:
         await state.close()
@@ -444,22 +446,30 @@ def handle(path: Path, message: dict[str, Any]) -> dict[str, Any] | None:
             }
         )
     if method == "tools/call":
-        name = str(params.get("name") or "")
-        raw_args = params.get("arguments")
-        arguments: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
-        tool = _tool_map().get(name)
-        if tool is None:
-            return result(_text(f"unknown tool {name!r}", error=True))
-        if name == "apply" and arguments.get("confirm") is not True:
-            return result(_text("apply was not run — call plan, then call apply with confirm set to true", error=True))
+        from interlace.state.store import event_actor
+
+        token = event_actor.set("mcp")
         try:
-            value: Any = asyncio.run(cast(Coroutine[Any, Any, Any], tool[2](path, arguments)))
-        except InterlaceError as exc:
-            return result(_text(exc.message, error=True))
-        except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
-            return result(_text(str(exc) or type(exc).__name__, error=True))
-        return result(_text(value))
+            name = str(params.get("name") or "")
+            raw_args = params.get("arguments")
+            arguments: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+            tool = _tool_map().get(name)
+            if tool is None:
+                return result(_text(f"unknown tool {name!r}", error=True))
+            if name == "apply" and arguments.get("confirm") is not True:
+                return result(
+                    _text("apply was not run — call plan, then call apply with confirm set to true", error=True)
+                )
+            try:
+                value: Any = asyncio.run(cast(Coroutine[Any, Any, Any], tool[2](path, arguments)))
+            except InterlaceError as exc:
+                return result(_text(exc.message, error=True))
+            except Exception as exc:
+                traceback.print_exc(file=sys.stderr)
+                return result(_text(str(exc) or type(exc).__name__, error=True))
+            return result(_text(value))
+        finally:
+            event_actor.reset(token)
     return error(-32601, f"method not found: {method}")
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +28,11 @@ from interlace.physical.spec import (
 from interlace.sinks import FILE_FORMATS
 
 ModelFn = Callable[..., Any]
+
+# Set while a Python model function is running. Registrations then replace a
+# model this run already created, and are recorded for the apply that builds them.
+dynamic_owner: ContextVar[str | None] = ContextVar("interlace_dynamic_owner", default=None)
+dynamic_batch: ContextVar[list[str] | None] = ContextVar("interlace_dynamic_batch", default=None)
 
 # The materialisation planes: `virtual`/`view`/`ephemeral` are interlace-owned
 # (a fingerprinted snapshot read through an environment view); `table`/`file` are
@@ -123,7 +129,7 @@ class ModelDef:
     path: str | None = None  # output path for materialise: file
     format: str | None = None  # csv | parquet | json for materialise: file
     environments: tuple[str, ...] = ("prod",)  # which environments actually deliver a terminal model
-    schedule: dict[str, str] | None = None  # {"cron": "0 * * * *"} or {"every": "5m"} for `interlace serve`
+    schedule: dict[str, str] | None = None  # cron, every, watch (glob), or webhook name
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
     indexes: tuple[IndexSpec, ...] = ()  # physical indexes; not part of the data fingerprint
     constraints: tuple[ConstraintSpec, ...] = ()  # physical constraints; engine-enforced, not checks
@@ -180,11 +186,24 @@ class Registry:
     models: dict[str, ModelDef] = field(default_factory=dict)
     streams: dict[str, StreamDef] = field(default_factory=dict)
     checks: list[CheckDef] = field(default_factory=list)
+    dynamic: set[str] = field(default_factory=set)  # names registered by a run, not by a source file
 
-    def register_model(self, definition: ModelDef) -> None:
-        if definition.name in self.models:
+    def register_model(self, definition: ModelDef, *, dynamic: bool = False) -> None:
+        owner = dynamic_owner.get()
+        replacing = owner is not None and definition.name in self.dynamic
+        if definition.name in self.models and not replacing:
+            if owner is not None:
+                raise DefinitionError(
+                    f"model {definition.name!r} is already defined in the project; "
+                    f"a run can only replace a model it registered earlier"
+                )
             raise DefinitionError(f"duplicate model name: {definition.name!r}")
         self.models[definition.name] = definition
+        if dynamic or owner is not None:
+            self.dynamic.add(definition.name)
+        batch = dynamic_batch.get()
+        if owner is not None and batch is not None and definition.name not in batch:
+            batch.append(definition.name)
 
     def register_stream(self, definition: StreamDef) -> None:
         if definition.name in self.streams:
@@ -198,6 +217,7 @@ class Registry:
         self.models.clear()
         self.streams.clear()
         self.checks.clear()
+        self.dynamic.clear()
 
 
 REGISTRY = Registry()

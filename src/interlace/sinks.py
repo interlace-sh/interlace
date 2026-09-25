@@ -13,6 +13,9 @@ holds the target parse and the file COPY.
 
 from __future__ import annotations
 
+import re
+from datetime import UTC, datetime
+
 import sqlglot
 from sqlglot import exp
 
@@ -20,6 +23,33 @@ from interlace.exceptions import PlanError
 from interlace.ir.relation import TableRef
 
 FILE_FORMATS = frozenset({"parquet", "csv", "json"})
+_PATH_TOKEN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_PATH_TOKEN_VALUES = frozenset({"date", "datetime", "workspace"})
+
+
+def expand_path_tokens(path: str, *, workspace: str, now: datetime | None = None) -> str:
+    """Expand ``${date}``, ``${datetime}``, and ``${workspace}`` in a file path.
+
+    ``date`` is ``YYYY-MM-DD`` and ``datetime`` is ``YYYYMMDDTHHMMSSZ``, both UTC.
+    Any other ``${...}`` is an error — this is not a general template language.
+    """
+    moment = now or datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    moment = moment.astimezone(UTC)
+    values = {
+        "date": moment.strftime("%Y-%m-%d"),
+        "datetime": moment.strftime("%Y%m%dT%H%M%SZ"),
+        "workspace": workspace,
+    }
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in _PATH_TOKEN_VALUES:
+            raise PlanError(f"unknown path token ${{{key}}}; file paths accept {', '.join(sorted(_PATH_TOKEN_VALUES))}")
+        return values[key]
+
+    return _PATH_TOKEN.sub(replace, path)
 
 
 def target_ref(target: str) -> TableRef:

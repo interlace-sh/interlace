@@ -30,7 +30,7 @@ import asyncio
 import contextlib
 import re
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from uuid import uuid4
 
 import duckdb
@@ -127,6 +127,7 @@ class DuckDBAdapter(EngineAdapter):
         # re-running catalog writes here races across concurrent cursors.
         self._session_init = list(session_init)
         self._attached: list[str] = []  # aliases to DETACH on close (see close())
+        self.refresh_inputs: Callable[[], None] | None = None  # re-expand input view paths (date tokens)
         # Serialises catalog-mutating statements on DuckLake catalogs only (see
         # module docstring); a no-op context elsewhere so builds run in parallel.
         # Plain Lock, not RLock: no locked path calls another, and a plain Lock
@@ -258,6 +259,14 @@ class DuckDBAdapter(EngineAdapter):
 
     async def fetch_sql(self, sql: str) -> pa.RecordBatchReader:
         return await asyncio.to_thread(self._fetch_sync, sql)
+
+    def execute_sync(self, sql: str) -> None:
+        """Run one statement on the calling thread. Fixture tests use this."""
+        self._execute_sync(sql)
+
+    def fetch_sync(self, sql: str) -> pa.RecordBatchReader:
+        """Read one statement on the calling thread. Fixture tests use this."""
+        return self._fetch_sync(sql)
 
     # No fetch_sandboxed override: DuckDB cannot sandbox one query on the shared
     # warehouse connection without poisoning the writer (enable_external_access is

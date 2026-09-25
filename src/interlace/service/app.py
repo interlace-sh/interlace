@@ -38,6 +38,7 @@ from litestar.static_files import create_static_files_router
 
 from interlace import __version__
 from interlace.dsl.decorators import StreamDef
+from interlace.dsl.dynamic import DYNAMIC_ROOT
 from interlace.exceptions import CheckError, LockError, QueryError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
@@ -89,6 +90,11 @@ def _source_mtime(root: Path, model_paths: list[str]) -> float:
         for file in base.rglob("*"):
             if file.suffix in (".sql", ".py") and file.is_file():
                 latest = max(latest, file.stat().st_mtime)
+    dynamic = root / DYNAMIC_ROOT
+    if dynamic.is_dir():
+        for file in dynamic.rglob("*.sql"):
+            if file.is_file():
+                latest = max(latest, file.stat().st_mtime)
     return latest
 
 
@@ -105,11 +111,17 @@ async def reload_if_stale(state: State) -> None:
             return
         project = await asyncio.to_thread(Project.load, state.root)
         compiled = await asyncio.to_thread(project.compile)
-        state.compiled = compiled
-        state.lineage = column_lineage(compiled)
-        state.stream_consumer_map = {name: sorted(stream_consumers(compiled, name)) for name in state.streams}
-        state.describe_cache = {}
+        state.project = project
+        _publish_compiled(state, compiled)
         state.source_mtime = mtime
+
+
+def _publish_compiled(state: State, compiled: CompiledProject) -> None:
+    """Swap the daemon's compiled graph for one that includes models a run just registered."""
+    state.compiled = compiled
+    state.lineage = column_lineage(compiled)
+    state.stream_consumer_map = {name: sorted(stream_consumers(compiled, name)) for name in state.streams}
+    state.describe_cache = {}
 
 
 class ModelInfo(msgspec.Struct):
@@ -204,7 +216,7 @@ class RunInfo(msgspec.Struct):
     partition: list[str] | None = None
     restate: bool = False
     # how the run came to be — the enqueue key's prefix names the trigger
-    # (cron: / interval: / api: / stream:)
+    # (cron: / interval: / watch: / webhook: / api: / stream:)
     idempotency_key: str | None = None
     environment: str | None = None  # the env it built into (once it has succeeded)
     duration: float | None = None  # wall-clock seconds, run.started → terminal
@@ -388,6 +400,14 @@ class EngineInfo(msgspec.Struct):
     dialect: str
     database: str  # credentials redacted
     default: bool
+
+
+class ConnectionInfo(msgspec.Struct):
+    name: str
+    type: str  # "http" | "postgres"
+    base_url: str | None = None
+    headers: dict[str, str] | None = None  # secret-bearing values replaced with …
+    dsn: str | None = None  # credentials redacted
 
 
 class ScheduleInfo(msgspec.Struct):
@@ -957,6 +977,38 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     return CreateRunResult(enqueued=1 if enqueued else 0, models=models)
 
 
+class HookResult(msgspec.Struct):
+    model: str
+    idempotency_key: str
+    enqueued: bool
+
+
+@post("/hooks/{name:str}", opt={"scope": "write"}, status_code=201)
+async def post_hook(name: FromPath[str], state: State, request: Request) -> HookResult:
+    """Enqueue the model that declares ``schedule: {webhook: name}``.
+
+    ``Idempotency-Key`` dedupes a retried delivery. Without it, every POST is a new run.
+    """
+    from interlace.exceptions import DefinitionError
+    from interlace.scheduler.engine import webhook_targets
+
+    await reload_if_stale(state)
+    try:
+        targets = webhook_targets(state.compiled)
+    except DefinitionError as exc:
+        raise ClientException(detail=exc.message) from exc
+    model = targets.get(name)
+    if model is None:
+        raise NotFoundException(detail=f"unknown webhook: {name}")
+    supplied = request.headers.get("Idempotency-Key", "").strip()
+    key = supplied or f"webhook:{name}:{uuid4().hex}"
+    enqueued = await state.store.enqueue_run(key, [model], None)
+    if enqueued:
+        await state.store.append_event("run.enqueued", entity=key, payload={"models": [model], "webhook": name})
+        state.drain_wanted.set()
+    return HookResult(model=model, idempotency_key=key, enqueued=enqueued)
+
+
 @post("/runs/{run_id:int}/cancel", opt={"scope": "write"}, status_code=200)
 async def cancel_run(run_id: FromPath[int], state: State) -> dict:
     """Cancel a run: queued cancels immediately; running cancels cooperatively
@@ -1015,6 +1067,9 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
                 base_path=state.root,
                 parallelism=state.parallelism,
                 on_progress=on_progress,
+                connections=state.connections,
+                loaded=state.project,
+                on_compiled=lambda fresh: _publish_compiled(state, fresh),
             )
         except CheckError as exc:
             await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
@@ -1116,6 +1171,9 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
                 base_path=state.root,
                 parallelism=state.parallelism,
                 on_progress=on_progress,
+                connections=state.connections,
+                loaded=state.project,
+                on_compiled=lambda fresh: _publish_compiled(state, fresh),
             )
         except CheckError as exc:
             await state.store.append_event("run.blocked", entity=env, payload={"reason": exc.message})
@@ -1482,6 +1540,17 @@ async def get_engines(state: State) -> list[EngineInfo]:
     return infos
 
 
+@get("/connections")
+async def get_connections(state: State) -> list[ConnectionInfo]:
+    from interlace.connections import redacted
+
+    infos: list[ConnectionInfo] = []
+    for name in sorted(state.connections):
+        public = redacted(name, state.connections[name])
+        infos.append(ConnectionInfo(**public))
+    return infos
+
+
 @get("/schedules")
 async def get_schedules(state: State) -> list[ScheduleInfo]:
     from datetime import datetime
@@ -1495,9 +1564,11 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
         schedule = compiled.models[name].schedule
         if not schedule:
             continue
-        kind = "cron" if "cron" in schedule else "every"
-        expression = str(schedule.get("cron") or schedule.get("every"))
-        last = await state.store.get_trigger_last_fired(f"{'cron' if kind == 'cron' else 'interval'}:{name}")
+        from interlace.scheduler.engine import schedule_kind
+
+        kind, expression = schedule_kind(name, schedule)
+        trigger_id = {"cron": f"cron:{name}", "every": f"interval:{name}", "watch": f"watch:{name}"}.get(kind)
+        last = await state.store.get_trigger_last_fired(trigger_id) if trigger_id else None
 
         def _wire(moment: datetime | None) -> str | None:
             # trigger timestamps are naive LOCAL (the scheduler ticks datetime.now());
@@ -1508,7 +1579,7 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
         if kind == "cron":
             with contextlib.suppress(Exception):
                 next_fire = next(CronSim(expression, last or datetime.now()))
-        elif last is not None:
+        elif kind == "every" and last is not None:
             from interlace.state.interval import parse_grain
 
             with contextlib.suppress(Exception):
@@ -1632,6 +1703,39 @@ async def get_lineage(state: State, environment: FromQuery[str | None] = None) -
         if sources
     }
     return LineageResponse(models=models, edges=edges, columns=column_sources, streams=streams)
+
+
+class FixtureTestRequest(msgspec.Struct):
+    selectors: list[str] = msgspec.field(default_factory=list)
+    update_golden: bool = False
+
+
+class FixtureTestResponse(msgspec.Struct):
+    ok: bool
+    passed: list[str]
+    messages: list[str]
+
+
+@post("/tests/run", opt={"scope": "write"})
+async def post_tests_run(state: State, data: FixtureTestRequest | None = None) -> FixtureTestResponse:
+    """Build selected models in an ephemeral DuckDB and diff ``tests/golden``.
+
+    Does not touch the warehouse, live checks, or the promotion gate.
+    """
+    from interlace.exceptions import PlanError
+    from interlace.testing.golden import run_fixture_tests
+
+    request = data or FixtureTestRequest()
+    await reload_if_stale(state)
+    compiled: CompiledProject = state.compiled
+    try:
+        chosen = select_models(request.selectors, compiled) if request.selectors else None
+        report = await asyncio.to_thread(
+            run_fixture_tests, compiled, Path(state.root), select=chosen, update=request.update_golden
+        )
+    except (SelectionError, PlanError) as exc:
+        raise ClientException(detail=exc.message) from exc
+    return FixtureTestResponse(ok=report.ok, passed=list(report.passed), messages=list(report.messages))
 
 
 @post("/checks/run", opt={"scope": "write"})
@@ -1913,6 +2017,7 @@ def create_app(
         flush_targets = [*streams.values(), *(quarantine_stream(s) for s in shadows)]
         if streams:
             await ensure_stream_tables(flush_targets, engine)
+        app.state.project = project
         app.state.compiled = compiled
         app.state.lineage = column_lineage(compiled)  # whole-project qualify: compute once, not per request
         app.state.store = store
@@ -1925,6 +2030,8 @@ def create_app(
         app.state.source_mtime = _source_mtime(project.root, project.config.model_paths)
         app.state.parallelism = project.config.parallelism
         app.state.engine_configs = project.config.engine_configs()
+        app.state.connections = project.config.connections
+        app.state.cdc = project.config.cdc
         app.state.default_engine = project.config.default_engine
         app.state.describe_cache = {}  # (model, fingerprint) -> {column: type}, filled by /lineage
         app.state.lock_owner = f"serve:{os.getpid()}"  # cross-process apply lock identity
@@ -1999,6 +2106,16 @@ def create_app(
                 await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})
                 if stream_name in streams:
                     await _enqueue_stream_consumers(app.state, streams[stream_name])
+            if app.state.cdc:
+                from interlace.cdc.publish import confirm_flushed
+                from interlace.streaming.materializer import stream_watermark
+
+                for source in app.state.cdc.values():
+                    landed = streams.get(source.stream)
+                    if landed is None:
+                        continue
+                    watermark = await stream_watermark(landed, engine)
+                    await confirm_flushed(store, source.stream, watermark)
 
         async def flusher_loop() -> None:
             """Micro-batch materializer: publishes signal, this coalesces everything
@@ -2026,7 +2143,7 @@ def create_app(
                 try:
                     await reload_if_stale(app.state)  # scheduled/queued builds see on-disk edits too
                     compiled = app.state.compiled  # live: reload may have swapped it
-                    await TriggerEngine(build_triggers(compiled), store).tick(datetime.now())
+                    await TriggerEngine(build_triggers(compiled, root=project.root), store).tick(datetime.now())
                     if asyncio.get_running_loop().time() >= next_trim:
                         # event_log / check_results / terminal queue rows grow with
                         # every apply and flush; nothing else reclaims them
@@ -2040,6 +2157,9 @@ def create_app(
                             environment=environment,
                             base_path=project.root,
                             parallelism=project.config.parallelism,
+                            connections=project.config.connections,
+                            loaded=app.state.project,
+                            on_compiled=lambda fresh: _publish_compiled(app.state, fresh),
                         )
                     if streams:
                         app.state.flush_wanted.set()  # catch up anything the flusher hasn't seen
@@ -2068,9 +2188,49 @@ def create_app(
                 with contextlib.suppress(asyncio.QueueFull):
                     subscriber.put_nowait(None)
 
+        async def cdc_loop() -> None:
+            """Copy Postgres slots into their @streams. The LSN feedback waits for flush."""
+            from interlace.cdc.publish import publish_changes
+            from interlace.cdc.slot import SlotReader
+            from interlace.config.config import PostgresConnection
+
+            readers: dict[str, SlotReader] = {}
+            try:
+                while True:
+                    for name, source in app.state.cdc.items():
+                        conn = app.state.connections.get(source.connection)
+                        declared = streams.get(source.stream)
+                        if not isinstance(conn, PostgresConnection) or declared is None:
+                            logger.error("cdc %s needs a postgres connection and a declared @stream", name)
+                            continue
+                        try:
+                            reader = readers.get(name)
+                            if reader is None:
+                                reader = SlotReader(conn.dsn, source)
+                                readers[name] = reader
+                            confirmed = await store.cdc_confirmed_lsn(source.stream)
+                            changes = await asyncio.to_thread(reader.poll, confirmed)
+                            if changes:
+                                await publish_changes(stream_log, store, source.stream, changes)
+                                app.state.flush_dirty.add(source.stream)
+                                app.state.flush_wanted.set()
+                            advanced = await store.cdc_confirmed_lsn(source.stream)
+                            if advanced:
+                                await asyncio.to_thread(reader.feedback, advanced)
+                        except Exception:
+                            logger.exception("cdc %s failed; reconnecting", name)
+                            failed = readers.pop(name, None)
+                            if failed is not None:
+                                await asyncio.to_thread(failed.close)
+                    await asyncio.sleep(1)
+            finally:
+                for reader in readers.values():
+                    await asyncio.to_thread(reader.close)
+
         tail_task = asyncio.create_task(event_tail())
         flusher_task = asyncio.create_task(flusher_loop()) if streams else None
         loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None
+        cdc_task = asyncio.create_task(cdc_loop()) if project.config.cdc else None
         watch_task = asyncio.create_task(shutdown_watch())
         try:
             yield
@@ -2086,7 +2246,7 @@ def create_app(
             for subscriber in list(app.state.sse_subscribers):
                 with contextlib.suppress(asyncio.QueueFull):
                     subscriber.put_nowait(None)
-            for task in (loop_task, flusher_task, tail_task, watch_task):
+            for task in (cdc_task, loop_task, flusher_task, tail_task, watch_task):
                 if task is not None:
                     task.cancel()
                     # suppress Exception too: a task that already died must not
@@ -2204,7 +2364,10 @@ def create_app(
             post_reset,
             post_query,
             get_engines,
+            get_connections,
             get_schedules,
+            post_hook,
+            post_tests_run,
             get_lineage,
             get_apikeys,
             post_apikey,

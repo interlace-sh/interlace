@@ -33,6 +33,8 @@ from sqlglot import exp
 
 from interlace.checks.runner import CheckOutcome, run_checks
 from interlace.contracts import validate_contract
+from interlace.dsl.decorators import dynamic_batch
+from interlace.dsl.dynamic import dynamic_depth, write_dynamic_models
 from interlace.engines.base import EngineAdapter, statement_of
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, ExecutionError, InterlaceError, PlanError
@@ -40,8 +42,10 @@ from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.physical.reconcile import model_objects, object_changes, reconcile_statements
 from interlace.physical.spec import PhysicalObject
+from interlace.plan.differ import diff
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
 from interlace.plan.resolve import resolve_model_query
+from interlace.project import Project
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.sinks import file_statements, target_ref
 from interlace.state.interval import Interval
@@ -109,10 +113,13 @@ def _failure_detail(exc: BaseException) -> dict[str, Any]:
 
 
 def _resolve_export_path(base_path: Path | None, path: str) -> str:
-    target = Path(path)
+    from interlace.sinks import expand_path_tokens
+
+    root = base_path or Path.cwd()
+    target = Path(expand_path_tokens(path, workspace=root.name))
     if target.is_absolute():
         return str(target)
-    return str((base_path or Path.cwd()) / target)
+    return str(root / target)
 
 
 async def _merge_python_output(
@@ -856,6 +863,9 @@ async def apply(
     base_path: Path | None = None,
     parallelism: int = 4,
     on_progress: ProgressCallback | None = None,
+    connections: Mapping[str, Any] | None = None,
+    loaded: Project | None = None,
+    on_compiled: Callable[[CompiledProject], None] | None = None,
 ) -> ApplyResult:
     """Execute a plan and record the result in ``state``.
 
@@ -865,9 +875,19 @@ async def apply(
     ``on_progress`` (model, event, detail) fires on the event loop as each model's
     build starts / finishes: events are ``"start"``, ``"done"``, ``"failed"``,
     ``"cancelled"``. ``detail`` carries seconds and row deltas on done, and the
-    message plus the failed statement on failed.
+    message plus the failed statement on failed. ``connections`` is bound for
+    Python models, which resolve a name with :func:`interlace.connections.connection`.
+
+    ``loaded`` is the project those Python models were discovered from. Models they
+    register while running are written (when they have SQL), compiled, and built
+    before this call returns. ``on_compiled`` receives that new graph so a daemon
+    can serve it without waiting for a file-mtime reload.
     """
     registry = as_registry(engine, engines)
+    for adapter in registry.opened():
+        refresh = getattr(adapter, "refresh_inputs", None)
+        if refresh is not None:
+            refresh()
     from interlace.physical.annotate import annotate_plan
 
     await annotate_plan(plan, compiled, registry)
@@ -981,79 +1001,169 @@ async def apply(
         if on_progress is not None:
             on_progress(name, "done", _build_detail(result, name))
 
+    from interlace.connections import bind_connections, unbind_connections
+
+    # Copied into each build task at creation, so a Python model that registers
+    # models (including from a worker thread) appends to this same list.
+    batch_token = dynamic_batch.set([])
+    registered: list[str] = []
     try:
-        async with asyncio.TaskGroup() as group:
-            for name in per_model:
-                group.create_task(run_model(name))
-    except ExceptionGroup as failures:  # single failure keeps apply()'s plain-exception contract
-        if len(failures.exceptions) == 1:
-            # re-raise the plain single exception, preserving its own cause (the build error,
-            # kept for --debug) rather than re-chaining the ExceptionGroup
-            failure = failures.exceptions[0]
-            raise failure from failure.__cause__
-        raise
+        bound = bind_connections(connections)
+        try:
+            try:
+                async with asyncio.TaskGroup() as group:
+                    for name in per_model:
+                        group.create_task(run_model(name))
+            except ExceptionGroup as failures:  # single failure keeps apply()'s plain-exception contract
+                if len(failures.exceptions) == 1:
+                    # re-raise the plain single exception, preserving its own cause (the build error,
+                    # kept for --debug) rather than re-chaining the ExceptionGroup
+                    failure = failures.exceptions[0]
+                    raise failure from failure.__cause__
+                raise
+        finally:
+            unbind_connections(bound)
 
-    for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing
-        await state.add_snapshot(reuse)
-        result.reused.append(reuse.name)
+        for reuse in plan.reuses:  # output provably identical: record the fingerprint, build nothing
+            await state.add_snapshot(reuse)
+            result.reused.append(reuse.name)
 
-    built_now = {task.snapshot.name for task in plan.backfills}
-    for action in plan.physical:
-        if not action.standalone or action.name in built_now:
-            continue
-        model = compiled.models[action.name]
-        if model.materialise == "file":
-            continue
-        target_engine = registry.require(model.engine, model=model.name)
-        if model.is_terminal:
-            if plan.environment not in model.environments or not model.target:
+        built_now = {task.snapshot.name for task in plan.backfills}
+        for action in plan.physical:
+            if not action.standalone or action.name in built_now:
                 continue
-            table = target_ref(model.target)
-        else:
+            model = compiled.models[action.name]
+            if model.materialise == "file":
+                continue
+            target_engine = registry.require(model.engine, model=model.name)
+            if model.is_terminal:
+                if plan.environment not in model.environments or not model.target:
+                    continue
+                table = target_ref(model.target)
+            else:
+                recorded = await state.get_snapshot(model.name, model.fingerprint)
+                table = recorded.physical_table if recorded is not None else model.physical_table
+            if not await target_engine.table_exists(table):
+                continue
+            ddl, objects, warnings = await _physical_ddl(target_engine, model, table, action.previous, same_table=True)
+            for warning in warnings:
+                _remember(plan.warnings, warning)
+            if ddl:
+                await target_engine.execute_all(ddl)
             recorded = await state.get_snapshot(model.name, model.fingerprint)
-            table = recorded.physical_table if recorded is not None else model.physical_table
-        if not await target_engine.table_exists(table):
-            continue
-        ddl, objects, warnings = await _physical_ddl(target_engine, model, table, action.previous, same_table=True)
-        for warning in warnings:
-            _remember(plan.warnings, warning)
-        if ddl:
-            await target_engine.execute_all(ddl)
-        recorded = await state.get_snapshot(model.name, model.fingerprint)
-        if recorded is None:
-            continue
-        await state.add_snapshot(replace(recorded, physical_hash=model.physical_hash, physical_objects=objects))
+            if recorded is None:
+                continue
+            await state.add_snapshot(replace(recorded, physical_hash=model.physical_hash, physical_objects=objects))
 
-    ensured: set[tuple[str, str]] = set()  # (engine, schema): one CREATE SCHEMA per pair, not per view
-    for swap in plan.virtual_updates:
-        view_engine = registry.require(swap.engine)
-        if (swap.engine, swap.view.schema) not in ensured:
-            await view_engine.create_schema(swap.view.schema)
-            ensured.add((swap.engine, swap.view.schema))
-        await view_engine.create_view(swap.view, swap.target)
+        ensured: set[tuple[str, str]] = set()  # (engine, schema): one CREATE SCHEMA per pair, not per view
+        for swap in plan.virtual_updates:
+            view_engine = registry.require(swap.engine)
+            if (swap.engine, swap.view.schema) not in ensured:
+                await view_engine.create_schema(swap.view.schema)
+                ensured.add((swap.engine, swap.view.schema))
+            await view_engine.create_view(swap.view, swap.target)
 
-    mapping = {name: compiled.models[name].fingerprint for name in plan.promote}
-    await state.promote(plan.environment, mapping)
-    # ephemeral models are tracked in the mapping (so re-plans stay clean) but are inlined
-    # into consumers — they have no promotable table/view, so the user-facing count omits
-    # them, keeping "promoted N" consistent with the N build rows shown
-    result.promoted = sum(1 for name in mapping if compiled.models[name].materialise != "ephemeral")
+        mapping = {name: compiled.models[name].fingerprint for name in plan.promote}
+        await state.promote(plan.environment, mapping)
+        # ephemeral models are tracked in the mapping (so re-plans stay clean) but are inlined
+        # into consumers — they have no promotable table/view, so the user-facing count omits
+        # them, keeping "promoted N" consistent with the N build rows shown
+        result.promoted = sum(1 for name in mapping if compiled.models[name].materialise != "ephemeral")
 
-    # deleted models: drop their env view and demote them, or the view serves the
-    # last snapshot forever and pins it against gc
-    removed = [c for c in plan.changes if c.change_type is ChangeType.REMOVED]
-    if removed:
-        last_snapshots = await state.get_snapshots(
-            (c.name, c.previous_fingerprint) for c in removed if c.previous_fingerprint is not None
+        # deleted models: drop their env view and demote them, or the view serves the
+        # last snapshot forever and pins it against gc
+        removed = [c for c in plan.changes if c.change_type is ChangeType.REMOVED]
+        if removed:
+            last_snapshots = await state.get_snapshots(
+                (c.name, c.previous_fingerprint) for c in removed if c.previous_fingerprint is not None
+            )
+            for change in removed:
+                snapshot = last_snapshots.get((change.name, change.previous_fingerprint or ""))
+                view = env_view(plan.environment, change.name)
+                with contextlib.suppress(Exception):
+                    # best effort: the model's engine may have been deleted from config
+                    # along with the model — the DEMOTE below must still happen, or the
+                    # removal never settles and every later apply fails right here
+                    adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
+                    await adapter.execute(
+                        exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True)
+                    )
+            await state.demote(plan.environment, [c.name for c in removed])
+        registered = list(dynamic_batch.get() or [])
+    finally:
+        dynamic_batch.reset(batch_token)
+
+    if registered and loaded is not None:
+        result = await _expand_dynamic(
+            result,
+            names=registered,
+            loaded=loaded,
+            plan=plan,
+            engine=engine,
+            engines=engines,
+            state=state,
+            base_path=base_path,
+            parallelism=parallelism,
+            on_progress=on_progress,
+            connections=connections,
+            on_compiled=on_compiled,
         )
-        for change in removed:
-            snapshot = last_snapshots.get((change.name, change.previous_fingerprint or ""))
-            view = env_view(plan.environment, change.name)
-            with contextlib.suppress(Exception):
-                # best effort: the model's engine may have been deleted from config
-                # along with the model — the DEMOTE below must still happen, or the
-                # removal never settles and every later apply fails right here
-                adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
-                await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
-        await state.demote(plan.environment, [c.name for c in removed])
+    return result
+
+
+async def _expand_dynamic(
+    result: ApplyResult,
+    *,
+    names: list[str],
+    loaded: Project,
+    plan: Plan,
+    engine: EngineAdapter | None,
+    engines: Mapping[str, EngineAdapter] | EngineRegistry | None,
+    state: StateStore,
+    base_path: Path | None,
+    parallelism: int,
+    on_progress: ProgressCallback | None,
+    connections: Mapping[str, Any] | None,
+    on_compiled: Callable[[CompiledProject], None] | None,
+) -> ApplyResult:
+    """Compile and build models a Python model registered during this apply."""
+    depth = dynamic_depth.get()
+    if depth >= 8:
+        raise PlanError(
+            "dynamic model registration nested more than 8 levels; "
+            "a model registered during a run registered further models until the cap"
+        )
+    await asyncio.to_thread(write_dynamic_models, loaded.root, names)
+    compiled = await asyncio.to_thread(loaded.compile_registered)
+    if on_compiled is not None:
+        on_compiled(compiled)
+    follow = await diff(compiled, plan.environment, state, select=set(names))
+    if follow.is_empty:
+        return result
+    token = dynamic_depth.set(depth + 1)
+    try:
+        child = await apply(
+            follow,
+            compiled=compiled,
+            engine=engine,
+            engines=engines,
+            state=state,
+            base_path=base_path,
+            parallelism=parallelism,
+            on_progress=on_progress,
+            connections=connections,
+            loaded=loaded,
+            on_compiled=on_compiled,
+        )
+    finally:
+        dynamic_depth.reset(token)
+    result.built.extend(name for name in child.built if name not in result.built)
+    result.reused.extend(name for name in child.reused if name not in result.reused)
+    result.gated.extend(name for name in child.gated if name not in result.gated)
+    result.transfers.extend(child.transfers)
+    result.promoted += child.promoted
+    result.checks.extend(child.checks)
+    result.timings.update(child.timings)
+    for name, counts in child.rows.items():
+        result.record_rows(name, counts)
     return result

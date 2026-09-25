@@ -143,6 +143,7 @@ module = [
     "adbc_driver_bigquery.*",  # optional 'adbc-bigquery' extra — absent in the base env
     "pyspark.*",  # optional 'spark' extra — absent in the base env
     "delta.*",  # optional 'spark' extra (delta-spark) — absent in the base env
+    "psycopg.*",  # optional 'postgres' extra — absent in the base env
 ]
 ignore_missing_imports = true
 

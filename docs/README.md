@@ -19,8 +19,10 @@ built-in orchestration, and durable streaming ingestion. Published to PyPI as `i
   owned and external planes, with the exact statements each emits and when to use it.
 - **[Checks](checks.md)** — the ten built-in data-quality checks, severity, and promotion
   gating.
+- **[Fixture tests](testing.md)** — `interlace test` diffs a model against `tests/golden` in an
+  ephemeral DuckDB. Upstream rows can come from `tests/fixtures`.
 - **[Streaming](streaming.md)** — `@stream` ingestion, publishing, schema-drift modes,
-  exactly-once materialisation, and reverse-ETL (terminal `table` / `file`).
+  exactly-once materialisation, Postgres CDC, and reverse-ETL (terminal `table` / `file`).
 - **[Sources](sources.md)** — pulling from REST APIs and databases: the `interlace.sources`
   client (auth, pagination, retry), incremental `cursor` pulls, and the source templates.
 

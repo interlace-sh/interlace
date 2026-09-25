@@ -14,8 +14,10 @@ versioning uses ``PRAGMA user_version`` with an ordered migration list.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 import threading
@@ -166,6 +168,20 @@ _MIGRATIONS: list[str] = [
     ALTER TABLE snapshots ADD COLUMN physical_hash TEXT NOT NULL DEFAULT '';
     ALTER TABLE snapshots ADD COLUMN physical_objects TEXT NOT NULL DEFAULT '[]';
     """,
+    # 0013 — Postgres CDC: confirmed LSN advances only after the stream watermark does
+    """
+    CREATE TABLE cdc_confirmed (
+        stream  TEXT PRIMARY KEY,
+        lsn     TEXT NOT NULL
+    );
+
+    CREATE TABLE cdc_pending (
+        stream      TEXT NOT NULL,
+        log_offset  INTEGER NOT NULL,
+        lsn         TEXT NOT NULL,
+        PRIMARY KEY (stream, log_offset)
+    );
+    """,
 ]
 
 
@@ -201,6 +217,16 @@ class QueuedRun:
     priority: int
     attempts: int
     restate: bool = False
+
+
+def _stamp_actor(type: str, payload: dict[str, object] | None) -> dict[str, object] | None:
+    """Record who triggered an apply or run. Other event types stay as written."""
+    actor = event_actor.get()
+    if not actor or not type.startswith(("apply.", "run.")):
+        return payload
+    stamped = dict(payload or {})
+    stamped.setdefault("api_key", actor)
+    return stamped
 
 
 def _now_iso() -> str:
@@ -287,12 +313,16 @@ class StateStore(Protocol):
     async def close(self) -> None: ...
 
 
+event_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar("interlace_event_actor", default=None)
+
+
 class SqliteStateStore:
     """SQLite-backed :class:`StateStore` (WAL mode)."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._conn = connection
         self._lock = threading.Lock()
+        self.event_log_path: str | None = None
 
     @classmethod
     async def open(cls, path: str | Path) -> SqliteStateStore:
@@ -313,6 +343,59 @@ class SqliteStateStore:
 
     async def close(self) -> None:
         await asyncio.to_thread(self._conn.close)
+
+    async def cdc_confirmed_lsn(self, stream: str) -> str | None:
+        """The replication LSN whose rows have been flushed, or None if CDC has not confirmed one."""
+        return await asyncio.to_thread(self._cdc_confirmed_lsn_sync, stream)
+
+    def _cdc_confirmed_lsn_sync(self, stream: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT lsn FROM cdc_confirmed WHERE stream = ?", (stream,)).fetchone()
+        return str(row["lsn"]) if row else None
+
+    async def cdc_note_pending(self, stream: str, rows: list[tuple[int, str]]) -> None:
+        """Remember which log offset each replication LSN landed at. Deduped appends are included."""
+        await asyncio.to_thread(self._cdc_note_pending_sync, stream, rows)
+
+    def _cdc_note_pending_sync(self, stream: str, rows: list[tuple[int, str]]) -> None:
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO cdc_pending (stream, log_offset, lsn) VALUES (?, ?, ?)",
+                [(stream, offset, lsn) for offset, lsn in rows],
+            )
+            self._conn.commit()
+
+    async def cdc_advance(self, stream: str, watermark: int) -> str | None:
+        """Confirm the LSN of every pending row at or below ``watermark``.
+
+        ``watermark`` is the offset ``flush_streams`` has committed. Rows past it
+        stay pending, so a crash re-reads from the last confirmed LSN.
+        """
+        return await asyncio.to_thread(self._cdc_advance_sync, stream, watermark)
+
+    def _cdc_advance_sync(self, stream: str, watermark: int) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT lsn FROM cdc_pending WHERE stream = ? AND log_offset <= ? ORDER BY log_offset DESC LIMIT 1",
+                (stream, watermark),
+            ).fetchone()
+            if row is None:
+                return self._cdc_confirmed_lsn_unlocked(stream)
+            lsn = str(row["lsn"])
+            self._conn.execute(
+                "DELETE FROM cdc_pending WHERE stream = ? AND log_offset <= ?",
+                (stream, watermark),
+            )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO cdc_confirmed (stream, lsn) VALUES (?, ?)",
+                (stream, lsn),
+            )
+            self._conn.commit()
+        return lsn
+
+    def _cdc_confirmed_lsn_unlocked(self, stream: str) -> str | None:
+        row = self._conn.execute("SELECT lsn FROM cdc_confirmed WHERE stream = ?", (stream,)).fetchone()
+        return str(row["lsn"]) if row else None
 
     # --- snapshots ----------------------------------------------------------
 
@@ -1046,13 +1129,36 @@ class SqliteStateStore:
         return await asyncio.to_thread(self._append_event_sync, type, entity, payload)
 
     def _append_event_sync(self, type: str, entity: str | None, payload: dict[str, object] | None) -> int:
+        payload = _stamp_actor(type, payload)
+        ts = _now_iso()
         with self._lock:
             cursor = self._conn.execute(
                 "INSERT INTO event_log (ts, type, entity, payload) VALUES (?, ?, ?, ?)",
-                (_now_iso(), type, entity, json.dumps(payload) if payload is not None else None),
+                (ts, type, entity, json.dumps(payload) if payload is not None else None),
             )
             self._conn.commit()
-            return int(cursor.lastrowid or 0)
+            seq = int(cursor.lastrowid or 0)
+        self._mirror_event(seq, ts, type, entity, payload)
+        return seq
+
+    def _mirror_event(
+        self, seq: int, ts: str, type: str, entity: str | None, payload: dict[str, object] | None
+    ) -> None:
+        """One NDJSON line after the SQLite commit, when ``event_log_path`` is set."""
+        path = self.event_log_path
+        if not path:
+            return
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        line = json.dumps(
+            {"seq": seq, "ts": ts, "type": type, "entity": entity, "payload": payload},
+            default=str,
+            separators=(",", ":"),
+        )
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
 
     async def latest_event_seq(self) -> int:
         """The event log's current head (0 when empty) — where a live tail starts."""
@@ -1099,15 +1205,18 @@ class SqliteStateStore:
             self._conn.commit()
         return token
 
-    async def verify_api_key(self, token: str) -> list[str] | None:
-        """Return the key's scopes, or None if the token is unknown."""
+    async def verify_api_key(self, token: str) -> tuple[str, list[str]] | None:
+        """Return ``(name, scopes)``, or None if the token is unknown."""
         return await asyncio.to_thread(self._verify_api_key_sync, token)
 
-    def _verify_api_key_sync(self, token: str) -> list[str] | None:
+    def _verify_api_key_sync(self, token: str) -> tuple[str, list[str]] | None:
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self._lock:
-            row = self._conn.execute("SELECT scopes FROM api_keys WHERE key_hash = ?", (digest,)).fetchone()
-        return json.loads(row["scopes"]) if row else None
+            row = self._conn.execute("SELECT name, scopes FROM api_keys WHERE key_hash = ?", (digest,)).fetchone()
+        if row is None:
+            return None
+        scopes = json.loads(row["scopes"])
+        return str(row["name"]), list(scopes)
 
     async def revoke_api_key(self, name: str) -> int:
         """Revoke every key with this name; returns how many were removed."""

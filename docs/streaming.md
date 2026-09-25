@@ -103,6 +103,29 @@ The policy for fields that don't match the declared schema:
 `streams` landing tables so ingestion starts empty again. It does not drop terminal
 `table`/`file` destinations.
 
+## Postgres CDC
+
+A `cdc:` block on a `postgres` connection reads a logical replication slot
+(`pgoutput`) and appends each change to a declared `@stream`. Deletes are a row
+whose `_change` column is `delete`, so a downstream `merge` can drop them.
+Inserts and updates use `insert` and `update`. The stored LSN advances only after
+`flush_streams` has committed those log offsets: a crash re-reads from the last
+confirmed LSN (at-least-once into the log, exactly-once into the warehouse, same
+as HTTP publish). The daemon does this while `interlace serve` is running. The
+slot and publication are created in Postgres; interlace does not create them.
+
+```yaml
+connections:
+  app: {type: postgres, dsn: "postgresql://etl@db.internal:5432/app"}
+cdc:
+  orders:
+    connection: app
+    slot: interlace_orders
+    publication: orders_pub
+    tables: [public.orders]
+    stream: orders
+```
+
 ## Reverse-ETL: terminal `table` / `file`
 
 A `materialise: table` or `materialise: file` model is **terminal** — it delivers its
@@ -122,7 +145,8 @@ SELECT customer_id, score FROM customer_value
 ```
 
 - **`materialise: file`** — `format: parquet | csv | json` + `path`, written via DuckDB
-  `COPY` (overwrite; `strategy: replace`).
+  `COPY` (overwrite; `strategy: replace`). `${date}`, `${datetime}`, and `${workspace}`
+  expand in `path` when the file is written.
 - **`materialise: table` (reverse ETL)** — `target: <alias>.<schema>.<table>` where `alias`
   is a database wired in via the project's `attach:` config (Postgres, SQLite, another
   DuckDB). `strategy` picks the delivery — the **same strategies as virtual models**, pointed

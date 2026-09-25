@@ -31,6 +31,7 @@ from typing import Any
 import pyarrow as pa
 from sqlglot import exp
 
+from interlace.dsl.dynamic import registering
 from interlace.engines.base import EngineAdapter
 from interlace.exceptions import DefinitionError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
@@ -164,10 +165,11 @@ async def run_python_model(
             upstream = compiled.models[dependency]
             arguments[param] = RelationHandle(dependency, await _upstream_reader(upstream, compiled, engine, physical))
 
-    if inspect.iscoroutinefunction(model.fn):
-        result = await model.fn(**arguments)
-    else:
-        result = await asyncio.to_thread(model.fn, **arguments)
+    with registering(model.name):
+        if inspect.iscoroutinefunction(model.fn):
+            result = await model.fn(**arguments)
+        else:
+            result = await asyncio.to_thread(model.fn, **arguments)
 
     return _to_reader(model.name, result)
 

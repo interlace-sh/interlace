@@ -1,0 +1,90 @@
+name: Interlace plan comment
+description: >
+  Compile an Interlace project, preview the plan, and comment breaking / reuse /
+  physical DDL on the pull request. Replaces an earlier comment on the same PR.
+inputs:
+  path:
+    description: Project root (the directory with interlace.yaml)
+    default: '.'
+  environment:
+    description: Target environment
+    default: prod
+  python-version:
+    description: Python used to install and run the CLI
+    default: '3.12'
+  extra:
+    description: pip extra installed with the package (service is enough for the CLI)
+    default: service
+  package:
+    description: Install specifier. Use '.' to install this checkout.
+    default: interlaced
+  github-token:
+    description: Token used to post the PR comment
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Interlace
+      shell: bash
+      working-directory: ${{ github.action_path }}/../..
+      run: |
+        python -m pip install --upgrade pip
+        if [ "${{ inputs.package }}" = "." ]; then
+          pip install ".[${{ inputs.extra }}]"
+        else
+          pip install "${{ inputs.package }}[${{ inputs.extra }}]"
+        fi
+
+    - name: Plan
+      id: plan
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        set +e
+        interlace plan --markdown --env "${{ inputs.environment }}" | tee "${{ github.workspace }}/interlace-plan.md"
+        status=${PIPESTATUS[0]}
+        set -e
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+        if [ -s "${{ github.workspace }}/interlace-plan.md" ]; then
+          cat "${{ github.workspace }}/interlace-plan.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Comment on pull request
+      if: always() && github.event_name == 'pull_request' && hashFiles('interlace-plan.md') != ''
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/interlace-plan.md`, 'utf8');
+          const marker = '<!-- interlace-plan -->';
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+          }
+
+    - name: Fail on a blocked plan
+      if: always() && steps.plan.outputs.status != '0'
+      shell: bash
+      run: exit "${{ steps.plan.outputs.status }}"

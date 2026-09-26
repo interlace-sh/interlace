@@ -7,7 +7,8 @@ list/inspect runs, and enqueue runs onto the durable queue (a running ``interlac
 scheduler`` drains them). The project is compiled at startup and recompiled on
 demand when a model file changes on disk (see ``reload_if_stale``), so a Plan/Apply
 from the UI reflects live edits — matching what ``interlace plan`` shows; the
-warehouse engine and control-plane store are opened for the app's lifetime. msgspec structs are the wire types (Litestar serialises them
+warehouse engine and control-plane store are opened for the app's lifetime.
+Wire types live in ``service.types`` (msgspec structs; Litestar serialises them
 natively). Scoped API-key auth is enforced once a key exists (see auth.py), and
 OpenAPI docs render via Scalar at ``/schema/scalar``.
 """
@@ -19,12 +20,12 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
-import msgspec
 import pyarrow as pa
 from litestar import Litestar, Request, delete, get, post
 from litestar.config.compression import CompressionConfig
@@ -38,19 +39,67 @@ from litestar.static_files import create_static_files_router
 
 from interlace import __version__
 from interlace.dsl.decorators import StreamDef
-from interlace.dsl.dynamic import DYNAMIC_ROOT, apply_with_registrations
-from interlace.exceptions import CheckError, LockError, QueryError, SelectionError, StreamError
+from interlace.dsl.dynamic import DYNAMIC_ROOT
+from interlace.exceptions import BreakingPlanError, CheckError, LockError, QueryError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models, wants_state
-from interlace.physical.annotate import annotate_plan
-from interlace.plan.differ import diff
-from interlace.plan.run import run_plan
+from interlace.plan.apply import ApplyResult, ProgressCallback
+from interlace.plan.orchestrate import compute_plan, plan_and_apply, resolve_selection, run_and_apply
+from interlace.plan.plan import Plan
 from interlace.project import Project
 from interlace.service.auth import auth_guard
+from interlace.service.types import (
+    ApiKeyInfo,
+    ApplyRequest,
+    ApplyResponse,
+    BuildInfo,
+    Change,
+    CheckOutcomeInfo,
+    CheckResultInfo,
+    ConnectionInfo,
+    ConstraintInfo,
+    CreateApiKey,
+    CreateRun,
+    CreateRunResult,
+    EngineInfo,
+    EnvironmentInfo,
+    EventInfo,
+    FixtureTestRequest,
+    FixtureTestResponse,
+    GcRequest,
+    GcResponse,
+    HookResult,
+    ImpactColumn,
+    ImpactResponse,
+    IndexInfo,
+    LineageModel,
+    LineageResponse,
+    LineageStream,
+    ModelDetail,
+    ModelInfo,
+    PlanResponse,
+    ProfileColumn,
+    PublishResult,
+    QueryRequest,
+    QueryResponse,
+    ResetRequest,
+    ResetResponse,
+    RollbackRequest,
+    RunChecksRequest,
+    RunChecksResponse,
+    RunDetail,
+    RunInfo,
+    SampleResponse,
+    ScheduleInfo,
+    SchemaPolicyInfo,
+    StreamCommit,
+    StreamCommitResult,
+    StreamDetail,
+    StreamInfo,
+)
 from interlace.sinks import target_ref
 from interlace.state.locks import hold_apply_lock
-from interlace.state.snapshot import ChangeCategory
 from interlace.streaming.log import Event, Lease
 from interlace.streaming.materializer import (
     ensure_stream_tables,
@@ -123,403 +172,58 @@ def _publish_compiled(state: State, compiled: CompiledProject) -> None:
     state.describe_cache = {}
 
 
-class ModelInfo(msgspec.Struct):
-    name: str
-    output: str  # the materialisation value (virtual/view/ephemeral/table/file)
-    materialise: str
-    strategy: str
-    is_terminal: bool  # materialise: table/file — delivered to an external destination
-    fingerprint: str
-    depends_on: list[str]
-    tags: list[str]
-    owner: str | None
-    schedule: dict[str, str] | None
-    engine: str = "default"
-    language: str = "sql"  # "sql" | "python"
-    has_checks: bool = False  # declares SQL or Python checks — the runs view flags per-model check status
-
-
-class IndexInfo(msgspec.Struct):
-    columns: list[str]
-    name: str  # resolved object name (explicit, or il__<model>__…)
-    unique: bool = False
-
-
-class ConstraintInfo(msgspec.Struct):
-    type: str
-    name: str
-    columns: list[str] = msgspec.field(default_factory=list)
-    expression: str | None = None  # check
-    reference: str | None = None  # foreign_key target, as written
-    fields: list[str] = msgspec.field(default_factory=list)
-
-
-class SchemaPolicyInfo(msgspec.Struct):
-    """External-table drift policy. ``columns`` is unused on an owned snapshot."""
-
-    columns: str = "additive"  # additive | reject | ignore
-    indexes: str = "manage"  # manage | ignore
-    constraints: str = "manage"
-
-
-class ModelDetail(msgspec.Struct):
-    name: str
-    output: str
-    materialise: str
-    strategy: str
-    is_terminal: bool
-    fingerprint: str
-    depends_on: list[str]
-    upstream: list[str]
-    downstream: list[str]
-    columns: dict[str, list[str]]
-    tags: list[str]
-    owner: str | None
-    schedule: dict[str, str] | None
-    sql: str | None = None  # canonical SQL; None for Python models
-    language: str = "sql"  # "sql" | "python"
-    source: str | None = None  # dedented function source for Python models
-    indexes: list[IndexInfo] = msgspec.field(default_factory=list)
-    constraints: list[ConstraintInfo] = msgspec.field(default_factory=list)
-    schema: SchemaPolicyInfo = msgspec.field(default_factory=SchemaPolicyInfo)
-
-
-class Change(msgspec.Struct):
-    name: str
-    change_type: str
-    category: str | None
-    previous_fingerprint: str | None = None
-    new_fingerprint: str | None = None
-    impacted_columns: list[str] = msgspec.field(default_factory=list)
-    new_sql: str | None = None
-    previous_sql: str | None = None
-    reused: bool = False  # output provably identical: recorded without a rebuild
-
-
-class PlanResponse(msgspec.Struct):
-    environment: str
-    changes: list[Change]
-    transfers: list[str] = msgspec.field(default_factory=list)  # explicit cross-engine movement
-    physical: list[str] = msgspec.field(default_factory=list)  # "+ index il__orders__id"
-    drift: list[str] = msgspec.field(default_factory=list)  # external-table drift; blocking drift is a 400
-
-
-class RunInfo(msgspec.Struct):
-    id: int
-    flow_selector: list[str]
-    state: str
-    attempts: int
-    error: str | None
-    enqueued_at: str | None = None
-    priority: int = 0
-    partition: list[str] | None = None
-    restate: bool = False
-    # how the run came to be — the enqueue key's prefix names the trigger
-    # (cron: / interval: / watch: / webhook: / api: / stream:)
-    idempotency_key: str | None = None
-    environment: str | None = None  # the env it built into (once it has succeeded)
-    duration: float | None = None  # wall-clock seconds, run.started → terminal
-
-
-class CreateRun(msgspec.Struct):
-    selectors: list[str] = msgspec.field(default_factory=list)
-    environment: str | None = None
-    start: str | None = None  # ISO timestamp: backfill window start (incremental models)
-    end: str | None = None  # ISO timestamp: backfill window end
-    restate: bool = False  # reprocess the window instead of skipping filled intervals
-
-
-class CreateRunResult(msgspec.Struct):
-    enqueued: int
-    models: list[str]
-
-
-class EventInfo(msgspec.Struct):
-    seq: int
-    ts: str
-    type: str
-    entity: str | None
-    payload: dict | None
-
-
-class RunDetail(msgspec.Struct):
-    id: int
-    flow_selector: list[str]
-    state: str
-    attempts: int
-    error: str | None
-    enqueued_at: str | None
-    priority: int
-    partition: list[str] | None
-    events: list[EventInfo]
-    restate: bool = False
-    idempotency_key: str | None = None
-
-
-class EnvironmentInfo(msgspec.Struct):
-    name: str
-    models: int
-    changed: int  # compiled models whose fingerprint differs from the one promoted here
-    promoted_at: str | None = None  # when the environment last moved
-
-
-class ApplyRequest(msgspec.Struct):
-    selectors: list[str] = msgspec.field(default_factory=list)
-    environment: str | None = None
-    force: bool = False  # required to proceed when the plan has breaking changes
-    forward_only: bool = False  # history-keeping models inherit their table; new logic applies ahead
-
-
-class ApplyResponse(msgspec.Struct):
-    environment: str
-    built: list[str]
-    promoted: int
-    breaking: bool
-    reused: list[str] = msgspec.field(default_factory=list)
-    transfers: list[str] = msgspec.field(default_factory=list)
-    # per-model row movement (inserted/updated/deleted) and build seconds
-    rows: dict[str, dict[str, int]] = msgspec.field(default_factory=dict)
-    timings: dict[str, float] = msgspec.field(default_factory=dict)
-    gated: list[str] = msgspec.field(default_factory=list)  # terminals recorded but not delivered (env gate)
-    checks: list[CheckOutcomeInfo] = msgspec.field(default_factory=list)  # so a UI apply can show check results
-
-
-class CheckResultInfo(msgspec.Struct):
-    id: int
-    environment: str
-    model: str
-    fingerprint: str
-    check_name: str
-    check_type: str
-    severity: str
-    status: str
-    failures: int
-    message: str | None
-    executed_at: str
-
-
-class StreamInfo(msgspec.Struct):
-    name: str
-    schema: dict[str, str]
-    table: str
-    head: int  # highest offset accepted into the log
-    watermark: int  # highest offset materialized into the warehouse
-    pending: int  # head - watermark: durable events not yet in the warehouse
-    on_schema_drift: str = "reject"
-    retention: str | None = None  # age after which materialized events are swept
-
-
-class StreamDetail(msgspec.Struct):
-    name: str
-    schema: dict[str, str]
-    table: str
-    head: int
-    watermark: int
-    pending: int
-    idempotency_key: str | None
-    recent: list[dict]  # latest payloads, newest last
-    on_schema_drift: str = "reject"
-    retention: str | None = None
-
-
-class PublishResult(msgspec.Struct):
-    """Ack for a durable append. Materialization is micro-batched: a flusher task
-    coalesces publishes into one warehouse write moments later — poll the stream's
-    ``watermark`` (GET /streams/{name}) to observe it land."""
-
-    accepted: int
-    deduplicated: int
-    last_offset: int | None
-    quarantined: int = 0  # events diverted to <stream>__quarantine (quarantine mode)
-
-
-class StreamCommit(msgspec.Struct):
-    """Advance a consumer group's committed offset. The token comes from the SSE lease frame."""
-
-    group: str
-    offset: int
-    token: str
-
-
-class StreamCommitResult(msgspec.Struct):
-    group: str
-    committed_offset: int
-
-
-class QueryRequest(msgspec.Struct):
-    sql: str
-    limit: int = 500  # capped at 10_000; the console is for inspection, not extraction
-
-
-class QueryResponse(msgspec.Struct):
-    columns: list[str]
-    types: list[str]
-    rows: list[list]  # JSON-safe cells (non-scalar values stringified)
-    row_count: int
-    truncated: bool
-    elapsed_ms: float
-
-
-class ProfileColumn(msgspec.Struct):
-    column: str
-    type: str
-    nulls: int
-    distinct: int
-    min: str | None = None
-    max: str | None = None
-
-
-class BuildInfo(msgspec.Struct):
-    status: str  # done | failed | cancelled
-    at: str
-    seconds: float | None = None
-    rows: dict[str, int] | None = None
-    message: str | None = None
-    statement: str | None = None
-
-
-class SampleResponse(msgspec.Struct):
-    """A bounded read of a model, or of the rows one check rejected."""
-
-    available: bool
-    message: str | None = None
-    relation: str | None = None
-    columns: list[str] = msgspec.field(default_factory=list)
-    types: list[str] = msgspec.field(default_factory=list)
-    rows: list[list] = msgspec.field(default_factory=list)
-    row_count: int = 0
-    truncated: bool = False
-    profile: list[ProfileColumn] = msgspec.field(default_factory=list)
-    last_build: BuildInfo | None = None
-
-
-class EngineInfo(msgspec.Struct):
-    name: str
-    type: str
-    dialect: str
-    database: str  # credentials redacted
-    default: bool
-
-
-class ConnectionInfo(msgspec.Struct):
-    name: str
-    type: str  # "http" | "postgres"
-    base_url: str | None = None
-    headers: dict[str, str] | None = None  # secret-bearing values replaced with …
-    dsn: str | None = None  # credentials redacted
-
-
-class ScheduleInfo(msgspec.Struct):
-    model: str
-    kind: str  # "cron" | "every"
-    expression: str
-    next_fire: str | None
-    last_fired: str | None
-
-
-class ImpactColumn(msgspec.Struct):
-    model: str
-    column: str
-    via: str  # the upstream column it was derived from, one hop up
-
-
-class ImpactResponse(msgspec.Struct):
-    source: str  # "model.column"
-    impacted: list[ImpactColumn]  # downstream columns transitively derived from it
-    opaque_consumers: list[str]  # models reading the source whole (Python / * projections)
-
-
-class LineageModel(msgspec.Struct):
-    name: str
-    output: str
-    strategy: str
-    engine: str
-    tags: list[str]
-    columns: list[str]  # output columns: warehouse-described, else parsed from the AST
-    types: dict[str, str] = msgspec.field(default_factory=dict)  # column -> engine type (when described)
-    has_schedule: bool = False
-    has_checks: bool = False
-
-
-class LineageStream(msgspec.Struct):
-    name: str  # keyed "streams.<name>" in edges/columns to match SQL table refs
-    stream: str  # the bare stream name
-    columns: list[str]
-    types: dict[str, str] = msgspec.field(default_factory=dict)
-    consumers: list[str] = msgspec.field(default_factory=list)  # models reading it directly
-
-
-class LineageResponse(msgspec.Struct):
-    models: list[LineageModel]
-    edges: list[list[str]]  # [upstream, downstream]
-    # model -> column -> [[upstream_model, upstream_column], ...]
-    columns: dict[str, dict[str, list[list[str]]]]
-    streams: list[LineageStream] = msgspec.field(default_factory=list)
-
-
-class RunChecksRequest(msgspec.Struct):
-    environment: str | None = None
-    selectors: list[str] = msgspec.field(default_factory=list)
-
-
-class CheckOutcomeInfo(msgspec.Struct):
-    model: str
-    name: str
-    check_type: str
-    severity: str
-    status: str
-    failures: int
-    message: str | None = None
-
-
-class RunChecksResponse(msgspec.Struct):
-    environment: str
-    outcomes: list[CheckOutcomeInfo]
-    skipped: list[str]  # declared but not promoted in this environment
-    passed: int
-    blocking_failures: int
-
-
-class ApiKeyInfo(msgspec.Struct):
-    name: str
-    scopes: list[str]
-    created_at: str
-
-
-class CreateApiKey(msgspec.Struct):
-    name: str
-    scopes: list[str] = msgspec.field(default_factory=lambda: ["read"])
-
-
-class RollbackRequest(msgspec.Struct):
-    generation: int | None = None  # default: the generation before the latest
-
-
-class GcRequest(msgspec.Struct):
-    grace: str = "7d"  # keep unreferenced snapshots younger than this
-    dry_run: bool = False
-
-
-class GcResponse(msgspec.Struct):
-    removed_snapshots: int
-    dropped_tables: list[str]
-    kept_snapshots: int
-    dry_run: bool
-
-
-class ResetRequest(msgspec.Struct):
-    confirm: bool = False  # required unless dry_run
-    dry_run: bool = False
-
-
-class ResetResponse(msgspec.Struct):
-    dropped_views: list[str]
-    dropped_schemas: list[str]
-    cleared_snapshots: int
-    kept_terminals: list[str]
-    environments: list[str]
-    stream_log_cleared: bool
-    dry_run: bool
+def _event_progress(state: State, extra: dict[str, Any]) -> tuple[ProgressCallback, Callable[[], Awaitable[None]]]:
+    """Fire-and-forget model.* events; the drain coroutine waits them out."""
+    loop = asyncio.get_running_loop()
+    tasks: set[asyncio.Task[None]] = set()
+
+    def on_progress(model: str, event: str, detail: dict[str, Any]) -> None:
+        payload: dict[str, Any] = {**extra, **detail}
+        task = loop.create_task(state.store.append_event(f"model.{event}", entity=model, payload=payload))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def drain() -> None:
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    return on_progress, drain
+
+
+def _apply_response(env: str, result: ApplyResult | None, *, breaking: bool) -> ApplyResponse:
+    if result is None:
+        return ApplyResponse(environment=env, built=[], promoted=0, breaking=breaking)
+    return ApplyResponse(
+        environment=env,
+        built=result.built,
+        promoted=result.promoted,
+        breaking=breaking,
+        reused=result.reused,
+        transfers=result.transfers,
+        rows={
+            name: {"inserted": c.inserted, "updated": c.updated, "deleted": c.deleted}
+            for name, c in result.rows.items()
+        },
+        timings={name: round(seconds, 3) for name, seconds in result.timings.items()},
+        gated=result.gated,
+        checks=[
+            CheckOutcomeInfo(
+                model=outcome.model,
+                name=outcome.name,
+                check_type=outcome.type,
+                severity=outcome.severity,
+                status=outcome.status,
+                failures=outcome.failures,
+                message=outcome.message,
+            )
+            for outcome in result.checks
+        ],
+    )
+
+
+async def _flush_if_streams(state: State) -> None:
+    if state.streams:
+        await flush_streams(state.flush_targets, state.stream_log, state.engine)
 
 
 def _python_source(model: CompiledModel) -> str | None:
@@ -783,12 +487,10 @@ async def get_plan(
     compiled: CompiledProject = state.compiled
     selectors = [part.strip() for part in select.split(",") if part.strip()] if select else []
     try:
-        promoted = await state.store.get_environment(env) if wants_state(selectors) else None
-        selected = select_models(selectors, compiled, promoted=promoted) if selectors else None
+        selected = await resolve_selection(compiled, state.store, env, selectors)
+        plan = await compute_plan(compiled, env, state.store, state.engines, select=selected, forward_only=forward_only)
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
-    plan = await diff(compiled, env, state.store, select=selected, forward_only=forward_only)
-    await annotate_plan(plan, compiled, state.engines)
     reused = {snapshot.name for snapshot in plan.reuses}
     previous_snapshots = await state.store.get_snapshots(
         (c.name, c.previous_fingerprint) for c in plan.changes if c.previous_fingerprint is not None
@@ -976,12 +678,6 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     return CreateRunResult(enqueued=1 if enqueued else 0, models=models)
 
 
-class HookResult(msgspec.Struct):
-    model: str
-    idempotency_key: str
-    enqueued: bool
-
-
 @post("/hooks/{name:str}", opt={"scope": "write"}, status_code=201)
 async def post_hook(name: FromPath[str], state: State, request: Request) -> HookResult:
     """Enqueue the model that declares ``schedule: {webhook: name}``.
@@ -1024,88 +720,44 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
     await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
-    try:
-        promoted = await state.store.get_environment(env) if wants_state(data.selectors) else None
-        selected = select_models(data.selectors, compiled, promoted=promoted) if data.selectors else None
-    except SelectionError as exc:
-        raise ClientException(detail=exc.message) from exc
-    async with hold_apply_lock(state.store, owner=state.lock_owner):
-        if state.streams:  # an apply must see every event the publish path has accepted
-            await flush_streams(state.flush_targets, state.stream_log, state.engine)
-        plan = await diff(compiled, env, state.store, select=selected, forward_only=data.forward_only)
-        await annotate_plan(plan, compiled, state.engines)
-        if plan.blocking:
-            raise ClientException(detail="schema drift blocks apply: " + "; ".join(plan.blocking))
-        breaking = plan.has_breaking_changes
-        if breaking and not data.force:
-            names = ", ".join(c.name for c in plan.changes if c.category is ChangeCategory.BREAKING)
-            # 409 Conflict so the UI can offer "apply anyway" by status, not by matching this string
-            raise ClientException(
-                status_code=409, detail=f"plan has breaking changes ({names}); resubmit with force=true"
-            )
-        if plan.is_empty:
-            return ApplyResponse(environment=env, built=[], promoted=0, breaking=False)
+    on_progress, drain_progress = _event_progress(state, {"environment": env})
+
+    async def on_start(plan: Plan) -> None:
         await state.store.append_event("apply.started", entity=env, payload={"models": plan.promote})
-        loop = asyncio.get_running_loop()
-        progress_tasks: set[asyncio.Task] = set()
 
-        def on_progress(model: str, event: str, detail: dict | None = None) -> None:
-            # fire-and-forget telemetry, but hold a strong ref: an unreferenced task
-            # can be GC'd mid-write and its exception silently vanishes
-            payload: dict = {"environment": env, **(detail or {})}
-            task = loop.create_task(state.store.append_event(f"model.{event}", entity=model, payload=payload))
-            progress_tasks.add(task)
-            task.add_done_callback(progress_tasks.discard)
-
-        try:
-            result = await apply_with_registrations(
-                plan,
-                compiled=compiled,
-                engines=state.engines,
-                state=state.store,
-                base_path=state.root,
-                parallelism=state.parallelism,
-                on_progress=on_progress,
-                connections=state.connections,
-                project=state.project,
-                on_compiled=lambda fresh: _publish_compiled(state, fresh),
-            )
-        except CheckError as exc:
-            await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
-            raise ClientException(detail=exc.message) from exc
-        finally:
-            if progress_tasks:  # let the per-model events land before we return / raise
-                await asyncio.gather(*progress_tasks, return_exceptions=True)
+    async def on_finish(result: ApplyResult) -> None:
         await state.store.append_event(
-            "apply.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
+            "apply.finished",
+            entity=env,
+            payload={"built": result.built, "promoted": result.promoted},
         )
-        state.describe_cache.clear()  # new fingerprints, new tables: /lineage re-describes
-    return ApplyResponse(
-        environment=env,
-        built=result.built,
-        promoted=result.promoted,
-        breaking=breaking,
-        reused=result.reused,
-        transfers=result.transfers,
-        rows={
-            name: {"inserted": c.inserted, "updated": c.updated, "deleted": c.deleted}
-            for name, c in result.rows.items()
-        },
-        timings={name: round(seconds, 3) for name, seconds in result.timings.items()},
-        gated=result.gated,
-        checks=[
-            CheckOutcomeInfo(
-                model=outcome.model,
-                name=outcome.name,
-                check_type=outcome.type,
-                severity=outcome.severity,
-                status=outcome.status,
-                failures=outcome.failures,
-                message=outcome.message,
-            )
-            for outcome in result.checks
-        ],
-    )
+        state.describe_cache.clear()
+
+    try:
+        plan, result = await plan_and_apply(
+            compiled,
+            environment=env,
+            project=state.project,
+            engines=state.engines,
+            state=state.store,
+            lock_owner=state.lock_owner,
+            selectors=data.selectors,
+            forward_only=data.forward_only,
+            force=data.force,
+            parallelism=state.parallelism,
+            connections=state.connections,
+            on_progress=on_progress,
+            on_compiled=lambda fresh: _publish_compiled(state, fresh),
+            on_start=on_start,
+            on_finish=on_finish,
+            prepare=lambda: _flush_if_streams(state),
+        )
+    except CheckError as exc:
+        await state.store.append_event("apply.blocked", entity=env, payload={"reason": exc.message})
+        raise ClientException(detail=exc.message) from exc
+    finally:
+        await drain_progress()
+    return _apply_response(env, result, breaking=plan.has_breaking_changes)
 
 
 @post("/run", opt={"scope": "write"})
@@ -1115,14 +767,6 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
     await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
-    try:
-        promoted = await state.store.get_environment(env) if wants_state(data.selectors) else None
-        selected = (
-            select_models(data.selectors, compiled, promoted=promoted) if data.selectors else set(compiled.models)
-        )
-    except SelectionError as exc:
-        raise ClientException(detail=exc.message) from exc
-
     from datetime import datetime
 
     def _bound(value: str | None) -> datetime | None:
@@ -1138,78 +782,48 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
     except ValueError as exc:
         raise ClientException(detail=f"start/end must be ISO timestamps: {exc}") from exc
 
-    async with hold_apply_lock(state.store, owner=state.lock_owner):
-        if state.streams:
-            await flush_streams(state.flush_targets, state.stream_log, state.engine)
-        plan = await run_plan(
-            compiled,
-            env,
-            state.store,
-            start=window_start,
-            end=window_end,
-            select=selected,
-            restate=data.restate,
-        )
-        event = "restate.started" if data.restate else "run.started"
+    event = "restate.started" if data.restate else "run.started"
+    on_progress, drain_progress = _event_progress(state, {"environment": env})
+
+    async def on_start(plan: Plan) -> None:
         await state.store.append_event(event, entity=env, payload={"models": plan.promote, "restate": data.restate})
-        loop = asyncio.get_running_loop()
-        progress_tasks: set[asyncio.Task] = set()
 
-        def on_progress(model: str, progress_event: str, detail: dict | None = None) -> None:
-            payload: dict = {"environment": env, **(detail or {})}
-            task = loop.create_task(state.store.append_event(f"model.{progress_event}", entity=model, payload=payload))
-            progress_tasks.add(task)
-            task.add_done_callback(progress_tasks.discard)
-
-        try:
-            result = await apply_with_registrations(
-                plan,
-                compiled=compiled,
-                engines=state.engines,
-                state=state.store,
-                base_path=state.root,
-                parallelism=state.parallelism,
-                on_progress=on_progress,
-                connections=state.connections,
-                project=state.project,
-                on_compiled=lambda fresh: _publish_compiled(state, fresh),
-            )
-        except CheckError as exc:
-            await state.store.append_event("run.blocked", entity=env, payload={"reason": exc.message})
-            raise ClientException(detail=exc.message) from exc
-        finally:
-            if progress_tasks:
-                await asyncio.gather(*progress_tasks, return_exceptions=True)
+    async def on_finish(result: ApplyResult) -> None:
         await state.store.append_event(
-            "run.finished", entity=env, payload={"built": result.built, "promoted": result.promoted}
+            "run.finished",
+            entity=env,
+            payload={"built": result.built, "promoted": result.promoted},
         )
         state.describe_cache.clear()
-    return ApplyResponse(
-        environment=env,
-        built=result.built,
-        promoted=result.promoted,
-        breaking=False,
-        reused=result.reused,
-        transfers=result.transfers,
-        rows={
-            name: {"inserted": c.inserted, "updated": c.updated, "deleted": c.deleted}
-            for name, c in result.rows.items()
-        },
-        timings={name: round(seconds, 3) for name, seconds in result.timings.items()},
-        gated=result.gated,
-        checks=[
-            CheckOutcomeInfo(
-                model=outcome.model,
-                name=outcome.name,
-                check_type=outcome.type,
-                severity=outcome.severity,
-                status=outcome.status,
-                failures=outcome.failures,
-                message=outcome.message,
-            )
-            for outcome in result.checks
-        ],
-    )
+
+    try:
+        _plan, result = await run_and_apply(
+            compiled,
+            environment=env,
+            project=state.project,
+            engines=state.engines,
+            state=state.store,
+            lock_owner=state.lock_owner,
+            selectors=data.selectors,
+            start=window_start,
+            end=window_end,
+            restate=data.restate,
+            parallelism=state.parallelism,
+            connections=state.connections,
+            on_progress=on_progress,
+            on_compiled=lambda fresh: _publish_compiled(state, fresh),
+            on_start=on_start,
+            on_finish=on_finish,
+            prepare=lambda: _flush_if_streams(state),
+        )
+    except CheckError as exc:
+        await state.store.append_event("run.blocked", entity=env, payload={"reason": exc.message})
+        raise ClientException(detail=exc.message) from exc
+    except SelectionError as exc:
+        raise ClientException(detail=exc.message) from exc
+    finally:
+        await drain_progress()
+    return _apply_response(env, result, breaking=False)
 
 
 @get("/checks")
@@ -1702,17 +1316,6 @@ async def get_lineage(state: State, environment: FromQuery[str | None] = None) -
         if sources
     }
     return LineageResponse(models=models, edges=edges, columns=column_sources, streams=streams)
-
-
-class FixtureTestRequest(msgspec.Struct):
-    selectors: list[str] = msgspec.field(default_factory=list)
-    update_golden: bool = False
-
-
-class FixtureTestResponse(msgspec.Struct):
-    ok: bool
-    passed: list[str]
-    messages: list[str]
 
 
 @post("/tests/run", opt={"scope": "write"})
@@ -2321,7 +1924,7 @@ def create_app(
         statement = details.get("statement") if isinstance(details, dict) else None
         if isinstance(statement, str) and statement:
             body["statement"] = statement
-        if isinstance(exc, LockError):
+        if isinstance(exc, LockError | BreakingPlanError):
             return Response(content=body, status_code=409)
         status = 404 if "unknown" in message[:40].lower() else 400
         return Response(content=body, status_code=status)

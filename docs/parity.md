@@ -10,6 +10,8 @@ limited to one surface, the reason is given.
 | Row sample and column profile | `mcp` `preview_model` | `GET /models/{name}/preview` | models, lineage (selected node) |
 | Column impact / blast radius | `impact` | `GET /models/{name}/impact` | models (per-column) |
 | Preview a plan | `plan` | `GET /plan` | plan |
+| Env / table row+schema compare | `diff` | — | — |
+| PR plan comment | `plan --markdown` + Action | — | — |
 | Apply (build + promote) | `apply` | `POST /apply` | plan |
 | Force-run / restate (sync) | `run`, `restate` | `POST /run` | — |
 | Force-run / restate (queued) | — | `POST /runs` | runs (queued) |

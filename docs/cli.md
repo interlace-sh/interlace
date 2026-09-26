@@ -2,14 +2,14 @@
 
 `interlace <command>`. Global: `--version` / `-v`. Shared options (not every command takes every one):
 
-- `--env` / `-e` (default `prod`, env `INTERLACE_ENV`) — plan/apply/run/restate/serve/scheduler/checks run.
+- `--env` / `-e` (default `prod`, env `INTERLACE_ENV`) — plan/apply/diff/run/restate/serve/scheduler/checks run.
 - `--path` / `-p` (default `.`) — project root.
-- `--select` / `-s` (repeatable) — plan/apply/run/restate/models/checks run/`test` (see [selectors](#selectors)).
-- `--json` — plan/models/runs/streams/engines/connections/impact/env/checks/reset (and lineage via `--format json`).
+- `--select` / `-s` (repeatable) — plan/apply/diff/run/restate/models/checks run/`test` (see [selectors](#selectors)).
+- `--json` — plan/diff/models/runs/streams/engines/connections/impact/env/checks/reset (and lineage via `--format json`).
 - `--parallelism` (default 0 = the project's `parallelism`) — apply/run/restate only.
 
 Exit codes: `0` ok; `1` selection error / breaking-plan-without-force / check failure /
-unknown target / guard tripped; `2` malformed input (bad ISO window, bad grace, bad format).
+table-diff mismatch / unknown target / guard tripped; `2` malformed input (bad ISO window, bad grace, bad format).
 
 ## Transformation
 
@@ -25,11 +25,12 @@ credentials it needs. Filesystem only. Bundled templates:
 | `github` | Incremental pull of GitHub issues via the REST source client | `[sources]` extra |
 | `postgres` | Incremental pull from a Postgres source (bundled seeded docker-compose) | Docker + `[postgres]` extra |
 
-### `interlace plan [--env] [--select] [--forward-only] [--json]`
+### `interlace plan [--env] [--select] [--forward-only] [--json] [--markdown]`
 Preview what `apply` would change in an environment, without building. Connects to the
 engines to report live indexes and column drift, but does not write. `--json` mirrors the
 HTTP `PlanResponse` shape, including `physical` (`+ index` / `- constraint` lines that do
-not rebuild data) and `drift`. Exit 1 when `schema.columns: reject` finds a blocking
+not rebuild data) and `drift`. `--markdown` emits a GitHub-flavoured comment (breaking /
+reuse / physical DDL) for CI. Exit 1 when `schema.columns: reject` finds a blocking
 mismatch. `--forward-only` previews history-inheriting plans.
 
 ### `interlace apply [--env] [--select] [--forward-only] [--force] [--parallelism]`
@@ -38,6 +39,12 @@ environment. Refuses to proceed on a **breaking** plan unless `--force`. Blockin
 drift exits 1 before any write (`force` does not bypass it). Shows live per-model build
 rows (✓/✗/⊘). A blocking check failure aborts before promotion (exit 1). When a model
 fails inside the engine, the SQL that failed is printed under the error line. Needs a live warehouse.
+
+### `interlace diff [--env] [--against ENV] [--source T] [--target T] [--on COL] [--select] [--json]`
+Schema + row compare. Env mode (`--against staging`) diffs each selected model's built
+table in `--env` against the other environment (join on `--on`, else the model's `key:`,
+else every common column). Table mode (`--source schema.t --target schema.t`) compares two
+warehouse relations. Exit 1 when schema or rows differ. `--json` is the machine form.
 
 ### `interlace run [--env] [--select] [--start] [--end] [--parallelism]`
 Force-build models regardless of change detection, then promote. `--start`/`--end` set the
@@ -175,4 +182,18 @@ Names and scopes (never the secrets).
 - `state:modified` — models whose fingerprint differs from the target environment's promoted
   mapping (the CI diff); affixes compose (`state:modified+`); an empty match is legitimate.
 
-Accepted by `plan`, `apply`, `run`, `restate`, `models`, `checks run`.
+Accepted by `plan`, `apply`, `diff`, `run`, `restate`, `models`, `checks run`.
+
+## GitHub Action
+
+A composite Action comments the plan on a pull request (breaking models, reuse count,
+physical DDL). It replaces an earlier comment that starts with `<!-- interlace-plan -->`.
+
+```yaml
+- uses: interlace-sh/interlace/.github/actions/plan-comment@master
+  with:
+    path: .
+    environment: prod
+```
+
+`interlace plan --markdown` is the same body, for other CI.

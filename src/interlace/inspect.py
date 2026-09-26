@@ -23,7 +23,12 @@ from interlace.sinks import target_ref
 from interlace.state.snapshot import Snapshot
 
 
-class _InspectStore(Protocol):
+class _RelationStore(Protocol):
+    async def get_environment(self, environment: str) -> dict[str, str]: ...
+    async def get_snapshot(self, name: str, fingerprint: str) -> Snapshot | None: ...
+
+
+class _InspectStore(_RelationStore, Protocol):
     """The control-plane reads a preview needs, beyond the plan/apply store slice."""
 
     async def latest_model_build(self, model: str) -> dict[str, object] | None: ...
@@ -118,7 +123,7 @@ async def last_build(store: _InspectStore, name: str) -> LastBuild | None:
 
 
 async def _built_table(
-    model: CompiledModel, store: _InspectStore, engine: EngineAdapter, environment: str
+    model: CompiledModel, store: _RelationStore, engine: EngineAdapter, environment: str
 ) -> tuple[TableRef, str] | None:
     """The relation a preview should read, and why (environment view or snapshot)."""
     if model.materialise == "ephemeral" or model.materialise == "file":
@@ -142,6 +147,14 @@ async def _built_table(
     if snapshot is not None and await engine.table_exists(snapshot.physical_table):
         return snapshot.physical_table, "snapshot"
     return None
+
+
+async def model_relation(
+    model: CompiledModel, store: _RelationStore, engine: EngineAdapter, environment: str
+) -> TableRef | None:
+    """The table a preview or table-diff should read for ``model`` in ``environment``."""
+    found = await _built_table(model, store, engine, environment)
+    return None if found is None else found[0]
 
 
 def _unavailable(model: CompiledModel) -> str:

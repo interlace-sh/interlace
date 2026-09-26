@@ -17,18 +17,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from interlace import __version__
-from interlace.dsl.dynamic import apply_with_registrations
 from interlace.exceptions import InterlaceError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledProject
-from interlace.graph.selectors import select_models, wants_state
 from interlace.inspect import failing_rows, preview_model
-from interlace.physical.annotate import annotate_plan
-from interlace.plan.differ import diff
+from interlace.plan.orchestrate import compute_plan, plan_and_apply, resolve_selection
 from interlace.project import Project
 from interlace.query import prepare_readonly
-from interlace.state.locks import hold_apply_lock
-from interlace.state.snapshot import ChangeCategory
 from interlace.streaming import ensure_stream_tables
 
 _PROTOCOL = "2024-11-05"
@@ -158,10 +153,10 @@ async def _plan(path: Path, args: dict[str, Any]) -> Any:
     try:
         environment = _env(project, args)
         selectors = [str(item) for item in args.get("selectors") or []]
-        promoted = await state.get_environment(environment) if wants_state(selectors) else None
-        selected = select_models(selectors, compiled, promoted=promoted) if selectors else None
-        plan = await diff(compiled, environment, state, select=selected, forward_only=bool(args.get("forward_only")))
-        await annotate_plan(plan, compiled, engines)
+        selected = await resolve_selection(compiled, state, environment, selectors)
+        plan = await compute_plan(
+            compiled, environment, state, engines, select=selected, forward_only=bool(args.get("forward_only"))
+        )
     finally:
         await state.close()
         engines.close()
@@ -187,34 +182,28 @@ async def _apply(path: Path, args: dict[str, Any]) -> Any:
     project, compiled, state, engines = await _open(path)
     try:
         environment = _env(project, args)
-        selectors = [str(item) for item in args.get("selectors") or []]
-        if project.streams:
-            await ensure_stream_tables(project.streams, engines.get())
-        promoted = await state.get_environment(environment) if wants_state(selectors) else None
-        selected = select_models(selectors, compiled, promoted=promoted) if selectors else None
-        plan = await diff(compiled, environment, state, select=selected, forward_only=bool(args.get("forward_only")))
-        await annotate_plan(plan, compiled, engines)
-        if plan.blocking:
-            raise InterlaceError("schema drift blocks apply: " + "; ".join(plan.blocking))
-        if plan.is_empty:
-            return {"environment": environment, "built": [], "promoted": 0}
-        if plan.has_breaking_changes and not args.get("force"):
-            names = ", ".join(change.name for change in plan.changes if change.category is ChangeCategory.BREAKING)
-            raise InterlaceError(f"plan has breaking changes ({names}); resubmit with force true")
-        async with hold_apply_lock(state, owner=f"mcp:{os.getpid()}"):
-            result = await apply_with_registrations(
-                plan,
-                compiled=compiled,
-                engines=engines,
-                state=state,
-                base_path=project.root,
-                parallelism=project.config.parallelism,
-                connections=project.config.connections,
-                project=project,
-            )
+
+        async def prepare() -> None:
+            if project.streams:
+                await ensure_stream_tables(project.streams, engines.get())
+
+        plan, result = await plan_and_apply(
+            compiled,
+            environment=environment,
+            project=project,
+            engines=engines,
+            state=state,
+            lock_owner=f"mcp:{os.getpid()}",
+            selectors=[str(item) for item in args.get("selectors") or []],
+            forward_only=bool(args.get("forward_only")),
+            force=bool(args.get("force")),
+            prepare=prepare,
+        )
     finally:
         await state.close()
         engines.close()
+    if result is None:
+        return {"environment": environment, "built": [], "promoted": 0}
     return {
         "environment": environment,
         "built": result.built,

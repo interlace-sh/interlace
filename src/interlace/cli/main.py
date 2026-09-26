@@ -17,16 +17,23 @@ from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from interlace.dsl.dynamic import apply_with_registrations
-from interlace.exceptions import CheckError, ConfigurationError, InterlaceError, LockError, QueryError, SelectionError
+from interlace.exceptions import (
+    CheckError,
+    ConfigurationError,
+    InterlaceError,
+    LockError,
+    PlanError,
+    QueryError,
+    SelectionError,
+)
 from interlace.graph.column_lineage import column_impact, column_lineage, split_target
 from interlace.graph.project import CompiledProject
-from interlace.graph.selectors import select_models, wants_state
-from interlace.physical.annotate import annotate_plan
+from interlace.graph.selectors import select_models
 from interlace.plan.apply import ApplyResult
-from interlace.plan.differ import diff
+from interlace.plan.comment import plan_markdown
+from interlace.plan.orchestrate import compute_plan, plan_and_apply, resolve_selection, run_and_apply
 from interlace.plan.plan import ChangeType, Plan
-from interlace.plan.run import run_plan
+from interlace.plan.table_diff import TableDiff
 from interlace.project import Project
 from interlace.scaffold import list_templates, scaffold_project
 from interlace.scheduler.engine import TriggerEngine, build_triggers
@@ -243,11 +250,6 @@ def _selection(
         raise typer.Exit(1) from exc
 
 
-async def _promoted_if_needed(state: Any, environment: str, selectors: list[str]) -> dict[str, str] | None:
-    """state:modified compares against the target environment's fingerprints."""
-    return await state.get_environment(environment) if wants_state(selectors) else None
-
-
 @app.command()
 def init(
     path: Path = typer.Argument(Path("."), help="Directory to initialise."),
@@ -287,9 +289,10 @@ def plan(
     select: list[str] = _SELECT,
     forward_only: bool = _FORWARD_ONLY,
     as_json: bool = _JSON,
+    markdown: bool = typer.Option(False, "--markdown", help="Emit a GitHub-flavoured plan comment (CI)."),
 ) -> None:
     """Show what apply would change in an environment."""
-    asyncio.run(_plan(environment, path, select, forward_only, as_json))
+    asyncio.run(_plan(environment, path, select, forward_only, as_json, markdown))
 
 
 @app.command()
@@ -303,6 +306,22 @@ def apply(
 ) -> None:
     """Build changed models and promote the environment."""
     asyncio.run(_apply(environment, path, select, forward_only, force, parallelism))
+
+
+@app.command("diff")
+def table_diff_cmd(
+    environment: str = _ENV,
+    path: Path = _PATH,
+    select: list[str] = _SELECT,
+    against: str = typer.Option("", "--against", help="Other environment (env mode)."),
+    source: str = typer.Option("", "--source", help="Left table, schema.table (table mode)."),
+    target: str = typer.Option("", "--target", help="Right table, schema.table (table mode)."),
+    on: list[str] = typer.Option([], "--on", help="Join key columns. Default: the model's key, else common columns."),
+    limit: int = typer.Option(20, "--limit", "-n", help="Sample rows per category."),
+    as_json: bool = _JSON,
+) -> None:
+    """Compare a model across two environments, or two tables on the warehouse."""
+    asyncio.run(_table_diff(environment, path, select, against, source, target, on, limit, as_json))
 
 
 @app.command()
@@ -333,24 +352,31 @@ def test(
 
 
 async def _plan(
-    environment: str, path: Path, select: list[str], forward_only: bool = False, as_json: bool = False
+    environment: str,
+    path: Path,
+    select: list[str],
+    forward_only: bool = False,
+    as_json: bool = False,
+    markdown: bool = False,
 ) -> None:
     project = Project.load(path)
     compiled = project.compile()
     state = await project.open_state()
     engines = project.open_engines()
     try:
-        promoted = await _promoted_if_needed(state, environment, select)
-        result = await diff(
-            compiled, environment, state, select=_selection(compiled, select, promoted), forward_only=forward_only
-        )
-        await annotate_plan(result, compiled, engines)
-        if as_json:
+        selected = await resolve_selection(compiled, state, environment, select)
+        result = await compute_plan(compiled, environment, state, engines, select=selected, forward_only=forward_only)
+        if markdown:
+            typer.echo(plan_markdown(result, environment))
+        elif as_json:
             _emit_json(_plan_dict(result, environment))
         else:
             _render(result, environment)
         if result.blocking:
             raise typer.Exit(1)
+    except SelectionError as exc:
+        console.print(f"[red]{escape(exc.message)}[/red]")
+        raise typer.Exit(1) from exc
     finally:
         await state.close()
         engines.close()
@@ -385,6 +411,132 @@ def _plan_dict(plan: Plan, environment: str) -> dict:
     }
 
 
+def _diff_dict(result: TableDiff) -> dict[str, object]:
+    schema = {
+        "added": [{"name": name, "type": dtype} for name, dtype in result.schema.added],
+        "removed": [{"name": name, "type": dtype} for name, dtype in result.schema.removed],
+        "type_changed": [
+            {"name": name, "left": left, "right": right} for name, left, right in result.schema.type_changed
+        ],
+    }
+    rows = None
+    if result.rows is not None:
+        rows = {
+            "left_count": result.rows.left_count,
+            "right_count": result.rows.right_count,
+            "left_only": result.rows.left_only,
+            "right_only": result.rows.right_only,
+            "changed": result.rows.changed,
+            "matched": result.rows.matched,
+            "keys": result.rows.keys,
+            "left_only_sample": result.rows.left_only_sample,
+            "right_only_sample": result.rows.right_only_sample,
+            "changed_sample": result.rows.changed_sample,
+        }
+    return {
+        "left": result.left,
+        "right": result.right,
+        "model": result.model,
+        "schema": schema,
+        "rows": rows,
+        "message": result.message,
+        "differs": result.differs,
+    }
+
+
+def _render_diffs(results: list[TableDiff]) -> None:
+    for result in results:
+        title = result.model or f"{result.left} vs {result.right}"
+        if result.message and result.rows is None and result.schema.empty:
+            console.print(f"[yellow]{title}[/yellow]  {result.message}")
+            continue
+        table = _table(title)
+        table.add_column("Side")
+        table.add_column("Relation", style="dim")
+        table.add_row("left", result.left)
+        table.add_row("right", result.right)
+        console.print(table)
+        if result.schema.added or result.schema.removed or result.schema.type_changed:
+            for name, dtype in result.schema.added:
+                console.print(f"  [green]+[/] column {name} {dtype}")
+            for name, dtype in result.schema.removed:
+                console.print(f"  [red]-[/] column {name} {dtype}")
+            for name, left, right in result.schema.type_changed:
+                console.print(f"  [yellow]~[/] column {name} {left} → {right}")
+        if result.message:
+            console.print(f"  [yellow]{result.message}[/yellow]")
+        if result.rows is None:
+            continue
+        rows = result.rows
+        console.print(
+            f"  rows  left={rows.left_count} right={rows.right_count}  "
+            f"only-left={rows.left_only} only-right={rows.right_only} changed={rows.changed} "
+            f"matched={rows.matched}  keys={','.join(rows.keys) or '—'}"
+        )
+
+
+async def _table_diff(
+    environment: str,
+    path: Path,
+    select: list[str],
+    against: str,
+    source: str,
+    target: str,
+    on: list[str],
+    limit: int,
+    as_json: bool,
+) -> None:
+    from interlace.plan.table_diff import diff_environments, diff_tables, parse_table_ref
+
+    if bool(source) != bool(target):
+        console.print("[red]table mode needs both --source and --target[/red]")
+        raise typer.Exit(2)
+    if not source and not against:
+        console.print("[red]env mode needs --against ENV (or pass --source/--target)[/red]")
+        raise typer.Exit(2)
+    project = Project.load(path)
+    compiled = project.compile()
+    engines = project.open_engines()
+    state = await project.open_state()
+    try:
+        if source:
+            result = await diff_tables(
+                engines.get(),
+                parse_table_ref(source),
+                parse_table_ref(target),
+                keys=on or None,
+                sample=limit,
+            )
+            results = [result]
+        else:
+            selected = await resolve_selection(compiled, state, environment, select)
+            results = await diff_environments(
+                compiled,
+                left_env=environment,
+                right_env=against,
+                store=state,
+                engines=engines,
+                select=selected,
+                keys=on or None,
+                sample=limit,
+            )
+        if as_json:
+            _emit_json([_diff_dict(item) for item in results])
+        else:
+            if not results:
+                console.print("No comparable models (ephemeral/file outputs are skipped).")
+            else:
+                _render_diffs(results)
+        if any(item.differs for item in results):
+            raise typer.Exit(1)
+    except PlanError as exc:
+        console.print(f"[red]{escape(exc.message)}[/red]")
+        raise typer.Exit(1) from exc
+    finally:
+        await state.close()
+        engines.close()
+
+
 async def _apply(
     environment: str,
     path: Path,
@@ -393,50 +545,64 @@ async def _apply(
     force: bool = False,
     parallelism: int = 0,
 ) -> None:
+    from interlace.exceptions import BreakingPlanError
+
     project = Project.load(path)
     compiled = project.compile()
     engines = project.open_engines()
     state = await project.open_state()
+    tracker: _BuildProgress | None = _BuildProgress() if console.is_terminal else None
+    started = False
     try:
-        # Stream-fed projects must build without the daemon ever having run:
-        # declared stream tables are ensured (empty) so models reading them work.
-        if project.streams:
-            await ensure_stream_tables(project.streams, engines.get())
-        promoted = await _promoted_if_needed(state, environment, select)
-        plan_result = await diff(
-            compiled, environment, state, select=_selection(compiled, select, promoted), forward_only=forward_only
-        )
-        await annotate_plan(plan_result, compiled, engines)
-        _render(plan_result, environment)
-        if plan_result.is_empty:
-            return
-        if plan_result.has_breaking_changes and not force:  # same guard the HTTP API enforces
-            breaking = ", ".join(
-                c.name for c in plan_result.changes if c.category is not None and c.category.value == "breaking"
-            )
-            console.print(f"[red]plan has breaking changes ({breaking}); re-run with --force to proceed[/red]")
-            raise typer.Exit(1)
-        progress = _build_progress(plan_result)
+
+        async def prepare() -> None:
+            # Stream-fed projects must build without the daemon ever having run:
+            # declared stream tables are ensured (empty) so models reading them work.
+            if project.streams:
+                await ensure_stream_tables(project.streams, engines.get())
+
+        def on_plan(plan: Plan) -> None:
+            nonlocal started, tracker
+            _render(plan, environment)
+            if tracker is not None and not plan.backfills:
+                tracker = None
+            if tracker is not None:
+                tracker.progress.start()
+                started = True
+
+        def on_progress(model: str, event: str, detail: dict[str, Any]) -> None:
+            if tracker is not None:
+                tracker(model, event, detail)
+
         try:
-            with progress.progress if progress else contextlib.nullcontext():
-                async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:apply"):
-                    result = await apply_with_registrations(
-                        plan_result,
-                        compiled=compiled,
-                        engines=engines,
-                        state=state,
-                        base_path=project.root,
-                        on_progress=progress,
-                        connections=project.config.connections,
-                        parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
-                        project=project,
-                    )
+            _plan_result, result = await plan_and_apply(
+                compiled,
+                environment=environment,
+                project=project,
+                engines=engines,
+                state=state,
+                lock_owner=f"cli:{os.getpid()}:apply",
+                selectors=select,
+                forward_only=forward_only,
+                force=force,
+                parallelism=parallelism or None,
+                on_progress=on_progress,
+                on_plan=on_plan,
+                prepare=prepare,
+            )
+        except BreakingPlanError as exc:
+            console.print(
+                f"[red]plan has breaking changes ({', '.join(exc.names)}); re-run with --force to proceed[/red]"
+            )
+            raise typer.Exit(1) from exc
         except CheckError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
         except LockError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
+        if result is None:
+            return
         _render_build_results(result, compiled)
         _render_checks(result)
         await _render_empty_incrementals(result, compiled, engines)
@@ -444,6 +610,8 @@ async def _apply(
             f"[green]Built {len(set(result.built))} model(s); promoted {result.promoted} to '{environment}'.[/green]"
         )
     finally:
+        if started and tracker is not None:
+            tracker.progress.stop()
         await state.close()
         engines.close()
 
@@ -509,34 +677,44 @@ async def _execute(
     compiled = project.compile()
     engines = project.open_engines()
     state = await project.open_state()
+    tracker: _BuildProgress | None = _BuildProgress() if console.is_terminal else None
+    started_bar = False
     try:
-        if project.streams:  # as in _apply: stream tables must exist daemon or not
-            await ensure_stream_tables(project.streams, engines.get())
-        plan_result = await run_plan(
-            compiled,
-            environment,
-            state,
-            start=window_start,
-            end=window_end,
-            select=_selection(compiled, select, await _promoted_if_needed(state, environment, select)),
-            restate=restate,
-        )
-        progress = _build_progress(plan_result)
+
+        async def prepare() -> None:
+            if project.streams:  # as in _apply: stream tables must exist daemon or not
+                await ensure_stream_tables(project.streams, engines.get())
+
+        def on_plan(plan: Plan) -> None:
+            nonlocal started_bar, tracker
+            if tracker is not None and not plan.backfills:
+                tracker = None
+            if tracker is not None:
+                tracker.progress.start()
+                started_bar = True
+
+        def on_progress(model: str, event: str, detail: dict[str, Any]) -> None:
+            if tracker is not None:
+                tracker(model, event, detail)
+
         started = time.perf_counter()
         try:
-            with progress.progress if progress else contextlib.nullcontext():
-                async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:run"):
-                    result = await apply_with_registrations(
-                        plan_result,
-                        compiled=compiled,
-                        engines=engines,
-                        state=state,
-                        base_path=project.root,
-                        on_progress=progress,
-                        connections=project.config.connections,
-                        parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
-                        project=project,
-                    )
+            plan_result, result = await run_and_apply(
+                compiled,
+                environment=environment,
+                project=project,
+                engines=engines,
+                state=state,
+                lock_owner=f"cli:{os.getpid()}:run",
+                selectors=select,
+                start=window_start,
+                end=window_end,
+                restate=restate,
+                parallelism=parallelism or None,
+                on_progress=on_progress,
+                on_plan=on_plan,
+                prepare=prepare,
+            )
         except CheckError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
             raise typer.Exit(1) from exc
@@ -553,6 +731,8 @@ async def _execute(
             f"promoted {result.promoted} to '{environment}'.[/green]"
         )
     finally:
+        if started_bar and tracker is not None:
+            tracker.progress.stop()
         await state.close()
         engines.close()
 

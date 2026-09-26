@@ -1,11 +1,11 @@
 # Interlace — Architecture & Design
 
 *Written during the 2026 rebuild of the 0.x line. This is the design rationale and
-the contract for the platform now shipping as **v2.0** (`interlaced` on PyPI). Short
+the contract for the platform now shipping as **v2.6** (`interlaced` on PyPI). Short
 *current state* notes in each section record where the implementation actually stands;
-a consolidated **Roadmap** section (§14) lists what is designed but not yet built. When
-this document says "we do X", read it as the shipped behaviour unless a note says
-otherwise.*
+a consolidated **Roadmap** section (§14) lists what is designed but not yet built, ranked
+Now / Next / Later. When this document says "we do X", read it as the shipped behaviour
+unless a note says otherwise.*
 
 **Status:** Implemented, single-node. **Scope:** clean-slate design of the whole
 platform. **Goal:** a comprehensive, independent, MIT-licensed alternative to
@@ -114,7 +114,8 @@ class Strategy(ABC):
 
 Built-ins: `replace`, `view`, `ephemeral` (AST-spliced as a CTE into consumers at compile
 time), `incremental` (interval predicate injected as an AST filter),
-`merge` and `full_merge` (keyed upsert built from `exp` constructors), and
+`merge`, `full_merge`, and `hash_merge` (keyed upserts built from `exp` constructors;
+`hash_merge` writes only the hash delta), and
 `scd` (update-expire + insert-new sequence). Strategies build canonical ASTs and
 consult `EngineCaps` for the fallbacks they actually need; the adapter transpiles.
 
@@ -180,7 +181,7 @@ per-model process-pool opt-in and no `executor=` argument today (§8, §14).
 
 ---
 
-## 4. DuckDB's two roles; DuckLake as default storage
+## 4. DuckDB's two roles; DuckLake as opt-in storage
 
 **Role 1 — the default local engine.** Physical storage defaults to a **plain DuckDB
 file** — one file, single-process, zero extra setup, the simplest way to start. **DuckLake**
@@ -243,10 +244,13 @@ land on the same contract later without a redesign.
   gone — it reappears only in `EngineAdapter.transpile()`. You can therefore author in
   one dialect and transpile to another; *running* against a given engine still requires
   that engine's adapter (DuckDB and Postgres today — §4).
-- **Jinja macros: rejected.** Python is the macro language. The SQL header is a YAML
-  block comment namespaced under `interlace:` — valid SQL, no Jinja, no text
-  substitution. (A typed `{{ }}` / `@vars` templating layer is *not* implemented; there
-  is no vars machinery at all today. It is a possible future addition — §14.)
+- **Jinja macros: rejected.** Python is the macro language for generated models. Scalar
+  SQL macros live in `macros/*.sql` as `CREATE MACRO` and are expanded into the AST
+  before fingerprint, lineage, and transpile — one definition, every engine. The SQL
+  header is a YAML block comment namespaced under `interlace:` — valid SQL, no Jinja,
+  no text substitution. Path tokens (`${date}` / `${datetime}` / `${workspace}`) expand
+  in `inputs:` and file materialisation paths. A typed `{{ }}` / `@vars` layer for
+  model SQL is *not* implemented (§14).
 - **`ref()` as text macro: rejected.** References resolve at the AST level during
   qualification — which is what makes lineage parseable.
 
@@ -686,24 +690,30 @@ worker host).
 
 ```
 src/interlace/
-  dsl/         # @model @stream @check decorators; SQL file loader; project discovery
-  ir/          # Relation types; canonicalisation; fingerprints; Arrow schema handling
+  dsl/         # @model @stream @check; SQL loader; discovery; dynamic register_model
+  ir/          # Relation types; canonicalisation; fingerprints; macros; Arrow schema
   graph/       # dag (toposort, stdlib), column_lineage, selectors
   state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc, reset)
-  plan/        # differ (sqlglot.diff + classification), plan, apply, run
+  plan/        # differ (sqlglot.diff + classification), plan, apply, run, orchestrate (plan_and_apply),
+               #   comment (PR markdown), table_diff
+  physical/    # indexes/constraints specs, drift, reconcile DDL (third hash, not data fp)
   engines/     # base (EngineAdapter, EngineCaps); adbc (shared ADBC base); duckdb (+ DuckLake),
                #   postgres, redshift/snowflake/bigquery (alpha), spark (beta), quack, registry
-  strategies/  # replace, view, full_merge, incremental, merge, scd
+  strategies/  # replace, view, full_merge, incremental, merge, hash_merge, scd
   checks/      # built-in check types + @check decorator — results gate promotion
+  testing/     # fixture/golden CSV tests (`interlace test`)
+  cdc/         # Postgres logical replication slot → @stream
   inspect.py   # row sample, column profile, and the rows a check rejected
   mcp_server.py # stdio MCP server; apply refuses unless confirm is true
-  scheduler/   # triggers (cron/interval/watch), engine (TriggerEngine), worker (leases/retries/cancel)
+  connections.py # named http/postgres connections a Python model reads while building
+  inputs.py    # DuckDB file scans (parquet/csv/json/delta/iceberg) as FROM-able views
+  scheduler/   # triggers (cron/interval/watch/webhook), engine (TriggerEngine), worker (leases/retries/cancel)
   runtime/     # execution context for Python models (Arrow handles)
   streaming/   # log (SqliteStreamLog), materializer (flush + watermark), schema (drift modes)
-  service/     # app.py (litestar), auth.py, ui/ (the /ui web app)
+  service/     # types.py (msgspec wire structs), app.py (litestar), auth.py, ui/ (the /ui web app)
   config/      # config load; ${VAR} + .env interpolation
-  cli/         # init plan apply run restate gc reset scheduler serve mcp models lineage env runs
-               #   checks streams engines cancel apikey
+  cli/         # init plan apply diff run restate gc reset scheduler serve mcp models lineage env runs
+               #   checks streams engines connections cancel apikey test
   sinks.py     # terminal delivery helpers: external table target + file COPY
   project.py   # Project.load/compile; engine + state + stream-log opening
 ```
@@ -712,12 +722,12 @@ src/interlace/
 
 | Package | Constraint | Why |
 |---|---|---|
-| `sqlglot` | `>=25.0,<29.0` | Canonical IR, transpilation, qualification/type annotation, semantic diff, column lineage. The single most load-bearing dep. |
+| `sqlglot` | `>=25.0,<30.0` | Canonical IR, transpilation, qualification/type annotation, semantic diff, column lineage. The single most load-bearing dep. |
 | `duckdb` | `>=1.5.3` | Default engine, federation hub, DuckLake, quack serving. |
 | `pyarrow` | `>=17.0` | The wire format; RecordBatchReader everywhere. |
 | `pydantic` v2 | `>=2.5,<3.0` | Config + manifest validation only (cold paths). |
 | `typer` | `>=0.12,<1.0` | CLI. |
-| `rich` | `>=13.0,<15.0` | CLI display, strictly an event subscriber. |
+| `rich` | `>=13.0,<16.0` | CLI display, strictly an event subscriber. |
 | `cronsim` | `>=2.5,<3.0` | Cron parsing for the trigger engine (we own the loop; APScheduler rejected). |
 | `tenacity` | `>=8.2,<10.0` | Retries: tasks, DuckLake commit conflicts, transfers. |
 | `pyyaml` | `>=6.0,<7.0` | Project config (config + env overlays). |
@@ -733,12 +743,13 @@ Logging is the **standard library `logging`** — there is no `structlog` depend
   add those (alpha) drivers.
 - **`spark`** — the Spark engine (beta): `pyspark` + `delta-spark` (Spark 4.0 / Delta 4.0),
   a `SparkSession` transport rather than ADBC.
-- **`postgres`** — `psycopg[binary]`, reserved for the *future* Postgres state/log
-  backends (§12); no such backend ships today.
+- **`postgres`** — `psycopg[binary]`, used today by `cdc:` (logical replication into a
+  `@stream`) and `connections:` of type `postgres`. A Postgres *control-plane* store
+  (state/queue/log) is still unbuilt (§12, §14).
 - **`polars`** — `polars`, the preferred eager frame a user can build from
   `handle.table()`.
 - **`pandas`** — `pandas`, compatibility only.
-- **`all`** — `service,adbc,postgres,polars`.
+- **`all`** — `service,adbc,postgres,polars,sources`.
 - **`dev`** — test/lint toolchain: `pytest`, `pytest-asyncio`, `ruff`, `black`, `mypy`,
   and **`httpx`** (litestar's TestClient transport — httpx is dev-only, not a runtime
   dep). No `argon2-cffi` / `joserfc` (those would come with OIDC — roadmap) and no
@@ -754,55 +765,65 @@ dozen lines), APScheduler, Celery, Redis, Airflow-anything, ibis.
 
 ## 14. Roadmap — not yet built
 
-Everything above (unless a note says otherwise) is shipped in v2.0. The following are
-*designed for* but **not implemented**; they are collected here so the body can describe
-only shipped behaviour:
+Shipped behaviour is described in the body. This section is only what is still unbuilt,
+ranked so a later reader does not treat every bullet as equal. Principle: deepen the
+one-process wedge, close trust gaps, defer scale-out until a named user hits the ceiling.
 
-- **Sensor triggers** — freshness (table-staleness) and upstream-completion, beyond the
-  shipped cron, interval, file-watch, and inbound webhook (§2.6, §10).
-- **SLA + alerting** — `@model(sla=…)` sensors emitting breach events, an `AlertRouter`
-  fanning out to Slack/webhook/email with a firing/resolved state machine, an `alerts`
-  table, and UI alert history (§10).
-- **Leader election / multi-node** — a `leases` table for singleton loops
-  (TriggerEngine/janitor/flusher), Postgres `SKIP LOCKED` + advisory locks +
-  LISTEN/NOTIFY, and multi-worker/multi-host operation (§10, §12).
-- **Postgres state/log backends + conformance suite** — the OLTP control-plane swap
-  SQLite→Postgres and the cross-backend test suite that would guarantee identical
-  claim/lease semantics (§6, §12). The `postgres` extra ships the driver; the backend
-  does not.
-- **Cloud-warehouse adapters (alpha)** — Redshift, Snowflake, BigQuery and MotherDuck
-  `EngineAdapter`s now ship (ADBC is Arrow-native end-to-end; they share one `AdbcAdapter`
-  base), unlocking "author in Snowflake SQL, run it in Snowflake in prod" (§4, §5). They are
-  wired and dialect-correct but **not yet run against a live account** — promoting them out of
-  alpha needs live validation (connection strings, metadata probes).
-- **Spark (beta)** — a `SparkSession` transport (Arrow via `toArrow`/`createDataFrame`),
-  tested against a local Spark + Delta Lake session. `merge` and `incremental` run
-  natively; `scd`/`full_merge` need a MERGE-based rewrite to work on Delta (which forbids
-  subqueries in `UPDATE`/`DELETE` conditions). Databricks is still open: its connector is
-  Arrow-native but lacks an `adbc_ingest` bulk-load, so `load()` needs a bespoke staged-COPY
-  path.
-- **Reverse-ETL SaaS connectors + delivery ledger** — a `SinkConnector` (batch HTTP) for
-  API/SaaS destinations (a third terminal plane beyond `table`/`file`), a per-target
-  delivery ledger (cursor / last-synced hash per key) for change-only pushes (§6).
-- **First-class streaming models & outbound consumers** — a `kind="incremental_stream"`
-  model with `on_stream(...)` triggers and a `ctx.stream_batch(...)` accessor; outbound
-  consumer groups (webhook, RabbitMQ, …) with read→process→ack, `<stream>__dlq`
-  dead-lettering, and GCRA rate limiting; and a DBSP-style incremental accelerator (§9).
-- **Broker stream-log backends** — Postgres, Redpanda/Kafka, NATS JetStream, and an
-  Arrow-IPC segment backend behind the `StreamLog` Protocol, plus a consumer-lag
-  (`max_lag`) gate and richer retention (`max_events`/`min_unconsumed`) (§9.1).
-- **OIDC / JWKS** — browser SSO for the UI (would add `argon2-cffi`, `joserfc`) on top of
-  the shipped API-key auth (§11).
-- **Iceberg / R2 interoperability sink** — landing stream/model output as Iceberg via
-  DuckDB's REST catalog support (incl. Cloudflare R2 Data Catalog) and Parquet/JSON on
-  object storage (§9).
-- **Typed `{{ }}` vars** — a lintable, AST-resolved `@vars`/`ctx` templating layer for
-  SQL (no vars machinery exists today) (§5).
-- **Process-pool executor** — a `@model(executor="process")` opt-in mapping to a
-  `ProcessPoolExecutor` (handles serialise as engine refs + AST; results return as Arrow
-  IPC) (§3, §8).
-- **Latency SLOs** — the target envelope (200-OK p99 < 25 ms; POST→queryable p95 < 1 s;
-  POST→downstream start < 3 s) is a design goal, **not** a measured/tested guarantee (§9).
+Already shipped (do not look for these here): snapshots and virtual environments,
+column-pruned plan/apply, AST macros, `hash_merge`, indexes/constraints, `reset`,
+cross-process apply lock, fixture tests (`interlace test`), cron/interval/`watch`/
+webhook schedules, Postgres CDC, named `connections:` / `inputs:`, runtime
+`register_model`, MCP, inspect/preview, stream SSE consumers, event-log NDJSON,
+`interlace diff` (env/table compare), GitHub Action plan comment.
+
+### Next
+
+- **Seed/file content hash** — optional `watch:` of file bytes in the fingerprint so
+  editing a CSV is a real plan change (`schedule: {watch:}` is operational, not that).
+- **Typed `@vars` for model SQL** — path tokens (`${date}` / `${datetime}` /
+  `${workspace}`) exist; lintable AST-resolved vars inside SQL do not (§5).
+- **Live-validate MotherDuck**, then one of Snowflake / BigQuery. Adapters are wired
+  and dialect-correct but have not run against a live account (§4).
+- **macOS CI smoke** — `interlace init` + `apply` on the quickstart. Linux is what CI
+  runs today.
+- **Measured stream SLOs** — the envelope (200-OK p99 < 25 ms; POST→queryable p95 <
+  1 s; POST→downstream start < 3 s) is a design goal, not a test (§9). Group-commit
+  only if that envelope is missed.
+- **Hot-reload topology** — `serve` recompiles models on mtime; `cdc:` / `connections:`
+  / `engines:` still need a restart. Fail loudly on those yaml changes, or pick them up.
+  Document `.interlace/dynamic` vs git.
+
+### Later
+
+- **Sensor triggers** — freshness (table-staleness) and upstream-completion. Cron,
+  interval, file-watch, and inbound webhook already ship (§2.6, §10).
+- **SLA + alerting** — `@model(sla=…)`, `AlertRouter` to Slack/webhook/email, `alerts`
+  table, UI history (§10).
+- **Leader election / multi-node** — `leases` for singleton loops, Postgres
+  `SKIP LOCKED` + advisory locks + LISTEN/NOTIFY, multi-worker hosts (§10, §12).
+- **Postgres state/log backends + conformance suite** — OLTP control-plane swap
+  SQLite→Postgres. The `postgres` extra is already used for CDC and connections; it
+  does not yet back the store/queue/log (§6, §12).
+- **Spark `scd`/`full_merge`** — MERGE rewrite for Delta (subqueries in `UPDATE`/
+  `DELETE` are forbidden). Databricks `load()` needs a staged-COPY path (§4).
+- **Reverse-ETL SaaS connectors + delivery ledger** — `SinkConnector` beyond
+  `table`/`file` (§6).
+- **First-class streaming models** — `kind="incremental_stream"`, `on_stream`,
+  `ctx.stream_batch`. SSE consumer groups already ship; webhook/RabbitMQ/`__dlq`/
+  GCRA and a DBSP accelerator do not (§9).
+- **Broker stream-log backends** — Postgres, Redpanda/Kafka, NATS, Arrow-IPC
+  segments; `max_lag`; richer retention (§9.1).
+- **OIDC / JWKS** — browser SSO on top of API keys (§11).
+- **Iceberg / R2 sink** — Iceberg via DuckDB REST catalog (incl. Cloudflare R2 Data
+  Catalog) (§9).
+- **Process-pool executor** — `@model(executor="process")` (§3, §8).
+- **OpenLineage** emit from apply/run; a dlt-inside-`@model` template.
+
+### Not a product bet
+
+Semantic layer / MetricFlow; a package hub; arbitrary-Python-task orchestration;
+Kafka before a Postgres stream log; a DBSP engine; matching dbt-mcp's remote Fusion
+toolset.
 
 ---
 

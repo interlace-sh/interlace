@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+**`interlace diff` compares two environments or two tables.** Schema first, then a keyed
+row join (left-only / right-only / changed). Env mode is `--against staging`; table mode
+is `--source` / `--target`. Exit 1 when they differ.
+
+**GitHub Action comments the plan on a pull request.** Breaking models, reuse, and
+physical DDL. `interlace plan --markdown` is the same body. The Action replaces an
+earlier comment marked `<!-- interlace-plan -->`.
+
+**HTTP wire types live in `service/types.py`.** CLI, HTTP, and MCP share one
+`plan_and_apply` helper (lock, breaking/blocking gates, dynamic follow-up build).
+
 ## 2.6.0 (2026-09-26)
 
 **A run can register models and build them in the same apply.** A scheduled Python

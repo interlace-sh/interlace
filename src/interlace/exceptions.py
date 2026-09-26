@@ -42,6 +42,18 @@ class PlanError(InterlaceError):
     """A plan could not be computed or applied."""
 
 
+class BreakingPlanError(PlanError):
+    """The plan has breaking changes and ``force`` was not set."""
+
+    def __init__(self, names: list[str]) -> None:
+        listed = ", ".join(names)
+        super().__init__(
+            f"plan has breaking changes ({listed}); pass force to proceed",
+            details={"kind": "breaking", "names": names},
+        )
+        self.names = names
+
+
 class ExecutionError(InterlaceError):
     """A model failed while building (its query, its Python function, or the load)."""
 

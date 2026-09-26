@@ -1,5 +1,51 @@
 # Changelog
 
+## 2.6.0 (2026-09-26)
+
+**A run can register models and build them in the same apply.** A scheduled Python
+model may call `REGISTRY.register_model` while it runs. Those models are compiled
+and built before the apply returns. SQL definitions are written to
+`.interlace/dynamic/<name>.sql` only after that build succeeds, so a failed model
+does not land on disk or in the daemon graph. The next plan, the UI, and a restart
+load them from there. Re-registering the same name updates the SQL. A name that
+already comes from a source file cannot be replaced. A Python function registered
+this way is built in the current process only. The generator has to actually run
+(`interlace run`, or a schedule the scheduler force-runs); a plan of an unchanged
+fingerprint does not call it.
+
+**Named connections, file inputs, and Postgres CDC.** `connections:` names HTTP
+clients and Postgres DSNs a Python model reads while it builds. An unset `${VAR}`
+is a config error. `interlace connections` and `GET /connections` list names and
+types with secrets redacted. `inputs:` are DuckDB scans (parquet, csv, json, delta,
+iceberg) a model can `FROM`. `${date}`, `${datetime}`, and `${workspace}` expand in
+that path, and in a file materialisation path, when the file is read or written.
+`cdc:` reads a Postgres logical replication slot and appends each change to a
+`@stream`. The stored LSN advances only after those log offsets are committed.
+
+**Schedules can watch a glob or wait for a webhook.** `schedule: {watch: glob}`
+fires when the matched files change. `schedule: {webhook: name}` stays off the
+tick; `POST /hooks/{name}` enqueues that model. Cron and interval are unchanged.
+
+**Fixture tests.** `interlace test` builds the selected models in an ephemeral
+DuckDB and diffs them against `tests/golden/<model>.csv`. `tests/fixtures/<model>.csv`
+stands in for an upstream model. `--update-golden` rewrites the expected file.
+With neither goldens nor `--select`, the command exits 1. `POST /tests/run` is the
+same check.
+
+**Model preview, failing rows, and MCP.** Selecting a model opens its own page.
+The preview bar shows a row sample by default and the column profile on Schema.
+`GET /models/{name}/preview` and the rows a check rejected are on the API. A
+`relationships` preview joins the upstream table that was promoted, not the
+fingerprint the current source would build. `interlace mcp` speaks JSON-RPC on
+stdio so an agent can inspect and apply with confirm.
+
+**External consumers can tail a durable stream over SSE.** A group lease stays
+open with the connection. The offset moves only when the consumer commits it.
+A committed append wakes waiting reads instead of polling the log.
+
+**The operator event log can be mirrored as NDJSON.** `event_log_path` writes one
+JSON object per line after the SQLite commit. Unset by default.
+
 ## 2.5.0 (2026-09-24)
 
 **Indexes and constraints, separate from the data fingerprint.** A `virtual` or `table`

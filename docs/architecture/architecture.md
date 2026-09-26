@@ -726,7 +726,7 @@ src/interlace/
 
 | Package | Constraint | Why |
 |---|---|---|
-| `sqlglot` | `>=25.0,<31.0` | Canonical IR, transpilation, qualification/type annotation, semantic diff, column lineage. The single most load-bearing dep. |
+| `sqlglot` | `>=30.0,<31.0` | Canonical IR, transpilation, qualification/type annotation, semantic diff, column lineage. The single most load-bearing dep. |
 | `duckdb` | `>=1.5.3` | Default engine, federation hub, DuckLake, quack serving. |
 | `pyarrow` | `>=17.0` | The wire format; RecordBatchReader everywhere. |
 | `pydantic` v2 | `>=2.5,<3.0` | Config + manifest validation only (cold paths). |

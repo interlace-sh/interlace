@@ -1,0 +1,4 @@
+# Template metadata (read by `interlace init --list`; not copied into the project).
+title: Postgres CDC
+description: Follow a Docker Postgres table through a logical slot into a @stream, and fold it into a replica (needs Docker).
+requires_env: [postgres, service]

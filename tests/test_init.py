@@ -97,6 +97,26 @@ def test_events_template_compiles_as_a_streaming_project(tmp_path: Path) -> None
     assert {"events_by_minute", "events_by_type", "user_spend", "top_users"} <= set(compiled.models)
 
 
+def test_cdc_template_compiles_a_replica_over_the_slot(tmp_path: Path) -> None:
+    scaffold_project(tmp_path, name="shop", template="cdc")
+    assert (tmp_path / "docker-compose.yml").exists()
+    assert (tmp_path / "push.py").exists()
+    assert (tmp_path / "init" / "seed.sql").exists()
+    project = Project.load(tmp_path)
+    assert project.config.name == "shop"
+    source = project.config.cdc["orders"]
+    assert source.connection == "shop"
+    assert source.slot == "interlace_orders"
+    assert source.publication == "orders_pub"
+    assert source.tables == ["public.orders"]
+    assert source.stream == "orders"
+    assert "orders" in {stream.name for stream in project.streams}
+    compiled = project.compile()
+    replica = compiled.models["orders"]
+    assert replica.strategy == "full_merge" and replica.key == ("id",)
+    assert compiled.models["orders_by_status"].dependencies == ("orders",)
+
+
 def test_postgres_template_compiles_without_the_postgres_extra(tmp_path: Path) -> None:
     scaffold_project(tmp_path, name="pg", template="postgres")
     assert (tmp_path / "docker-compose.yml").exists()  # bundled seeded source db

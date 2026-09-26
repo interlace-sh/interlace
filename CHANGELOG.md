@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+**Postgres CDC starter.** `interlace init --template cdc` scaffolds a Docker Postgres
+with a logical slot, a `@stream` that follows it, and a `full_merge` replica.
+`pgoutput` values are text; the replica casts them.
+
+**Fix: Postgres CDC can read a slot on psycopg 3.** That driver has no replication
+cursor, so `start_replication` never ran. The daemon peeks `pgoutput` with
+`pg_logical_slot_peek_binary_changes` (Postgres 14+) and advances the slot only
+after the flush.
+
 ## 2.8.0 (2026-09-26)
 
 **Deleted models drop their environment view.** sqlglot 30's `DROP` names the object in

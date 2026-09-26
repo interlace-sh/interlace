@@ -31,7 +31,8 @@ def github_issues(cursor=None):
 ```
 
 `interlace init --template github` (a REST source) and `--template postgres` (a DB source, via
-psycopg) scaffold complete, runnable versions of this pattern.
+psycopg) scaffold complete, runnable versions of this pattern. Following a Postgres table
+as it changes, rather than polling it, is `--template cdc` — see [streaming](streaming.md).
 
 ## Incremental and idempotent
 

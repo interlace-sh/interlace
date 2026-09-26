@@ -1,0 +1,21 @@
+name: __PROJECT_NAME__
+default_dialect: duckdb
+# The replica lands in a local DuckDB file. `interlace serve` holds that file;
+# query through the daemon (POST /query or /ui) while it is running.
+database: .interlace/warehouse.duckdb
+
+connections:
+  shop:
+    type: postgres
+    # The bundled docker-compose publishes this. Edit it to follow your own database.
+    dsn: postgresql://interlace:interlace@localhost:5457/shop
+
+# `interlace serve` reads this slot and appends each change to the `orders` stream.
+# The slot and publication are created by init/seed.sql; interlace does not create them.
+cdc:
+  orders:
+    connection: shop
+    slot: interlace_orders
+    publication: orders_pub
+    tables: [public.orders]
+    stream: orders

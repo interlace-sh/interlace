@@ -106,13 +106,20 @@ The policy for fields that don't match the declared schema:
 ## Postgres CDC
 
 A `cdc:` block on a `postgres` connection reads a logical replication slot
-(`pgoutput`) and appends each change to a declared `@stream`. Deletes are a row
-whose `_change` column is `delete`, so a downstream `merge` can drop them.
-Inserts and updates use `insert` and `update`. The stored LSN advances only after
-`flush_streams` has committed those log offsets: a crash re-reads from the last
-confirmed LSN (at-least-once into the log, exactly-once into the warehouse, same
-as HTTP publish). The daemon does this while `interlace serve` is running. The
-slot and publication are created in Postgres; interlace does not create them.
+(`pgoutput`) and appends each change to a declared `@stream`. Inserts, updates,
+and deletes arrive as rows whose `_change` column is `insert`, `update`, or
+`delete`. Every value is text — that is how `pgoutput` encodes a tuple — so the
+stream schema uses string fields and a downstream model casts them. The stored
+LSN advances only after `flush_streams` has committed those log offsets: a crash
+re-reads from the last confirmed LSN (at-least-once into the log, exactly-once
+into the warehouse, same as HTTP publish). The daemon does this while
+`interlace serve` is running. The slot and publication are created in Postgres;
+interlace does not create them.
+
+`interlace init --template cdc` scaffolds a runnable copy: Docker Postgres
+(`wal_level=logical`), the slot and publication, the stream, and a `full_merge`
+replica that keeps the latest change per key and drops deletes. Reading the slot
+needs Postgres 14 or newer.
 
 ```yaml
 connections:

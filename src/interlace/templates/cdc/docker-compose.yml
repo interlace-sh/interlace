@@ -1,0 +1,29 @@
+# A throwaway Postgres with logical replication, seeded on first boot from ./init/*.sql.
+#   docker compose up -d --wait   # Postgres on :5457 (5455 is the dev db, 5456 the pull template)
+#   interlace serve               # the slot is copied into the orders stream
+#   python push.py                # insert / update / delete, and watch the replica follow
+#   docker compose down -v        # stop and wipe
+services:
+  source-db:
+    image: postgres:18
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    environment:
+      POSTGRES_USER: interlace
+      POSTGRES_PASSWORD: interlace
+      POSTGRES_DB: shop
+    ports:
+      - "5457:5432"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U interlace -d shop"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

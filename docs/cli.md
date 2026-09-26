@@ -24,6 +24,7 @@ credentials it needs. Filesystem only. Bundled templates:
 | `events` | Durable `@stream` HTTP ingestion + exactly-once live rollups | `[service]` extra to run |
 | `github` | Incremental pull of GitHub issues via the REST source client | `[sources]` extra |
 | `postgres` | Incremental pull from a Postgres source (bundled seeded docker-compose) | Docker + `[postgres]` extra |
+| `cdc` | Follow a Docker Postgres table through a logical slot into a `@stream` and a `full_merge` replica | Docker + `[postgres,service]` extras |
 
 ### `interlace plan [--env] [--select] [--forward-only] [--json] [--markdown]`
 Preview what `apply` would change in an environment, without building. Connects to the

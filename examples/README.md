@@ -25,6 +25,7 @@ interlace init my_pipe --template github       # a specific template
 | [`events`](../src/interlace/templates/events/) | `interlaced[service]` | Durable HTTP event ingestion — a `@stream` with exactly-once rollups — run under `interlace serve`. Shows the streaming pillar end to end. |
 | [`github`](../src/interlace/templates/github/) | `interlaced[sources]` | Pull GitHub issues incrementally via the REST source client: a real API landed as an ordinary table you can model on (a `merge` source keyed on a cursor). |
 | [`postgres`](../src/interlace/templates/postgres/) | Docker + `interlaced[postgres]` | Incrementally pull from a Postgres source; a bundled `docker-compose` seeds a database to pull from. Shows a keyed incremental DB source. |
+| [`cdc`](../src/interlace/templates/cdc/) | Docker + `interlaced[postgres,service]` | Follow a Docker Postgres table through a logical slot into a `@stream`, and fold the changelog into a `full_merge` replica. |
 
 ## Reference projects — read these
 

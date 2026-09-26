@@ -133,6 +133,8 @@ async def test_live_slot_appends_and_confirms_after_flush(tmp_path: Path) -> Non
         offsets = await publish_changes(log, store, "probe", changes)
         assert await store.cdc_confirmed_lsn("probe") is None
         assert await confirm_flushed(store, "probe", max(offsets)) == changes[-1].lsn
+        reader.feedback(changes[-1].lsn)
+        assert reader.poll(changes[-1].lsn, limit=20) == []
     finally:
         reader.close()
         await log.close()

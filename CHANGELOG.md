@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.7.0 (2026-09-26)
 
 **`interlace diff` compares two environments or two tables.** Schema first, then a keyed
 row join (left-only / right-only / changed). Env mode is `--against staging`; table mode

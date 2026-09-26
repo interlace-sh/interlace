@@ -12,7 +12,7 @@ from sqlglot import exp, parse_one
 
 from interlace.engines.base import EngineCaps
 from interlace.exceptions import DefinitionError
-from interlace.ir.relation import TableRef
+from interlace.ir.relation import TableRef, drop
 from interlace.physical.spec import ConstraintSpec, IndexSpec, PhysicalObject
 
 _INDEX_FALLBACK = frozenset({"primary_key", "unique", "foreign_key"})
@@ -69,10 +69,10 @@ def create_statements(
     objects: tuple[PhysicalObject, ...],
     *,
     dialect: str,
-) -> list[exp.Expression]:
+) -> list[exp.Expr]:
     """CREATE/ALTER statements for ``objects``, in declaration order."""
     wanted = {obj.name: obj for obj in objects}
-    statements: list[exp.Expression] = []
+    statements: list[exp.Expr] = []
     for index in indexes:
         obj = wanted.get(index.object_name(model))
         if obj is not None and obj.kind == "index":
@@ -90,21 +90,21 @@ def create_statements(
     return statements
 
 
-def drop_statement(table: TableRef, obj: PhysicalObject, dialect: str) -> exp.Expression:
+def drop_statement(table: TableRef, obj: PhysicalObject, dialect: str) -> exp.Expr:
     """Drop one recorded object. DuckDB index names are catalog-qualified; Postgres indexes are not."""
     if obj.kind == "index":
         catalog = table.catalog if dialect == "duckdb" else None
-        return exp.Drop(this=exp.table_(obj.name, db=table.schema, catalog=catalog), kind="INDEX", exists=True)
+        return drop(exp.table_(obj.name, db=table.schema, catalog=catalog), kind="INDEX")
     if obj.kind == "not_null" and obj.column:
         return _set_not_null(table, obj.column, drop=True)
     return exp.Alter(
         this=table.to_expr(),
         kind="TABLE",
-        actions=[exp.Drop(this=exp.to_identifier(obj.name), kind="CONSTRAINT", exists=True)],
+        actions=[drop(exp.to_identifier(obj.name), kind="CONSTRAINT")],
     )
 
 
-def _create_index(table: TableRef, name: str, columns: tuple[str, ...], unique: bool) -> exp.Expression:
+def _create_index(table: TableRef, name: str, columns: tuple[str, ...], unique: bool) -> exp.Expr:
     return exp.Create(
         this=exp.Index(
             this=exp.to_identifier(name),
@@ -117,7 +117,7 @@ def _create_index(table: TableRef, name: str, columns: tuple[str, ...], unique: 
     )
 
 
-def _set_not_null(table: TableRef, column: str, *, drop: bool) -> exp.Expression:
+def _set_not_null(table: TableRef, column: str, *, drop: bool) -> exp.Expr:
     return exp.Alter(
         this=table.to_expr(),
         kind="TABLE",
@@ -125,7 +125,7 @@ def _set_not_null(table: TableRef, column: str, *, drop: bool) -> exp.Expression
     )
 
 
-def _add_constraint(table: TableRef, name: str, spec: ConstraintSpec, dialect: str) -> exp.Expression:
+def _add_constraint(table: TableRef, name: str, spec: ConstraintSpec, dialect: str) -> exp.Expr:
     return exp.Alter(
         this=table.to_expr(),
         kind="TABLE",
@@ -139,7 +139,7 @@ def _add_constraint(table: TableRef, name: str, spec: ConstraintSpec, dialect: s
     )
 
 
-def _constraint_body(spec: ConstraintSpec, dialect: str) -> exp.Expression:
+def _constraint_body(spec: ConstraintSpec, dialect: str) -> exp.Expr:
     if spec.type == "primary_key":
         return exp.PrimaryKey(expressions=[exp.to_identifier(column) for column in spec.columns])
     if spec.type == "unique":

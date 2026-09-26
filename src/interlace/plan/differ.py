@@ -80,7 +80,7 @@ def _fold(name: str) -> str:
     return name.lower()
 
 
-def _projection_map(ast: exp.Expression | None) -> dict[str, str] | None:
+def _projection_map(ast: exp.Expr | None) -> dict[str, str] | None:
     """Map folded output column name -> canonical expression SQL for a simple
     SELECT, or None if undeterminable."""
     if not isinstance(ast, exp.Select):
@@ -112,7 +112,7 @@ def _positional_hazard(ast: exp.Select) -> bool:
 
 
 def _direct_impact(
-    previous_sql: str | None, ast: exp.Expression | None
+    previous_sql: str | None, ast: exp.Expr | None
 ) -> tuple[tuple[str, ...] | None, frozenset[str] | None]:
     """Prove what a direct change did to the model's output: ``(added, touched)``.
 
@@ -175,7 +175,7 @@ def _direct_impact(
     return None, (None if leaky else frozenset(changed))
 
 
-def _selects_star(ast: exp.Expression | None) -> bool:
+def _selects_star(ast: exp.Expr | None) -> bool:
     """Whether the model's output can inherit new upstream columns."""
     if ast is None:
         return True  # Python models read whole upstream tables
@@ -190,7 +190,7 @@ def _selects_star(ast: exp.Expression | None) -> bool:
     return False
 
 
-def _consumed_columns(ast: exp.Expression | None, dependency: str) -> frozenset[str] | None:
+def _consumed_columns(ast: exp.Expr | None, dependency: str) -> frozenset[str] | None:
     """The folded columns of ``dependency`` that ``ast`` provably reads, or None
     when attribution is impossible (Python models, ``*`` / COLUMNS projections,
     NATURAL joins, unqualified references in a multi-source query) — None means

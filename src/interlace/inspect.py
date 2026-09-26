@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from sqlglot import exp
 
@@ -165,8 +165,8 @@ def _unavailable(model: CompiledModel) -> str:
     return "not built in this environment yet — apply first"
 
 
-async def _read(engine: EngineAdapter, query: exp.Expression, limit: int) -> Tabular:
-    bounded = exp.select(exp.Star()).from_(cast("exp.Query", query).subquery("_preview")).limit(limit + 1)
+async def _read(engine: EngineAdapter, query: exp.Query, limit: int) -> Tabular:
+    bounded = exp.select(exp.Star()).from_(query.subquery("_preview")).limit(limit + 1)
     reader = await engine.fetch(bounded)
     table = await asyncio.to_thread(reader.read_all)
     names = list(table.column_names)
@@ -182,7 +182,7 @@ async def _read(engine: EngineAdapter, query: exp.Expression, limit: int) -> Tab
 
 
 def _profile_query(table: TableRef, columns: list[str], *, bounds: bool) -> exp.Select:
-    selected: list[exp.Expression] = [exp.alias_(exp.Count(this=exp.Star()), "n")]
+    selected: list[exp.Expr] = [exp.alias_(exp.Count(this=exp.Star()), "n")]
     for index, name in enumerate(columns):
         column = exp.column(name)
         selected.append(exp.alias_(exp.Count(this=column), f"p{index}"))

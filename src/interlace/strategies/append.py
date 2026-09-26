@@ -10,7 +10,6 @@ a first delivery it binds positionally against the table the ensure just created
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from sqlglot import exp
 
@@ -34,16 +33,16 @@ class Append(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         query = relation.ast
         table = table_expr(target)
         ensure = exp.Create(
             this=table.copy(),
             kind="TABLE",
             exists=True,
-            expression=exp.select("*").from_(cast("exp.Query", query.copy()).subquery("_s")).limit(0),
+            expression=exp.select("*").from_(query.copy().subquery("_s")).limit(0),
         )
-        into: exp.Expression = table.copy()
+        into: exp.Expr = table.copy()
         if columns:  # aligned against an existing target: bind by name, leave the rest to DEFAULT
             into = exp.Schema(this=table.copy(), expressions=[exp.column(c) for c in columns])
         insert = exp.Insert(this=into, expression=query.copy())

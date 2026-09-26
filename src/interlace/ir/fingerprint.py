@@ -21,7 +21,7 @@ from sqlglot import exp
 _FP_LEN = 16
 
 
-def canonical_sql(ast: exp.Expression) -> str:
+def canonical_sql(ast: exp.Expr) -> str:
     """Render an AST to a stable, comment-free, normalised string for hashing."""
     return ast.sql(comments=False, normalize=True, pretty=False)
 
@@ -37,7 +37,7 @@ def _digest(*parts: str) -> str:
 
 def data_fingerprint(
     *,
-    query: str | exp.Expression,
+    query: str | exp.Expr,
     strategy_config: dict[str, Any],
     upstream_fingerprints: list[str],
 ) -> str:
@@ -46,7 +46,7 @@ def data_fingerprint(
     ``query`` is the canonical SQL for SQL models, or the dedented function
     source for Python models (produced by the caller via ``inspect.getsource``).
     """
-    sql = canonical_sql(query) if isinstance(query, exp.Expression) else query
+    sql = canonical_sql(query) if isinstance(query, exp.Expr) else query
     return _digest(sql, _stable_json(strategy_config), *sorted(upstream_fingerprints))
 
 

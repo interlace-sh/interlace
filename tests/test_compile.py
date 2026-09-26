@@ -72,3 +72,10 @@ def test_cycle_in_models_is_rejected() -> None:
     models = [sql_model("a", "SELECT * FROM b"), sql_model("b", "SELECT * FROM a")]
     with pytest.raises(DependencyError):
         compile_models(models)
+
+
+def test_a_model_must_be_a_query() -> None:
+    from interlace.exceptions import CompilationError
+
+    with pytest.raises(CompilationError, match="must be a query"):
+        compile_models([sql_model("gone", "DROP TABLE IF EXISTS main.gone")])

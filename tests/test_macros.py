@@ -141,7 +141,9 @@ def test_one_definition_renders_per_dialect() -> None:
     assert "subtotal / 100" in ast.sql("duckdb")
     # Postgres would do integer division on `/`, so sqlglot casts first — the exact
     # thing dbt's postgres__cents_to_dollars exists to hand-write
-    assert "CAST(subtotal AS DOUBLE PRECISION) / NULLIF(100, 0)" in ast.sql("postgres")
+    pg = ast.sql("postgres")
+    assert "CAST(subtotal AS DOUBLE PRECISION)" in pg
+    assert "/ 100" in pg
     assert "AS NUMERIC" in ast.sql("bigquery")
 
 

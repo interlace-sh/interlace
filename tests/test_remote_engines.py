@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
-import sqlglot
 
 from interlace.engines.adbc import arrow_type_name
 from interlace.engines.base import EngineCaps
@@ -28,7 +27,7 @@ _TARGET = TableRef(schema="s", name="t")
 
 
 def _rel(sql: str) -> SqlRelation:
-    return SqlRelation(ast=sqlglot.parse_one(sql))
+    return SqlRelation.from_sql(sql)
 
 
 def test_dialects_and_capabilities() -> None:

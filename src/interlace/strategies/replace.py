@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from sqlglot import exp
 
 from interlace.engines.base import EngineCaps
-from interlace.ir.relation import SqlRelation, TableRef
+from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.state.interval import Interval
 from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
 
@@ -28,12 +28,12 @@ class Replace(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         table = table_expr(target)
         if caps.supports_create_or_replace:
             return [exp.Create(this=table, kind="TABLE", replace=True, expression=relation.ast)]
         return [
-            exp.Drop(this=table, kind="TABLE", exists=True),
+            drop(table, kind="TABLE"),
             exp.Create(this=table, kind="TABLE", expression=relation.ast),
         ]
 

@@ -38,7 +38,7 @@ from interlace.engines.base import EngineAdapter, statement_of
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, ExecutionError, InterlaceError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.ir.relation import SqlRelation, TableRef
+from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.physical.reconcile import model_objects, object_changes, reconcile_statements
 from interlace.physical.spec import PhysicalObject
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
@@ -144,7 +144,7 @@ async def _merge_python_output(
 
     strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
     source: exp.Query = exp.select("*").from_(stage_table.copy())
-    pre_statements: list[exp.Expression] = []
+    pre_statements: list[exp.Expr] = []
     columns: list[str] | None = None
     if exists:
         alignment = await _align_stage_to_target(engine, stage, target, strategy)
@@ -161,7 +161,7 @@ async def _merge_python_output(
         # staged output, since there is no query to probe the way a SQL model has.
         interval = await _bootstrap_window(model, exp.select("*").from_(stage_table.copy()), engine)
     statements = strategy.plan_statements(relation, target, engine.caps, interval, columns)
-    drop_stage = exp.Drop(this=stage_table.copy(), kind="TABLE", exists=True)
+    drop_stage = drop(stage_table.copy(), kind="TABLE")
     counts = await engine.execute_all([*pre_statements, *statements, drop_stage])
     written = strategy.row_counts(counts[len(pre_statements) : len(pre_statements) + len(statements)])
     return written, interval
@@ -179,7 +179,7 @@ class Alignment:
     alone on an update and takes its DEFAULTs on an insert. ``unproduced`` names the
     difference — target columns this model has no value for."""
 
-    pre_statements: list[exp.Expression]
+    pre_statements: list[exp.Expr]
     source: exp.Query
     columns: list[str]
     produced_source: exp.Query
@@ -218,7 +218,7 @@ async def _align_stage_to_target(
             details={"target": target.to_expr().sql(), "columns": clash},
         )
     target_expr = target.to_expr()
-    pre_statements: list[exp.Expression] = []
+    pre_statements: list[exp.Expr] = []
     added: list[str] = []
     for column, dtype in stage_columns.items():
         if column not in target_columns:
@@ -247,8 +247,8 @@ async def _align_stage_to_target(
     # Any remaining type mismatch (e.g. a numeric field arriving as VARCHAR) is cast
     # to the target's type — deterministic, and loudly fails the run on values that
     # genuinely don't convert rather than silently corrupting the column.
-    projection: list[exp.Expression] = []
-    produced_projection: list[exp.Expression] = []
+    projection: list[exp.Expr] = []
+    produced_projection: list[exp.Expr] = []
     produced: list[str] = []
     unproduced: list[str] = []
     casts: list[str] = []
@@ -259,7 +259,7 @@ async def _align_stage_to_target(
             continue
         if stage_columns[column] != dtype:
             casts.append(f"{column} {stage_columns[column]} -> {dtype}")
-            fitted: exp.Expression = exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column)
+            fitted: exp.Expr = exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column)
         else:
             fitted = exp.column(column)
         projection.append(fitted)
@@ -314,7 +314,7 @@ async def _physical_ddl(
     previous: tuple[PhysicalObject, ...],
     *,
     same_table: bool,
-) -> tuple[list[exp.Expression], tuple[PhysicalObject, ...], list[str]]:
+) -> tuple[list[exp.Expr], tuple[PhysicalObject, ...], list[str]]:
     """Statements that reconcile interlace-owned indexes and constraints, plus the set to record.
 
     ``same_table`` is false for a brand-new snapshot table: the previous table's
@@ -335,7 +335,7 @@ def _remember(notes: list[str] | None, warning: str) -> None:
 async def _deliver_table(
     model: CompiledModel,
     engine: EngineAdapter,
-    resolved: exp.Expression,
+    resolved: exp.Query,
     strategy: Strategy,
     interval: Interval | None,
     previous: tuple[PhysicalObject, ...] = (),
@@ -392,7 +392,7 @@ async def _deliver_table(
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
     try:
-        pre_statements: list[exp.Expression]
+        pre_statements: list[exp.Expr]
         aligned: exp.Query
         columns: list[str] | None
         if policy == "ignore":
@@ -454,7 +454,7 @@ async def _deliver_table(
         # leftover is harmless — the next delivery CREATE OR REPLACEs it).
         counts = await engine.execute_all([*pre_statements, *ddl, *statements])
     finally:
-        await engine.execute(exp.Drop(this=stage.to_expr(), kind="TABLE", exists=True))
+        await engine.execute(drop(stage.to_expr(), kind="TABLE"))
     return strategy.row_counts(counts[len(pre_statements) + len(ddl) :]), objects
 
 
@@ -530,7 +530,7 @@ async def _attach_transfer(
     return True
 
 
-async def _bootstrap_window(model: CompiledModel, resolved: exp.Expression, engine: EngineAdapter) -> Interval | None:
+async def _bootstrap_window(model: CompiledModel, resolved: exp.Query, engine: EngineAdapter) -> Interval | None:
     """The initial backfill window for a fresh incremental table: the source's
     time-column range (one aggregate scan over the resolved query), floored/
     ceiled to the model's grain and filled as ONE covering interval. ``backfill:
@@ -1077,6 +1077,6 @@ async def apply(
                 # along with the model — the DEMOTE below must still happen, or the
                 # removal never settles and every later apply fails right here
                 adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
-                await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+                await adapter.execute(drop(view, kind="VIEW"))
         await state.demote(plan.environment, [c.name for c in removed])
     return result

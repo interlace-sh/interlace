@@ -10,7 +10,6 @@ stages and aligns the source to the target's column order before delivery.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from sqlglot import exp
 
@@ -30,14 +29,14 @@ class ReplaceInPlace(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         query = relation.ast
         table = table_expr(target)
         ensure = exp.Create(
             this=table.copy(),
             kind="TABLE",
             exists=True,
-            expression=exp.select("*").from_(cast("exp.Query", query.copy()).subquery("_s")).limit(0),
+            expression=exp.select("*").from_(query.copy().subquery("_s")).limit(0),
         )
         wipe = exp.Delete(this=table.copy())  # empty in place, never drop
         insert = exp.Insert(this=table.copy(), expression=query.copy())

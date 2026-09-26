@@ -33,7 +33,7 @@ and the new logic applies going forward.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from sqlglot import exp
 
@@ -62,13 +62,13 @@ class Scd(Strategy):
         self.key = key
         self.time_column = time_column
 
-    def _valid_from(self) -> exp.Expression:
+    def _valid_from(self) -> exp.Expr:
         """A fresh node for the validity-start value: the event time, or now()."""
         if self.time_column:
             return exp.cast(exp.column(self.time_column), "TIMESTAMP")
         return exp.CurrentTimestamp()
 
-    def _open_columns(self, query: exp.Expression, caps: EngineCaps) -> list[str] | None:
+    def _open_columns(self, query: exp.Query, caps: EngineCaps) -> list[str] | None:
         """The model's own output columns, for projecting open rows without star-EXCLUDE.
 
         ``None`` when the engine has ``SELECT * EXCLUDE`` (we use it — and it copes with
@@ -77,7 +77,7 @@ class Scd(Strategy):
         can't be enumerated there and raises a clear error."""
         if caps.supports_star_exclude:
             return None
-        projections = cast("exp.Query", query).selects
+        projections = query.selects
         names = [projection.alias_or_name for projection in projections]
         if not names or any(isinstance(p, exp.Star) or not n for p, n in zip(projections, names, strict=True)):
             raise PlanError(
@@ -93,18 +93,18 @@ class Scd(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         query = relation.ast
         table = table_expr(target)
         open_cols = self._open_columns(query, caps)  # None -> use SELECT * EXCLUDE
 
         def source() -> exp.Select:  # fresh nodes each use
-            return exp.select("*").from_(cast("exp.Query", query.copy()).subquery("_s"))
+            return exp.select("*").from_(query.copy().subquery("_s"))
 
         def open_rows() -> exp.Select:  # current rows, projected to the source's shape
             # SELECT * EXCLUDE(validity) where the engine has it; otherwise enumerate the
             # model's own columns explicitly — same projection, no star-exclude needed.
-            selection: list[exp.Expression] = (
+            selection: list[exp.Expr] = (
                 [exp.Star(except_=[exp.column(VALID_FROM), exp.column(VALID_TO)])]
                 if open_cols is None
                 else [exp.column(c) for c in open_cols]
@@ -115,7 +115,7 @@ class Scd(Strategy):
             fresh = exp.Except(this=source(), expression=open_rows(), distinct=True)
             return exp.Subquery(this=fresh, alias=exp.TableAlias(this="_fresh"))
 
-        key_expr: exp.Expression = (
+        key_expr: exp.Expr = (
             exp.column(self.key[0]) if len(self.key) == 1 else exp.Tuple(expressions=[exp.column(k) for k in self.key])
         )
 
@@ -128,7 +128,7 @@ class Scd(Strategy):
                 exp.alias_(self._valid_from(), VALID_FROM),
                 exp.alias_(_null_timestamp(), VALID_TO),
             )
-            .from_(cast("exp.Query", query.copy()).subquery("_s"))
+            .from_(query.copy().subquery("_s"))
             .limit(0),
         )
 
@@ -138,7 +138,7 @@ class Scd(Strategy):
         # physically last on a table scd created in one shot: an additive ALTER (the
         # model grew a column) appends the new column AFTER them, and a positional
         # insert would then write it into _valid_from.
-        into: exp.Expression = table.copy()
+        into: exp.Expr = table.copy()
         if columns is not None:
             written = [*(c for c in columns if c not in self.managed_columns), VALID_FROM, VALID_TO]
             into = exp.Schema(this=table.copy(), expressions=[exp.column(c) for c in written])
@@ -150,13 +150,13 @@ class Scd(Strategy):
 
     def _closes(
         self,
-        query: exp.Expression,
+        query: exp.Query,
         table: exp.Table,
         target: TableRef,
-        key_expr: exp.Expression,
+        key_expr: exp.Expr,
         source: Callable[[], exp.Select],
         open_rows: Callable[[], exp.Select],
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         """The UPDATE(s) that close open rows the source no longer matches."""
         if not self.time_column:
             # One UPDATE closes both changed and vanished keys at processing time.
@@ -178,7 +178,7 @@ class Scd(Strategy):
         # time (join to `fresh`, which holds exactly the new versions); a vanished key
         # has no succeeding event, so close it at processing time.
         fresh = exp.Except(this=source(), expression=open_rows(), distinct=True)
-        join_on: exp.Expression | None = exp.column(VALID_TO, table=target.name).is_(exp.Null())
+        join_on: exp.Expr | None = exp.column(VALID_TO, table=target.name).is_(exp.Null())
         for k in self.key:
             match = exp.EQ(this=exp.column(k, table=target.name), expression=exp.column(k, table="_f"))
             join_on = exp.and_(join_on, match)
@@ -190,7 +190,7 @@ class Scd(Strategy):
         close_changed.set("from_", exp.From(this=exp.Subquery(this=fresh, alias=exp.TableAlias(this="_f"))))
         close_changed.set("where", exp.Where(this=join_on))
 
-        source_keys = exp.select(*self.key).from_(cast("exp.Query", query.copy()).subquery("_s"))
+        source_keys = exp.select(*self.key).from_(query.copy().subquery("_s"))
         close_vanished = exp.Update(
             this=table.copy(),
             expressions=[exp.EQ(this=exp.column(VALID_TO), expression=exp.CurrentTimestamp())],

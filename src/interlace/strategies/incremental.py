@@ -22,7 +22,6 @@ The grain (``interval`` config) lives with the planner, not here.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from sqlglot import exp
 
@@ -60,16 +59,16 @@ class Incremental(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         if interval is None:
             raise PlanError("incremental requires an interval to process")
         query = relation.ast
         table = table_expr(target)
 
         def derived() -> exp.Subquery:
-            return cast("exp.Query", query.copy()).subquery("_s")
+            return query.copy().subquery("_s")
 
-        def window() -> exp.Expression:
+        def window() -> exp.Expr:
             column = exp.column(self.time_column)
             return exp.And(
                 this=exp.GTE(this=column.copy(), expression=exp.Literal.string(interval.start.isoformat())),

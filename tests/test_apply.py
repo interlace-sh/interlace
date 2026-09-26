@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-import sqlglot
 from conftest import fetch_rows as _rows
 
 from interlace.dsl.decorators import ModelDef
@@ -230,7 +229,7 @@ async def test_merge_upserts_across_runs(env: tuple[DuckDBAdapter, SqliteStateSt
     caps = EngineCaps(supports_create_or_replace=True)
 
     def relation(sql: str) -> SqlRelation:
-        return SqlRelation(ast=sqlglot.parse_one(sql))
+        return SqlRelation.from_sql(sql)
 
     await engine.execute_all(
         strategy.plan_statements(relation("SELECT * FROM (VALUES (1, 'a'), (2, 'b')) v(id, name)"), target, caps)

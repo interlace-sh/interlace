@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
-import sqlglot
 
 from interlace.dsl.decorators import ModelDef
 from interlace.engines.base import EngineCaps
@@ -47,7 +46,7 @@ requires_pg = pytest.mark.skipif(not _pg_available(), reason="no reachable Postg
 
 
 def _relation(sql: str, dialect: str = "postgres") -> SqlRelation:
-    return SqlRelation(ast=sqlglot.parse_one(sql))
+    return SqlRelation.from_sql(sql)
 
 
 @pytest.mark.unit

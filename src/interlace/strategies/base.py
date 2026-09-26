@@ -73,7 +73,7 @@ class Strategy(ABC):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         """Return canonical-dialect ASTs; the engine adapter transpiles them.
 
         ``columns`` is the target's aligned column order when apply already knows it

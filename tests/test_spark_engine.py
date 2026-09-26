@@ -12,7 +12,6 @@ from collections.abc import Iterator
 
 import pyarrow as pa
 import pytest
-import sqlglot
 
 from interlace.engines.base import EngineCaps
 from interlace.engines.spark import spark_type_name
@@ -63,16 +62,14 @@ def test_spark_type_mapping() -> None:
 def test_merge_and_scd_transpile_to_spark() -> None:
     target = TableRef(schema="s", name="t")
     merge = Merge(("id",)).plan_statements(
-        SqlRelation(ast=sqlglot.parse_one("SELECT id, v FROM src")),
+        SqlRelation.from_sql("SELECT id, v FROM src"),
         target,
         EngineCaps(supports_merge=True),
         None,
         columns=["id", "v"],
     )
     assert merge[0].sql(dialect="spark").startswith("MERGE INTO")
-    scd = Scd(("id",)).plan_statements(
-        SqlRelation(ast=sqlglot.parse_one("SELECT id, tier FROM src")), target, EngineCaps()
-    )
+    scd = Scd(("id",)).plan_statements(SqlRelation.from_sql("SELECT id, tier FROM src"), target, EngineCaps())
     for statement in scd:  # scd enumerates (no star-EXCLUDE) — must render in the spark dialect
         assert statement.sql(dialect="spark")
 
@@ -122,7 +119,7 @@ async def test_merge_upserts_natively_in_spark(spark_engine) -> None:
     engine = spark_engine
     await engine.create_schema("s")
     await engine.load(TableRef(schema="s", name="dim"), pa.table({"id": [1, 2], "v": ["a", "b"]}).to_reader(), "create")
-    src = SqlRelation(ast=sqlglot.parse_one("SELECT * FROM VALUES (2, 'B'), (3, 'c') AS s(id, v)"))
+    src = SqlRelation.from_sql("SELECT * FROM VALUES (2, 'B'), (3, 'c') AS s(id, v)")
     statements = Merge(("id",)).plan_statements(src, TableRef(schema="s", name="dim"), engine.caps, None, ["id", "v"])
     assert engine.transpile(statements[0]).startswith("MERGE INTO")  # native single-statement path
     await engine.execute_all(statements)
@@ -149,7 +146,7 @@ async def test_incremental_windows_in_spark(spark_engine) -> None:
     await engine.create_schema("w")
     target = TableRef(schema="w", name="events")
     strategy = Incremental("ts")
-    query = SqlRelation(ast=sqlglot.parse_one("SELECT * FROM VALUES (CAST('2026-01-01' AS DATE), 5) AS e(ts, n)"))
+    query = SqlRelation.from_sql("SELECT * FROM VALUES (CAST('2026-01-01' AS DATE), 5) AS e(ts, n)")
     window = Interval(datetime(2026, 1, 1), datetime(2026, 1, 2))
     await engine.execute_all(strategy.plan_statements(query, target, engine.caps, window))
     await engine.execute_all(strategy.plan_statements(query, target, engine.caps, window))  # rerun = idempotent

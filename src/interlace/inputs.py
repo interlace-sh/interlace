@@ -85,7 +85,7 @@ def reject_inputs_on_other_engines(
 def _referenced_inputs(ast: object, names: set[str]) -> list[str]:
     from sqlglot import exp as expression
 
-    if not isinstance(ast, expression.Expression):
+    if not isinstance(ast, expression.Expr):
         return []
     found: list[str] = []
     for ref in table_references(ast):

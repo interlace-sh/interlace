@@ -40,4 +40,21 @@ class SqlRelation:
     leaves this form — the engine adapter transpiles the AST at execution time, so
     no data is materialised until a strategy or sink runs a single statement."""
 
-    ast: exp.Expression
+    ast: exp.Query
+
+    @classmethod
+    def from_sql(cls, sql: str, dialect: str = "duckdb") -> SqlRelation:
+        from interlace.ir.canonicalize import as_query, parse
+
+        return cls(ast=as_query(parse(sql, dialect)))
+
+
+def drop(target: TableRef | exp.Expr, *, kind: str, exists: bool = True) -> exp.Drop:
+    """DROP TABLE/VIEW/INDEX/CONSTRAINT.
+
+    sqlglot 30 names the object in ``tables``, not ``this``. ``Expr.__init__`` still
+    stores a ``this=`` kwarg, but the generator only reads ``tables``, so
+    ``DROP VIEW IF EXISTS`` renders with no target. Always go through this helper.
+    """
+    node = target.to_expr() if isinstance(target, TableRef) else target
+    return exp.Drop(tables=[node], kind=kind, exists=exists)

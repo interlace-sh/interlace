@@ -45,7 +45,7 @@ def _insert_schema(schema: dict[str, Any], model_name: str, columns: dict[str, s
     node[leaf] = columns
 
 
-def _model_lineage(ast: exp.Expression, schema: dict[str, Any], dialect: str) -> ColumnSources | None:
+def _model_lineage(ast: exp.Expr, schema: dict[str, Any], dialect: str) -> ColumnSources | None:
     try:
         qualified = qualify(ast.copy(), schema=schema, dialect=dialect)
     except Exception:

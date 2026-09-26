@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import cast
 
 from sqlglot import exp
 
@@ -254,15 +253,15 @@ async def _count(engine: EngineAdapter, table: TableRef) -> int:
     return int(arrow.column(0)[0].as_py() or 0)
 
 
-async def _count_query(engine: EngineAdapter, query: exp.Expression) -> int:
-    wrapped = exp.select(exp.alias_(exp.Count(this=exp.Star()), "n")).from_(cast("exp.Query", query).subquery("_n"))
+async def _count_query(engine: EngineAdapter, query: exp.Query) -> int:
+    wrapped = exp.select(exp.alias_(exp.Count(this=exp.Star()), "n")).from_(query.subquery("_n"))
     reader = await engine.fetch(wrapped)
     table = await asyncio.to_thread(reader.read_all)
     return int(table.column(0)[0].as_py() or 0)
 
 
-async def _sample(engine: EngineAdapter, query: exp.Expression, limit: int) -> list[dict[str, object]]:
-    bounded = exp.select(exp.Star()).from_(cast("exp.Query", query).subquery("_diff")).limit(limit)
+async def _sample(engine: EngineAdapter, query: exp.Query, limit: int) -> list[dict[str, object]]:
+    bounded = exp.select(exp.Star()).from_(query.subquery("_diff")).limit(limit)
     reader = await engine.fetch(bounded)
     table = await asyncio.to_thread(reader.read_all)
     return [{name: json_cell(row[name]) for name in table.column_names} for row in table.to_pylist()]
@@ -295,7 +294,7 @@ def _changed(left: TableRef, right: TableRef, keys: list[str], compared: list[st
     return exp.select(*selected).from_(ltab).join(rtab, on=on, join_type="INNER").where(predicate)
 
 
-def _join_on(left_alias: str, right_alias: str, keys: list[str]) -> exp.Expression:
+def _join_on(left_alias: str, right_alias: str, keys: list[str]) -> exp.Expr:
     parts = [
         exp.EQ(this=exp.column(name, table=left_alias), expression=exp.column(name, table=right_alias)) for name in keys
     ]

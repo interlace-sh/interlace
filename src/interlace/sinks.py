@@ -69,7 +69,7 @@ def target_ref(target: str) -> TableRef:
     )
 
 
-def file_statements(fmt: str, query: exp.Expression, resolved_path: str, dialect: str) -> list[exp.Expression]:
+def file_statements(fmt: str, query: exp.Expr, resolved_path: str, dialect: str) -> list[exp.Expr]:
     """Build the ``COPY (...) TO`` that writes ``query`` to a file (overwrite)."""
     if fmt not in FILE_FORMATS:
         raise PlanError(f"unsupported file format: {fmt!r}", details={"format": fmt})

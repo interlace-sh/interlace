@@ -35,7 +35,6 @@ statements atomically.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from sqlglot import exp
 
@@ -67,7 +66,7 @@ class Merge(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         query = relation.ast
         if columns:
             if caps.supports_merge:
@@ -75,11 +74,11 @@ class Merge(Strategy):
             return self._update_insert(query, target, columns)
         return self._delete_insert(query, target)
 
-    def _merge(self, query: exp.Expression, target: TableRef, columns: Sequence[str]) -> exp.Merge:
+    def _merge(self, query: exp.Query, target: TableRef, columns: Sequence[str]) -> exp.Merge:
         """One ``MERGE INTO`` upsert over ``columns`` — the model's own columns, in the
         target's order. Columns outside the list are neither set nor inserted."""
         tgt = exp.table_(target.name, db=target.schema, catalog=target.catalog, alias=_TARGET)
-        source = cast("exp.Query", query.copy()).subquery(_SOURCE)
+        source = query.copy().subquery(_SOURCE)
         on = self._key_predicate(_TARGET)
 
         key_set = set(self.key)
@@ -99,16 +98,16 @@ class Merge(Strategy):
         )
         return exp.Merge(this=tgt, using=source, on=on, whens=exp.Whens(expressions=whens))
 
-    def _key_predicate(self, table_alias: str) -> exp.Expression:
+    def _key_predicate(self, table_alias: str) -> exp.Expr:
         """``<table>.k = _s.k`` ANDed across the key."""
-        match: exp.Expression | None = None
+        match: exp.Expr | None = None
         for k in self.key:
             eq = exp.column(k, table=table_alias).eq(exp.column(k, table=_SOURCE))
             match = eq if match is None else exp.and_(match, eq)
         assert match is not None  # the constructor rejects an empty key
         return match
 
-    def _unmatched(self, target: TableRef) -> exp.Expression:
+    def _unmatched(self, target: TableRef) -> exp.Expr:
         """``NOT EXISTS (SELECT 1 FROM target WHERE target.k = _s.k)`` — the source rows
         with no target row for their key.
 
@@ -118,7 +117,7 @@ class Merge(Strategy):
         probe = exp.select(exp.Literal.number(1)).from_(table_expr(target)).where(self._key_predicate(target.name))
         return exp.Not(this=exp.Exists(this=probe))
 
-    def _update_insert(self, query: exp.Expression, target: TableRef, columns: Sequence[str]) -> list[exp.Expression]:
+    def _update_insert(self, query: exp.Query, target: TableRef, columns: Sequence[str]) -> list[exp.Expr]:
         """The portable in-place upsert: UPDATE matched keys, INSERT unmatched ones.
 
         Both statements name ``columns`` explicitly, so — unlike ``_delete_insert`` —
@@ -134,9 +133,9 @@ class Merge(Strategy):
         table = table_expr(target)
 
         def derived() -> exp.Subquery:  # a fresh "(<query>) AS _s" each time
-            return cast("exp.Query", query.copy()).subquery(_SOURCE)
+            return query.copy().subquery(_SOURCE)
 
-        statements: list[exp.Expression] = []
+        statements: list[exp.Expr] = []
         non_key = [c for c in columns if c not in set(self.key)]
         if non_key:  # a key-only table has nothing to update on a match — INSERT only
             update = exp.Update(
@@ -156,11 +155,11 @@ class Merge(Strategy):
         statements.append(insert)
         return statements
 
-    def _delete_insert(self, query: exp.Expression, target: TableRef) -> list[exp.Expression]:
+    def _delete_insert(self, query: exp.Query, target: TableRef) -> list[exp.Expr]:
         table = table_expr(target)
 
         def derived() -> exp.Subquery:  # a fresh "(<query>) AS _s" each time (no shared nodes)
-            return cast("exp.Query", query.copy()).subquery("_s")
+            return query.copy().subquery("_s")
 
         ensure = exp.Create(
             this=table.copy(),
@@ -169,7 +168,7 @@ class Merge(Strategy):
             expression=exp.select("*").from_(derived()).limit(0),
         )
         key_source = exp.select(*self.key).from_(derived())
-        left: exp.Expression = (
+        left: exp.Expr = (
             exp.column(self.key[0]) if len(self.key) == 1 else exp.Tuple(expressions=[exp.column(k) for k in self.key])
         )
         delete = exp.Delete(

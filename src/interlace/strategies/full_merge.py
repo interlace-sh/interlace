@@ -21,7 +21,6 @@ apply runs the statements atomically.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from sqlglot import exp
 
@@ -47,12 +46,12 @@ class FullMerge(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         query = relation.ast
         table = table_expr(target)
 
         def source() -> exp.Select:  # fresh nodes each use
-            return exp.select("*").from_(cast("exp.Query", query.copy()).subquery("_s"))
+            return exp.select("*").from_(query.copy().subquery("_s"))
 
         def current() -> exp.Select:
             return exp.select("*").from_(table.copy())
@@ -61,7 +60,7 @@ class FullMerge(Strategy):
             fresh = exp.Except(this=source(), expression=current(), distinct=True)
             return exp.select(*self.key).from_(exp.Subquery(this=fresh, alias=exp.TableAlias(this="_fresh")))
 
-        key_expr: exp.Expression = (
+        key_expr: exp.Expr = (
             exp.column(self.key[0]) if len(self.key) == 1 else exp.Tuple(expressions=[exp.column(k) for k in self.key])
         )
 
@@ -76,7 +75,7 @@ class FullMerge(Strategy):
             this=table.copy(), where=exp.Where(this=exp.In(this=key_expr, query=exp.Subquery(this=fresh_keys())))
         )
         # keys absent from the source were deleted upstream
-        source_keys = exp.select(*self.key).from_(cast("exp.Query", query.copy()).subquery("_s"))
+        source_keys = exp.select(*self.key).from_(query.copy().subquery("_s"))
         delete_missing = exp.Delete(
             this=table.copy(),
             where=exp.Where(

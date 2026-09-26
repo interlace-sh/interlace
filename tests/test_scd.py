@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-import sqlglot
 from sqlglot import exp
 
 from interlace.engines.base import EngineCaps
@@ -18,7 +17,7 @@ TARGET = TableRef(schema="main", name="dim_customers")
 
 
 def _relation(sql: str) -> SqlRelation:
-    return SqlRelation(ast=sqlglot.parse_one(sql))
+    return SqlRelation.from_sql(sql)
 
 
 def _source(rows: list[tuple[int, str, str]]) -> str:
@@ -93,7 +92,7 @@ async def test_scd_event_time_windows_follow_the_data() -> None:
 
     def src(rows: list[tuple[int, str, str]]) -> SqlRelation:
         values = ", ".join(f"({i}, '{tier}', '{ts}')" for i, tier, ts in rows)
-        return SqlRelation(ast=sqlglot.parse_one(f"SELECT * FROM (VALUES {values}) AS t (id, tier, ts)"))
+        return SqlRelation.from_sql(f"SELECT * FROM (VALUES {values}) AS t (id, tier, ts)")
 
     await engine.execute_all(
         strategy.plan_statements(src([(1, "gold", "2024-01-01"), (2, "silver", "2024-01-02")]), TARGET, engine.caps)

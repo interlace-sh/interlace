@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.8.0 (2026-09-26)
+
+**Deleted models drop their environment view.** sqlglot 30's `DROP` names the object in
+`tables=`, not `this=` — `this=` rendered as `DROP VIEW IF EXISTS` with no name, and
+apply swallowed that, so a removed model kept serving. `drop()` is the constructor.
+The IR node type is `exp.Expr`; a model is a `Query`.
+
+**Dependencies.** sqlglot 29 → 30. Dev and service extras track current mypy / ruff /
+uvicorn / typer. The Spark extra allows Spark 4.2 and Delta 4.4. CI covers Python 3.14.
+
 ## 2.7.0 (2026-09-26)
 
 **`interlace diff` compares two environments or two tables.** Schema first, then a keyed

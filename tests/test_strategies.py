@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-import sqlglot
 
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef
@@ -18,7 +17,7 @@ _TARGET = TableRef(schema="interlace__main", name="orders__abc")
 
 
 def _relation() -> SqlRelation:
-    return SqlRelation(ast=sqlglot.parse_one("SELECT 1 AS x"))
+    return SqlRelation.from_sql("SELECT 1 AS x")
 
 
 def _sql(statements: list) -> list[str]:
@@ -36,6 +35,17 @@ def test_replace_falls_back_to_drop_and_create() -> None:
         "DROP TABLE IF EXISTS interlace__main.orders__abc",
         "CREATE TABLE interlace__main.orders__abc AS SELECT 1 AS x",
     ]
+
+
+def test_sqlglot30_drop_ignores_this_and_drop_helper_names_the_table() -> None:
+    """sqlglot 30 stores ``this=`` but the generator only emits ``tables=``."""
+    from sqlglot import exp
+
+    from interlace.ir.relation import drop
+
+    silent = exp.Drop(this=_TARGET.to_expr(), kind="TABLE", exists=True).sql(dialect="duckdb")
+    assert silent == "DROP TABLE IF EXISTS"
+    assert drop(_TARGET, kind="TABLE").sql(dialect="duckdb") == "DROP TABLE IF EXISTS interlace__main.orders__abc"
 
 
 def test_view_strategy_creates_a_view() -> None:
@@ -126,9 +136,7 @@ def test_merge_row_counts_native_is_a_single_written_count() -> None:
 
 
 def test_hash_merge_builds_ensure_update_insert() -> None:
-    statements = HashMerge(("id",)).plan_statements(
-        SqlRelation(ast=sqlglot.parse_one("SELECT id, v FROM src")), _TARGET, _CAPS
-    )
+    statements = HashMerge(("id",)).plan_statements(SqlRelation.from_sql("SELECT id, v FROM src"), _TARGET, _CAPS)
     rendered = _sql(statements)
     assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
     # MD5 over the non-key columns, each NULL-normalised and joined on a separator.
@@ -148,7 +156,7 @@ def test_hash_merge_names_its_insert_columns_when_aligned() -> None:
     """With a column list (an existing target, which may carry columns this model does
     not produce) the insert binds by name and leaves the rest to their DEFAULTs."""
     statements = HashMerge(("id",)).plan_statements(
-        SqlRelation(ast=sqlglot.parse_one("SELECT id, v FROM src")), _TARGET, _CAPS, columns=["id", "v"]
+        SqlRelation.from_sql("SELECT id, v FROM src"), _TARGET, _CAPS, columns=["id", "v"]
     )
     assert _sql(statements)[2].startswith("INSERT INTO interlace__main.orders__abc (id, v, _hash) SELECT * FROM")
 
@@ -171,7 +179,7 @@ def test_hash_merge_needs_explicit_columns_for_select_star() -> None:
     from interlace.exceptions import PlanError
 
     with pytest.raises(PlanError):  # the hash is built from the projection — SELECT * can't be enumerated
-        HashMerge(("id",)).plan_statements(SqlRelation(ast=sqlglot.parse_one("SELECT * FROM src")), _TARGET, _CAPS)
+        HashMerge(("id",)).plan_statements(SqlRelation.from_sql("SELECT * FROM src"), _TARGET, _CAPS)
 
 
 def test_resolve_strategy_hash_merge() -> None:

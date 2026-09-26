@@ -18,12 +18,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlglot import exp
-
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.graph.project import PHYSICAL_SCHEMA_PREFIX
-from interlace.ir.relation import TableRef
+from interlace.ir.relation import TableRef, drop
 from interlace.plan.plan import XFER_SCHEMA
 from interlace.state.store import SqliteStateStore
 from interlace.streaming.log import StreamLog
@@ -89,7 +87,7 @@ async def _drop_relation(adapter: EngineAdapter, schema: str, name: str) -> None
     if not rows:
         return  # already gone
     kind = "VIEW" if str(rows[0]["table_type"]).upper() == "VIEW" else "TABLE"
-    await adapter.execute(exp.Drop(this=exp.table_(name, db=schema), kind=kind, exists=True))
+    await adapter.execute(drop(TableRef(schema=schema, name=name), kind=kind))
 
 
 async def rollback_environment(
@@ -163,7 +161,7 @@ async def rollback_environment(
             snapshot = gone.get((name, current[name]))
             adapter = registry.require(snapshot.engine if snapshot is not None else registry.default)
             view = env_view(environment, name)
-            await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+            await adapter.execute(drop(view, kind="VIEW"))
 
     await state.set_environment(environment, mapping)
     return {"environment": environment, "generation": target, "repointed": repointed, "removed_views": removed}
@@ -192,7 +190,7 @@ async def drop_environment(
         engine_name = snapshot.engine if snapshot is not None else registry.default
         view = env_view(environment, model)
         adapter = registry.require(engine_name)
-        await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+        await adapter.execute(drop(view, kind="VIEW"))
         dropped.append(f"{engine_name}:{view.schema}.{view.name}")
         if environment != PRODUCTION_ENV:  # never touch the natural schemas
             schemas.setdefault(engine_name, set()).add(view.schema)
@@ -289,7 +287,7 @@ async def reset(
             engine_name = snapshot.engine if snapshot is not None else registry.default
             view = env_view(environment, model)
             adapter = registry.require(engine_name)
-            await adapter.execute(exp.Drop(this=exp.table_(view.name, db=view.schema), kind="VIEW", exists=True))
+            await adapter.execute(drop(view, kind="VIEW"))
     for engine_name, names in sandbox_schemas.items():
         adapter = registry.require(engine_name)
         for schema in sorted(names):
@@ -359,9 +357,7 @@ async def gc(
     for staged in result.swept_staging:
         engine_name, rest = staged.split(":", 1)
         schema, name = rest.split(".", 1)
-        await registry.require(engine_name).execute(
-            exp.Drop(this=exp.table_(name, db=schema), kind="TABLE", exists=True)
-        )
+        await registry.require(engine_name).execute(drop(TableRef(schema=schema, name=name), kind="TABLE"))
 
     # Re-check right before dropping: a concurrent apply in ANOTHER process may have
     # recorded a rebuild-skip reuse row over one of these tables after our transaction

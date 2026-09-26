@@ -8,8 +8,6 @@ pruning and the ``impact`` command).
 
 from __future__ import annotations
 
-from typing import cast
-
 import sqlglot
 from sqlglot import exp
 
@@ -17,7 +15,7 @@ from interlace.exceptions import CompilationError
 from interlace.ir.relation import TableRef
 
 
-def is_star_projection(projection: exp.Expression) -> bool:
+def is_star_projection(projection: exp.Expr) -> bool:
     """Whether a SELECT projection expands the row — a bare ``*`` or ``t.*`` (and
     DuckDB ``COLUMNS(...)``) — as opposed to a ``*`` that is merely a function
     argument, like the one in ``count(*)`` (which projects a single named column).
@@ -29,7 +27,7 @@ def is_star_projection(projection: exp.Expression) -> bool:
     )
 
 
-def parse(sql: str, dialect: str = "duckdb") -> exp.Expression:
+def parse(sql: str, dialect: str = "duckdb") -> exp.Expr:
     """Parse a single SQL statement in the given dialect into a sqlglot AST."""
     try:
         parsed = sqlglot.parse_one(sql, dialect=dialect)
@@ -46,7 +44,22 @@ def parse(sql: str, dialect: str = "duckdb") -> exp.Expression:
     return parsed
 
 
-def table_references(ast: exp.Expression) -> list[str]:
+def as_query(ast: exp.Expr, *, what: str = "SQL") -> exp.Query:
+    """Narrow an AST to a SELECT/UNION query.
+
+    sqlglot 30's ``Expr`` is the universal node type; ``Query`` is a separate trait
+    (``Select`` inherits both). ``.subquery()`` / ``.selects`` / ``.with_()`` live on
+    ``Query``, not on ``Expr``.
+    """
+    if isinstance(ast, exp.Query):
+        return ast
+    raise CompilationError(
+        f"{what} must be a query (SELECT/UNION/...), not {type(ast).__name__}",
+        details={"node": type(ast).__name__},
+    )
+
+
+def table_references(ast: exp.Expr) -> list[str]:
     """Return the distinct real table references in an AST, excluding CTE names.
 
     Each reference is keyed as ``db.name`` (or ``name`` when unqualified). CTE
@@ -66,7 +79,7 @@ def table_references(ast: exp.Expression) -> list[str]:
     return refs
 
 
-def resolve_references(ast: exp.Expression, mapping: dict[str, TableRef]) -> exp.Expression:
+def resolve_references(ast: exp.Expr, mapping: dict[str, TableRef]) -> exp.Expr:
     """Rewrite model-name table references to their physical tables (returns a new AST).
 
     ``mapping`` is keyed by dependency model name; a reference matches by its
@@ -76,7 +89,7 @@ def resolve_references(ast: exp.Expression, mapping: dict[str, TableRef]) -> exp
     if not mapping:
         return ast
 
-    def rewrite(node: exp.Expression) -> exp.Expression:
+    def rewrite(node: exp.Expr) -> exp.Expr:
         if isinstance(node, exp.Table):
             key = f"{node.db}.{node.name}" if node.db else node.name
             target = mapping.get(key) or mapping.get(node.name)
@@ -88,5 +101,4 @@ def resolve_references(ast: exp.Expression, mapping: dict[str, TableRef]) -> exp
                 node.set("catalog", exp.to_identifier(target.catalog) if target.catalog else None)
         return node
 
-    # sqlglot 29 loosened transform()'s return annotation; it is an Expression.
-    return cast("exp.Expression", ast.transform(rewrite))
+    return ast.transform(rewrite)

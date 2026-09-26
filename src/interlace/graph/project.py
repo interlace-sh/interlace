@@ -21,7 +21,7 @@ from interlace.checks.spec import CheckSpec
 from interlace.dsl.decorators import CheckDef, ModelDef, ModelFn
 from interlace.exceptions import CompilationError, DefinitionError
 from interlace.graph.dag import DependencyGraph
-from interlace.ir.canonicalize import parse, table_references
+from interlace.ir.canonicalize import as_query, parse, table_references
 from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint, physical_fingerprint
 from interlace.ir.macros import Macro, expand_macros
 from interlace.ir.relation import TableRef
@@ -61,7 +61,7 @@ class CompiledModel:
     path: str | None  # output path for materialise: file
     format: str | None  # csv | parquet | json for materialise: file
     environments: tuple[str, ...]  # which environments actually deliver a terminal model
-    ast: exp.Expression | None  # parsed SQL, or None for Python models
+    ast: exp.Query | None  # parsed SQL, or None for Python models
     owner: str | None = None  # surfaced in the catalog/API (metadata, not fingerprinted into data)
     description: str | None = None
     fn: ModelFn | None = None  # the Python model function (source is fingerprinted; None for SQL)
@@ -103,7 +103,7 @@ def _physical_table(name: str, fingerprint: str, catalog: str | None) -> TableRe
 
 def _resolve_dependencies(
     model: ModelDef, names: set[str], default_dialect: str, macros: Mapping[str, Macro]
-) -> tuple[tuple[str, ...], exp.Expression | None, str]:
+) -> tuple[tuple[str, ...], exp.Query | None, str]:
     dialect = model.dialect or default_dialect
     deps: list[str] = []
     seen: set[str] = set()
@@ -116,10 +116,10 @@ def _resolve_dependencies(
     for explicit in model.depends_on:
         add(explicit)
 
-    ast: exp.Expression | None = None
+    ast: exp.Query | None = None
     if model.sql is not None:
         try:
-            ast = parse(model.sql, dialect)
+            ast = as_query(parse(model.sql, dialect), what=f"model {model.name}")
         except CompilationError as exc:  # name the offending model so the error is actionable
             raise CompilationError(
                 f"model {model.name!r}: {exc.message}", details={**exc.details, "model": model.name}
@@ -127,7 +127,7 @@ def _resolve_dependencies(
         # Before anything reads the AST: the fingerprint is canonical SQL, so expanding
         # here is what makes a macro edit rebuild its callers, and what lets a macro body
         # reference a model and have that count as a dependency.
-        ast = expand_macros(ast, macros, model.name)
+        ast = as_query(expand_macros(ast, macros, model.name), what=f"model {model.name}")
         for ref in table_references(ast):
             if ref in names:
                 add(ref)
@@ -145,7 +145,7 @@ def _resolve_dependencies(
     return tuple(deps), ast, dialect
 
 
-def _fingerprint_query(model: ModelDef, ast: exp.Expression | None) -> str | exp.Expression:
+def _fingerprint_query(model: ModelDef, ast: exp.Query | None) -> str | exp.Query:
     if ast is not None:
         return ast
     if model.fn is not None:
@@ -176,7 +176,7 @@ def compile_models(
     dialects_by_engine = engine_dialects or {}
     engines = known_engines
 
-    resolved: dict[str, tuple[tuple[str, ...], exp.Expression | None, str, str]] = {}
+    resolved: dict[str, tuple[tuple[str, ...], exp.Query | None, str, str]] = {}
     graph = DependencyGraph()
     for name, definition in definitions.items():
         engine = definition.engine or default_engine
@@ -242,7 +242,7 @@ def compile_models(
         }
         query = _fingerprint_query(definition, ast)
         # render the canonical SQL once: it feeds both fingerprints and definition_sql
-        canonical = canonical_sql(query) if isinstance(query, exp.Expression) else query
+        canonical = canonical_sql(query) if isinstance(query, exp.Expr) else query
         local_fingerprint = data_fingerprint(query=canonical, strategy_config=strategy_config, upstream_fingerprints=[])
         fingerprint = data_fingerprint(
             query=canonical,

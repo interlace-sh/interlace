@@ -44,7 +44,7 @@ _SYSTEM_RELATION = re.compile(r"^(pragma_|duckdb_)", re.IGNORECASE)
 _SAFE_TABLE_FUNCTIONS = frozenset({"generate_series"})
 
 
-def _fn_name(node: exp.Expression) -> str | None:
+def _fn_name(node: exp.Expr) -> str | None:
     if isinstance(node, exp.Anonymous):
         return str(node.this).lower()
     if isinstance(node, exp.Func):
@@ -67,7 +67,7 @@ def _reject_file_like_identifier(table: exp.Table) -> None:
         raise QueryError("file paths are not queryable — read tables, not files")
 
 
-def guard_readonly(parsed: exp.Expression) -> None:
+def guard_readonly(parsed: exp.Expr) -> None:
     """Reject anything a read-only query must never do — table functions, file paths,
     and file/network readers. Raises :class:`QueryError`."""
     for table in parsed.find_all(exp.Table):
@@ -83,7 +83,7 @@ def guard_readonly(parsed: exp.Expression) -> None:
             raise QueryError(f"function {name!r} reads outside the warehouse — not allowed")
 
 
-def prepare_readonly(sql: str, dialect: str, limit: int) -> tuple[exp.Expression, int]:
+def prepare_readonly(sql: str, dialect: str, limit: int) -> tuple[exp.Expr, int]:
     """Parse and fence one read-only ``SELECT``; return (bounded AST, effective row cap).
 
     The AST is ``SELECT * FROM (<query>) LIMIT cap + 1`` so a caller can tell a full

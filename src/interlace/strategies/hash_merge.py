@@ -26,7 +26,7 @@ missing column surface as a binder error).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from sqlglot import exp
 
@@ -54,13 +54,13 @@ class HashMerge(Strategy):
     def writes_named_columns(self) -> bool:
         return True
 
-    def _payload_columns(self, query: exp.Expression, columns: Sequence[str] | None) -> list[str]:
+    def _payload_columns(self, query: exp.Query, columns: Sequence[str] | None) -> list[str]:
         """The non-key columns the hash is built from — the model's own columns as apply
         aligned them when it knows them, else read off the query's projections."""
         key_set = set(self.key)
         if columns is not None:
             return [c for c in columns if c not in key_set and c != HASH_COLUMN]
-        projections = cast("exp.Query", query).selects
+        projections = query.selects
         names = [p.alias_or_name for p in projections]
         if not names or any(isinstance(p, exp.Star) or not n for p, n in zip(projections, names, strict=True)):
             raise PlanError(
@@ -68,7 +68,7 @@ class HashMerge(Strategy):
             )
         return [n for n in names if n not in key_set]
 
-    def _hash_expr(self, payload: Sequence[str]) -> exp.Expression:
+    def _hash_expr(self, payload: Sequence[str]) -> exp.Expr:
         """``MD5(CONCAT_WS('||', COALESCE(CAST(col AS VARCHAR), '')...))`` over the
         payload columns. COALESCE so a NULL never collapses the separator layout."""
         if not payload:  # key-only table: nothing to compare, a constant hash (never "changes")
@@ -83,17 +83,17 @@ class HashMerge(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expression]:
+    ) -> list[exp.Expr]:
         query = relation.ast
         table = table_expr(target)
         payload = self._payload_columns(query, columns)
 
         def source_hashed() -> exp.Select:  # the model's rows + a computed _hash; fresh nodes each use
-            inner = cast("exp.Query", query.copy()).subquery("_src")
+            inner = query.copy().subquery("_src")
             return exp.select(exp.Star(), exp.alias_(self._hash_expr(payload), HASH_COLUMN)).from_(inner)
 
-        def key_match() -> exp.Expression:  # target.k = _s.k, ANDed across the key
-            match: exp.Expression | None = None
+        def key_match() -> exp.Expr:  # target.k = _s.k, ANDed across the key
+            match: exp.Expr | None = None
             for k in self.key:
                 eq = exp.column(k, table=target.name).eq(exp.column(k, table=_SOURCE))
                 match = eq if match is None else exp.and_(match, eq)
@@ -129,7 +129,7 @@ class HashMerge(Strategy):
             .from_(exp.Subquery(this=source_hashed(), alias=exp.TableAlias(this=_SOURCE)))
             .where(unmatched)
         )
-        into: exp.Expression = table.copy()
+        into: exp.Expr = table.copy()
         if columns is not None:
             written = [*(c for c in columns if c != HASH_COLUMN), HASH_COLUMN]  # source_hashed's order
             into = exp.Schema(this=table.copy(), expressions=[exp.column(c) for c in written])

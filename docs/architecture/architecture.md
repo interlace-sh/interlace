@@ -1,7 +1,7 @@
 # Interlace — Architecture & Design
 
 *Written during the 2026 rebuild of the 0.x line. This is the design rationale and
-the contract for the platform now shipping as **v2.7** (`interlaced` on PyPI). Short
+the contract for the platform now shipping as **v2.8** (`interlaced` on PyPI). Short
 *current state* notes in each section record where the implementation actually stands;
 a consolidated **Roadmap** section (§14) lists what is designed but not yet built, ranked
 Now / Next / Later. When this document says "we do X", read it as the shipped behaviour
@@ -28,6 +28,10 @@ The framework's internal contract is deliberately independent of any dataframe l
 
 - **sqlglot** is the most load-bearing dependency: parsing, qualification, type
   annotation, transpilation across dialects, semantic diff, and column lineage.
+  v30 split the AST: `exp.Expr` is the universal node; `Expression` is a
+  constructible subclass; `Query` / `Condition` are parallel traits (a `Select`
+  is both). `.subquery()` lives on `Query`. `DROP` names its target in `tables=`
+  — construct it with `interlace.ir.relation.drop`.
 - **Arrow** is the only interchange format. pandas never appears in core (optional
   extra only).
 - **ibis** is not used. Its two roles are both covered without it: as a data plane it
@@ -47,9 +51,9 @@ returns Arrow (§3).
 
 ### 2.1 `Relation` — what a model produces
 
-An SQL model is a qualified, type-annotated sqlglot AST tagged with the engine that can
-evaluate it natively (`SqlRelation`). A Python model produces Arrow record batches. The
-schema is always known — declared or inferred.
+An SQL model is a `SqlRelation` — a sqlglot `Query` tagged with the engine that can
+evaluate it natively. A Python model produces Arrow record batches. The schema is
+always known — declared or inferred.
 
 ### 2.2 `EngineAdapter` — the only place dialect-specific code lives
 
@@ -58,7 +62,7 @@ class EngineAdapter(ABC):
     dialect: str                             # sqlglot dialect name
     caps: EngineCaps                         # feature flags for strategy fallbacks
 
-    async def execute(self, ast: exp.Expression) -> None: ...
+    async def execute(self, ast: exp.Expr) -> None: ...
     async def fetch(self, ast) -> pa.RecordBatchReader: ...        # extract: engine → Arrow
     async def load(self, table, reader, mode: Literal["create","append"]) -> int: ...  # Arrow → engine
     async def create_view(self, name, target) -> None: ...
@@ -108,7 +112,7 @@ backfill tasks (column-impact-narrowed, §6), the explicit cross-engine transfer
 ```python
 class Strategy(ABC):
     def plan_statements(self, rel, target, caps: EngineCaps,
-                        interval: Interval | None = None) -> list[exp.Expression]:
+                        interval: Interval | None = None) -> list[exp.Expr]:
         """Return canonical-dialect ASTs. The adapter transpiles. NEVER returns strings."""
 ```
 
@@ -722,7 +726,7 @@ src/interlace/
 
 | Package | Constraint | Why |
 |---|---|---|
-| `sqlglot` | `>=25.0,<30.0` | Canonical IR, transpilation, qualification/type annotation, semantic diff, column lineage. The single most load-bearing dep. |
+| `sqlglot` | `>=25.0,<31.0` | Canonical IR, transpilation, qualification/type annotation, semantic diff, column lineage. The single most load-bearing dep. |
 | `duckdb` | `>=1.5.3` | Default engine, federation hub, DuckLake, quack serving. |
 | `pyarrow` | `>=17.0` | The wire format; RecordBatchReader everywhere. |
 | `pydantic` v2 | `>=2.5,<3.0` | Config + manifest validation only (cold paths). |
@@ -741,7 +745,7 @@ Logging is the **standard library `logging`** — there is no `structlog` depend
 - **`adbc`** — the Postgres and Redshift engines via Arrow-native ADBC
   (`adbc-driver-manager`, `adbc-driver-postgresql`). **`adbc-snowflake`** / **`adbc-bigquery`**
   add those (alpha) drivers.
-- **`spark`** — the Spark engine (beta): `pyspark` + `delta-spark` (Spark 4.0 / Delta 4.0),
+- **`spark`** — the Spark engine (beta): `pyspark` + `delta-spark` (Spark 4.0–4.2 / Delta 4.4),
   a `SparkSession` transport rather than ADBC.
 - **`postgres`** — `psycopg[binary]`, used today by `cdc:` (logical replication into a
   `@stream`) and `connections:` of type `postgres`. A Postgres *control-plane* store

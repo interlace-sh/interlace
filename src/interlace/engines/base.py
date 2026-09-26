@@ -83,11 +83,11 @@ class EngineAdapter(ABC):
     caps: EngineCaps
 
     @abstractmethod
-    async def execute(self, ast: exp.Expression) -> None:
+    async def execute(self, ast: exp.Expr) -> None:
         """Run a statement (DDL/DML) with no result set."""
 
     @abstractmethod
-    async def fetch(self, ast: exp.Expression) -> pa.RecordBatchReader:
+    async def fetch(self, ast: exp.Expr) -> pa.RecordBatchReader:
         """Extract: evaluate a query and stream the result as Arrow batches."""
 
     @abstractmethod
@@ -123,7 +123,7 @@ class EngineAdapter(ABC):
         """Whether the table (or view) exists. Adapters override with a direct probe."""
         return bool(await self.describe(table))
 
-    async def execute_all(self, statements: Sequence[exp.Expression]) -> list[int]:
+    async def execute_all(self, statements: Sequence[exp.Expr]) -> list[int]:
         """Run statements in order; returns affected-row counts per statement (0 when
         unknown). Override to make the batch atomic (one transaction)."""
         for statement in statements:
@@ -138,7 +138,7 @@ class EngineAdapter(ABC):
         """Evaluate one raw SQL query written in this engine's dialect."""
         return await self.fetch(sqlglot.parse_one(sql, read=self.dialect))
 
-    async def fetch_sandboxed(self, ast: exp.Expression) -> pa.RecordBatchReader:
+    async def fetch_sandboxed(self, ast: exp.Expr) -> pa.RecordBatchReader:
         """Like :meth:`fetch`, but for untrusted queries (the HTTP query console):
         the engine must not touch anything outside the warehouse — no local files,
         no network. The engine cannot always enforce that itself (DuckDB's
@@ -150,6 +150,6 @@ class EngineAdapter(ABC):
         to add defence in depth."""
         return await self.fetch(ast)
 
-    def transpile(self, ast: exp.Expression) -> str:
+    def transpile(self, ast: exp.Expr) -> str:
         """Canonical AST -> this engine's SQL. The one place dialect leaks back in."""
         return ast.sql(dialect=self.dialect)

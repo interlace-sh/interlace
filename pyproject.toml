@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interlaced"
-version = "2.7.0"
+version = "2.8.0"
 description = "Python and SQL models in one DAG. Transformation, orchestration and durable streaming in one process, on DuckDB and Postgres."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,6 +19,8 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
     "Topic :: Database",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: SQL",
     # Linux is what CI runs and what this is developed on. Nothing in the codebase
     # is platform-specific, but macOS and Windows are untested — see the README.
@@ -28,7 +30,7 @@ classifiers = [
 # Core: the IR + engine + state + plan spine (Phase 1). Everything is Arrow- and
 # sqlglot-native. See docs/architecture/architecture.md.
 dependencies = [
-    "sqlglot>=25.0,<30.0",        # canonical IR, transpilation, semantic diff, column lineage
+    "sqlglot>=25.0,<31.0",        # canonical IR, transpilation, semantic diff, column lineage
     "duckdb>=1.5.3",              # default engine + federation hub; DuckLake storage + quack serving
     "pyarrow>=17.0",              # the wire format: RecordBatchReader everywhere
     "pydantic>=2.5,<3.0",         # config + manifest validation (cold paths only)
@@ -67,8 +69,8 @@ adbc = [
 adbc-snowflake = ["interlaced[adbc]", "adbc-driver-snowflake>=1.2,<2.0"]
 adbc-bigquery = ["interlaced[adbc]", "adbc-driver-bigquery>=1.2,<2.0"]
 # Spark engine: PySpark session transport (Arrow-native), Delta for mutating strategies.
-# Pinned to the Spark 4.0 / Delta 4.0 pair (Delta lags the latest Spark minor).
-spark = ["pyspark>=4.0,<4.1", "delta-spark>=4.0,<4.1"]
+# Delta 4.4 supports Spark 4.0.1–4.2.0.
+spark = ["pyspark>=4.0,<4.3", "delta-spark>=4.0,<4.5"]
 postgres = ["psycopg[binary]>=3.1,<4.0"]
 polars = ["polars>=1.0,<2.0"]
 pandas = ["pandas>=2.0,<4.0"]

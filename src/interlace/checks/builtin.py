@@ -22,6 +22,7 @@ from sqlglot import exp, parse_one
 
 from interlace.checks.spec import CheckSpec
 from interlace.exceptions import DefinitionError
+from interlace.ir.canonicalize import as_query
 from interlace.ir.relation import TableRef
 
 _FAILURES = "failures"
@@ -36,11 +37,11 @@ def _table(ref: TableRef) -> exp.Table:
     return exp.table_(ref.name, db=ref.schema or None, catalog=ref.catalog)
 
 
-def _count_where(table: TableRef, condition: exp.Expression) -> exp.Select:
+def _count_where(table: TableRef, condition: exp.Expr) -> exp.Select:
     return exp.select(exp.alias_(exp.Count(this=exp.Star()), _FAILURES)).from_(_table(table)).where(condition)
 
 
-def _flag(table: TableRef, condition: exp.Expression) -> exp.Select:
+def _flag(table: TableRef, condition: exp.Expr) -> exp.Select:
     """1 if ``condition`` holds over the whole table, else 0."""
     flag = exp.Case().when(condition, exp.Literal.number(1)).else_(exp.Literal.number(0))
     return exp.select(exp.alias_(flag, _FAILURES)).from_(_table(table))
@@ -54,7 +55,7 @@ def _require(spec: CheckSpec, model: str, *, columns: int | None = None, params:
             raise DefinitionError(f"check {spec.type!r} on {model!r} needs {name!r}")
 
 
-def _parse_expr(sql: str, dialect: str) -> exp.Expression:
+def _parse_expr(sql: str, dialect: str) -> exp.Expr:
     return parse_one(sql, read=dialect)
 
 
@@ -65,7 +66,7 @@ def _interval(max_age: str) -> exp.Interval:
     return exp.Interval(this=exp.Literal.string(match.group(1)), unit=exp.Var(this=_AGE_UNITS[match.group(2)]))
 
 
-def _row_predicate(spec: CheckSpec, model: str, dialect: str, resolve: ResolveTable) -> exp.Expression | None:
+def _row_predicate(spec: CheckSpec, model: str, dialect: str, resolve: ResolveTable) -> exp.Expr | None:
     """A WHERE predicate that is true for a violating row.
 
     ``None`` for checks that are not a per-row filter (``unique`` counts groups,
@@ -88,7 +89,7 @@ def _row_predicate(spec: CheckSpec, model: str, dialect: str, resolve: ResolveTa
         if "min" not in params and "max" not in params:
             raise DefinitionError(f"check 'range' on {model!r} needs min and/or max")
         col = cols[0]
-        bounds: list[exp.Expression] = []
+        bounds: list[exp.Expr] = []
         if "min" in params:
             bounds.append(exp.LT(this=col, expression=exp.Literal.number(params["min"])))
         if "max" in params:
@@ -103,7 +104,7 @@ def _row_predicate(spec: CheckSpec, model: str, dialect: str, resolve: ResolveTa
 
     if spec.type == "expression":
         _require(spec, model, params=("expression",))
-        return cast(exp.Expression, exp.paren(_parse_expr(str(params["expression"]), dialect)).not_())
+        return cast(exp.Expr, exp.paren(_parse_expr(str(params["expression"]), dialect)).not_())
 
     if spec.type == "relationships":
         _require(spec, model, columns=1, params=("to", "field"))
@@ -115,9 +116,7 @@ def _row_predicate(spec: CheckSpec, model: str, dialect: str, resolve: ResolveTa
     return None
 
 
-def build_check_query(
-    spec: CheckSpec, table: TableRef, model: str, dialect: str, resolve: ResolveTable
-) -> exp.Expression:
+def build_check_query(spec: CheckSpec, table: TableRef, model: str, dialect: str, resolve: ResolveTable) -> exp.Expr:
     """Compile ``spec`` against ``table`` into a query returning ``failures``."""
     cols = [exp.column(c) for c in spec.columns]
     params: dict[str, Any] = spec.params
@@ -139,7 +138,7 @@ def build_check_query(
         if "min" not in params and "max" not in params:
             raise DefinitionError(f"check 'row_count' on {model!r} needs min and/or max")
         count = exp.Count(this=exp.Star())
-        counts: list[exp.Expression] = []
+        counts: list[exp.Expr] = []
         if "min" in params:
             counts.append(exp.LT(this=count, expression=exp.Literal.number(params["min"])))
         if "max" in params:
@@ -166,7 +165,7 @@ def build_check_query(
 
 def build_failing_rows(
     spec: CheckSpec, table: TableRef, model: str, dialect: str, resolve: ResolveTable
-) -> exp.Expression | None:
+) -> exp.Query | None:
     """The rows a check rejected, or ``None`` when the check has no row set.
 
     ``row_count`` and ``freshness`` judge the whole table. ``unique`` returns the
@@ -177,7 +176,7 @@ def build_failing_rows(
     if spec.type == "sql":
         _require(spec, model, params=("query",))
         sql = str(spec.params["query"]).replace("{table}", _table(table).sql(dialect=dialect))
-        return _parse_expr(sql, dialect)
+        return as_query(_parse_expr(sql, dialect), what=f"sql check on {model}")
     if spec.type == "unique":
         _require(spec, model, columns=1)
         cols = [exp.column(c) for c in spec.columns]
@@ -187,7 +186,7 @@ def build_failing_rows(
             .group_by(*cols)
             .having(exp.GT(this=exp.Count(this=exp.Star()), expression=exp.Literal.number(1)))
         )
-        key: exp.Expression = exp.Tuple(expressions=cols) if len(cols) > 1 else cols[0]
+        key: exp.Expr = exp.Tuple(expressions=cols) if len(cols) > 1 else cols[0]
         return exp.select(exp.Star()).from_(_table(table)).where(exp.In(this=key, query=exp.Subquery(this=grouped)))
     predicate = _row_predicate(spec, model, dialect, resolve)
     if predicate is None:

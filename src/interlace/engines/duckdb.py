@@ -235,13 +235,13 @@ class DuckDBAdapter(EngineAdapter):
 
     # --- EngineAdapter ------------------------------------------------------
 
-    async def execute(self, ast: exp.Expression) -> None:
+    async def execute(self, ast: exp.Expr) -> None:
         await self.execute_sql(self.transpile(ast))
 
-    async def execute_all(self, statements: Sequence[exp.Expression]) -> list[int]:
+    async def execute_all(self, statements: Sequence[exp.Expr]) -> list[int]:
         return await asyncio.to_thread(self._execute_all_sync, [self.transpile(s) for s in statements])
 
-    async def fetch(self, ast: exp.Expression) -> pa.RecordBatchReader:
+    async def fetch(self, ast: exp.Expr) -> pa.RecordBatchReader:
         return await self.fetch_sql(self.transpile(ast))
 
     async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:

@@ -61,7 +61,7 @@ def reconcile_statements(
     drops: tuple[PhysicalObject, ...],
     *,
     existing_constraints: set[str],
-) -> list[exp.Expression]:
+) -> list[exp.Expr]:
     """Drop recorded objects that left the spec, then create what is missing.
 
     Constraint adds already present in the catalog are skipped (Postgres has no

@@ -21,7 +21,7 @@ fingerprint, before lineage, before transpilation. That ordering is the whole de
   the transpiler renders it per engine. This is the job dbt does with adapter dispatch —
   ``postgres__cents_to_dollars``, ``bigquery__cents_to_dollars`` — and it is not needed
   here: ``(amount / 100)`` becomes integer division on Postgres by itself, so sqlglot
-  emits ``CAST(amount AS DOUBLE PRECISION) / NULLIF(100, 0)`` and the macro stays one
+  casts the dividend to ``DOUBLE PRECISION`` before dividing, and the macro stays one
   line.
 
 The cost, and it is a real one: the macro exists at build time, not in the warehouse.
@@ -47,7 +47,7 @@ class Macro:
 
     name: str
     params: tuple[str, ...]
-    body: exp.Expression
+    body: exp.Expr
     source: str  # the file it came from, for error messages
 
 
@@ -85,7 +85,7 @@ def parse_macros(sql: str, dialect: str, source: str) -> list[Macro]:
             )
         # the UDF's `this` is a Table node wrapping the identifier, so the name is a
         # level down from where UserDefinedFunction.name looks
-        name = udf.this.name if isinstance(udf.this, exp.Expression) else str(udf.this)
+        name = udf.this.name if isinstance(udf.this, exp.Expr) else str(udf.this)
         macros.append(
             Macro(
                 name=name,
@@ -97,7 +97,7 @@ def parse_macros(sql: str, dialect: str, source: str) -> list[Macro]:
     return macros
 
 
-def expand_macros(ast: exp.Expression, macros: Mapping[str, Macro], model: str) -> exp.Expression:
+def expand_macros(ast: exp.Expr, macros: Mapping[str, Macro], model: str) -> exp.Expr:
     """Substitute every macro call in ``ast`` for its body. Returns a new expression."""
     if not macros:
         return ast
@@ -113,10 +113,10 @@ def expand_macros(ast: exp.Expression, macros: Mapping[str, Macro], model: str) 
     )
 
 
-def _expand_once(ast: exp.Expression, macros: Mapping[str, Macro], model: str) -> tuple[exp.Expression, int]:
+def _expand_once(ast: exp.Expr, macros: Mapping[str, Macro], model: str) -> tuple[exp.Expr, int]:
     hits = 0
 
-    def substitute(node: exp.Expression) -> exp.Expression:
+    def substitute(node: exp.Expr) -> exp.Expr:
         nonlocal hits
         if not isinstance(node, exp.Anonymous):
             return node
@@ -136,19 +136,19 @@ def _expand_once(ast: exp.Expression, macros: Mapping[str, Macro], model: str) -
     return ast.transform(substitute, copy=True), hits
 
 
-def _bind(macro: Macro, args: list[exp.Expression]) -> exp.Expression:
+def _bind(macro: Macro, args: list[exp.Expr]) -> exp.Expr:
     """The macro's body with each parameter reference replaced by its argument."""
     body = macro.body.copy()
     if not macro.params:
         return body
     by_name = {param.casefold(): arg for param, arg in zip(macro.params, args, strict=True)}
 
-    def replace(node: exp.Expression) -> exp.Expression:
+    def replace(node: exp.Expr) -> exp.Expr:
         if isinstance(node, exp.Column) and not node.table:
             argument = by_name.get(node.name.casefold())
             if argument is not None:
                 return argument.copy()
         return node
 
-    bound: exp.Expression = body.transform(replace, copy=False)
+    bound: exp.Expr = body.transform(replace, copy=False)
     return bound

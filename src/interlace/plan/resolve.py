@@ -9,13 +9,12 @@ that reads an ephemeral staging model gets its logic spliced in at compile time.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from sqlglot import exp
 
 from interlace.exceptions import PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.ir.canonicalize import resolve_references
+from interlace.ir.canonicalize import as_query, resolve_references
 from interlace.ir.relation import TableRef
 from interlace.sinks import target_ref
 
@@ -63,16 +62,16 @@ def _ephemeral_ancestors(model: CompiledModel, project: CompiledProject) -> list
 
 def resolve_model_query(
     model: CompiledModel, project: CompiledProject, physical: Mapping[str, TableRef] | None = None
-) -> exp.Expression:
+) -> exp.Query:
     """Rewrite a model's query for execution, inlining ephemeral upstreams as CTEs."""
     if model.ast is None:
         raise PlanError(f"cannot resolve a Python model query: {model.name!r}")
 
-    body: exp.Expression = resolve_references(model.ast, _ref_mapping(model, project, physical))
+    body: exp.Query = as_query(resolve_references(model.ast, _ref_mapping(model, project, physical)), what=model.name)
     for ancestor_name in _ephemeral_ancestors(model, project):
         ancestor = project.models[ancestor_name]
         if ancestor.ast is None:
             raise PlanError(f"ephemeral model {ancestor_name!r} must be SQL (cannot inline a Python model)")
         cte_body = resolve_references(ancestor.ast, _ref_mapping(ancestor, project, physical))
-        body = cast("exp.Query", body).with_(_cte_name(ancestor_name), as_=cte_body)
+        body = body.with_(_cte_name(ancestor_name), as_=cte_body)
     return body

@@ -18,11 +18,12 @@ import contextlib
 import logging
 import os
 import socket
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from interlace.dsl.dynamic import apply_with_registrations
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry
 from interlace.graph.project import CompiledProject
@@ -55,7 +56,7 @@ async def drain(
     parallelism: int = 4,
     connections: Mapping[str, Any] | None = None,
     loaded: Project | None = None,
-    on_compiled: Any | None = None,
+    on_compiled: Callable[[CompiledProject], None] | None = None,
 ) -> int:
     """Execute up to ``limit`` queued (or lease-expired) runs; returns how many ran."""
     actor = event_actor.set("scheduler")
@@ -114,7 +115,7 @@ async def _execute_run(
     base_path: Path | None,
     connections: Mapping[str, Any] | None,
     loaded: Project | None,
-    on_compiled: Any | None,
+    on_compiled: Callable[[CompiledProject], None] | None,
     owner: str,
     lease_seconds: float,
     max_attempts: int,
@@ -153,19 +154,32 @@ async def _execute_run(
             background.add(task)
             task.add_done_callback(background.discard)
 
-        result = await apply(
-            plan,
-            compiled=project,
-            engine=engine,
-            engines=engines,
-            state=store,
-            base_path=base_path,
-            parallelism=parallelism,
-            on_progress=on_progress,
-            connections=connections,
-            loaded=loaded,
-            on_compiled=on_compiled,
-        )
+        if loaded is None:
+            result = await apply(
+                plan,
+                compiled=project,
+                engine=engine,
+                engines=engines,
+                state=store,
+                base_path=base_path,
+                parallelism=parallelism,
+                on_progress=on_progress,
+                connections=connections,
+            )
+        else:
+            result = await apply_with_registrations(
+                plan,
+                compiled=project,
+                project=loaded,
+                on_compiled=on_compiled,
+                engine=engine,
+                engines=engines,
+                state=store,
+                base_path=base_path,
+                parallelism=parallelism,
+                on_progress=on_progress,
+                connections=connections,
+            )
         if background:  # let the progress events land before the run is marked done
             await asyncio.gather(*background, return_exceptions=True)
         return {

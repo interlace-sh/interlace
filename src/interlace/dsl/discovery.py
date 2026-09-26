@@ -18,7 +18,13 @@ from typing import Any
 
 from interlace.checks.spec import parse_checks
 from interlace.dsl.decorators import REGISTRY, ModelDef, _as_columns, _as_tuple, validate_materialise
-from interlace.dsl.dynamic import DYNAMIC_ROOT
+from interlace.dsl.dynamic import (
+    BACKFILL_DEFAULT,
+    DYNAMIC_ROOT,
+    ENVIRONMENTS_DEFAULT,
+    MATERIALISE_DEFAULT,
+    STRATEGY_DEFAULT,
+)
 from interlace.dsl.sql_config import extract_sql_config
 from interlace.exceptions import DefinitionError, InterlaceError
 from interlace.ir.macros import Macro, parse_macros
@@ -105,8 +111,8 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
             f"ETL, or materialise: file (with path:/format:) for a file",
             details={"model": name},
         )
-    materialise = config.get("materialise", "virtual")
-    strategy = config.get("strategy", "replace")
+    materialise = config.get("materialise", MATERIALISE_DEFAULT)
+    strategy = config.get("strategy", STRATEGY_DEFAULT)
     key = _as_tuple(config.get("key") or ())
     target = config.get("target")
     path = config.get("path")
@@ -125,7 +131,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         depends_on=_as_tuple(config.get("depends_on") or ()),
         interval=config.get("interval"),
         time_column=config.get("time_column"),
-        backfill=config.get("backfill", "auto"),  # first-build window for incremental
+        backfill=config.get("backfill", BACKFILL_DEFAULT),  # first-build window for incremental
         tags=_as_tuple(config.get("tags") or ()),
         owner=config.get("owner"),
         description=config.get("description"),
@@ -133,7 +139,7 @@ def _sql_model(default_name: str, sql: str, config: dict[str, Any], default_dial
         target=target,
         path=path,
         format=format,
-        environments=_as_tuple(config.get("environments") or ("prod",)),
+        environments=_as_tuple(config.get("environments") or ENVIRONMENTS_DEFAULT),
         schedule=config.get("schedule"),
         checks=parse_checks(config.get("checks"), default_name),
         indexes=parse_indexes(config.get("indexes"), name),

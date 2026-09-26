@@ -17,13 +17,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from interlace import __version__
+from interlace.dsl.dynamic import apply_with_registrations
 from interlace.exceptions import InterlaceError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
 from interlace.inspect import failing_rows, preview_model
 from interlace.physical.annotate import annotate_plan
-from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.project import Project
 from interlace.query import prepare_readonly
@@ -202,7 +202,7 @@ async def _apply(path: Path, args: dict[str, Any]) -> Any:
             names = ", ".join(change.name for change in plan.changes if change.category is ChangeCategory.BREAKING)
             raise InterlaceError(f"plan has breaking changes ({names}); resubmit with force true")
         async with hold_apply_lock(state, owner=f"mcp:{os.getpid()}"):
-            result = await apply_plan(
+            result = await apply_with_registrations(
                 plan,
                 compiled=compiled,
                 engines=engines,
@@ -210,7 +210,7 @@ async def _apply(path: Path, args: dict[str, Any]) -> Any:
                 base_path=project.root,
                 parallelism=project.config.parallelism,
                 connections=project.config.connections,
-                loaded=project,
+                project=project,
             )
     finally:
         await state.close()

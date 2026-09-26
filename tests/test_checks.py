@@ -13,6 +13,7 @@ from interlace.dsl.decorators import CheckDef, ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.exceptions import CheckError, DefinitionError
 from interlace.graph.project import compile_models
+from interlace.inspect import failing_rows
 from interlace.plan.apply import ApplyResult, apply
 from interlace.plan.differ import diff
 from interlace.runtime.handles import RelationHandle
@@ -41,6 +42,25 @@ async def _apply_orders(
     ]
     compiled = compile_models(models, checks=python_checks)
     return await apply(await diff(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
+
+
+async def test_failing_rows_join_the_promoted_upstream(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    checks = [
+        {"relationships": {"column": "customer_id", "to": "customers", "field": "customer_id", "severity": "warn"}}
+    ]
+    await _apply_orders(env, checks)
+    drifted = compile_models(
+        [
+            ModelDef(name="customers", sql="SELECT 99 AS customer_id"),
+            ModelDef(name="orders", sql=ORDERS_SQL, checks=parse_checks(checks, "orders")),
+        ]
+    )
+    sample = await failing_rows(drifted, store, engine, "orders", "relationships_customer_id", "dev", 20)
+    assert sample.available
+    customer_ids = [row[4] for row in sample.sample.rows]
+    assert 9 in customer_ids
+    assert 1 not in customer_ids
 
 
 def _outcome(result: ApplyResult, name: str) -> Any:

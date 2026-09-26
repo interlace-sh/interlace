@@ -38,13 +38,12 @@ from litestar.static_files import create_static_files_router
 
 from interlace import __version__
 from interlace.dsl.decorators import StreamDef
-from interlace.dsl.dynamic import DYNAMIC_ROOT
+from interlace.dsl.dynamic import DYNAMIC_ROOT, apply_with_registrations
 from interlace.exceptions import CheckError, LockError, QueryError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.graph.selectors import select_models, wants_state
 from interlace.physical.annotate import annotate_plan
-from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.run import run_plan
 from interlace.project import Project
@@ -1059,7 +1058,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
             task.add_done_callback(progress_tasks.discard)
 
         try:
-            result = await apply_plan(
+            result = await apply_with_registrations(
                 plan,
                 compiled=compiled,
                 engines=state.engines,
@@ -1068,7 +1067,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
                 parallelism=state.parallelism,
                 on_progress=on_progress,
                 connections=state.connections,
-                loaded=state.project,
+                project=state.project,
                 on_compiled=lambda fresh: _publish_compiled(state, fresh),
             )
         except CheckError as exc:
@@ -1163,7 +1162,7 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
             task.add_done_callback(progress_tasks.discard)
 
         try:
-            result = await apply_plan(
+            result = await apply_with_registrations(
                 plan,
                 compiled=compiled,
                 engines=state.engines,
@@ -1172,7 +1171,7 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
                 parallelism=state.parallelism,
                 on_progress=on_progress,
                 connections=state.connections,
-                loaded=state.project,
+                project=state.project,
                 on_compiled=lambda fresh: _publish_compiled(state, fresh),
             )
         except CheckError as exc:

@@ -100,6 +100,7 @@ class Project:
     checks: list[CheckDef]
     streams: list[StreamDef]
     macros: dict[str, Macro] = field(default_factory=dict)
+    registry_generation: int = -1  # REGISTRY.generation at load; -1 compiles the snapshot
 
     @classmethod
     def load(cls, root: Path | str) -> Project:
@@ -113,14 +114,14 @@ class Project:
             checks=list(REGISTRY.checks),
             streams=list(REGISTRY.streams.values()),
             macros=discover_macros(root, config.macro_paths, config.default_dialect),
+            registry_generation=REGISTRY.generation,
         )
 
     def compile(self) -> CompiledProject:
-        return self._compile(self.models)
-
-    def compile_registered(self) -> CompiledProject:
-        """Compile the live registry, including models a run registered after load."""
-        return self._compile(list(REGISTRY.models.values()))
+        """Compile this project. A run's registrations are included until the next load."""
+        live = REGISTRY.generation == self.registry_generation
+        models = list(REGISTRY.models.values()) if live else self.models
+        return self._compile(models)
 
     def _compile(self, models: list[ModelDef]) -> CompiledProject:
         engine_cfgs = self.config.engine_configs()

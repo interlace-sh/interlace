@@ -17,13 +17,13 @@ from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
+from interlace.dsl.dynamic import apply_with_registrations
 from interlace.exceptions import CheckError, ConfigurationError, InterlaceError, LockError, QueryError, SelectionError
 from interlace.graph.column_lineage import column_impact, column_lineage, split_target
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
 from interlace.physical.annotate import annotate_plan
 from interlace.plan.apply import ApplyResult
-from interlace.plan.apply import apply as apply_plan
 from interlace.plan.differ import diff
 from interlace.plan.plan import ChangeType, Plan
 from interlace.plan.run import run_plan
@@ -420,7 +420,7 @@ async def _apply(
         try:
             with progress.progress if progress else contextlib.nullcontext():
                 async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:apply"):
-                    result = await apply_plan(
+                    result = await apply_with_registrations(
                         plan_result,
                         compiled=compiled,
                         engines=engines,
@@ -429,7 +429,7 @@ async def _apply(
                         on_progress=progress,
                         connections=project.config.connections,
                         parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
-                        loaded=project,
+                        project=project,
                     )
         except CheckError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")
@@ -526,7 +526,7 @@ async def _execute(
         try:
             with progress.progress if progress else contextlib.nullcontext():
                 async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:run"):
-                    result = await apply_plan(
+                    result = await apply_with_registrations(
                         plan_result,
                         compiled=compiled,
                         engines=engines,
@@ -535,7 +535,7 @@ async def _execute(
                         on_progress=progress,
                         connections=project.config.connections,
                         parallelism=parallelism or project.config.parallelism,  # --parallelism wins over config
-                        loaded=project,
+                        project=project,
                     )
         except CheckError as exc:
             console.print(f"[red]{escape(exc.message)}[/red]")

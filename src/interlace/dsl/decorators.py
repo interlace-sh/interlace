@@ -187,6 +187,7 @@ class Registry:
     streams: dict[str, StreamDef] = field(default_factory=dict)
     checks: list[CheckDef] = field(default_factory=list)
     dynamic: set[str] = field(default_factory=set)  # names registered by a run, not by a source file
+    generation: int = 0  # bumped on clear, so a Project can tell its registry was replaced
 
     def register_model(self, definition: ModelDef, *, dynamic: bool = False) -> None:
         owner = dynamic_owner.get()
@@ -218,6 +219,7 @@ class Registry:
         self.streams.clear()
         self.checks.clear()
         self.dynamic.clear()
+        self.generation += 1
 
 
 REGISTRY = Registry()

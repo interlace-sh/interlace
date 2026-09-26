@@ -7,6 +7,7 @@ against a table the project already owns — never SQL the caller typed.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
@@ -28,6 +29,7 @@ class _InspectStore(Protocol):
     async def latest_model_build(self, model: str) -> dict[str, object] | None: ...
     async def get_environment(self, environment: str) -> dict[str, str]: ...
     async def get_snapshot(self, name: str, fingerprint: str) -> Snapshot | None: ...
+    async def get_snapshots(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], Snapshot]: ...
     async def list_check_results(self, model: str | None = None, limit: int = 200) -> list[dict[str, object]]: ...
 
 
@@ -286,11 +288,17 @@ async def failing_rows(
     if table is None:
         return FailingRows(available=False, message="not built in this environment yet — apply first")
 
+    # The check ran against the tables that were actually promoted, which can be an
+    # older snapshot than the fingerprint the current source would build.
+    promoted = await store.get_environment(environment)
+    built = await store.get_snapshots(promoted.items())
+    physical = {model_name: snapshot.physical_table for (model_name, _), snapshot in built.items()}
+
     def resolve(upstream: str) -> TableRef:
         other = compiled.models.get(upstream)
         if other is None:
             raise DefinitionError(f"check on {name!r} references unknown model {upstream!r}")
-        return other.physical_table
+        return physical.get(upstream, other.physical_table)
 
     query = build_failing_rows(spec, table, name, model.dialect, resolve)
     if query is None:

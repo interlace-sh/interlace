@@ -2,16 +2,17 @@
 
 ``diff`` can see the declared spec and the objects recorded in state. It cannot
 see engine caps or the live catalog. This pass runs once before ``plan`` is
-shown or applied.
+shown or applied. It lives in ``plan`` so ``physical`` does not import the planner.
 """
 
 from __future__ import annotations
 
 from interlace.engines.registry import EngineRegistry
 from interlace.graph.project import CompiledProject
+from interlace.physical.changes import DriftNote, PhysicalAction, PhysicalChange
 from interlace.physical.drift import column_drift
 from interlace.physical.reconcile import model_objects, object_changes
-from interlace.plan.plan import DriftNote, PhysicalAction, PhysicalChange, Plan
+from interlace.plan.plan import Plan
 from interlace.sinks import target_ref
 
 

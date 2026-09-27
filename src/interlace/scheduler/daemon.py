@@ -197,13 +197,13 @@ async def cdc_loop(state: Any) -> None:
                     if reader is None:
                         reader = SlotReader(conn.dsn, source)
                         readers[name] = reader
-                    confirmed = await state.store.cdc_confirmed_lsn(source.stream)
+                    confirmed = await state.store.cdc.cdc_confirmed_lsn(source.stream)
                     changes = await asyncio.to_thread(reader.poll, confirmed)
                     if changes:
                         await publish_changes(state.stream_log, state.store, source.stream, changes)
                         state.flush_dirty.add(source.stream)
                         state.flush_wanted.set()
-                    advanced = await state.store.cdc_confirmed_lsn(source.stream)
+                    advanced = await state.store.cdc.cdc_confirmed_lsn(source.stream)
                     if advanced:
                         await asyncio.to_thread(reader.feedback, advanced)
                 except Exception:

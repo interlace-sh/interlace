@@ -23,9 +23,11 @@ from interlace.exceptions import ConfigurationError
 
 pytestmark = pytest.mark.unit
 
-# Resolved from the imported module, not the working directory, so the
-# source-scanning tests below hold wherever pytest is invoked from.
-CLI_SOURCE = Path(inspect.getsourcefile(cli_main) or "").read_text()
+# Resolved from the imported package, not the working directory, so the
+# source-scanning tests below hold wherever pytest is invoked from. Commands
+# live in several modules; the escape rule applies to all of them.
+_CLI_DIR = Path(inspect.getsourcefile(cli_main) or "").parent
+CLI_SOURCE = "\n".join(path.read_text() for path in sorted(_CLI_DIR.glob("*.py")))
 
 
 def _render(markup: str) -> str:

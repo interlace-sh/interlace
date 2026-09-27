@@ -8,7 +8,7 @@ or has at a type the policy will not alter.
 
 from __future__ import annotations
 
-from interlace.plan.plan import DriftNote
+from interlace.physical.changes import DriftNote
 
 _NUMERIC_WIDTH = {"TINYINT": 0, "SMALLINT": 1, "INTEGER": 2, "BIGINT": 3, "FLOAT": 4, "DOUBLE": 5}
 _TYPE_ALIASES = {

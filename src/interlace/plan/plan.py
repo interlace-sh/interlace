@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from interlace.ir.layout import PRODUCTION_ENV, XFER_SCHEMA, env_view, staging_table
 from interlace.ir.relation import EngineRef, TableRef
-from interlace.physical.spec import PhysicalObject
+from interlace.physical.changes import DriftNote, PhysicalAction, PhysicalChange
 from interlace.state.interval import Interval
 from interlace.state.snapshot import ChangeCategory, Snapshot
 
@@ -29,40 +30,6 @@ class ChangeType(Enum):
     MODIFIED = "modified"
     REMOVED = "removed"
     UNCHANGED = "unchanged"
-
-
-@dataclass(frozen=True)
-class PhysicalChange:
-    """One index or constraint to add or drop. ``kind`` is ``index`` or ``constraint``."""
-
-    op: str  # add | drop
-    kind: str
-    name: str
-
-
-@dataclass(frozen=True)
-class PhysicalAction:
-    """Reconcile interlace-owned indexes and constraints on one model's table.
-
-    ``standalone`` means the data fingerprint did not change, so apply runs this
-    without rebuilding. Otherwise the build path applies it and these lines are
-    what ``plan`` shows.
-    """
-
-    name: str
-    standalone: bool
-    previous: tuple[PhysicalObject, ...] = ()
-    changes: tuple[PhysicalChange, ...] = ()
-    warnings: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class DriftNote:
-    """Schema drift on an external table. Blocking notes fail the plan before any write."""
-
-    model: str
-    message: str
-    blocking: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,14 +74,6 @@ class TransferEdge:
     model: str = ""  # the upstream model being moved
 
 
-XFER_SCHEMA = "interlace__xfer"
-
-
-def staging_table(upstream: str) -> TableRef:
-    """Where a transferred upstream lands on the consumer's engine (replaced on every transfer)."""
-    return TableRef(schema=XFER_SCHEMA, name=upstream.replace(".", "__"))
-
-
 def collect_transfers(compiled: CompiledProject, build_names: Iterable[str]) -> list[TransferEdge]:
     """One edge per (upstream, target engine) needed by the scheduled builds."""
     edges: dict[tuple[str, str], TransferEdge] = {}
@@ -143,20 +102,6 @@ class ViewSwap:
     view: TableRef
     target: TableRef
     engine: str = "default"  # named engine that hosts the view
-
-
-PRODUCTION_ENV = "prod"
-"""The production environment lives at the *unprefixed* schema (``main.orders``):
-that's what BI tools and consumers connect to. Every other environment is a
-prefixed sandbox (``dev__main.orders``) over the same physical snapshots."""
-
-
-def env_view(environment: str, model_name: str) -> TableRef:
-    """The virtual-environment view for a model: ``<schema>.<model>`` in
-    production, ``<env>__<schema>.<model>`` everywhere else."""
-    schema, _, base = model_name.rpartition(".")
-    prefix = "" if environment == PRODUCTION_ENV else f"{environment}__"
-    return TableRef(schema=f"{prefix}{schema or 'main'}", name=base)
 
 
 def schedule_build(
@@ -264,3 +209,22 @@ class Plan:
     @property
     def has_breaking_changes(self) -> bool:
         return any(c.category is ChangeCategory.BREAKING for c in self.changes)
+
+
+__all__ = [
+    "PRODUCTION_ENV",
+    "XFER_SCHEMA",
+    "BackfillTask",
+    "ChangeType",
+    "DriftNote",
+    "ModelChange",
+    "PhysicalAction",
+    "PhysicalChange",
+    "Plan",
+    "TransferEdge",
+    "ViewSwap",
+    "collect_transfers",
+    "env_view",
+    "schedule_build",
+    "staging_table",
+]

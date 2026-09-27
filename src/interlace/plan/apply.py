@@ -38,11 +38,12 @@ from interlace.engines.base import EngineAdapter, statement_of
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, ExecutionError, InterlaceError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
+from interlace.ir.layout import XFER_SCHEMA, staging_table
 from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.physical.drift import same_type, widens
 from interlace.physical.reconcile import model_objects, object_changes, reconcile_statements
 from interlace.physical.spec import PhysicalObject
-from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
+from interlace.plan.plan import BackfillTask, ChangeType, Plan, env_view
 from interlace.plan.resolve import resolve_model_query
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.sinks import file_statements, target_ref
@@ -943,7 +944,7 @@ async def apply(
     registry = as_registry(engine, engines)
     for adapter in registry.opened():
         adapter.refresh_inputs()
-    from interlace.physical.annotate import annotate_plan
+    from interlace.plan.annotate import annotate_plan
 
     await annotate_plan(plan, compiled, registry)
     if plan.blocking:

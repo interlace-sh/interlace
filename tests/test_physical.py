@@ -13,8 +13,8 @@ from interlace.engines.duckdb import DuckDBAdapter
 from interlace.engines.registry import as_registry
 from interlace.exceptions import DefinitionError, ExecutionError, PlanError
 from interlace.graph.project import compile_models
-from interlace.physical.annotate import annotate_plan
 from interlace.physical.reconcile import LOGICAL_CAPS, model_objects
+from interlace.plan.annotate import annotate_plan
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
 from interlace.state.store import SqliteStateStore

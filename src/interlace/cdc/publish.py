@@ -18,10 +18,10 @@ async def publish_changes(log: StreamLog, store: SqliteStateStore, stream: str, 
         stream,
         [Event(payload=payload_of(change), idempotency_key=f"cdc:{change.lsn}") for change in changes],
     )
-    await store.cdc_note_pending(stream, list(zip(result.offsets, (change.lsn for change in changes), strict=True)))
+    await store.cdc.cdc_note_pending(stream, list(zip(result.offsets, (change.lsn for change in changes), strict=True)))
     return result.offsets
 
 
 async def confirm_flushed(store: SqliteStateStore, stream: str, watermark: int) -> str | None:
     """Advance the stored LSN up to the offset ``flush_streams`` has committed."""
-    return await store.cdc_advance(stream, watermark)
+    return await store.cdc.cdc_advance(stream, watermark)

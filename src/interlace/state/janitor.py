@@ -22,8 +22,8 @@ from interlace.dsl.decorators import StreamDef
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.graph.project import PHYSICAL_SCHEMA_PREFIX
+from interlace.ir.layout import PRODUCTION_ENV, XFER_SCHEMA, env_view
 from interlace.ir.relation import TableRef, drop
-from interlace.plan.plan import XFER_SCHEMA
 from interlace.state.locks import hold_apply_lock
 from interlace.state.store import SqliteStateStore
 from interlace.streaming.log import StreamLog
@@ -112,7 +112,6 @@ async def rollback_environment(
     per-model rather than half-applied.
     """
     from interlace.exceptions import PlanError
-    from interlace.plan.plan import env_view
 
     registry = as_registry(engine, engines)
     generations = await state.list_generations(environment)
@@ -182,8 +181,6 @@ async def drop_environment(
     Returns the dropped view names. The environment's snapshots become
     unreferenced, so a later ``gc`` reclaims their tables.
     """
-    from interlace.plan.plan import PRODUCTION_ENV, env_view
-
     registry = as_registry(engine, engines)
     mapping = await state.get_environment(environment)
     dropped: list[str] = []
@@ -226,8 +223,6 @@ async def reset(
     last-fired times are kept (a live scheduler must not immediately force-run
     terminals). The stream log is cleared when provided.
     """
-    from interlace.plan.plan import PRODUCTION_ENV, env_view
-
     registry = as_registry(engine, engines)
     keep = frozenset(keep_models)
     environments = await state.list_environments()

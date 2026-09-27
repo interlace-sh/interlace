@@ -17,7 +17,7 @@ from interlace.engines.registry import EngineRegistry
 from interlace.exceptions import BreakingPlanError, PlanError
 from interlace.graph.project import CompiledProject
 from interlace.graph.selectors import select_models, wants_state
-from interlace.physical.annotate import annotate_plan
+from interlace.plan.annotate import annotate_plan
 from interlace.plan.apply import ApplyResult, ProgressCallback
 from interlace.plan.differ import diff
 from interlace.plan.plan import Plan

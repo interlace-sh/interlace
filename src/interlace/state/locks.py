@@ -3,7 +3,7 @@
 CLI ``apply`` / ``run`` and the daemon (HTTP apply, stream flush, scheduler drain,
 gc, env drop/rollback) all share one SQLite state file. An in-process
 ``asyncio.Lock`` cannot serialise those writers — this module does, via
-:meth:`SqliteStateStore.acquire_lock` with a heartbeat while the critical
+:meth:`AdvisoryLockStore.acquire_lock` with a heartbeat while the critical
 section runs.
 """
 
@@ -29,7 +29,7 @@ async def hold_apply_lock(
     timeout: float = 60.0,
 ) -> AsyncIterator[None]:
     """Hold the warehouse ``apply`` lock until the block exits; renew while held."""
-    acquired = await store.acquire_lock(APPLY_LOCK, owner=owner, lease_seconds=lease_seconds, timeout=timeout)
+    acquired = await store.locks.acquire_lock(APPLY_LOCK, owner=owner, lease_seconds=lease_seconds, timeout=timeout)
     if not acquired:
         raise LockError(
             f"could not acquire the apply lock within {timeout:.0f}s — "
@@ -45,7 +45,7 @@ async def hold_apply_lock(
                 await asyncio.wait_for(stop.wait(), timeout=interval)
                 return
             except TimeoutError:
-                if not await store.renew_lock(APPLY_LOCK, owner=owner, lease_seconds=lease_seconds):
+                if not await store.locks.renew_lock(APPLY_LOCK, owner=owner, lease_seconds=lease_seconds):
                     return  # lost the lock; the holder may fail on its own
 
     beat = asyncio.create_task(_heartbeat())
@@ -56,4 +56,4 @@ async def hold_apply_lock(
         beat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await beat
-        await store.release_lock(APPLY_LOCK, owner=owner)
+        await store.locks.release_lock(APPLY_LOCK, owner=owner)

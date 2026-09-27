@@ -39,13 +39,12 @@ from sqlglot import exp
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.canonicalize import is_star_projection, parse
 from interlace.ir.fingerprint import canonical_sql
+from interlace.physical.changes import PhysicalAction, PhysicalChange
 from interlace.physical.reconcile import LOGICAL_CAPS, model_objects, object_changes
 from interlace.physical.spec import PhysicalObject
 from interlace.plan.plan import (
     ChangeType,
     ModelChange,
-    PhysicalAction,
-    PhysicalChange,
     Plan,
     ViewSwap,
     collect_transfers,

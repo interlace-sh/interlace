@@ -26,6 +26,7 @@ from interlace.physical.spec import (
     validate_physical_allowed,
 )
 from interlace.sinks import FILE_FORMATS
+from interlace.strategies import named_strategy
 
 ModelFn = Callable[..., Any]
 
@@ -38,7 +39,6 @@ dynamic_batch: ContextVar[list[str] | None] = ContextVar("interlace_dynamic_batc
 # (a fingerprinted snapshot read through an environment view); `table`/`file` are
 # terminal deliveries into a destination interlace does not own.
 _MATERIALISATIONS = frozenset({"virtual", "view", "ephemeral", "table", "file"})
-_KEYED_STRATEGIES = frozenset({"merge", "full_merge", "hash_merge", "scd"})
 _DRIFT_MODES = frozenset({"evolve", "reject", "quarantine"})
 # Stream names become SQL identifiers / watermark keys — keep them safe to quote.
 _STREAM_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -95,7 +95,8 @@ def validate_materialise(
             )
     if strategy == "append" and materialise != "table":
         raise DefinitionError(f"model {name!r}: strategy: append requires materialise: table")
-    if strategy in _KEYED_STRATEGIES and not key:
+    kind = named_strategy(strategy)
+    if kind is not None and kind.requires_key and not key:
         raise DefinitionError(f"model {name!r}: strategy: {strategy} requires key:")
 
 

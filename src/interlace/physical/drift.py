@@ -27,7 +27,12 @@ def _norm(dtype: str) -> str:
     return _TYPE_ALIASES.get(upper, upper)
 
 
-def _widens(current: str, incoming: str) -> bool:
+def same_type(left: str, right: str) -> bool:
+    """True when two engine type names are the same after alias normalisation."""
+    return _norm(left) == _norm(right)
+
+
+def widens(current: str, incoming: str) -> bool:
     current, incoming = _norm(current), _norm(incoming)
     return (
         current in _NUMERIC_WIDTH and incoming in _NUMERIC_WIDTH and _NUMERIC_WIDTH[incoming] > _NUMERIC_WIDTH[current]
@@ -63,7 +68,7 @@ def column_drift(
         if dtype is None:
             continue
         _live_name, live_type = found
-        if _norm(live_type) == _norm(dtype) or _widens(live_type, dtype):
+        if same_type(live_type, dtype) or widens(live_type, dtype):
             continue
         message = f"{model}: {target}.{name} is {live_type}, model contract says {dtype}"
         if policy == "reject":

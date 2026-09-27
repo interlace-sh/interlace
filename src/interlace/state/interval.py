@@ -14,6 +14,19 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+
+def naive_local(value: str) -> datetime:
+    """Parse an ISO timestamp into the naive local time the interval ledger stores.
+
+    An aware value is converted to local time and stripped. Mixing one aware
+    window into a ledger of naive timestamps makes every later comparison fail.
+    """
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
 _GRAIN_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 _GRAIN_RE = re.compile(r"(\d+)([smhdw])")
 

@@ -41,7 +41,7 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
+from interlace.strategies.base import Strategy, WritePlan, table_expr
 
 VALID_FROM = "_valid_from"
 VALID_TO = "_valid_to"
@@ -55,6 +55,8 @@ class Scd(Strategy):
     """``CREATE IF NOT EXISTS`` + close changed/vanished rows + insert new versions."""
 
     managed_columns: ClassVar[tuple[str, ...]] = (VALID_FROM, VALID_TO)
+    accumulates = True
+    requires_key = True
 
     def __init__(self, key: tuple[str, ...], time_column: str | None = None) -> None:
         if not key:
@@ -93,7 +95,12 @@ class Scd(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
+        if not caps.supports_mutation_subquery:
+            raise PlanError(
+                "scd closes open rows with an UPDATE whose condition contains a subquery; "
+                "this engine rejects those. Use merge or hash_merge, or a catalog that allows them."
+            )
         query = relation.ast
         table = table_expr(target)
         open_cols = self._open_columns(query, caps)  # None -> use SELECT * EXCLUDE
@@ -146,7 +153,7 @@ class Scd(Strategy):
             this=into,
             expression=exp.select(exp.Star(), self._valid_from(), _null_timestamp()).from_(fresh_subquery()),
         )
-        return [ensure, *closes, insert]
+        return WritePlan([ensure, *closes, insert], ["ignore", *["update"] * len(closes), "insert"])
 
     def _closes(
         self,
@@ -202,10 +209,3 @@ class Scd(Strategy):
             ),
         )
         return [close_changed, close_vanished]
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        # processing-time: [ensure, close, insert]; event-time: [ensure, close_changed,
-        # close_vanished, insert]. Every close is a history row end-dated (an update).
-        inserted = _at(counts, len(counts) - 1)
-        updated = sum(_at(counts, i) for i in range(1, len(counts) - 1))
-        return RowCounts(inserted=inserted, updated=updated)

@@ -42,13 +42,16 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
+from interlace.strategies.base import Strategy, WritePlan, table_expr
 
 _TARGET, _SOURCE = "_t", "_s"
 
 
 class Merge(Strategy):
     """Native ``MERGE`` upsert, or ``CREATE IF NOT EXISTS`` + ``DELETE`` + ``INSERT``."""
+
+    accumulates = True
+    requires_key = True
 
     def __init__(self, key: tuple[str, ...]) -> None:
         if not key:
@@ -66,13 +69,15 @@ class Merge(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
         query = relation.ast
         if columns:
             if caps.supports_merge:
-                return [self._merge(query, target, columns)]
-            return self._update_insert(query, target, columns)
-        return self._delete_insert(query, target)
+                return WritePlan([self._merge(query, target, columns)], ["merge"])
+            statements = self._update_insert(query, target, columns)
+            roles = ["insert"] if len(statements) == 1 else ["update", "insert"]
+            return WritePlan(statements, roles)
+        return WritePlan(self._delete_insert(query, target), ["ignore", "upsert_delete", "insert"])
 
     def _merge(self, query: exp.Query, target: TableRef, columns: Sequence[str]) -> exp.Merge:
         """One ``MERGE INTO`` upsert over ``columns`` — the model's own columns, in the
@@ -176,12 +181,3 @@ class Merge(Strategy):
         )
         insert = exp.Insert(this=table.copy(), expression=query.copy())
         return [ensure, delete, insert]
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        if len(counts) == 1:  # native MERGE: one combined affected-row count, no insert/update split
-            return RowCounts(inserted=_at(counts, 0))
-        if len(counts) == 2:  # [update matched keys, insert unmatched keys]
-            return RowCounts(inserted=_at(counts, 1), updated=_at(counts, 0))
-        # [ensure, delete existing keys, insert]: a deleted key was re-inserted -> update
-        updated = _at(counts, 1)
-        return RowCounts(inserted=max(0, _at(counts, 2) - updated), updated=updated)

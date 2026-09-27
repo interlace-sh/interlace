@@ -157,23 +157,19 @@ async def _plan(path: Path, args: dict[str, Any]) -> Any:
         plan = await compute_plan(
             compiled, environment, state, engines, select=selected, forward_only=bool(args.get("forward_only"))
         )
+        from interlace.plan.payload import plan_document
+
+        previous = await state.get_snapshots(
+            (change.name, change.previous_fingerprint) for change in plan.changes if change.previous_fingerprint
+        )
+        document = plan_document(plan, compiled, previous, environment).as_dict()
     finally:
         await state.close()
         engines.close()
-    return {
-        "environment": environment,
-        "empty": plan.is_empty,
-        "breaking": plan.has_breaking_changes,
-        "blocking": list(plan.blocking),
-        "changes": [
-            {
-                "name": change.name,
-                "change_type": change.change_type.value,
-                "category": change.category.value if change.category else None,
-            }
-            for change in plan.changes
-        ],
-    }
+    document["empty"] = plan.is_empty
+    document["breaking"] = plan.has_breaking_changes
+    document["blocking"] = list(plan.blocking)
+    return document
 
 
 async def _apply(path: Path, args: dict[str, Any]) -> Any:

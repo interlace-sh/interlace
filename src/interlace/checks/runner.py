@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import pyarrow as pa
@@ -21,10 +21,13 @@ from interlace.checks.builtin import build_check_query
 from interlace.checks.spec import CheckSpec
 from interlace.dsl.decorators import CheckDef
 from interlace.engines.base import EngineAdapter
-from interlace.exceptions import DefinitionError
+from interlace.engines.registry import EngineRegistry
+from interlace.exceptions import DefinitionError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import TableRef
 from interlace.runtime.handles import RelationHandle
+from interlace.sinks import target_ref
+from interlace.state.store import SqliteStateStore
 
 
 @dataclass(frozen=True)
@@ -101,3 +104,45 @@ async def run_checks(
     outcomes = [await _run_declared(spec, model, compiled, engine, table, physical) for spec in model.checks]
     outcomes += [await _run_python(check, engine, table, model.name) for check in python_checks]
     return outcomes
+
+
+async def run_promoted_checks(
+    compiled: CompiledProject,
+    store: SqliteStateStore,
+    engines: EngineRegistry,
+    environment: str,
+    selectors: Sequence[str] = (),
+) -> tuple[list[CheckOutcome], list[str]]:
+    """Re-check an environment's promoted tables. ``state:`` selectors see the ledger.
+
+    Returns ``(outcomes, skipped)``. Models that were never promoted in this
+    environment are skipped. A missing     environment is a plan error.
+    """
+    from interlace.plan.orchestrate import resolve_selection
+
+    chosen = await resolve_selection(compiled, store, environment, selectors)
+    promoted = await store.get_environment(environment)
+    if not promoted:
+        raise PlanError(f"no environment {environment!r} — run `interlace apply` first")
+    snapshots = await store.get_snapshots(promoted.items())
+    physical = {name: snapshot.physical_table for (name, _), snapshot in snapshots.items()}
+    outcomes: list[CheckOutcome] = []
+    skipped: list[str] = []
+    for name, model in compiled.models.items():
+        if chosen is not None and name not in chosen:
+            continue
+        if not model.checks and not compiled.python_checks.get(name):
+            continue
+        if model.materialise == "file" or (model.is_terminal and environment not in model.environments):
+            continue
+        snapshot = snapshots.get((name, promoted.get(name, "")))
+        if snapshot is None:
+            skipped.append(name)
+            continue
+        engine = engines.require(snapshot.engine, model=name)
+        check_table = target_ref(model.target or "") if model.materialise == "table" else snapshot.physical_table
+        results = await run_checks(model, compiled, engine, check_table, compiled.python_checks.get(name, ()), physical)
+        if results:
+            await store.record_check_results(environment, snapshot.fingerprint, results)
+        outcomes.extend(results)
+    return outcomes, skipped

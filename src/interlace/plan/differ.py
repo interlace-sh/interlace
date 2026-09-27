@@ -54,6 +54,7 @@ from interlace.plan.plan import (
 )
 from interlace.state.snapshot import ChangeCategory, Snapshot
 from interlace.state.store import StateStore
+from interlace.strategies import named_strategy
 
 
 def snapshot_of(model: CompiledModel, category: ChangeCategory) -> Snapshot:
@@ -288,11 +289,7 @@ def _schedule_reuse(plan: Plan, model: CompiledModel, previous: Snapshot, enviro
         )
 
 
-_HISTORY_STRATEGIES = frozenset({"merge", "full_merge", "hash_merge", "scd", "incremental"})
-"""Strategies whose targets accumulate state a rebuild would destroy."""
-
-
-def _expand_to_changed_ancestors(compiled: CompiledProject, selected: set[str], current: dict[str, str]) -> set[str]:
+def expand_to_changed_ancestors(compiled: CompiledProject, selected: set[str], current: dict[str, str]) -> set[str]:
     """Grow a selection to include every changed ancestor of a selected model.
 
     A selected downstream's new fingerprint hashes its upstreams' new
@@ -327,8 +324,8 @@ async def diff(
     ``select`` limits which models are scheduled and promoted (None = all). Impact
     classification still runs over the whole graph so downstream categories are correct.
 
-    ``forward_only``: modified models whose strategy accumulates history
-    (merge / full_merge / scd / incremental) inherit their
+    ``forward_only``: modified models whose strategy accumulates rows
+    (merge, full_merge, hash_merge, scd, incremental) inherit their
     previous physical table and interval ledger instead of starting fresh — the
     new logic applies going forward, history survives. Requires the new query to
     stay shape-compatible with the existing table.
@@ -338,7 +335,7 @@ async def diff(
     if select is not None:
         # a selected model must never build against an upstream fingerprint that was
         # never materialised: pull every changed ancestor of the selection in too
-        selected = _expand_to_changed_ancestors(compiled, selected, current)
+        selected = expand_to_changed_ancestors(compiled, selected, current)
     plan = Plan(environment=environment)
     impact: dict[str, str] = {}  # changed models only: "semantic" | "additive" | "clean"
     touched: dict[str, frozenset[str] | None] = {}  # semantic models: provably-changed columns (None = all)
@@ -428,10 +425,12 @@ async def diff(
 
         if model.name not in selected:
             continue
+        kind = named_strategy(model.strategy)
         inherit = (
             forward_only
             and rebuild
-            and model.strategy in _HISTORY_STRATEGIES
+            and kind is not None
+            and kind.accumulates
             and not model.is_terminal  # a terminal table is never dropped: inherently forward-only, nothing to seed
             and previous is not None
             and previous.engine == model.engine  # history can't be copied across engines

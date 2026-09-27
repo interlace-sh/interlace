@@ -17,14 +17,15 @@ be non-NULL (a NULL key never compares equal, so it would churn every run).
 Duplicate source rows collapse via EXCEPT's distinct semantics, like scd.
 apply runs the statements atomically.
 
-The two deletes read key sets from temporary tables, not from an inlined
-``EXCEPT`` or source scan. On DuckLake, a ``DELETE`` whose subquery is
-``source EXCEPT target`` aborts the process: ``DuckLakeDelete::Finalize``
+On engines that can put ``EXCEPT`` inside a ``DELETE``, the changed-key delete
+inlines ``source EXCEPT target``. DuckLake cannot: ``DuckLakeDelete::Finalize``
 throws ``Could not find matching file for written delete file``, the catalog
 is invalidated, and the following ``ROLLBACK`` is a fatal exception thrown off
-the Python thread (exit 134). A delete that only reads a local temp table does
-not. The insert's ``EXCEPT`` stays a read — that path does not go through the
-delete finalizer.
+the Python thread (exit 134). That engine (``except_in_delete`` off) stages
+both key sets into temporary tables first; each ``DELETE`` then reads only
+the temp table. The insert's ``EXCEPT`` stays a read either way — that path
+does not go through the delete finalizer. An engine that rejects every
+subquery in a ``DELETE`` (Spark/Delta) raises at plan time.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.state.interval import Interval
-from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
+from interlace.strategies.base import Strategy, WritePlan, table_expr
 
 # Session-local. Dropped before create so a long-lived connection (Postgres)
 # can run full_merge again; DuckDB cursors are fresh per batch either way.
@@ -46,7 +47,10 @@ _VANISHED_KEYS = "_interlace_fm_vanished"
 
 
 class FullMerge(Strategy):
-    """``CREATE IF NOT EXISTS`` + stage key sets + delete + insert new versions."""
+    """``CREATE IF NOT EXISTS`` + delete changed and vanished keys + insert new versions."""
+
+    accumulates = True
+    requires_key = True
 
     def __init__(self, key: tuple[str, ...]) -> None:
         if not key:
@@ -60,7 +64,12 @@ class FullMerge(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
+        if not caps.supports_mutation_subquery:
+            raise PlanError(
+                "full_merge deletes with a subquery in the DELETE condition; this engine rejects those. "
+                "Use merge, or a catalog that allows subqueries in DELETE."
+            )
         query = relation.ast
         table = table_expr(target)
 
@@ -101,12 +110,14 @@ class FullMerge(Strategy):
                 ),
             ]
 
-        def delete_in(name: str) -> exp.Delete:
-            keys = exp.select(*self.key).from_(_temp(name))
+        def delete_keys(keys: exp.Query) -> exp.Delete:
             return exp.Delete(
                 this=table.copy(),
                 where=exp.Where(this=exp.In(this=_key(), query=exp.Subquery(this=keys))),
             )
+
+        def delete_in(name: str) -> exp.Delete:
+            return delete_keys(exp.select(*self.key).from_(_temp(name)))
 
         ensure = exp.Create(
             this=table.copy(),
@@ -120,19 +131,24 @@ class FullMerge(Strategy):
             this=table.copy(),
             expression=exp.select("*").from_(exp.Subquery(this=fresh, alias=exp.TableAlias(this="_fresh"))),
         )
-        # Both key sets are computed from the pre-image, then applied.
-        return [
-            ensure,
-            *stage(_CHANGED_KEYS, fresh_keys()),
-            *stage(_VANISHED_KEYS, vanished_keys()),
-            delete_in(_CHANGED_KEYS),
-            delete_in(_VANISHED_KEYS),
-            insert,
-        ]
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        # [ensure, drop+stage changed keys, drop+stage vanished keys,
-        #  delete changed, delete vanished, insert fresh versions]
-        updated = _at(counts, 5)
-        deleted = _at(counts, 6)
-        return RowCounts(inserted=max(0, _at(counts, 7) - updated), updated=updated, deleted=deleted)
+        # upsert_delete: changed keys are removed and re-inserted (an update).
+        # delete: vanished keys are gone. The insert count includes both new keys
+        # and new versions, so interpret_counts subtracts the changed-key deletes.
+        if caps.except_in_delete:
+            return WritePlan(
+                [ensure, delete_keys(fresh_keys()), delete_keys(vanished_keys()), insert],
+                ["ignore", "upsert_delete", "delete", "insert"],
+            )
+        # Both key sets are computed from the pre-image, then applied. The deletes
+        # read only the temp tables — DuckLake aborts if EXCEPT is inside the DELETE.
+        return WritePlan(
+            [
+                ensure,
+                *stage(_CHANGED_KEYS, fresh_keys()),
+                *stage(_VANISHED_KEYS, vanished_keys()),
+                delete_in(_CHANGED_KEYS),
+                delete_in(_VANISHED_KEYS),
+                insert,
+            ],
+            ["ignore", "ignore", "ignore", "ignore", "ignore", "upsert_delete", "delete", "insert"],
+        )

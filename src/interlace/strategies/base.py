@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, overload
 
 from sqlglot import exp
 
@@ -41,8 +41,59 @@ class RowCounts:
         return bool(self.inserted or self.updated or self.deleted)
 
 
-def _at(counts: Sequence[int], index: int) -> int:
-    return max(0, counts[index]) if index < len(counts) else 0
+def interpret_counts(roles: Sequence[str], counts: Sequence[int]) -> RowCounts:
+    """Turn per-statement affected-row counts into inserted/updated/deleted.
+
+    Roles, aligned with the statement list: ``ignore`` (ensure, drop, stage),
+    ``insert``, ``update``, ``delete`` (rows actually removed), ``upsert_delete``
+    (keys deleted and then re-inserted — an update, subtracted from the insert),
+    and ``merge`` (one native MERGE count, reported as inserted).
+    """
+    inserted = updated = deleted = upsert_deleted = 0
+    for index, role in enumerate(roles):
+        count = max(0, counts[index]) if index < len(counts) else 0
+        if role == "insert" or role == "merge":
+            inserted += count
+        elif role == "update":
+            updated += count
+        elif role == "delete":
+            deleted += count
+        elif role == "upsert_delete":
+            upsert_deleted += count
+    if upsert_deleted:
+        updated += upsert_deleted
+        inserted = max(0, inserted - upsert_deleted)
+    return RowCounts(inserted=inserted, updated=updated, deleted=deleted)
+
+
+class WritePlan(Sequence[exp.Expr]):
+    """The statements a strategy will run, and what each statement's row count means.
+
+    Iterates and indexes as the statement list, so callers execute it directly.
+    ``row_counts`` reads ``roles`` — never the length of the list — so a DROP or
+    a temp table inserted ahead of the writes cannot shift the interpretation.
+    """
+
+    def __init__(self, statements: Sequence[exp.Expr], roles: Sequence[str]) -> None:
+        if len(statements) != len(roles):
+            raise ValueError("every planned statement needs a role")
+        self.statements = tuple(statements)
+        self.roles = tuple(roles)
+
+    def __len__(self) -> int:
+        return len(self.statements)
+
+    @overload
+    def __getitem__(self, index: int) -> exp.Expr: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[exp.Expr, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> exp.Expr | tuple[exp.Expr, ...]:
+        return self.statements[index]
+
+    def row_counts(self, counts: Sequence[int]) -> RowCounts:
+        return interpret_counts(self.roles, counts)
 
 
 class Strategy(ABC):
@@ -51,6 +102,12 @@ class Strategy(ABC):
     # Bookkeeping columns the strategy itself adds to the target (never present in
     # the model's own output) — alignment/evolution must leave them alone.
     managed_columns: ClassVar[tuple[str, ...]] = ()
+    # A rebuild would destroy rows this strategy has accumulated (history, upserts).
+    accumulates: ClassVar[bool] = False
+    # The constructor rejects an empty key. Incremental's key is optional.
+    requires_key: ClassVar[bool] = False
+    # plan_statements raises without an interval (incremental).
+    requires_interval: ClassVar[bool] = False
 
     @property
     def writes_named_columns(self) -> bool:
@@ -73,17 +130,12 @@ class Strategy(ABC):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
         """Return canonical-dialect ASTs; the engine adapter transpiles them.
 
-        ``columns`` is the target's aligned column order when apply already knows it
-        (the staged delivery paths ``describe`` the target); ``None`` otherwise. Only
-        strategies that need a column list — ``merge``'s native ``MERGE`` — use it;
-        the rest ignore it and stay column-agnostic."""
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        """Interpret the engine's per-statement affected-row counts (index-aligned
-        with ``plan_statements``' list) into inserted/updated/deleted. Each strategy
-        knows what its own statements mean; the default reads the last statement as
-        the write."""
-        return RowCounts(inserted=_at(counts, len(counts) - 1) if counts else 0)
+        ``columns`` is the target's column order when apply already knows it
+        (it has described the target, or aligned a stage). ``None`` on a first
+        build, where there is nothing to preserve and the ensure-create matches
+        the source. Strategies that name their columns (``writes_named_columns``)
+        use the list for native ``MERGE`` or an explicit INSERT column list; the
+        rest ignore it and stay column-agnostic."""

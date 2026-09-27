@@ -124,11 +124,29 @@ def test_merge_key_only_table_omits_the_update_clause() -> None:
     assert "WHEN NOT MATCHED THEN INSERT (id) VALUES (_s.id)" in sql
 
 
-def test_full_merge_stages_key_sets_outside_the_delete() -> None:
-    """DuckLake aborts if EXCEPT (or the source scan) is nested inside the DELETE.
-    The deletes read temp tables; the insert's EXCEPT stays a read."""
+_DUCKLAKE = EngineCaps(supports_create_or_replace=True, except_in_delete=False)
+_NO_SUBQUERY = EngineCaps(supports_mutation_subquery=False)
+
+
+def test_full_merge_inlines_except_in_the_delete() -> None:
     relation = SqlRelation.from_sql("SELECT id, v FROM src")
     statements = FullMerge(("id",)).plan_statements(relation, _TARGET, _CAPS)
+    rendered = _sql(statements)
+    assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
+    assert rendered[1].startswith("DELETE FROM interlace__main.orders__abc WHERE id IN")
+    assert "EXCEPT" in rendered[1] and "FROM src" in rendered[1]
+    assert rendered[2].startswith("DELETE") and "EXCEPT" not in rendered[2]
+    assert rendered[3].startswith("INSERT INTO interlace__main.orders__abc ") and "EXCEPT" in rendered[3]
+    # [ensure, delete changed=11, delete vanished=2, insert=20] -> +9 ~11 -2
+    counts = statements.row_counts([0, 11, 2, 20])
+    assert (counts.inserted, counts.updated, counts.deleted) == (9, 11, 2)
+    assert "EXCEPT" in statements[1].sql(dialect="postgres")
+
+
+def test_full_merge_stages_key_sets_when_the_delete_cannot_hold_except() -> None:
+    """DuckLake aborts if EXCEPT is nested inside the DELETE. The deletes read temp tables."""
+    relation = SqlRelation.from_sql("SELECT id, v FROM src")
+    statements = FullMerge(("id",)).plan_statements(relation, _TARGET, _DUCKLAKE)
     rendered = _sql(statements)
     assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
     assert rendered[1] == "DROP TABLE IF EXISTS _interlace_fm_changed"
@@ -144,10 +162,10 @@ def test_full_merge_stages_key_sets_outside_the_delete() -> None:
     assert "FROM src" not in changed and "FROM src" not in vanished
 
     # stage sizes (100, 50) are not writes; tail is delete changed=11, delete vanished=2, insert=20
-    counts = FullMerge(("id",)).row_counts([0, 0, 100, 0, 50, 11, 2, 20])
+    counts = statements.row_counts([0, 0, 100, 0, 50, 11, 2, 20])
     assert (counts.inserted, counts.updated, counts.deleted) == (9, 11, 2)
 
-    multi = _sql(FullMerge(("a", "b")).plan_statements(relation, _TARGET, _CAPS))
+    multi = _sql(FullMerge(("a", "b")).plan_statements(relation, _TARGET, _DUCKLAKE))
     assert "WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_changed)" in multi[5]
     assert "WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_vanished)" in multi[6]
     postgres = [statement.sql(dialect="postgres") for statement in statements]
@@ -155,14 +173,24 @@ def test_full_merge_stages_key_sets_outside_the_delete() -> None:
     assert all("EXCEPT" not in sql for sql in postgres if sql.startswith("DELETE"))
 
 
-def test_merge_row_counts_native_is_a_single_written_count() -> None:
+def test_full_merge_rejects_engines_without_delete_subqueries() -> None:
+    from interlace.exceptions import PlanError
+
+    with pytest.raises(PlanError, match="subquery"):
+        FullMerge(("id",)).plan_statements(SqlRelation.from_sql("SELECT id FROM src"), _TARGET, _NO_SUBQUERY)
+
+
+def test_merge_row_counts_follow_the_plan_shape() -> None:
     # native MERGE returns one combined affected-row count (no insert/update split)
-    assert Merge(("id",)).row_counts([7]).inserted == 7
+    native = Merge(("id",)).plan_statements(_relation(), _TARGET, _MERGE_CAPS, columns=["id", "x"])
+    assert native.row_counts([7]).inserted == 7
     # the in-place fallback splits directly: [update=2, insert=5]
-    in_place = Merge(("id",)).row_counts([2, 5])
-    assert (in_place.inserted, in_place.updated) == (5, 2)
+    in_place = Merge(("id",)).plan_statements(_relation(), _TARGET, _CAPS, columns=["id", "x"])
+    counted = in_place.row_counts([2, 5])
+    assert (counted.inserted, counted.updated) == (5, 2)
     # the DELETE+INSERT fallback keeps the split: [ensure, delete=2, insert=5] -> +3 ~2
-    counts = Merge(("id",)).row_counts([0, 2, 5])
+    delete_insert = Merge(("id",)).plan_statements(_relation(), _TARGET, _CAPS)
+    counts = delete_insert.row_counts([0, 2, 5])
     assert (counts.inserted, counts.updated) == (3, 2)
 
 
@@ -202,7 +230,8 @@ def test_append_names_its_columns_when_aligned() -> None:
 
 
 def test_hash_merge_row_counts_split_update_and_insert() -> None:
-    counts = HashMerge(("id",)).row_counts([0, 3, 5])  # [ensure, update=3 changed, insert=5 new]
+    planned = HashMerge(("id",)).plan_statements(SqlRelation.from_sql("SELECT id, v FROM src"), _TARGET, _CAPS)
+    counts = planned.row_counts([0, 3, 5])  # [ensure, update=3 changed, insert=5 new]
     assert (counts.inserted, counts.updated) == (5, 3)
 
 

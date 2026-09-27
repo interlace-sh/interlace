@@ -18,13 +18,16 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from interlace.dsl.decorators import StreamDef
 from interlace.engines.base import EngineAdapter
 from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.graph.project import PHYSICAL_SCHEMA_PREFIX
 from interlace.ir.relation import TableRef, drop
 from interlace.plan.plan import XFER_SCHEMA
+from interlace.state.locks import hold_apply_lock
 from interlace.state.store import SqliteStateStore
 from interlace.streaming.log import StreamLog
+from interlace.streaming.materializer import sweep_streams
 
 _STREAMS_SCHEMA = "streams"
 _STREAMS_WATERMARKS = TableRef(schema=_STREAMS_SCHEMA, name="_watermarks")
@@ -373,3 +376,30 @@ async def gc(
         target = registry.require(key_engine.get(table_key, eng_name))
         await _drop_relation(target, schema, name)
     return result
+
+
+async def gc_project(
+    state: SqliteStateStore,
+    engines: EngineRegistry,
+    *,
+    grace: timedelta,
+    dry_run: bool,
+    lock_owner: str,
+    streams: Iterable[StreamDef] = (),
+    stream_log: StreamLog | None = None,
+) -> tuple[GcResult, dict[str, int], dict[str, int]]:
+    """Snapshot gc, log trim, and stream retention — the same work for CLI and HTTP.
+
+    The apply lock covers the snapshot decision. Trim and stream sweep run after
+    it, matching the order both entry points already used.
+    """
+    async with hold_apply_lock(state, owner=lock_owner):
+        result = await gc(state, engines=engines, grace=grace, dry_run=dry_run)
+    trimmed: dict[str, int] = {}
+    swept: dict[str, int] = {}
+    if not dry_run:
+        trimmed = await state.trim_logs()
+        listed = list(streams)
+        if listed and stream_log is not None:
+            swept = await sweep_streams(listed, stream_log, engines.get())
+    return result, trimmed, swept

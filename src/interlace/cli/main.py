@@ -34,13 +34,10 @@ from interlace.plan.comment import plan_markdown
 from interlace.plan.orchestrate import compute_plan, plan_and_apply, resolve_selection, run_and_apply
 from interlace.plan.plan import ChangeType, Plan
 from interlace.plan.table_diff import TableDiff
-from interlace.project import Project
+from interlace.project import Project, open_session
 from interlace.scaffold import list_templates, scaffold_project
-from interlace.scheduler.engine import TriggerEngine, build_triggers
-from interlace.scheduler.worker import drain
-from interlace.sinks import target_ref
 from interlace.state.locks import hold_apply_lock
-from interlace.streaming import ensure_stream_tables, flush_streams
+from interlace.streaming import ensure_stream_tables
 
 # pretty_exceptions_enable=False: let InterlaceError propagate out of app() so main()
 # can render it as one clean line instead of a Rich traceback through interlace internals.
@@ -359,56 +356,30 @@ async def _plan(
     as_json: bool = False,
     markdown: bool = False,
 ) -> None:
-    project = Project.load(path)
-    compiled = project.compile()
-    state = await project.open_state()
-    engines = project.open_engines()
-    try:
-        selected = await resolve_selection(compiled, state, environment, select)
-        result = await compute_plan(compiled, environment, state, engines, select=selected, forward_only=forward_only)
-        if markdown:
-            typer.echo(plan_markdown(result, environment))
-        elif as_json:
-            _emit_json(_plan_dict(result, environment))
-        else:
-            _render(result, environment)
-        if result.blocking:
-            raise typer.Exit(1)
-    except SelectionError as exc:
-        console.print(f"[red]{escape(exc.message)}[/red]")
-        raise typer.Exit(1) from exc
-    finally:
-        await state.close()
-        engines.close()
+    async with open_session(path) as (_project, compiled, state, engines):
+        try:
+            selected = await resolve_selection(compiled, state, environment, select)
+            result = await compute_plan(
+                compiled, environment, state, engines, select=selected, forward_only=forward_only
+            )
+            if markdown:
+                typer.echo(plan_markdown(result, environment))
+            elif as_json:
+                previous = await state.get_snapshots(
+                    (change.name, change.previous_fingerprint)
+                    for change in result.changes
+                    if change.previous_fingerprint is not None
+                )
+                from interlace.plan.payload import plan_document
 
-
-def _plan_dict(plan: Plan, environment: str) -> dict:
-    """The plan as data — mirrors the HTTP API's PlanResponse shape."""
-    reused = {snapshot.name for snapshot in plan.reuses}
-    return {
-        "environment": environment,
-        "changes": [
-            {
-                "name": change.name,
-                "change_type": change.change_type.value,
-                "category": change.category.value if change.category else None,
-                "reused": change.name in reused,
-                "previous_fingerprint": change.previous_fingerprint,
-                "new_fingerprint": change.new_fingerprint,
-            }
-            for change in plan.changes
-        ],
-        "transfers": [
-            f"{t.model}: {t.source.name} -> {t.target.name} ({t.via} -> {t.table.schema}.{t.table.name})"
-            for t in plan.transfers
-        ],
-        "physical": [
-            f"{'+' if change.op == 'add' else '-'} {change.kind} {change.name}"
-            for action in plan.physical
-            for change in action.changes
-        ],
-        "drift": [note.message for note in plan.drift],
-    }
+                _emit_json(plan_document(result, compiled, previous, environment).as_dict())
+            else:
+                _render(result, environment)
+            if result.blocking:
+                raise typer.Exit(1)
+        except SelectionError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
 
 
 def _diff_dict(result: TableDiff) -> dict[str, object]:
@@ -649,16 +620,13 @@ def restate(
 def _window(value: str, flag: str) -> datetime | None:
     if not value:
         return None
+    from interlace.state.interval import naive_local
+
     try:
-        parsed = datetime.fromisoformat(value)
+        return naive_local(value)
     except ValueError as exc:
         console.print(f"[red]{flag} must be an ISO timestamp (e.g. 2026-07-01T00:00:00); got {value!r}[/red]")
         raise typer.Exit(2) from exc
-    if parsed.tzinfo is not None:
-        # the interval ledger stores naive local timestamps; one aware window would
-        # poison every later naive/aware comparison for that model
-        parsed = parsed.astimezone().replace(tzinfo=None)
-    return parsed
 
 
 async def _execute(
@@ -749,8 +717,7 @@ def gc(
 
 async def _gc(path: Path, grace: str, dry_run: bool) -> None:
     from interlace.state.interval import parse_grain
-    from interlace.state.janitor import gc as run_gc
-    from interlace.streaming.materializer import sweep_streams
+    from interlace.state.janitor import gc_project
 
     try:
         parsed_grace = parse_grain(grace)
@@ -760,32 +727,34 @@ async def _gc(path: Path, grace: str, dry_run: bool) -> None:
     project = Project.load(path)
     engines = project.open_engines()
     state = await project.open_state()
+    log = await project.open_stream_log() if project.streams and not dry_run else None
     try:
-        async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:gc"):
-            result = await run_gc(state, engines=engines, grace=parsed_grace, dry_run=dry_run)
+        result, trimmed, swept = await gc_project(
+            state,
+            engines,
+            grace=parsed_grace,
+            dry_run=dry_run,
+            lock_owner=f"cli:{os.getpid()}:gc",
+            streams=project.streams,
+            stream_log=log,
+        )
         verb = "Would remove" if dry_run else "Removed"
         console.print(
             f"{verb} {len(result.removed_snapshots)} snapshot(s), dropped {len(result.dropped_tables)} table(s); "
             f"{result.kept_snapshots} snapshot(s) kept."
         )
-        if not dry_run:
-            trimmed = await state.trim_logs()
-            if any(trimmed.values()):
-                console.print(
-                    f"Trimmed {trimmed['events']} event(s), {trimmed['check_results']} check result(s), "
-                    f"{trimmed['runs']} finished run(s) older than 30 days."
-                )
+        if any(trimmed.values()):
+            console.print(
+                f"Trimmed {trimmed['events']} event(s), {trimmed['check_results']} check result(s), "
+                f"{trimmed['runs']} finished run(s) older than 30 days."
+            )
         for table in result.dropped_tables:
             console.print(f"  - {table}")
-        if project.streams and not dry_run:
-            log = await project.open_stream_log()
-            try:
-                swept = await sweep_streams(project.streams, log, engines.get())
-            finally:
-                await log.close()
-            if swept:
-                console.print("Stream retention: " + ", ".join(f"{k} -{v}" for k, v in swept.items()))
+        if swept:
+            console.print("Stream retention: " + ", ".join(f"{k} -{v}" for k, v in swept.items()))
     finally:
+        if log is not None:
+            await log.close()
         await state.close()
         engines.close()
 
@@ -873,52 +842,70 @@ def scheduler(
 
 
 async def _scheduler(environment: str, path: Path, interval: float, once: bool) -> None:
-    from interlace.streaming.materializer import sweep_streams
+    """Same loops as ``interlace serve``: reload, tick, trim, drain, flush, CDC."""
+    from types import SimpleNamespace
+
+    from interlace.scheduler.daemon import cdc_loop, flush_once, flusher_loop, scheduler_loop, source_mtime
+    from interlace.streaming.materializer import quarantine_stream, stream_consumers
 
     project = Project.load(path)
     compiled = project.compile()
     engines = project.open_engines()
-    state = await project.open_state()
-    stream_log = await project.open_stream_log() if project.streams else None
-    if project.streams:
-        await ensure_stream_tables(project.streams, engines.get())
-    trigger_engine = TriggerEngine(build_triggers(compiled, root=project.root), state)
+    store = await project.open_state()
+    streams = {stream.name: stream for stream in project.streams}
+    stream_log = await project.open_stream_log() if streams else None
+    shadows = [stream for stream in streams.values() if stream.on_schema_drift == "quarantine"]
+    flush_targets = [*streams.values(), *(quarantine_stream(stream) for stream in shadows)]
+    if streams:
+        await ensure_stream_tables(flush_targets, engines.get())
+    host = SimpleNamespace(
+        project=project,
+        compiled=compiled,
+        store=store,
+        engines=engines,
+        engine=engines.get(),
+        environment=environment,
+        root=project.root,
+        model_paths=project.config.model_paths,
+        reload_lock=asyncio.Lock(),
+        source_mtime=source_mtime(project.root, project.config.model_paths),
+        lock_owner=f"cli:{os.getpid()}:scheduler",
+        drain_wanted=asyncio.Event(),
+        flush_wanted=asyncio.Event(),
+        flush_dirty={target.name for target in flush_targets},
+        flush_targets=flush_targets,
+        streams=streams,
+        stream_log=stream_log,
+        log_heads=await stream_log.heads() if stream_log is not None else {},
+        lineage={},
+        describe_cache={},
+        cdc=project.config.cdc,
+        connections=project.config.connections,
+        stream_consumer_map={name: sorted(stream_consumers(compiled, name)) for name in streams},
+    )
+    host.flushed_heads = dict(host.log_heads)
+    flusher: asyncio.Task[None] | None = None
+    cdc: asyncio.Task[None] | None = None
     try:
-        while True:
-            await trigger_engine.tick(datetime.now())
-            # materialize anything published since the last tick, then run models
-            # (an API-only `serve --no-scheduler` process relies on this loop to flush)
-            async with hold_apply_lock(state, owner=f"cli:{os.getpid()}:scheduler"):
-                if stream_log is not None:
-                    await flush_streams(project.streams, stream_log, engines.get())
+        if streams:
+            await flush_once(host)  # this tick's models read rows that are already durable
+            flusher = asyncio.create_task(flusher_loop(host, flush_interval=0.05))
+        if project.config.cdc:
+            cdc = asyncio.create_task(cdc_loop(host))
 
-                def publish(fresh: CompiledProject) -> None:
-                    nonlocal compiled, trigger_engine
-                    compiled = fresh
-                    trigger_engine = TriggerEngine(build_triggers(compiled, root=project.root), state)
+        def report(ran: int) -> None:
+            console.print(f"[green]ran {ran} scheduled run(s) in '{environment}'[/green]")
 
-                ran = await drain(
-                    state,
-                    compiled,
-                    engines=engines,
-                    environment=environment,
-                    base_path=project.root,
-                    parallelism=project.config.parallelism,
-                    connections=project.config.connections,
-                    loaded=project,
-                    on_compiled=publish,
-                )
-            if ran:
-                console.print(f"[green]ran {ran} scheduled run(s) in '{environment}'[/green]")
-            if stream_log is not None:
-                await sweep_streams(project.streams, stream_log, engines.get())
-            if once:
-                break
-            await asyncio.sleep(interval)
+        await scheduler_loop(host, interval=interval, once=once, on_ran=report)
     finally:
+        for task in (cdc, flusher):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
         if stream_log is not None:
             await stream_log.close()
-        await state.close()
+        await store.close()
         engines.close()
 
 
@@ -1369,43 +1356,21 @@ def checks_run(environment: str = _ENV, path: Path = _PATH, select: list[str] = 
 async def _checks_run(environment: str, path: Path, select: list[str], as_json: bool = False) -> None:
     from dataclasses import asdict
 
-    from interlace.checks.runner import CheckOutcome, run_checks
+    from interlace.checks.runner import run_promoted_checks
 
     project = Project.load(path)
     compiled = project.compile()
-    chosen = _selection(compiled, select)
     engines_registry = project.open_engines()
     state = await project.open_state()
     try:
-        promoted = await state.get_environment(environment)
-        if not promoted:
-            console.print(f"[red]no environment {environment!r} — run `interlace apply` first[/red]")
-            raise typer.Exit(1)
-        snapshots = await state.get_snapshots(promoted.items())
-        physical = {name: snapshot.physical_table for (name, _), snapshot in snapshots.items()}
-        outcomes: list[CheckOutcome] = []
-        skipped: list[str] = []
-        for name, model in compiled.models.items():
-            if chosen is not None and name not in chosen:
-                continue
-            if not model.checks and not compiled.python_checks.get(name):
-                continue
-            if model.materialise == "file" or (model.is_terminal and environment not in model.environments):
-                continue  # a file has no queryable table; a table not delivered in this env has nothing to re-check
-            snapshot = snapshots.get((name, promoted.get(name, "")))
-            if snapshot is None:  # declared but never promoted here: nothing to check against
-                skipped.append(name)
-                continue
-            # the SNAPSHOT's engine, not the compiled model's: an engine re-pin since
-            # the last promote means the promoted table still lives on the old engine
-            engine = engines_registry.require(snapshot.engine, model=name)
-            check_table = target_ref(model.target or "") if model.materialise == "table" else snapshot.physical_table
-            results = await run_checks(
-                model, compiled, engine, check_table, compiled.python_checks.get(name, ()), physical
-            )
-            if results:
-                await state.record_check_results(environment, snapshot.fingerprint, results)
-            outcomes.extend(results)
+        try:
+            outcomes, skipped = await run_promoted_checks(compiled, state, engines_registry, environment, select)
+        except PlanError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
+        except SelectionError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
     finally:
         await state.close()
         engines_registry.close()
@@ -1573,32 +1538,28 @@ def connections(path: Path = _PATH, as_json: bool = _JSON) -> None:
     console.print(table)
 
 
-async def _warehouse_columns(project: Project, compiled: CompiledProject) -> dict[str, list[str]]:
-    """Best-effort real output columns per model, probed from the built warehouse so
-    column lineage traces precisely through Python models (a Python model's true
-    columns can't be known statically). Empty on any failure — an unbuilt project or
-    a warehouse held by a running ``serve`` — and lineage falls back to static analysis."""
-    from sqlglot import exp
+async def _known_columns(project: Project, compiled: CompiledProject, environment: str) -> dict[str, list[str]]:
+    """Output column names from each promoted snapshot's physical table."""
+    from interlace.inspect import described_outputs
 
     try:
         engines = project.open_engines()
     except Exception:
         return {}
-    described: dict[str, list[str]] = {}
+    state = await project.open_state()
     try:
-        for name, model in compiled.models.items():
-            with contextlib.suppress(Exception):  # unbuilt / non-queryable (file target): names-only is fine
-                reader = await engines.get(model.engine).fetch(exp.select("*").from_(exp.to_table(name)).limit(0))
-                described[name] = list(reader.schema.names)
+        described = await described_outputs(compiled, state, engines, environment)
     finally:
+        await state.close()
         engines.close()
-    return described
+    return {name: list(columns) for name, columns in described.items()}
 
 
 @app.command()
 def impact(
     target: str = typer.Argument(..., help="model.column — what would changing this column touch?"),
     path: Path = _PATH,
+    environment: str = _ENV,
     as_json: bool = _JSON,
 ) -> None:
     """Column-level blast radius: every downstream column derived from this one,
@@ -1610,7 +1571,7 @@ def impact(
         console.print(f"[red]expected <model>.<column> with a known model; got {target!r}[/red]")
         raise typer.Exit(1)
     model, column = parsed
-    described = asyncio.run(_warehouse_columns(project, compiled))
+    described = asyncio.run(_known_columns(project, compiled, environment))
     result = column_impact(compiled, model, column, known_columns=described)
     impacted = result["impacted"]
     opaque = result["opaque_consumers"]
@@ -1639,6 +1600,7 @@ def impact(
 def lineage(
     model: str = typer.Argument(..., help="Model name."),
     path: Path = _PATH,
+    environment: str = _ENV,
     columns: bool = typer.Option(False, "--columns", "-c", help="Show column-level lineage."),
     fmt: str = typer.Option("text", "--format", "-f", help="Output format: text, json, or dot (Graphviz)."),
 ) -> None:
@@ -1654,7 +1616,7 @@ def lineage(
 
     upstream = sorted(compiled.graph.ancestors(model))
     downstream = sorted(compiled.graph.descendants(model))
-    described = asyncio.run(_warehouse_columns(project, compiled)) if columns else {}
+    described = asyncio.run(_known_columns(project, compiled, environment)) if columns else {}
     sources = column_lineage(compiled, known_columns=described).get(model, {}) if columns else {}
 
     if fmt == "dot":
@@ -1720,9 +1682,15 @@ def apikey_create(
 
 
 async def _apikey_create(name: str, path: Path, scopes: list[str]) -> None:
+    from interlace.exceptions import ConfigurationError
+
     state = await Project.load(path).open_state()
     try:
-        token = await state.create_api_key(name, scopes)
+        try:
+            token = await state.create_api_key(name, scopes)
+        except ConfigurationError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
     finally:
         await state.close()
     console.print(f"[green]created API key '{name}' ({', '.join(scopes)})[/green]")
@@ -1740,17 +1708,15 @@ def apikey_revoke(
 
 
 async def _apikey_revoke(name: str, path: Path) -> None:
+    from interlace.exceptions import ConfigurationError
+
     state = await Project.load(path).open_state()
     try:
-        keys = await state.list_api_keys()
-        matching = sum(1 for key in keys if key["name"] == name)
-        if matching and matching == len(keys):
-            console.print(
-                "[red]refusing to revoke the last key(s) — that would disable authentication; "
-                "create a replacement first[/red]"
-            )
-            raise typer.Exit(1)
-        removed = await state.revoke_api_key(name)
+        try:
+            removed = await state.revoke_api_key(name)
+        except ConfigurationError as exc:
+            console.print(f"[red]{escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
     finally:
         await state.close()
     if removed:

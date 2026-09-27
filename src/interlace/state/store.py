@@ -21,16 +21,20 @@ import os
 import secrets
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, NotRequired, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict, TypeVar
 
+from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 from interlace.physical.spec import PhysicalObject
 from interlace.state.interval import Interval, IntervalSet
 from interlace.state.snapshot import ChangeCategory, Snapshot
+
+_API_SCOPES = frozenset({"read", "write", "admin"})
+_R = TypeVar("_R")
 
 _MIGRATIONS: list[str] = [
     # 0001 — snapshots, interval ledger, environment pointers
@@ -342,11 +346,11 @@ class SqliteStateStore:
         return conn
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._conn.close)
+        await self._io(self._conn.close)
 
     async def cdc_confirmed_lsn(self, stream: str) -> str | None:
         """The replication LSN whose rows have been flushed, or None if CDC has not confirmed one."""
-        return await asyncio.to_thread(self._cdc_confirmed_lsn_sync, stream)
+        return await self._io(self._cdc_confirmed_lsn_sync, stream)
 
     def _cdc_confirmed_lsn_sync(self, stream: str) -> str | None:
         with self._lock:
@@ -355,7 +359,7 @@ class SqliteStateStore:
 
     async def cdc_note_pending(self, stream: str, rows: list[tuple[int, str]]) -> None:
         """Remember which log offset each replication LSN landed at. Deduped appends are included."""
-        await asyncio.to_thread(self._cdc_note_pending_sync, stream, rows)
+        await self._io(self._cdc_note_pending_sync, stream, rows)
 
     def _cdc_note_pending_sync(self, stream: str, rows: list[tuple[int, str]]) -> None:
         with self._lock:
@@ -371,7 +375,7 @@ class SqliteStateStore:
         ``watermark`` is the offset ``flush_streams`` has committed. Rows past it
         stay pending, so a crash re-reads from the last confirmed LSN.
         """
-        return await asyncio.to_thread(self._cdc_advance_sync, stream, watermark)
+        return await self._io(self._cdc_advance_sync, stream, watermark)
 
     def _cdc_advance_sync(self, stream: str, watermark: int) -> str | None:
         with self._lock:
@@ -400,7 +404,7 @@ class SqliteStateStore:
     # --- snapshots ----------------------------------------------------------
 
     async def add_snapshot(self, snapshot: Snapshot) -> None:
-        await asyncio.to_thread(self._add_snapshot_sync, snapshot)
+        await self._io(self._add_snapshot_sync, snapshot)
 
     def _add_snapshot_sync(self, snapshot: Snapshot) -> None:
         with self._lock:
@@ -426,7 +430,7 @@ class SqliteStateStore:
             self._conn.commit()
 
     async def get_snapshot(self, name: str, fingerprint: str) -> Snapshot | None:
-        return await asyncio.to_thread(self._get_snapshot_sync, name, fingerprint)
+        return await self._io(self._get_snapshot_sync, name, fingerprint)
 
     def _get_snapshot_sync(self, name: str, fingerprint: str) -> Snapshot | None:
         with self._lock:
@@ -442,7 +446,7 @@ class SqliteStateStore:
 
     async def get_snapshots(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], Snapshot]:
         """Batch-fetch snapshots by (name, fingerprint) — two queries total, not 2N."""
-        return await asyncio.to_thread(self._get_snapshots_sync, list(pairs))
+        return await self._io(self._get_snapshots_sync, list(pairs))
 
     def _get_snapshots_sync(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], Snapshot]:
         if not pairs:
@@ -474,7 +478,7 @@ class SqliteStateStore:
         }
 
     async def list_snapshots(self, name: str) -> list[Snapshot]:
-        return await asyncio.to_thread(self._list_snapshots_sync, name)
+        return await self._io(self._list_snapshots_sync, name)
 
     def _list_snapshots_sync(self, name: str) -> list[Snapshot]:
         with self._lock:
@@ -492,7 +496,7 @@ class SqliteStateStore:
 
     async def list_snapshot_rows(self) -> list[dict[str, str]]:
         """Every snapshot row (no intervals): name, fingerprint, physical table, engine, created_at."""
-        return await asyncio.to_thread(self._list_snapshot_rows_sync)
+        return await self._io(self._list_snapshot_rows_sync)
 
     def _list_snapshot_rows_sync(self) -> list[dict[str, str]]:
         with self._lock:
@@ -503,7 +507,7 @@ class SqliteStateStore:
 
     async def delete_snapshots(self, pairs: Iterable[tuple[str, str]]) -> None:
         """Remove snapshot rows and their interval-ledger entries."""
-        await asyncio.to_thread(self._delete_snapshots_sync, list(pairs))
+        await self._io(self._delete_snapshots_sync, list(pairs))
 
     def _delete_snapshots_sync(self, pairs: list[tuple[str, str]]) -> None:
         with self._lock:
@@ -519,7 +523,7 @@ class SqliteStateStore:
         atomic against a concurrent promote from any process. A row is doomed when
         no environment references its fingerprint AND it predates ``cutoff``.
         ``delete=False`` (dry run) returns the same partition without deleting."""
-        return await asyncio.to_thread(self._collect_snapshot_garbage_sync, cutoff, delete)
+        return await self._io(self._collect_snapshot_garbage_sync, cutoff, delete)
 
     def _collect_snapshot_garbage_sync(
         self, cutoff: datetime, delete: bool
@@ -555,7 +559,7 @@ class SqliteStateStore:
     # --- interval ledger ----------------------------------------------------
 
     async def record_interval(self, name: str, fingerprint: str, interval: Interval) -> None:
-        await asyncio.to_thread(self._record_interval_sync, name, fingerprint, interval)
+        await self._io(self._record_interval_sync, name, fingerprint, interval)
 
     def _record_interval_sync(self, name: str, fingerprint: str, interval: Interval) -> None:
         with self._lock:
@@ -566,7 +570,7 @@ class SqliteStateStore:
             self._conn.commit()
 
     async def get_intervals(self, name: str, fingerprint: str) -> IntervalSet:
-        return await asyncio.to_thread(self._get_intervals_sync, name, fingerprint)
+        return await self._io(self._get_intervals_sync, name, fingerprint)
 
     def _get_intervals_sync(self, name: str, fingerprint: str) -> IntervalSet:
         with self._lock:
@@ -578,7 +582,7 @@ class SqliteStateStore:
     # --- environments -------------------------------------------------------
 
     async def promote(self, environment: str, mapping: dict[str, str]) -> None:
-        await asyncio.to_thread(self._promote_sync, environment, mapping)
+        await self._io(self._promote_sync, environment, mapping)
 
     def _promote_sync(self, environment: str, mapping: dict[str, str]) -> None:
         self._apply_promotion(environment, mapping, replace=False)
@@ -647,7 +651,7 @@ class SqliteStateStore:
 
     async def list_generations(self, environment: str) -> list[dict[str, object]]:
         """Promotion history, newest first: generation, when, how many models."""
-        return await asyncio.to_thread(self._list_generations_sync, environment)
+        return await self._io(self._list_generations_sync, environment)
 
     def _list_generations_sync(self, environment: str) -> list[dict[str, object]]:
         with self._lock:
@@ -660,7 +664,7 @@ class SqliteStateStore:
 
     async def get_generation(self, environment: str, generation: int) -> dict[str, str]:
         """The full model->fingerprint mapping recorded at ``generation``."""
-        return await asyncio.to_thread(self._get_generation_sync, environment, generation)
+        return await self._io(self._get_generation_sync, environment, generation)
 
     def _get_generation_sync(self, environment: str, generation: int) -> dict[str, str]:
         with self._lock:
@@ -673,7 +677,7 @@ class SqliteStateStore:
     async def set_environment(self, environment: str, mapping: dict[str, str]) -> None:
         """Replace an environment's mapping wholesale (rollback): rows not in
         ``mapping`` are removed. One transaction; records a new history generation."""
-        await asyncio.to_thread(self._apply_promotion, environment, mapping, replace=True)
+        await self._io(self._apply_promotion, environment, mapping, replace=True)
 
     async def trim_logs(
         self, older_than: timedelta = timedelta(days=30), *, keep_generations: int = 50
@@ -682,7 +686,7 @@ class SqliteStateStore:
         terminal ``work_queue`` rows of the same age, and keep only the most recent
         ``keep_generations`` promotion generations per environment. Each of these
         grows with every apply/flush/run and has no other reclamation path."""
-        return await asyncio.to_thread(self._trim_logs_sync, older_than, keep_generations)
+        return await self._io(self._trim_logs_sync, older_than, keep_generations)
 
     def _trim_logs_sync(self, older_than: timedelta, keep_generations: int) -> dict[str, int]:
         cutoff = (datetime.now(UTC) - older_than).isoformat()
@@ -708,7 +712,7 @@ class SqliteStateStore:
 
     async def demote(self, environment: str, names: Iterable[str]) -> None:
         """Remove models from an environment's promotion map (model deletion)."""
-        await asyncio.to_thread(self._demote_sync, environment, list(names))
+        await self._io(self._demote_sync, environment, list(names))
 
     def _demote_sync(self, environment: str, names: list[str]) -> None:
         if not names:
@@ -721,7 +725,7 @@ class SqliteStateStore:
             self._conn.commit()
 
     async def get_environment(self, environment: str) -> dict[str, str]:
-        return await asyncio.to_thread(self._get_environment_sync, environment)
+        return await self._io(self._get_environment_sync, environment)
 
     def _get_environment_sync(self, environment: str) -> dict[str, str]:
         with self._lock:
@@ -732,7 +736,7 @@ class SqliteStateStore:
 
     async def delete_environment(self, environment: str) -> int:
         """Remove an environment's promotion rows; returns how many were deleted."""
-        return await asyncio.to_thread(self._delete_environment_sync, environment)
+        return await self._io(self._delete_environment_sync, environment)
 
     def _delete_environment_sync(self, environment: str) -> int:
         with self._lock:
@@ -745,7 +749,7 @@ class SqliteStateStore:
         trigger last-fired times, and snapshot/interval/environment rows for
         ``keep_models`` (terminal table/file models — so the next apply does not
         re-deliver into destinations we do not own)."""
-        return await asyncio.to_thread(self._reset_control_plane_sync, list(keep_models))
+        return await self._io(self._reset_control_plane_sync, list(keep_models))
 
     def _reset_control_plane_sync(self, keep_models: list[str]) -> dict[str, int]:
         # snapshots / intervals / environments are filtered; the rest go entirely.
@@ -784,7 +788,7 @@ class SqliteStateStore:
 
     async def environment_promoted_at(self) -> dict[str, str]:
         """Each environment's most recent promotion timestamp."""
-        return await asyncio.to_thread(self._environment_promoted_at_sync)
+        return await self._io(self._environment_promoted_at_sync)
 
     def _environment_promoted_at_sync(self) -> dict[str, str]:
         with self._lock:
@@ -794,7 +798,7 @@ class SqliteStateStore:
         return {row["environment"]: row["at"] for row in rows}
 
     async def list_environments(self) -> list[str]:
-        return await asyncio.to_thread(self._list_environments_sync)
+        return await self._io(self._list_environments_sync)
 
     def _list_environments_sync(self) -> list[str]:
         with self._lock:
@@ -816,9 +820,7 @@ class SqliteStateStore:
 
         ``restate`` reprocesses every interval in the partition window instead of
         skipping the ones already filled (catchup)."""
-        return await asyncio.to_thread(
-            self._enqueue_run_sync, idempotency_key, flow_selector, partition, priority, restate
-        )
+        return await self._io(self._enqueue_run_sync, idempotency_key, flow_selector, partition, priority, restate)
 
     def _enqueue_run_sync(
         self,
@@ -852,7 +854,7 @@ class SqliteStateStore:
         """Atomically claim queued runs — plus 'running' runs whose lease expired
         (their worker died). A reclaimed run past ``max_attempts`` is marked failed
         instead of being handed out again."""
-        return await asyncio.to_thread(self._claim_runs_sync, limit, owner, lease_seconds, max_attempts)
+        return await self._io(self._claim_runs_sync, limit, owner, lease_seconds, max_attempts)
 
     def _claim_runs_sync(self, limit: int, owner: str, lease_seconds: float, max_attempts: int) -> list[QueuedRun]:
         now = datetime.now(UTC)
@@ -908,7 +910,7 @@ class SqliteStateStore:
     async def renew_lease(self, run_id: int, *, owner: str, lease_seconds: float = 60.0) -> str:
         """Heartbeat: extend the lease. Returns "ok", "cancel" (cancellation was
         requested — stop cooperatively), or "lost" (another worker holds the run)."""
-        return await asyncio.to_thread(self._renew_lease_sync, run_id, owner, lease_seconds)
+        return await self._io(self._renew_lease_sync, run_id, owner, lease_seconds)
 
     def _renew_lease_sync(self, run_id: int, owner: str, lease_seconds: float) -> str:
         # BEGIN IMMEDIATE + owner-fenced UPDATE: without it a starved worker whose
@@ -943,7 +945,7 @@ class SqliteStateStore:
         """Cancel a run: queued runs cancel immediately; running runs get a
         cooperative flag their worker honours at the next heartbeat. Returns the
         resulting state, or None if the run is unknown/already finished."""
-        return await asyncio.to_thread(self._request_cancel_sync, run_id)
+        return await self._io(self._request_cancel_sync, run_id)
 
     def _request_cancel_sync(self, run_id: int) -> str | None:
         with self._lock:
@@ -961,7 +963,7 @@ class SqliteStateStore:
     async def requeue_run(self, run_id: int, *, error: str, owner: str | None = None) -> bool:
         """Put a failed attempt back on the queue for a durable retry (fenced like
         :meth:`finish_run` when ``owner`` is given). Returns whether it landed."""
-        return await asyncio.to_thread(self._requeue_run_sync, run_id, error, owner)
+        return await self._io(self._requeue_run_sync, run_id, error, owner)
 
     def _requeue_run_sync(self, run_id: int, error: str, owner: str | None) -> bool:
         fence = "" if owner is None else " AND lease_owner = ?"
@@ -989,7 +991,7 @@ class SqliteStateStore:
         """Record a terminal state. With ``owner`` set, the write is fenced: it only
         lands while that worker still holds the lease — a starved worker whose run
         was reclaimed cannot stomp the reclaimer's result. Returns whether it landed."""
-        return await asyncio.to_thread(self._finish_run_sync, run_id, success, error, status, owner)
+        return await self._io(self._finish_run_sync, run_id, success, error, status, owner)
 
     def _finish_run_sync(
         self, run_id: int, success: bool, error: str | None, status: str | None, owner: str | None
@@ -1009,7 +1011,7 @@ class SqliteStateStore:
         return cursor.rowcount > 0
 
     async def count_pending_runs(self) -> int:
-        return await asyncio.to_thread(self._count_pending_runs_sync)
+        return await self._io(self._count_pending_runs_sync)
 
     def _count_pending_runs_sync(self) -> int:
         with self._lock:
@@ -1038,7 +1040,7 @@ class SqliteStateStore:
         )
 
     async def list_runs(self, limit: int = 50) -> list[RunRecord]:
-        return await asyncio.to_thread(self._list_runs_sync, limit)
+        return await self._io(self._list_runs_sync, limit)
 
     def _list_runs_sync(self, limit: int) -> list[RunRecord]:
         # correlated subqueries on idx_event_log_entity give each run its wall-clock
@@ -1068,7 +1070,7 @@ class SqliteStateStore:
         return records
 
     async def get_run(self, run_id: int) -> RunRecord | None:
-        return await asyncio.to_thread(self._get_run_sync, run_id)
+        return await self._io(self._get_run_sync, run_id)
 
     def _get_run_sync(self, run_id: int) -> RunRecord | None:
         with self._lock:
@@ -1076,11 +1078,11 @@ class SqliteStateStore:
         return self._run_dict(row) if row else None
 
     async def events_for_entity(self, entity: str) -> list[dict[str, object]]:
-        return await asyncio.to_thread(self._events_for_entity_sync, entity)
+        return await self._io(self._events_for_entity_sync, entity)
 
     async def latest_model_build(self, model: str) -> dict[str, object] | None:
         """The newest terminal build event for a model (done / failed / cancelled)."""
-        return await asyncio.to_thread(self._latest_model_build_sync, model)
+        return await self._io(self._latest_model_build_sync, model)
 
     def _latest_model_build_sync(self, model: str) -> dict[str, object] | None:
         with self._lock:
@@ -1102,7 +1104,7 @@ class SqliteStateStore:
     async def events_for_run(self, run_id: int) -> list[dict[str, object]]:
         """A run's per-model events — keyed by ``payload.run`` (their entity is the model
         name, not the run id), so the run detail can show a model-level timeline."""
-        return await asyncio.to_thread(self._events_for_run_sync, run_id)
+        return await self._io(self._events_for_run_sync, run_id)
 
     def _events_for_run_sync(self, run_id: int) -> list[dict[str, object]]:
         with self._lock:
@@ -1126,7 +1128,7 @@ class SqliteStateStore:
     # --- event log ----------------------------------------------------------
 
     async def append_event(self, type: str, entity: str | None = None, payload: dict[str, object] | None = None) -> int:
-        return await asyncio.to_thread(self._append_event_sync, type, entity, payload)
+        return await self._io(self._append_event_sync, type, entity, payload)
 
     def _append_event_sync(self, type: str, entity: str | None, payload: dict[str, object] | None) -> int:
         payload = _stamp_actor(type, payload)
@@ -1162,7 +1164,7 @@ class SqliteStateStore:
 
     async def latest_event_seq(self) -> int:
         """The event log's current head (0 when empty) — where a live tail starts."""
-        return await asyncio.to_thread(self._latest_event_seq_sync)
+        return await self._io(self._latest_event_seq_sync)
 
     def _latest_event_seq_sync(self) -> int:
         with self._lock:
@@ -1170,7 +1172,7 @@ class SqliteStateStore:
         return int(row[0] or 0)
 
     async def read_events(self, after_seq: int = 0, limit: int = 200) -> list[dict[str, object]]:
-        return await asyncio.to_thread(self._read_events_sync, after_seq, limit)
+        return await self._io(self._read_events_sync, after_seq, limit)
 
     def _read_events_sync(self, after_seq: int, limit: int) -> list[dict[str, object]]:
         with self._lock:
@@ -1189,25 +1191,39 @@ class SqliteStateStore:
             for row in rows
         ]
 
+    async def _io(self, fn: Callable[..., _R], /, *args: Any, **kwargs: Any) -> _R:
+        """The one worker-thread entry. Sync methods keep the connection lock."""
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
     # --- API keys -----------------------------------------------------------
 
     async def create_api_key(self, name: str, scopes: list[str]) -> str:
         """Create a key; returns the plaintext token (shown once — only the hash is stored)."""
-        return await asyncio.to_thread(self._create_api_key_sync, name, scopes)
+        return await self._io(self._create_api_key_sync, name, scopes)
 
     def _create_api_key_sync(self, name: str, scopes: list[str]) -> str:
+        cleaned = name.strip()
+        if not cleaned:
+            raise ConfigurationError("name the key")
+        if not scopes or set(scopes) - _API_SCOPES:
+            raise ConfigurationError(f"scopes must be a non-empty subset of read/write/admin (got {scopes})")
         token = "ilk_" + secrets.token_hex(16)
         with self._lock:
+            existing = self._conn.execute("SELECT 1 FROM api_keys WHERE name = ?", (cleaned,)).fetchone()
+            if existing is not None:
+                raise ConfigurationError(
+                    f"a key named {cleaned!r} already exists — revoke it first or pick another name"
+                )
             self._conn.execute(
                 "INSERT INTO api_keys (name, key_hash, scopes, created_at) VALUES (?, ?, ?, ?)",
-                (name, hashlib.sha256(token.encode()).hexdigest(), json.dumps(scopes), _now_iso()),
+                (cleaned, hashlib.sha256(token.encode()).hexdigest(), json.dumps(list(scopes)), _now_iso()),
             )
             self._conn.commit()
         return token
 
     async def verify_api_key(self, token: str) -> tuple[str, list[str]] | None:
         """Return ``(name, scopes)``, or None if the token is unknown."""
-        return await asyncio.to_thread(self._verify_api_key_sync, token)
+        return await self._io(self._verify_api_key_sync, token)
 
     def _verify_api_key_sync(self, token: str) -> tuple[str, list[str]] | None:
         digest = hashlib.sha256(token.encode()).hexdigest()
@@ -1220,16 +1236,25 @@ class SqliteStateStore:
 
     async def revoke_api_key(self, name: str) -> int:
         """Revoke every key with this name; returns how many were removed."""
-        return await asyncio.to_thread(self._revoke_api_key_sync, name)
+        return await self._io(self._revoke_api_key_sync, name)
 
     def _revoke_api_key_sync(self, name: str) -> int:
         with self._lock:
+            total = int(self._conn.execute("SELECT count(*) FROM api_keys").fetchone()[0])
+            matching = int(self._conn.execute("SELECT count(*) FROM api_keys WHERE name = ?", (name,)).fetchone()[0])
+            if matching == 0:
+                return 0
+            if matching == total:
+                # Zero keys means keyless mode: every request is admin.
+                raise ConfigurationError(
+                    "refusing to revoke the last key(s) — that would disable authentication; create a replacement first"
+                )
             removed = self._conn.execute("DELETE FROM api_keys WHERE name = ?", (name,)).rowcount
             self._conn.commit()
         return removed
 
     async def count_api_keys(self) -> int:
-        return await asyncio.to_thread(self._count_api_keys_sync)
+        return await self._io(self._count_api_keys_sync)
 
     def _count_api_keys_sync(self) -> int:
         with self._lock:
@@ -1237,7 +1262,7 @@ class SqliteStateStore:
         return int(row[0])
 
     async def list_api_keys(self) -> list[dict[str, object]]:
-        return await asyncio.to_thread(self._list_api_keys_sync)
+        return await self._io(self._list_api_keys_sync)
 
     def _list_api_keys_sync(self) -> list[dict[str, object]]:
         with self._lock:
@@ -1248,7 +1273,7 @@ class SqliteStateStore:
 
     async def record_check_results(self, environment: str, fingerprint: str, outcomes: Iterable[Any]) -> None:
         """Persist one model's check outcomes (objects with name/type/severity/status/failures/message)."""
-        await asyncio.to_thread(self._record_check_results_sync, environment, fingerprint, list(outcomes))
+        await self._io(self._record_check_results_sync, environment, fingerprint, list(outcomes))
 
     def _record_check_results_sync(self, environment: str, fingerprint: str, outcomes: list[Any]) -> None:
         now = _now_iso()
@@ -1275,7 +1300,7 @@ class SqliteStateStore:
             self._conn.commit()
 
     async def list_check_results(self, model: str | None = None, limit: int = 200) -> list[dict[str, object]]:
-        return await asyncio.to_thread(self._list_check_results_sync, model, limit)
+        return await self._io(self._list_check_results_sync, model, limit)
 
     def _list_check_results_sync(self, model: str | None, limit: int) -> list[dict[str, object]]:
         sql = (
@@ -1295,7 +1320,7 @@ class SqliteStateStore:
     # --- trigger state ------------------------------------------------------
 
     async def get_trigger_last_fired(self, trigger_id: str) -> datetime | None:
-        return await asyncio.to_thread(self._get_trigger_last_fired_sync, trigger_id)
+        return await self._io(self._get_trigger_last_fired_sync, trigger_id)
 
     def _get_trigger_last_fired_sync(self, trigger_id: str) -> datetime | None:
         with self._lock:
@@ -1305,7 +1330,7 @@ class SqliteStateStore:
         return datetime.fromisoformat(row["last_fired_at"]) if row and row["last_fired_at"] else None
 
     async def set_trigger_last_fired(self, trigger_id: str, when: datetime) -> None:
-        await asyncio.to_thread(self._set_trigger_last_fired_sync, trigger_id, when)
+        await self._io(self._set_trigger_last_fired_sync, trigger_id, when)
 
     def _set_trigger_last_fired_sync(self, trigger_id: str, when: datetime) -> None:
         with self._lock:
@@ -1319,7 +1344,7 @@ class SqliteStateStore:
 
     async def acquire_lock(self, name: str, *, owner: str, lease_seconds: float = 180.0, timeout: float = 60.0) -> bool:
         """Take (or renew, if already owned) a named advisory lock. Returns False on timeout."""
-        return await asyncio.to_thread(self._acquire_lock_sync, name, owner, lease_seconds, timeout)
+        return await self._io(self._acquire_lock_sync, name, owner, lease_seconds, timeout)
 
     def _acquire_lock_sync(self, name: str, owner: str, lease_seconds: float, timeout: float) -> bool:
         import time as _time
@@ -1354,7 +1379,7 @@ class SqliteStateStore:
 
     async def renew_lock(self, name: str, *, owner: str, lease_seconds: float = 180.0) -> bool:
         """Extend a lock only if ``owner`` still holds it. Returns False if lost."""
-        return await asyncio.to_thread(self._renew_lock_sync, name, owner, lease_seconds)
+        return await self._io(self._renew_lock_sync, name, owner, lease_seconds)
 
     def _renew_lock_sync(self, name: str, owner: str, lease_seconds: float) -> bool:
         with self._lock:
@@ -1380,7 +1405,7 @@ class SqliteStateStore:
 
     async def release_lock(self, name: str, *, owner: str) -> None:
         """Drop a lock if ``owner`` still holds it (no-op otherwise)."""
-        await asyncio.to_thread(self._release_lock_sync, name, owner)
+        await self._io(self._release_lock_sync, name, owner)
 
     def _release_lock_sync(self, name: str, owner: str) -> None:
         with self._lock:

@@ -39,15 +39,23 @@ from litestar.static_files import create_static_files_router
 
 from interlace import __version__
 from interlace.dsl.decorators import StreamDef
-from interlace.dsl.dynamic import DYNAMIC_ROOT
 from interlace.exceptions import BreakingPlanError, CheckError, LockError, QueryError, SelectionError, StreamError
 from interlace.graph.column_lineage import column_lineage
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.graph.selectors import select_models, wants_state
+from interlace.graph.selectors import select_models
 from interlace.plan.apply import ApplyResult, ProgressCallback
 from interlace.plan.orchestrate import compute_plan, plan_and_apply, resolve_selection, run_and_apply
 from interlace.plan.plan import Plan
 from interlace.project import Project
+from interlace.scheduler.daemon import (
+    cdc_loop,
+    flush_once,
+    flusher_loop,
+    publish_compiled,
+    reload_if_stale,
+    scheduler_loop,
+    source_mtime,
+)
 from interlace.service.auth import auth_guard
 from interlace.service.types import (
     ApiKeyInfo,
@@ -98,7 +106,6 @@ from interlace.service.types import (
     StreamDetail,
     StreamInfo,
 )
-from interlace.sinks import target_ref
 from interlace.state.locks import hold_apply_lock
 from interlace.streaming.log import Event, Lease
 from interlace.streaming.materializer import (
@@ -107,7 +114,6 @@ from interlace.streaming.materializer import (
     quarantine_stream,
     stream_consumers,
     stream_watermark,
-    sweep_streams,
 )
 from interlace.streaming.schema import (
     partition_rows,
@@ -120,56 +126,6 @@ from interlace.streaming.schema import (
 # the UI reflects the edit, matching what `interlace plan` (a fresh process) shows.
 # Only the model graph is re-derived; changing engine/stream/path topology in
 # interlace.yaml still needs a daemon restart.
-
-
-def _source_mtime(root: Path, model_paths: list[str]) -> float:
-    """Newest mtime across the config file and every model source. Cheap staleness
-    probe (a stat walk); recompile only happens when this advances."""
-    from interlace.config.config import CONFIG_FILE
-
-    latest = 0.0
-    config = root / CONFIG_FILE
-    if config.exists():
-        latest = config.stat().st_mtime
-    for relative in model_paths:
-        base = root / relative
-        if not base.is_dir():
-            continue
-        for file in base.rglob("*"):
-            if file.suffix in (".sql", ".py") and file.is_file():
-                latest = max(latest, file.stat().st_mtime)
-    dynamic = root / DYNAMIC_ROOT
-    if dynamic.is_dir():
-        for file in dynamic.rglob("*.sql"):
-            if file.is_file():
-                latest = max(latest, file.stat().st_mtime)
-    return latest
-
-
-async def reload_if_stale(state: State) -> None:
-    """Recompile from disk if any model source changed since the last compile.
-
-    Serialised by a lock so concurrent requests recompile at most once, and a
-    no-op (one stat walk) when nothing changed. Refreshes only the compile-derived
-    state — the graph, whole-project lineage, stream→consumer map — and clears the
-    describe cache (new fingerprints mean new tables to re-describe)."""
-    async with state.reload_lock:
-        mtime = await asyncio.to_thread(_source_mtime, state.root, state.model_paths)
-        if mtime <= state.source_mtime:
-            return
-        project = await asyncio.to_thread(Project.load, state.root)
-        compiled = await asyncio.to_thread(project.compile)
-        state.project = project
-        _publish_compiled(state, compiled)
-        state.source_mtime = mtime
-
-
-def _publish_compiled(state: State, compiled: CompiledProject) -> None:
-    """Swap the daemon's compiled graph for one that includes models a run just registered."""
-    state.compiled = compiled
-    state.lineage = column_lineage(compiled)
-    state.stream_consumer_map = {name: sorted(stream_consumers(compiled, name)) for name in state.streams}
-    state.describe_cache = {}
 
 
 def _event_progress(state: State, extra: dict[str, Any]) -> tuple[ProgressCallback, Callable[[], Awaitable[None]]]:
@@ -491,40 +447,31 @@ async def get_plan(
         plan = await compute_plan(compiled, env, state.store, state.engines, select=selected, forward_only=forward_only)
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
-    reused = {snapshot.name for snapshot in plan.reuses}
+    from interlace.plan.payload import plan_document
+
     previous_snapshots = await state.store.get_snapshots(
         (c.name, c.previous_fingerprint) for c in plan.changes if c.previous_fingerprint is not None
     )
-    changes: list[Change] = []
-    for change in plan.changes:
-        previous_sql: str | None = None
-        if change.previous_fingerprint is not None:
-            snapshot = previous_snapshots.get((change.name, change.previous_fingerprint))
-            previous_sql = snapshot.definition_sql if snapshot else None
-        model = compiled.models.get(change.name)
-        changes.append(
+    document = plan_document(plan, compiled, previous_snapshots, env)
+    return PlanResponse(
+        environment=document.environment,
+        changes=[
             Change(
                 name=change.name,
-                change_type=change.change_type.value,
-                category=change.category.value if change.category else None,
+                change_type=change.change_type,
+                category=change.category,
                 previous_fingerprint=change.previous_fingerprint,
                 new_fingerprint=change.new_fingerprint,
                 impacted_columns=list(change.impacted_columns),
-                new_sql=model.definition_sql if model else None,
-                previous_sql=previous_sql,
-                reused=change.name in reused,
+                new_sql=change.new_sql,
+                previous_sql=change.previous_sql,
+                reused=change.reused,
             )
-        )
-    return PlanResponse(
-        environment=env,
-        changes=changes,
-        transfers=[f"{t.model}: {t.source.name} -> {t.target.name} ({t.via})" for t in plan.transfers],
-        physical=[
-            f"{'+' if change.op == 'add' else '-'} {change.kind} {change.name}"
-            for action in plan.physical
-            for change in action.changes
+            for change in document.changes
         ],
-        drift=[note.message for note in plan.drift],
+        transfers=list(document.transfers),
+        physical=list(document.physical),
+        drift=list(document.drift),
     )
 
 
@@ -648,22 +595,16 @@ async def create_run(data: CreateRun, state: State) -> CreateRunResult:
     compiled: CompiledProject = state.compiled
     env = data.environment or state.environment
     try:
-        promoted = await state.store.get_environment(env) if wants_state(data.selectors) else None
-        selected = (
-            select_models(data.selectors, compiled, promoted=promoted) if data.selectors else set(compiled.models)
-        )
+        selected = await resolve_selection(compiled, state.store, env, data.selectors, default_all=True)
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
-    models = sorted(selected)
+    models = sorted(selected or ())
     partition = None
     if data.start or data.end:
-        from datetime import datetime
+        from interlace.state.interval import naive_local
 
         def naive(value: str) -> str:
-            parsed = datetime.fromisoformat(value)
-            if parsed.tzinfo is not None:  # ledger timestamps are naive local
-                parsed = parsed.astimezone().replace(tzinfo=None)
-            return parsed.isoformat()
+            return naive_local(value).isoformat()
 
         try:
             bounds = tuple(naive(v) if v else "" for v in (data.start, data.end))
@@ -747,7 +688,7 @@ async def post_apply(data: ApplyRequest, state: State) -> ApplyResponse:
             parallelism=state.parallelism,
             connections=state.connections,
             on_progress=on_progress,
-            on_compiled=lambda fresh: _publish_compiled(state, fresh),
+            on_compiled=lambda fresh: publish_compiled(state, fresh),
             on_start=on_start,
             on_finish=on_finish,
             prepare=lambda: _flush_if_streams(state),
@@ -769,13 +710,12 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
     env = data.environment or state.environment
     from datetime import datetime
 
+    from interlace.state.interval import naive_local
+
     def _bound(value: str | None) -> datetime | None:
         if not value:
             return None
-        parsed = datetime.fromisoformat(value)
-        if parsed.tzinfo is not None:
-            parsed = parsed.astimezone().replace(tzinfo=None)
-        return parsed
+        return naive_local(value)
 
     try:
         window_start, window_end = _bound(data.start), _bound(data.end)
@@ -811,7 +751,7 @@ async def post_run(data: CreateRun, state: State) -> ApplyResponse:
             parallelism=state.parallelism,
             connections=state.connections,
             on_progress=on_progress,
-            on_compiled=lambda fresh: _publish_compiled(state, fresh),
+            on_compiled=lambda fresh: publish_compiled(state, fresh),
             on_start=on_start,
             on_finish=on_finish,
             prepare=lambda: _flush_if_streams(state),
@@ -832,22 +772,6 @@ async def get_checks(
 ) -> list[CheckResultInfo]:
     rows = await state.store.list_check_results(model)
     return [CheckResultInfo(**row) for row in (rows[:limit] if limit else rows)]
-
-
-async def _enqueue_stream_consumers(state: State, stream: StreamDef) -> None:
-    """A flush advanced the stream table: enqueue the models that read it.
-
-    The idempotency key carries the watermark, so repeated flushes at the same
-    position debounce into one run while new data keeps enqueuing new runs.
-    """
-    consumers = state.stream_consumer_map.get(stream.name, [])
-    if not consumers:
-        return
-    watermark = await stream_watermark(stream, state.engine)
-    key = f"stream:{stream.name}:{watermark}"
-    if await state.store.enqueue_run(key, sorted(consumers), None, 0):
-        await state.store.append_event("run.enqueued", entity=key, payload={"models": sorted(consumers)})
-        state.drain_wanted.set()  # wake the scheduler now, don't wait out the tick interval
 
 
 def _stream_or_404(state: State, name: str) -> StreamDef:
@@ -1223,38 +1147,21 @@ def _ast_projection_names(model: CompiledModel) -> list[str]:
     return names
 
 
-async def _described_columns(state: State, name: str, promoted: dict[str, str], snapshots: dict) -> dict[str, str]:
-    """Column -> type from the promoted physical table, cached per fingerprint.
-    Empty when the model isn't promoted / built yet (compile-time names still show)."""
-    fingerprint = promoted.get(name)
-    snapshot = snapshots.get((name, fingerprint or ""))
-    if snapshot is None:
-        return {}
-    cache: dict[tuple[str, str | None], dict[str, str]] = state.describe_cache
-    key = (name, fingerprint)
-    if key not in cache:
-        described: dict[str, str] = {}
-        with contextlib.suppress(Exception):  # missing table / engine away: names-only is fine
-            engine = state.engines.require(snapshot.engine, model=name)
-            described = await engine.describe(snapshot.physical_table)
-        if not described:
-            return {}  # transient (outage, not built yet): never cache a negative
-        cache[key] = described
-    return cache[key]
-
-
 @get("/lineage")
 async def get_lineage(state: State, environment: FromQuery[str | None] = None) -> LineageResponse:
     """The whole graph in one payload: nodes (with warehouse-described column
     types), table edges, column lineage, and stream sources — the UI renders
     and traces without a request per node. ``?environment=`` inspects a sandbox."""
+    from interlace.inspect import described_outputs
+
     await reload_if_stale(state)
     compiled: CompiledProject = state.compiled
-    promoted = await state.store.get_environment(environment or state.environment)
-    snapshots = await state.store.get_snapshots(promoted.items())
+    types_by_model = await described_outputs(
+        compiled, state.store, state.engines, environment or state.environment, cache=state.describe_cache
+    )
 
     order = compiled.graph.topological_sort()
-    types_by_model = {name: await _described_columns(state, name, promoted, snapshots) for name in order}
+    types_by_model = {name: types_by_model.get(name, {}) for name in order}
     # Real warehouse columns feed column lineage: a Python model then contributes its
     # true output columns to the schema graph, so SQL models downstream of it qualify
     # and trace precisely (falling back to name-passthrough only where nothing's built).
@@ -1344,61 +1251,36 @@ async def post_tests_run(state: State, data: FixtureTestRequest | None = None) -
 async def post_checks_run(state: State, data: RunChecksRequest | None = None) -> RunChecksResponse:
     """Run checks ad hoc against an environment's promoted tables (dbt-test style),
     recording the results."""
-    from interlace.checks.runner import run_checks
+    from interlace.checks.runner import run_promoted_checks
+    from interlace.exceptions import PlanError
 
     request = data or RunChecksRequest()
     await reload_if_stale(state)
-    compiled: CompiledProject = state.compiled
     env = request.environment or state.environment
-    promoted = await state.store.get_environment(env)
     try:
-        chosen = select_models(request.selectors, compiled, promoted=promoted) if request.selectors else None
+        results, skipped = await run_promoted_checks(state.compiled, state.store, state.engines, env, request.selectors)
+    except PlanError as exc:
+        raise NotFoundException(detail=exc.message) from exc
     except SelectionError as exc:
         raise ClientException(detail=exc.message) from exc
-    if not promoted:
-        raise NotFoundException(detail=f"no environment {env!r} — apply first")
-    snapshots = await state.store.get_snapshots(promoted.items())
-    physical = {name: snapshot.physical_table for (name, _), snapshot in snapshots.items()}
-    outcomes: list[CheckOutcomeInfo] = []
-    blocking = 0
-    skipped: list[str] = []
-    for name, model in compiled.models.items():
-        if chosen is not None and name not in chosen:
-            continue
-        if (not model.checks and not compiled.python_checks.get(name)) or model.materialise == "file":
-            continue
-        if model.is_terminal and env not in model.environments:  # a table not delivered here has nothing to re-check
-            continue
-        snapshot = snapshots.get((name, promoted.get(name, "")))
-        if snapshot is None:
-            skipped.append(name)
-            continue
-        # the SNAPSHOT's engine, not the compiled model's: an engine re-pin since
-        # the last promote means the promoted table still lives on the old engine
-        engine = state.engines.require(snapshot.engine, model=name)
-        check_table = target_ref(model.target or "") if model.materialise == "table" else snapshot.physical_table
-        results = await run_checks(model, compiled, engine, check_table, compiled.python_checks.get(name, ()), physical)
-        if results:
-            await state.store.record_check_results(env, snapshot.fingerprint, results)
-        for outcome in results:
-            blocking += 1 if outcome.blocking else 0
-            outcomes.append(
-                CheckOutcomeInfo(
-                    model=outcome.model,
-                    name=outcome.name,
-                    check_type=outcome.type,
-                    severity=outcome.severity,
-                    status=outcome.status,
-                    failures=outcome.failures,
-                    message=outcome.message,
-                )
-            )
+    outcomes = [
+        CheckOutcomeInfo(
+            model=outcome.model,
+            name=outcome.name,
+            check_type=outcome.type,
+            severity=outcome.severity,
+            status=outcome.status,
+            failures=outcome.failures,
+            message=outcome.message,
+        )
+        for outcome in results
+    ]
     return RunChecksResponse(
         environment=env,
         outcomes=outcomes,
         skipped=sorted(skipped),
-        passed=sum(1 for o in outcomes if o.status == "passed"),
-        blocking_failures=blocking,
+        passed=sum(1 for outcome in outcomes if outcome.status == "passed"),
+        blocking_failures=sum(1 for outcome in results if outcome.blocking),
     )
 
 
@@ -1412,31 +1294,25 @@ async def get_apikeys(state: State) -> list[ApiKeyInfo]:
 
 @post("/apikeys", opt={"scope": "admin"})
 async def post_apikey(data: CreateApiKey, state: State) -> dict:
-    name = data.name.strip()
-    if not name:
-        raise ClientException(detail="name the key")
-    invalid = set(data.scopes) - {"read", "write", "admin"}
-    if invalid or not data.scopes:
-        raise ClientException(detail=f"scopes must be a non-empty subset of read/write/admin (got {data.scopes})")
-    if any(key["name"] == name for key in await state.store.list_api_keys()):
-        raise ClientException(detail=f"a key named {name!r} already exists — revoke it first or pick another name")
-    token = await state.store.create_api_key(name, data.scopes)
-    return {"name": name, "scopes": data.scopes, "token": token}  # token shown once
+    from interlace.exceptions import ConfigurationError
+
+    try:
+        token = await state.store.create_api_key(data.name, data.scopes)
+    except ConfigurationError as exc:
+        raise ClientException(detail=exc.message) from exc
+    return {"name": data.name.strip(), "scopes": data.scopes, "token": token}  # token shown once
 
 
 @delete("/apikeys/{name:str}", opt={"scope": "admin"}, status_code=200)
 async def delete_apikey(name: FromPath[str], state: State) -> dict:
-    keys = await state.store.list_api_keys()
-    matching = sum(1 for key in keys if key["name"] == name)
-    if not matching:
+    from interlace.exceptions import ConfigurationError
+
+    try:
+        removed = await state.store.revoke_api_key(name)
+    except ConfigurationError as exc:
+        raise ClientException(detail=exc.message) from exc
+    if not removed:
         raise NotFoundException(detail=f"no key named {name!r}")
-    if matching == len(keys):
-        # zero keys = keyless mode = every request is admin. Revoking the last
-        # key must never silently disable authentication.
-        raise ClientException(
-            detail="refusing to revoke the last key(s) — that would disable authentication; create a replacement first"
-        )
-    removed = await state.store.revoke_api_key(name)
     return {"name": name, "removed": removed}
 
 
@@ -1444,17 +1320,22 @@ async def delete_apikey(name: FromPath[str], state: State) -> dict:
 async def post_gc(state: State, data: GcRequest | None = None) -> GcResponse:
     """Garbage-collect unreferenced snapshots and their physical tables."""
     from interlace.state.interval import parse_grain
-    from interlace.state.janitor import gc as run_gc
+    from interlace.state.janitor import gc_project
 
     request = data or GcRequest()
     try:
         grace = parse_grain(request.grace)
     except ValueError as exc:
         raise ClientException(detail=str(exc)) from exc
-    async with hold_apply_lock(state.store, owner=state.lock_owner):
-        result = await run_gc(state.store, engines=state.engines, grace=grace, dry_run=request.dry_run)
-    if not request.dry_run:
-        await state.store.trim_logs()  # event_log / check_results / terminal queue rows
+    result, _, _swept = await gc_project(
+        state.store,
+        state.engines,
+        grace=grace,
+        dry_run=request.dry_run,
+        lock_owner=state.lock_owner,
+        streams=state.streams.values(),
+        stream_log=state.stream_log,
+    )
     if result.removed_snapshots and not request.dry_run:
         await state.store.append_event(
             "gc.finished",
@@ -1596,10 +1477,6 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: Litestar) -> AsyncIterator[None]:
-        from datetime import datetime
-
-        from interlace.scheduler.engine import TriggerEngine, build_triggers
-        from interlace.scheduler.worker import drain
 
         project = Project.load(root)
         store = await project.open_state()
@@ -1629,7 +1506,7 @@ def create_app(
         app.state.root = project.root
         app.state.model_paths = project.config.model_paths  # for the on-demand recompile staleness probe
         app.state.reload_lock = asyncio.Lock()  # serialise recompiles; recompile at most once per change
-        app.state.source_mtime = _source_mtime(project.root, project.config.model_paths)
+        app.state.source_mtime = source_mtime(project.root, project.config.model_paths)
         app.state.parallelism = project.config.parallelism
         app.state.engine_configs = project.config.engine_configs()
         app.state.connections = project.config.connections
@@ -1684,93 +1561,8 @@ def create_app(
                     logger.exception("event tail failed; retrying")
                 await asyncio.sleep(0.5)
 
-        async def flush_once() -> None:
-            """One coalesced flush of the DIRTY streams + the consumer enqueues it earns."""
-            dirty = set(app.state.flush_dirty)
-            app.state.flush_dirty.clear()  # publishes during the flush re-dirty for the next cycle
-            targets = [target for target in flush_targets if target.name in dirty]
-            if not targets:
-                return
-            # snapshot the heads BEFORE the flush: flush_stream drains everything
-            # appended up to now, but a publish landing mid-flush advances log_heads
-            # without being flushed — crediting that later would undercount pending
-            # and defeat the 429 backpressure gate.
-            pre_flush = {target.name: app.state.log_heads.get(target.name, 0) for target in targets}
-            try:
-                async with hold_apply_lock(store, owner=app.state.lock_owner):
-                    flushed = await flush_streams(targets, stream_log, engine)
-            except BaseException:
-                app.state.flush_dirty |= dirty  # nothing confirmed: keep them dirty
-                raise
-            for target in targets:
-                app.state.flushed_heads[target.name] = pre_flush[target.name]
-            for stream_name, rows in flushed.items():
-                await store.append_event("stream.flushed", entity=stream_name, payload={"rows": rows})
-                if stream_name in streams:
-                    await _enqueue_stream_consumers(app.state, streams[stream_name])
-            if app.state.cdc:
-                from interlace.cdc.publish import confirm_flushed
-                from interlace.streaming.materializer import stream_watermark
-
-                for source in app.state.cdc.values():
-                    landed = streams.get(source.stream)
-                    if landed is None:
-                        continue
-                    watermark = await stream_watermark(landed, engine)
-                    await confirm_flushed(store, source.stream, watermark)
-
-        async def flusher_loop() -> None:
-            """Micro-batch materializer: publishes signal, this coalesces everything
-            appended since the last flush into one warehouse write."""
-            while True:
-                await app.state.flush_wanted.wait()
-                await asyncio.sleep(stream_flush_interval)  # let a burst pile up behind one write
-                app.state.flush_wanted.clear()
-                try:
-                    await flush_once()
-                except Exception:
-                    logger.exception("stream flush failed; will retry")
-                    app.state.flush_wanted.set()  # the durable log still holds the events
-                    await asyncio.sleep(1.0)  # don't spin on a persistent failure
-
         if streams:
             app.state.flush_wanted.set()  # catch up anything durable but unflushed at last shutdown
-
-        async def scheduler_loop() -> None:
-            next_trim = asyncio.get_running_loop().time()  # first tick trims; then every 6h
-            while True:
-                # cleared before the pass so an enqueue landing mid-drain re-arms the
-                # event and earns another prompt pass rather than being lost
-                app.state.drain_wanted.clear()
-                try:
-                    await reload_if_stale(app.state)  # scheduled/queued builds see on-disk edits too
-                    compiled = app.state.compiled  # live: reload may have swapped it
-                    await TriggerEngine(build_triggers(compiled, root=project.root), store).tick(datetime.now())
-                    if asyncio.get_running_loop().time() >= next_trim:
-                        # event_log / check_results / terminal queue rows grow with
-                        # every apply and flush; nothing else reclaims them
-                        await store.trim_logs()
-                        next_trim = asyncio.get_running_loop().time() + 6 * 3600
-                    async with hold_apply_lock(store, owner=app.state.lock_owner):  # one warehouse writer at a time
-                        await drain(
-                            store,
-                            compiled,
-                            engines=engines,
-                            environment=environment,
-                            base_path=project.root,
-                            parallelism=project.config.parallelism,
-                            connections=project.config.connections,
-                            loaded=app.state.project,
-                            on_compiled=lambda fresh: _publish_compiled(app.state, fresh),
-                        )
-                    if streams:
-                        app.state.flush_wanted.set()  # catch up anything the flusher hasn't seen
-                        await sweep_streams(streams.values(), stream_log, engine)  # apply retention
-                except Exception:
-                    logger.exception("scheduler tick failed; retrying next interval")
-                # wake early the instant a run is enqueued; otherwise tick on the interval
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(app.state.drain_wanted.wait(), timeout=scheduler_interval)
 
         async def shutdown_watch() -> None:
             """End every open SSE stream the moment uvicorn begins shutting down.
@@ -1790,49 +1582,12 @@ def create_app(
                 with contextlib.suppress(asyncio.QueueFull):
                     subscriber.put_nowait(None)
 
-        async def cdc_loop() -> None:
-            """Copy Postgres slots into their @streams. The LSN feedback waits for flush."""
-            from interlace.cdc.publish import publish_changes
-            from interlace.cdc.slot import SlotReader
-            from interlace.config.config import PostgresConnection
-
-            readers: dict[str, SlotReader] = {}
-            try:
-                while True:
-                    for name, source in app.state.cdc.items():
-                        conn = app.state.connections.get(source.connection)
-                        declared = streams.get(source.stream)
-                        if not isinstance(conn, PostgresConnection) or declared is None:
-                            logger.error("cdc %s needs a postgres connection and a declared @stream", name)
-                            continue
-                        try:
-                            reader = readers.get(name)
-                            if reader is None:
-                                reader = SlotReader(conn.dsn, source)
-                                readers[name] = reader
-                            confirmed = await store.cdc_confirmed_lsn(source.stream)
-                            changes = await asyncio.to_thread(reader.poll, confirmed)
-                            if changes:
-                                await publish_changes(stream_log, store, source.stream, changes)
-                                app.state.flush_dirty.add(source.stream)
-                                app.state.flush_wanted.set()
-                            advanced = await store.cdc_confirmed_lsn(source.stream)
-                            if advanced:
-                                await asyncio.to_thread(reader.feedback, advanced)
-                        except Exception:
-                            logger.exception("cdc %s failed; reconnecting", name)
-                            failed = readers.pop(name, None)
-                            if failed is not None:
-                                await asyncio.to_thread(failed.close)
-                    await asyncio.sleep(1)
-            finally:
-                for reader in readers.values():
-                    await asyncio.to_thread(reader.close)
-
         tail_task = asyncio.create_task(event_tail())
-        flusher_task = asyncio.create_task(flusher_loop()) if streams else None
-        loop_task = asyncio.create_task(scheduler_loop()) if scheduler else None
-        cdc_task = asyncio.create_task(cdc_loop()) if project.config.cdc else None
+        flusher_task = (
+            asyncio.create_task(flusher_loop(app.state, flush_interval=stream_flush_interval)) if streams else None
+        )
+        loop_task = asyncio.create_task(scheduler_loop(app.state, interval=scheduler_interval)) if scheduler else None
+        cdc_task = asyncio.create_task(cdc_loop(app.state)) if project.config.cdc else None
         watch_task = asyncio.create_task(shutdown_watch())
         try:
             yield
@@ -1858,7 +1613,7 @@ def create_app(
             if streams:  # clean shutdown leaves nothing durable-but-unflushed behind
                 with anyio.move_on_after(8, shield=True):  # best-effort, bounded: force-quit must still quit
                     with contextlib.suppress(Exception):
-                        await flush_once()  # incl. consumer enqueues, so restarts owe nothing
+                        await flush_once(app.state)  # incl. consumer enqueues, so restarts owe nothing
             with anyio.CancelScope(shield=True):  # closes are fast and MUST run
                 with contextlib.suppress(Exception):
                     await stream_log.close()

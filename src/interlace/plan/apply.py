@@ -39,6 +39,7 @@ from interlace.engines.registry import EngineRegistry, as_registry
 from interlace.exceptions import CheckError, ExecutionError, InterlaceError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import SqlRelation, TableRef, drop
+from interlace.physical.drift import same_type, widens
 from interlace.physical.reconcile import model_objects, object_changes, reconcile_statements
 from interlace.physical.spec import PhysicalObject
 from interlace.plan.plan import XFER_SCHEMA, BackfillTask, ChangeType, Plan, env_view, staging_table
@@ -48,9 +49,8 @@ from interlace.sinks import file_statements, target_ref
 from interlace.state.interval import Interval
 from interlace.state.snapshot import Snapshot
 from interlace.state.store import StateStore
-from interlace.strategies import Incremental, Strategy, resolve_strategy
+from interlace.strategies import Strategy, resolve_strategy
 from interlace.strategies.base import RowCounts
-from interlace.strategies.hash_merge import HashMerge
 
 
 @dataclass
@@ -70,17 +70,6 @@ class ApplyResult:
 
     def record_rows(self, name: str, counts: RowCounts) -> None:
         self.rows[name] = self.rows.get(name, RowCounts()) + counts
-
-
-# The widening promotions DuckLake's ALTER COLUMN supports, in order.
-_NUMERIC_WIDTH = {"TINYINT": 0, "SMALLINT": 1, "INTEGER": 2, "BIGINT": 3, "FLOAT": 4, "DOUBLE": 5}
-
-
-def _widens(current: str, incoming: str) -> bool:
-    """True when ``incoming`` is a strictly wider numeric type than ``current``."""
-    return (
-        current in _NUMERIC_WIDTH and incoming in _NUMERIC_WIDTH and _NUMERIC_WIDTH[incoming] > _NUMERIC_WIDTH[current]
-    )
 
 
 logger = logging.getLogger("interlace.apply")
@@ -150,20 +139,20 @@ async def _merge_python_output(
         alignment = await _align_stage_to_target(engine, stage, target, strategy)
         pre_statements = alignment.pre_statements
         source, columns = alignment.for_strategy(strategy)
-    elif isinstance(strategy, HashMerge):
-        # hash_merge builds its _hash from the column list; on the first build the target
-        # doesn't exist yet (so no align pass ran), so take the columns from the staged output
+    elif strategy.writes_named_columns and strategy.managed_columns:
+        # The strategy builds bookkeeping columns from the model's own list. On the
+        # first build the target doesn't exist yet (so no align pass ran).
         columns = [c for c in await engine.describe(stage) if c not in strategy.managed_columns]
 
     relation = SqlRelation(ast=source)
-    if isinstance(strategy, Incremental) and bootstrap:
-        # First build of a keyed incremental Python model: the range comes from the
+    if strategy.requires_interval and bootstrap:
+        # First build of an incremental Python model: the range comes from the
         # staged output, since there is no query to probe the way a SQL model has.
         interval = await _bootstrap_window(model, exp.select("*").from_(stage_table.copy()), engine)
-    statements = strategy.plan_statements(relation, target, engine.caps, interval, columns)
+    planned = strategy.plan_statements(relation, target, engine.caps, interval, columns)
     drop_stage = drop(stage_table.copy(), kind="TABLE")
-    counts = await engine.execute_all([*pre_statements, *statements, drop_stage])
-    written = strategy.row_counts(counts[len(pre_statements) : len(pre_statements) + len(statements)])
+    counts = await engine.execute_all([*pre_statements, *planned, drop_stage])
+    written = planned.row_counts(counts[len(pre_statements) : len(pre_statements) + len(planned)])
     return written, interval
 
 
@@ -195,23 +184,24 @@ class Alignment:
         return self.source, self.columns
 
 
-async def _align_stage_to_target(
-    engine: EngineAdapter, stage: TableRef, target: TableRef, strategy: Strategy
+def _fit_columns(
+    source_columns: Mapping[str, str],
+    source_from: exp.Expression,
+    target: TableRef,
+    target_columns: dict[str, str],
+    strategy: Strategy,
 ) -> Alignment:
-    """Align a staged source to an EXISTING target: additive ALTERs for new columns,
-    widening type promotions in place, and projections over the stage fitted to the
-    target's final column set (NULL-fill vanished columns, cast type drift).
+    """Fit a described source to an existing target.
 
-    The strategy's managed bookkeeping columns (e.g. scd's validity pair, hash_merge's
-    ``_hash``) live on the target but never in the model's output, so they are held out
-    of both projections — the strategy owns them, and must find them already there."""
-    target_columns = await engine.describe(target)
+    Additive ALTERs for new columns, widening promotions in place, and a projection
+    over ``source_from`` (a stage table, or the query itself) in the target's final
+    column order. Managed bookkeeping columns stay on the target and out of both
+    projections — the strategy owns them."""
     _require_managed_columns(strategy, target, target_columns)
     exclude = strategy.managed_columns
     for column in exclude:
         target_columns.pop(column, None)
-    stage_columns = await engine.describe(stage)
-    if clash := [c for c in stage_columns if c in exclude]:
+    if clash := [c for c in source_columns if c in exclude]:
         raise PlanError(
             f"model output column {clash[0]!r} collides with a column the "
             f"{_strategy_name(strategy)} strategy manages — rename it in the model",
@@ -220,7 +210,7 @@ async def _align_stage_to_target(
     target_expr = target.to_expr()
     pre_statements: list[exp.Expr] = []
     added: list[str] = []
-    for column, dtype in stage_columns.items():
+    for column, dtype in source_columns.items():
         if column not in target_columns:
             added.append(column)
             pre_statements.append(
@@ -233,9 +223,8 @@ async def _align_stage_to_target(
                 )
             )
             target_columns[column] = dtype
-        elif dtype != target_columns[column] and _widens(target_columns[column], dtype):
-            # Source type drifted wider (int -> bigint -> double): promote the target
-            # in place — DuckLake supports exactly these widening promotions.
+        elif not same_type(dtype, target_columns[column]) and widens(target_columns[column], dtype):
+            # Source type drifted wider (int -> bigint -> double): promote in place.
             pre_statements.append(
                 exp.Alter(
                     this=target_expr.copy(),
@@ -253,27 +242,37 @@ async def _align_stage_to_target(
     unproduced: list[str] = []
     casts: list[str] = []
     for column, dtype in target_columns.items():
-        if column not in stage_columns:
+        if column not in source_columns:
             projection.append(exp.alias_(exp.Cast(this=exp.Null(), to=exp.DataType.build(dtype)), column))
             unproduced.append(column)
             continue
-        if stage_columns[column] != dtype:
-            casts.append(f"{column} {stage_columns[column]} -> {dtype}")
+        if not same_type(source_columns[column], dtype):
+            casts.append(f"{column} {source_columns[column]} -> {dtype}")
             fitted: exp.Expr = exp.alias_(exp.Cast(this=exp.column(column), to=exp.DataType.build(dtype)), column)
         else:
             fitted = exp.column(column)
         projection.append(fitted)
         produced_projection.append(fitted.copy())
         produced.append(column)
+    origin = source_from.copy()
     return Alignment(
         pre_statements=pre_statements,
-        source=exp.select(*projection).from_(stage.to_expr()),
+        source=exp.select(*projection).from_(origin),
         columns=list(target_columns),
-        produced_source=exp.select(*produced_projection).from_(stage.to_expr()),
+        produced_source=exp.select(*produced_projection).from_(origin.copy()),
         produced=produced,
         unproduced=unproduced,
         added=added,
         casts=casts,
+    )
+
+
+async def _align_stage_to_target(
+    engine: EngineAdapter, stage: TableRef, target: TableRef, strategy: Strategy
+) -> Alignment:
+    """Describe a staged source and fit it to an existing target. See :func:`_fit_columns`."""
+    return _fit_columns(
+        await engine.describe(stage), stage.to_expr(), target, dict(await engine.describe(target)), strategy
     )
 
 
@@ -332,6 +331,107 @@ def _remember(notes: list[str] | None, warning: str) -> None:
         notes.append(warning)
 
 
+def _prepare_alignment(
+    model: CompiledModel,
+    strategy: Strategy,
+    source_columns: Mapping[str, str],
+    source_from: exp.Expression,
+    target: TableRef,
+    target_columns: Mapping[str, str],
+    notes: list[str] | None,
+) -> tuple[list[exp.Expr], exp.Query, list[str] | None]:
+    """Fit an existing target to a described source. ``ignore`` skips ALTERs."""
+    policy = model.schema_policy.columns
+    qualified = target.to_expr().sql()
+    if policy == "ignore":
+        _require_managed_columns(strategy, target, target_columns)
+        extras = [
+            column
+            for column in target_columns
+            if column not in source_columns and column not in strategy.managed_columns
+        ]
+        if extras:
+            _remember(
+                notes,
+                f"{model.name}: {qualified} has columns the model does not produce ({', '.join(extras)}); left in place",
+            )
+        names = list(source_columns) if strategy.writes_named_columns else None
+        return [], exp.select("*").from_(source_from.copy()), names
+    alignment = _fit_columns(source_columns, source_from, target, dict(target_columns), strategy)
+    if policy == "reject" and (alignment.added or alignment.casts):
+        missing = ", ".join(alignment.added) or "none"
+        drifted = ", ".join(alignment.casts) or "none"
+        raise PlanError(
+            f"{model.name}: schema.columns is reject and {qualified} is not a compatible "
+            f"superset (missing columns: {missing}; type drift: {drifted})",
+            details={"model": model.name, "target": model.target},
+        )
+    if alignment.unproduced:
+        _remember(
+            notes,
+            f"{model.name}: {qualified} has columns the model does not produce "
+            f"({', '.join(alignment.unproduced)}); left in place",
+        )
+    if alignment.unproduced and not strategy.writes_named_columns:
+        logger.warning(
+            "%s: strategy %s writes whole rows into %s — it resets columns this model does not "
+            "produce (%s) on every delivery, and (replace, full_merge) deletes rows it does not "
+            "supply. Use merge, hash_merge or append if another writer owns part of this table.",
+            model.name,
+            model.strategy,
+            qualified,
+            ", ".join(alignment.unproduced),
+        )
+    aligned, columns = alignment.for_strategy(strategy)
+    return alignment.pre_statements, aligned, columns
+
+
+async def _probe_columns(engine: EngineAdapter, name: str, query: exp.Query) -> dict[str, str]:
+    """Column types of ``query`` from a ``LIMIT 0`` table, so a windowed delivery can fit
+    without copying the source once per window."""
+    probe = TableRef(schema=XFER_SCHEMA, name=f"{name.replace('.', '_')}__probe")
+    await engine.create_schema(probe.schema)
+    await engine.execute(exp.Create(this=probe.to_expr(), kind="TABLE", replace=True, expression=query.copy().limit(0)))
+    try:
+        return await engine.describe(probe)
+    finally:
+        await engine.execute(drop(probe.to_expr(), kind="TABLE"))
+
+
+async def _execute_delivery(
+    model: CompiledModel,
+    engine: EngineAdapter,
+    strategy: Strategy,
+    resolved: exp.Query,
+    interval: Interval | None,
+    previous: tuple[PhysicalObject, ...],
+    notes: list[str] | None,
+    target: TableRef,
+    *,
+    same_table: bool,
+    source_columns: Mapping[str, str] | None = None,
+    source_from: exp.Expression | None = None,
+) -> tuple[RowCounts, tuple[PhysicalObject, ...]]:
+    """Align when the target already exists, then run the strategy and its DDL together."""
+    pre: list[exp.Expr] = []
+    aligned: exp.Query = resolved
+    columns: list[str] | None = None
+    if source_columns is not None and source_from is not None:
+        pre, aligned, columns = _prepare_alignment(
+            model, strategy, source_columns, source_from, target, await engine.describe(target), notes
+        )
+    ddl, objects, warnings = await _physical_ddl(engine, model, target, previous, same_table=same_table)
+    for warning in warnings:
+        _remember(notes, warning)
+    planned = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval, columns)
+    if source_columns is None:
+        # The strategy's ensure-create makes the table; indexes land after it exists.
+        counts = await engine.execute_all([*planned, *ddl])
+        return planned.row_counts(counts[: len(planned)]), objects
+    counts = await engine.execute_all([*pre, *ddl, *planned])
+    return planned.row_counts(counts[len(pre) + len(ddl) :]), objects
+
+
 async def _deliver_table(
     model: CompiledModel,
     engine: EngineAdapter,
@@ -358,104 +458,54 @@ async def _deliver_table(
     Indexes and constraints interlace recorded are reconciled in the same transaction
     as the delivery. Anything else on the table is left alone.
 
-    Two cases skip staging and run the strategy directly against the target: the first
-    delivery (the ensure-create matches the source), and any windowed ``incremental``
-    delivery (``interval`` set). An incremental window is grain-scoped and stays
-    schema-stable within a fingerprint, so staging the *whole* source once per window
-    would make a wide backfill/restate O(windows × source) — the pathological case."""
+    The first delivery runs the strategy directly against the query (the ensure-create
+    matches the source). A later windowed delivery probes ``LIMIT 0`` for column types
+    and projects the query — it does not CTAS the whole source once per window. A later
+    full delivery stages the source so the strategy reads a frozen copy."""
     target = target_ref(model.target or "")
     exists = await engine.table_exists(target)
-    policy = model.schema_policy.columns
-    if interval is not None or not exists:
-        if exists and interval is not None and policy == "reject" and model.columns:
-            from interlace.physical.drift import column_drift
-
-            blocking = [
-                note.message
-                for note in column_drift(
-                    model.name, model.target or "", policy, await engine.describe(target), model.columns
-                )
-                if note.blocking
-            ]
-            if blocking:
-                raise PlanError(
-                    f"{model.name}: schema.columns is reject — {'; '.join(blocking)}",
-                    details={"model": model.name, "target": model.target},
-                )
-        ddl, objects, warnings = await _physical_ddl(engine, model, target, previous, same_table=exists)
-        for warning in warnings:
-            _remember(notes, warning)
-        statements = strategy.plan_statements(SqlRelation(ast=resolved), target, engine.caps, interval)
-        counts = await engine.execute_all([*statements, *ddl])
-        return strategy.row_counts(counts[: len(statements)]), objects
+    if not exists:
+        return await _execute_delivery(
+            model, engine, strategy, resolved, interval, previous, notes, target, same_table=False
+        )
+    if interval is not None:
+        source_columns = await _probe_columns(engine, model.name, resolved)
+        source_from = exp.Subquery(this=resolved.copy(), alias=exp.TableAlias(this=exp.to_identifier("_src")))
+        return await _execute_delivery(
+            model,
+            engine,
+            strategy,
+            resolved,
+            interval,
+            previous,
+            notes,
+            target,
+            same_table=True,
+            source_columns=source_columns,
+            source_from=source_from,
+        )
     stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name}__sink_stage")
     await engine.create_schema(stage.schema)
     await engine.execute(exp.Create(this=stage.to_expr(), kind="TABLE", replace=True, expression=resolved.copy()))
     try:
-        pre_statements: list[exp.Expr]
-        aligned: exp.Query
-        columns: list[str] | None
-        if policy == "ignore":
-            stage_map = await engine.describe(stage)
-            target_columns = await engine.describe(target)
-            _require_managed_columns(strategy, target, target_columns)
-            extras = [
-                column
-                for column in target_columns
-                if column not in stage_map and column not in strategy.managed_columns
-            ]
-            if extras:
-                _remember(
-                    notes,
-                    f"{model.name}: {target.to_expr().sql()} has columns the model does not produce "
-                    f"({', '.join(extras)}); left in place",
-                )
-            pre_statements = []
-            aligned = exp.select("*").from_(stage.to_expr())
-            columns = list(stage_map) if strategy.writes_named_columns else None
-        else:
-            alignment = await _align_stage_to_target(engine, stage, target, strategy)
-            if policy == "reject" and (alignment.added or alignment.casts):
-                missing = ", ".join(alignment.added) or "none"
-                drifted = ", ".join(alignment.casts) or "none"
-                raise PlanError(
-                    f"{model.name}: schema.columns is reject and {target.to_expr().sql()} is not a compatible "
-                    f"superset (missing columns: {missing}; type drift: {drifted})",
-                    details={"model": model.name, "target": model.target},
-                )
-            pre_statements = alignment.pre_statements
-            aligned, columns = alignment.for_strategy(strategy)
-            if alignment.unproduced:
-                _remember(
-                    notes,
-                    f"{model.name}: {target.to_expr().sql()} has columns the model does not produce "
-                    f"({', '.join(alignment.unproduced)}); left in place",
-                )
-            if alignment.unproduced and not strategy.writes_named_columns:
-                # A whole-row strategy rewrites rows entire, so any column the model doesn't
-                # produce is reset on every run — and the deleting ones (replace, full_merge)
-                # drop rows it doesn't supply at all. Fine when interlace owns the table (this
-                # is just a widened source); destructive when it shares it with another writer.
-                logger.warning(
-                    "%s: strategy %s writes whole rows into %s — it resets columns this model does not "
-                    "produce (%s) on every delivery, and (replace, full_merge) deletes rows it does not "
-                    "supply. Use merge, hash_merge or append if another writer owns part of this table.",
-                    model.name,
-                    model.strategy,
-                    target.to_expr().sql(),
-                    ", ".join(alignment.unproduced),
-                )
-        ddl, objects, warnings = await _physical_ddl(engine, model, target, previous, same_table=True)
-        for warning in warnings:
-            _remember(notes, warning)
-        statements = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval, columns)
-        # One transaction may write only ONE attached database: the delivery batch writes the
-        # external target; the stage lives in the warehouse and is dropped separately (a
-        # leftover is harmless — the next delivery CREATE OR REPLACEs it).
-        counts = await engine.execute_all([*pre_statements, *ddl, *statements])
+        return await _execute_delivery(
+            model,
+            engine,
+            strategy,
+            resolved,
+            interval,
+            previous,
+            notes,
+            target,
+            same_table=True,
+            source_columns=await engine.describe(stage),
+            source_from=stage.to_expr(),
+        )
     finally:
+        # The stage lives in the warehouse and is dropped outside the delivery
+        # transaction: one transaction may write only one attached database.
+        # A leftover is harmless — the next delivery CREATE OR REPLACEs it.
         await engine.execute(drop(stage.to_expr(), kind="TABLE"))
-    return strategy.row_counts(counts[len(pre_statements) + len(ddl) :]), objects
 
 
 async def _stage_cross_engine_inputs(
@@ -507,12 +557,9 @@ async def _stage_cross_engine_inputs(
 async def _attach_transfer(
     target: EngineAdapter, uri: str | None, source_name: str, origin: TableRef, stage: TableRef
 ) -> bool:
-    """Fast lane: when the target is DuckDB-family and the source is attachable,
-    stage with one federated CTAS. Opportunistic — any failure falls back to Arrow."""
-    from interlace.engines.duckdb import DuckDBAdapter
-    from interlace.engines.quack import QuackAdapter
-
-    if uri is None or not isinstance(target, DuckDBAdapter) or isinstance(target, QuackAdapter):
+    """Fast lane: when the target can ATTACH the source, stage with one federated CTAS.
+    Opportunistic — any failure falls back to Arrow."""
+    if uri is None or not target.caps.supports_attach:
         return False
     alias = f"__xfer_{source_name}"
     src = exp.table_(origin.name, db=origin.schema, catalog=alias).sql(dialect="duckdb")
@@ -679,6 +726,42 @@ async def _stamp_owned(
     return replace(snapshot, physical_hash=model.physical_hash, physical_objects=objects)
 
 
+async def _named_columns(strategy: Strategy, engine: EngineAdapter, table: TableRef) -> list[str] | None:
+    """Target columns for a strategy that names its writes, excluding bookkeeping columns.
+
+    None when the strategy binds positionally, or the target does not exist yet
+    (a first build, where the ensure-create matches the source)."""
+    if not strategy.writes_named_columns:
+        return None
+    described = await engine.describe(table)
+    if not described:
+        return None
+    managed = {column.casefold() for column in strategy.managed_columns}
+    names = [name for name in described if name.casefold() not in managed]
+    return names or None
+
+
+async def _accumulate_interval(state: StateStore, snapshot: Snapshot, interval: Interval | None) -> Snapshot:
+    """Fold ``interval`` into the ledger, keeping intervals a forward-only seed carried in."""
+    if interval is None:
+        return snapshot
+    filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
+    for carried in snapshot.intervals:
+        filled = filled.add(carried)
+    return replace(snapshot, intervals=filled.add(interval))
+
+
+def _record_timing(result: ApplyResult, name: str, started: float) -> None:
+    result.timings[name] = result.timings.get(name, 0.0) + (time.perf_counter() - started)
+
+
+def _record_build(result: ApplyResult, name: str, started: float) -> None:
+    """One ``built`` entry per model, timings summed across interval windows."""
+    if name not in result.built:
+        result.built.append(name)
+    _record_timing(result, name, started)
+
+
 async def _run_backfill(
     task: BackfillTask,
     plan: Plan,
@@ -710,7 +793,7 @@ async def _run_backfill(
         if snapshot.name not in result.built and snapshot.name not in result.reused:
             result.reused.append(snapshot.name)
         await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-        result.timings[snapshot.name] = result.timings.get(snapshot.name, 0.0) + (time.perf_counter() - task_started)
+        _record_timing(result, snapshot.name, task_started)
         return
 
     if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
@@ -754,17 +837,12 @@ async def _run_backfill(
                 bootstrap=task.bootstrap,
             )
             result.record_rows(snapshot.name, merged)
-            if filled_window is not None:  # incremental: accumulate the window in the ledger
-                filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
-                for carried in snapshot.intervals:
-                    filled = filled.add(carried)
-                snapshot = replace(snapshot, intervals=filled.add(filled_window))
+            snapshot = await _accumulate_interval(state, snapshot, filled_window)
         if model.columns:
             validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
         await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
-        result.built.append(snapshot.name)
         await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-        result.timings[snapshot.name] = time.perf_counter() - task_started
+        _record_build(result, snapshot.name, task_started)
         return
 
     resolved = resolve_model_query(model, compiled, resolution)
@@ -775,7 +853,7 @@ async def _run_backfill(
             # destination. Record the snapshot so the plan settles; deliver nothing.
             await state.add_snapshot(snapshot)
             result.gated.append(snapshot.name)
-            result.timings[snapshot.name] = time.perf_counter() - task_started
+            _record_timing(result, snapshot.name, task_started)
             return
         if model.materialise == "file":  # overwrite a file via COPY
             export_path = _resolve_export_path(base_path, model.path or "")
@@ -795,18 +873,12 @@ async def _run_backfill(
             )
             result.record_rows(snapshot.name, delivered)
             snapshot = replace(snapshot, physical_hash=model.physical_hash, physical_objects=objects)
-            if interval is not None:  # incremental terminal: accumulate the filled window in the ledger
-                filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
-                for carried in snapshot.intervals:  # forward-only N/A, but keep the ledger contract uniform
-                    filled = filled.add(carried)
-                snapshot = replace(snapshot, intervals=filled.add(interval))
+            snapshot = await _accumulate_interval(state, snapshot, interval)
             if model.columns:  # validate the delivered external table against the contract
                 validate_contract(
                     model.name, await target_engine.describe(target_ref(model.target or "")), model.columns
                 )
         await state.add_snapshot(snapshot)
-        if snapshot.name not in result.built:  # one entry per model, however many interval windows ran
-            result.built.append(snapshot.name)
         if model.materialise == "table":  # checks run against the delivered external table (gate promotion)
             await _gate_checks(
                 model,
@@ -818,7 +890,7 @@ async def _run_backfill(
                 resolution,
                 target=target_ref(model.target or ""),
             )
-        result.timings[snapshot.name] = result.timings.get(snapshot.name, 0.0) + (time.perf_counter() - task_started)
+        _record_build(result, snapshot.name, task_started)
         return
 
     relation = SqlRelation(ast=resolved)
@@ -830,25 +902,17 @@ async def _run_backfill(
     interval = task.interval
     if task.bootstrap:  # incremental first build: fill the source's whole range in one window
         interval = await _bootstrap_window(model, resolved, target_engine)
-    columns: list[str] | None = None
-    if model.strategy == "merge":  # native MERGE needs the target's column list; describe it if it exists
-        columns = list(await target_engine.describe(snapshot.physical_table)) or None
-    statements = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, interval, columns)
-    counts = await target_engine.execute_all(statements)
-    result.record_rows(snapshot.name, strategy.row_counts(counts))
+    columns = await _named_columns(strategy, target_engine, snapshot.physical_table)
+    planned = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, interval, columns)
+    counts = await target_engine.execute_all(planned)
+    result.record_rows(snapshot.name, planned.row_counts(counts))
     if model.columns:  # validate the built schema against the contract before recording it
         validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
 
-    if interval is not None:  # incremental: accumulate the filled window in the ledger
-        filled = await state.get_intervals(snapshot.name, snapshot.fingerprint)
-        for carried in snapshot.intervals:  # forward-only: the INHERITED ledger must persist too
-            filled = filled.add(carried)
-        snapshot = replace(snapshot, intervals=filled.add(interval))
+    snapshot = await _accumulate_interval(state, snapshot, interval)
     await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
-    if snapshot.name not in result.built:  # one entry per model, however many interval windows ran
-        result.built.append(snapshot.name)
     await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-    result.timings[snapshot.name] = result.timings.get(snapshot.name, 0.0) + (time.perf_counter() - task_started)
+    _record_build(result, snapshot.name, task_started)
 
 
 async def apply(
@@ -878,9 +942,7 @@ async def apply(
     """
     registry = as_registry(engine, engines)
     for adapter in registry.opened():
-        refresh = getattr(adapter, "refresh_inputs", None)
-        if refresh is not None:
-            refresh()
+        adapter.refresh_inputs()
     from interlace.physical.annotate import annotate_plan
 
     await annotate_plan(plan, compiled, registry)

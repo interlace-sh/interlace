@@ -42,6 +42,8 @@ _SPARK_CAPS = EngineCaps(
     supports_star_exclude=False,  # no portable SELECT * EXCLUDE -> scd enumerates the model's columns
     supports_merge=True,  # native MERGE (on a Delta/Iceberg catalog)
     supports_transactions=False,  # execute_all is sequential; streams must not use Spark
+    supports_mutation_subquery=False,  # Delta rejects subqueries in UPDATE/DELETE
+    except_in_delete=False,
     # Delta/Iceberg constraint support varies by catalog; NOT NULL is the portable one.
     enforced_constraints=frozenset({"not_null"}),
 )

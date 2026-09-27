@@ -34,7 +34,7 @@ from interlace.engines.base import EngineCaps
 from interlace.exceptions import PlanError
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
+from interlace.strategies.base import Strategy, WritePlan, table_expr
 
 HASH_COLUMN = "_hash"
 _SOURCE = "_s"
@@ -44,6 +44,8 @@ class HashMerge(Strategy):
     """``CREATE IF NOT EXISTS`` + update-where-hash-differs + insert-new-keys."""
 
     managed_columns: ClassVar[tuple[str, ...]] = (HASH_COLUMN,)
+    accumulates = True
+    requires_key = True
 
     def __init__(self, key: tuple[str, ...]) -> None:
         if not key:
@@ -83,7 +85,7 @@ class HashMerge(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
         query = relation.ast
         table = table_expr(target)
         payload = self._payload_columns(query, columns)
@@ -134,8 +136,4 @@ class HashMerge(Strategy):
             written = [*(c for c in columns if c != HASH_COLUMN), HASH_COLUMN]  # source_hashed's order
             into = exp.Schema(this=table.copy(), expressions=[exp.column(c) for c in written])
         insert = exp.Insert(this=into, expression=rows)
-        return [ensure, update, insert]
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        # [ensure, update changed keys, insert new keys]
-        return RowCounts(inserted=_at(counts, 2), updated=_at(counts, 1))
+        return WritePlan([ensure, update, insert], ["ignore", "update", "insert"])

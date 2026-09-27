@@ -31,6 +31,7 @@ import contextlib
 import re
 import threading
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import replace
 from uuid import uuid4
 
 import duckdb
@@ -51,7 +52,11 @@ _DUCKDB_CAPS = EngineCaps(
     # NOT NULL is enforced, and only via ALTER COLUMN (ADD CONSTRAINT is unimplemented).
     enforced_constraints=frozenset({"not_null"}),
     not_null_as_column=True,
+    supports_attach=True,
 )
+# DuckLake's delete finalizer aborts when EXCEPT is nested in the DELETE.
+# Staging the key set is safe; file DuckDB keeps the direct delete.
+_DUCKLAKE_CAPS = replace(_DUCKDB_CAPS, except_in_delete=False)
 
 
 # DuckLake uses optimistic concurrency: a concurrent writer's commit surfaces as
@@ -113,6 +118,7 @@ class DuckDBAdapter(EngineAdapter):
 
     dialect = "duckdb"
     caps = _DUCKDB_CAPS
+    _refresh_inputs: Callable[[], None] | None = None
 
     def __init__(
         self,
@@ -127,7 +133,7 @@ class DuckDBAdapter(EngineAdapter):
         # re-running catalog writes here races across concurrent cursors.
         self._session_init = list(session_init)
         self._attached: list[str] = []  # aliases to DETACH on close (see close())
-        self.refresh_inputs: Callable[[], None] | None = None  # re-expand input view paths (date tokens)
+        self.caps = _DUCKLAKE_CAPS if serialise_writes else _DUCKDB_CAPS
         # Serialises catalog-mutating statements on DuckLake catalogs only (see
         # module docstring); a no-op context elsewhere so builds run in parallel.
         # Plain Lock, not RLock: no locked path calls another, and a plain Lock
@@ -225,6 +231,7 @@ class DuckDBAdapter(EngineAdapter):
             self._conn.execute(f"ATTACH IF NOT EXISTS '{escaped}' AS {exp.to_identifier(alias).sql('duckdb')}")
         self._attached.append(alias)
         if uri.startswith("ducklake:"):  # writes may now reach a DuckLake catalog (e.g. table sinks)
+            self.caps = _DUCKLAKE_CAPS
             if isinstance(self._write_lock, contextlib.nullcontext):
                 self._write_lock = threading.Lock()
 

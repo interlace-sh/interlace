@@ -15,7 +15,7 @@ from sqlglot import exp
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.state.interval import Interval
-from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
+from interlace.strategies.base import Strategy, WritePlan, table_expr
 
 
 class Replace(Strategy):
@@ -28,15 +28,12 @@ class Replace(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
         table = table_expr(target)
         if caps.supports_create_or_replace:
-            return [exp.Create(this=table, kind="TABLE", replace=True, expression=relation.ast)]
-        return [
-            drop(table, kind="TABLE"),
-            exp.Create(this=table, kind="TABLE", expression=relation.ast),
-        ]
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        # single CREATE (OR REPLACE) AS, or DROP + CREATE: the create writes every row
-        return RowCounts(inserted=_at(counts, len(counts) - 1))
+            create = exp.Create(this=table, kind="TABLE", replace=True, expression=relation.ast)
+            return WritePlan([create], ["insert"])
+        return WritePlan(
+            [drop(table, kind="TABLE"), exp.Create(this=table, kind="TABLE", expression=relation.ast)],
+            ["ignore", "insert"],
+        )

@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -246,7 +248,7 @@ class Project:
         # is only the same thing when you happen to run from the root — not under
         # `--path`, `interlace serve`, or the scheduler.
         engine.search_files_from(str(self.root))
-        if self.config.inputs and isinstance(engine, DuckDBAdapter):
+        if self.config.inputs:
             from interlace.inputs import install_inputs
 
             def refresh(
@@ -264,7 +266,7 @@ class Project:
                     },
                 )
 
-            engine.refresh_inputs = refresh
+            engine._refresh_inputs = refresh
             refresh()
         for alias, uri in cfg.attach.items():
             target = uri
@@ -364,3 +366,23 @@ class Project:
         path = self.root / self.config.stream_path
         path.parent.mkdir(parents=True, exist_ok=True)
         return await SqliteStreamLog.open(path)
+
+
+@asynccontextmanager
+async def open_session(
+    path: Path,
+) -> AsyncIterator[tuple[Project, CompiledProject, SqliteStateStore, EngineRegistry]]:
+    """Load a project and close its state store and engines on the way out.
+
+    CLI commands that open a warehouse share this instead of copying the
+    load / compile / open / finally-close block.
+    """
+    project = Project.load(path)
+    compiled = project.compile()
+    engines = project.open_engines()
+    state = await project.open_state()
+    try:
+        yield project, compiled, state, engines
+    finally:
+        await state.close()
+        engines.close()

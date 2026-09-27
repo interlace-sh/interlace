@@ -21,13 +21,13 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 
 import pyarrow as pa
-from sqlglot import exp, parse_one
+from sqlglot import exp
 
 from interlace.dsl.decorators import StreamDef
 from interlace.engines.base import EngineAdapter
 from interlace.exceptions import ConfigurationError
 from interlace.graph.project import CompiledProject
-from interlace.ir.relation import TableRef
+from interlace.ir.relation import TableRef, drop
 from interlace.state.interval import parse_grain
 from interlace.streaming.log import StreamLog
 from interlace.streaming.schema import arrow_schema, coerce_row, evolved_columns, sql_columns
@@ -40,30 +40,36 @@ def target_table(stream: StreamDef) -> TableRef:
     return TableRef(schema=_SCHEMA, name=stream.name)
 
 
-def _sql(table: TableRef) -> str:
-    return exp.table_(table.name, db=table.schema).sql(dialect="duckdb")
+def _ident(name: str) -> exp.Expression:
+    """Quote every name. Stream columns are caller-chosen and include reserved words (`at`)."""
+    return exp.to_identifier(name, quoted=True)
 
 
-def _lit(value: str) -> str:
-    """A dialect-safe SQL string literal (never raw-interpolate stream names)."""
-    return exp.Literal.string(value).sql(dialect="duckdb")
+def _column_def(name: str, sql_type: str, *, exists: bool = False) -> exp.ColumnDef:
+    return exp.ColumnDef(this=_ident(name), kind=exp.DataType.build(sql_type), exists=exists)
+
+
+def _create_table(table: TableRef, columns: list[tuple[str, str]]) -> exp.Create:
+    schema = exp.Schema(
+        this=table.to_expr(),
+        expressions=[_column_def(name, sql_type) for name, sql_type in columns],
+    )
+    return exp.Create(this=schema, kind="TABLE", exists=True)
 
 
 async def ensure_stream_tables(streams: Iterable[StreamDef], engine: EngineAdapter) -> None:
     """Create the streams schema, watermark table, and one table per stream."""
     await engine.create_schema(_SCHEMA)
-    await engine.execute_sql(f"CREATE TABLE IF NOT EXISTS {_sql(_WATERMARKS)} (stream TEXT, committed_offset BIGINT)")
+    await engine.execute(_create_table(_WATERMARKS, [("stream", "TEXT"), ("committed_offset", "BIGINT")]))
     for stream in streams:
-        columns = ", ".join(
-            f"{exp.column(name).sql(dialect='duckdb', identify=True)} {sql_type}"  # quoted: names may be keywords
-            for name, sql_type in sql_columns(stream)
-        )
-        await engine.execute_sql(f"CREATE TABLE IF NOT EXISTS {_sql(target_table(stream))} ({columns})")
+        await engine.execute(_create_table(target_table(stream), list(sql_columns(stream))))
 
 
 async def stream_watermark(stream: StreamDef, engine: EngineAdapter) -> int:
-    reader = await engine.fetch_sql(
-        f"SELECT max(committed_offset) AS offset FROM {_sql(_WATERMARKS)} WHERE stream = {_lit(stream.name)}"
+    reader = await engine.fetch(
+        exp.select(exp.alias_(exp.Max(this=exp.column("committed_offset")), "offset"))
+        .from_(_WATERMARKS.to_expr())
+        .where(exp.column("stream").eq(exp.Literal.string(stream.name)))
     )
     rows = reader.read_all().to_pylist()
     return int(rows[0]["offset"] or 0) if rows else 0
@@ -127,14 +133,14 @@ async def _flush_batch(
         columns["_ingested_at"].append(event.ts.replace(tzinfo=None))
     batch = pa.table(columns, schema=schema)
 
-    target = _sql(target_table(stream))
+    target = target_table(stream).to_expr()
     # Evolve ALTERs land in the same execute_all txn as insert + watermark so a
     # crash cannot leave a widened schema with a stale watermark mid-flush.
     alters = [
-        parse_one(
-            f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS "
-            f"{exp.column(name).sql(dialect='duckdb', identify=True)} {sql_type}",
-            read="duckdb",
+        exp.Alter(
+            this=target.copy(),
+            kind="TABLE",
+            actions=[_column_def(name, sql_type, exists=True)],
         )
         for name, sql_type in extras.items()
     ]
@@ -142,17 +148,27 @@ async def _flush_batch(
     stage = TableRef(schema=_SCHEMA, name=f"_stage_{stream.name}")
     await engine.load(stage, batch.to_reader(), "create")
     last = events[-1].offset
-    # BY NAME: an evolved batch has more columns than older target rows had
-    insert = f"INSERT INTO {target} {'BY NAME ' if evolve else ''}SELECT * FROM {_sql(stage)}"
-    stream_lit = _lit(stream.name)
+    # Name every column. An evolved batch has more columns than older rows had;
+    # a positional INSERT would land them in the wrong place, and BY NAME is DuckDB-only.
+    names = [field.name for field in schema]
+    insert = exp.Insert(
+        this=exp.Schema(this=target.copy(), expressions=[_ident(name) for name in names]),
+        expression=exp.select(*(exp.column(name, quoted=True) for name in names)).from_(stage.to_expr()),
+    )
+    stream_lit = exp.Literal.string(stream.name)
     # data + watermark (+ evolve DDL) move together: crash-safe exactly-once landing
     await engine.execute_all(
         [
             *alters,
-            parse_one(insert, read="duckdb"),
-            parse_one(f"DELETE FROM {_sql(_WATERMARKS)} WHERE stream = {stream_lit}"),
-            parse_one(f"INSERT INTO {_sql(_WATERMARKS)} VALUES ({stream_lit}, {last})"),
-            parse_one(f"DROP TABLE {_sql(stage)}"),
+            insert,
+            exp.Delete(this=_WATERMARKS.to_expr(), where=exp.Where(this=exp.column("stream").eq(stream_lit))),
+            exp.Insert(
+                this=_WATERMARKS.to_expr(),
+                expression=exp.Values(
+                    expressions=[exp.Tuple(expressions=[stream_lit.copy(), exp.Literal.number(last)])]
+                ),
+            ),
+            drop(stage.to_expr(), kind="TABLE"),
         ]
     )
     return len(events), last

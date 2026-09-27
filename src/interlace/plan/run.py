@@ -14,15 +14,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from interlace.graph.project import CompiledProject
-from interlace.plan.differ import snapshot_of
+from interlace.plan.differ import expand_to_changed_ancestors, snapshot_of
 from interlace.plan.plan import (
-    BackfillTask,
     ChangeType,
     ModelChange,
     Plan,
-    ViewSwap,
     collect_transfers,
-    env_view,
     schedule_build,
 )
 from interlace.state.interval import Interval, latest_complete_window, parse_grain, slice_interval
@@ -59,9 +56,7 @@ async def run_plan(
     if select is not None:
         # a selected model must never resolve an upstream fingerprint that was
         # never materialised: pull changed ancestors into the run (same rule as diff)
-        from interlace.plan.differ import _expand_to_changed_ancestors
-
-        selected = _expand_to_changed_ancestors(compiled, selected, await state.get_environment(environment))
+        selected = expand_to_changed_ancestors(compiled, selected, await state.get_environment(environment))
     plan = Plan(environment=environment)
     for model in compiled.ordered():
         if model.name not in selected:
@@ -71,7 +66,6 @@ async def run_plan(
         # incremental into the interlace-owned virtual plane, or into a terminal
         # `table` (windowed delete+insert against the external target)
         is_incremental = model.strategy == "incremental" and model.materialise != "ephemeral"
-        wants_view = model.materialise in ("virtual", "view")  # terminal table has no env view
         if is_incremental:
             grain = parse_grain(model.interval or "1d")
             filled = await state.get_intervals(model.name, model.fingerprint)
@@ -79,11 +73,7 @@ async def run_plan(
             if start is None and end is None and not len(filled) and model.backfill != "none":
                 # nothing filled yet and no window given: bootstrap — apply derives
                 # the source's time-column range and fills it as one interval
-                plan.backfills.append(BackfillTask(snapshot=snapshot, bootstrap=True))
-                if wants_view:
-                    plan.virtual_updates.append(
-                        ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
-                    )
+                schedule_build(plan, model, snapshot, environment, bootstrap=True)
                 continue
             if start is None and end is None:
                 window_hint = _window(start, end, grain)
@@ -92,22 +82,19 @@ async def run_plan(
                     f"{model.interval or '1d'} window ({window_hint.start:%Y-%m-%d %H:%M} → "
                     f"{window_hint.end:%Y-%m-%d %H:%M}) is considered; other ranges need an explicit window"
                 )
-            scheduled = 0
-            for window in slice_interval(_window(start, end, grain), grain):
-                if restate or not filled.covers(window):  # restate reprocesses; otherwise catch up
-                    plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window))
-                    scheduled += 1
-            if scheduled > 366:  # more than a year of daily windows: probably a wider range than meant
+            windows = [
+                window
+                for window in slice_interval(_window(start, end, grain), grain)
+                if restate or not filled.covers(window)
+            ]
+            if len(windows) > 366:  # more than a year of daily windows: probably a wider range than meant
                 span = _window(start, end, grain)
                 plan.warnings.append(
-                    f"{model.name}: {scheduled} {model.interval or '1d'} windows "
+                    f"{model.name}: {len(windows)} {model.interval or '1d'} windows "
                     f"({span.start:%Y-%m-%d} → {span.end:%Y-%m-%d}) — one build task each. "
                     f"Pass --end (it defaults to now) to bound the range if that's wider than intended."
                 )
-            if wants_view:
-                plan.virtual_updates.append(
-                    ViewSwap(env_view(environment, model.name), model.physical_table, engine=model.engine)
-                )
+            schedule_build(plan, model, snapshot, environment, windows=windows)
         else:
             schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
 

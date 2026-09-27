@@ -7,6 +7,7 @@ against a table the project already owns — never SQL the caller typed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -15,6 +16,7 @@ from sqlglot import exp
 
 from interlace.checks.builtin import build_failing_rows
 from interlace.engines.base import EngineAdapter
+from interlace.engines.registry import EngineRegistry
 from interlace.exceptions import DefinitionError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import TableRef
@@ -318,3 +320,39 @@ async def failing_rows(
         return FailingRows(available=False, message="this check judges the table, not individual rows")
     sample = await _read(engine, query, _cap(limit))
     return FailingRows(available=True, sample=sample)
+
+
+async def described_outputs(
+    compiled: CompiledProject,
+    store: _InspectStore,
+    engines: EngineRegistry,
+    environment: str,
+    *,
+    cache: dict[tuple[str, str | None], dict[str, str]] | None = None,
+) -> dict[str, dict[str, str]]:
+    """Column types of each promoted physical table, keyed by model name.
+
+    Describes the snapshot's engine and table, not the model name. A miss is
+    not cached: a warehouse that is briefly away should not stick as empty.
+    """
+    promoted = await store.get_environment(environment)
+    snapshots = await store.get_snapshots(promoted.items())
+    described: dict[str, dict[str, str]] = {}
+    for name in compiled.models:
+        fingerprint = promoted.get(name)
+        snapshot = snapshots.get((name, fingerprint or ""))
+        if snapshot is None:
+            continue
+        key = (name, fingerprint)
+        if cache is not None and key in cache:
+            described[name] = cache[key]
+            continue
+        columns: dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            columns = await engines.require(snapshot.engine, model=name).describe(snapshot.physical_table)
+        if not columns:
+            continue
+        if cache is not None:
+            cache[key] = columns
+        described[name] = columns
+    return described

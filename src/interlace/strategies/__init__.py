@@ -27,9 +27,28 @@ __all__ = [
     "Scd",
     "Strategy",
     "View",
+    "named_strategy",
     "resolve_strategy",
     "table_expr",
 ]
+
+# ``replace`` here is the virtual-plane class. The flag lookup only reads class
+# variables (``requires_key``, ``accumulates``); both replace classes agree on those.
+_BY_NAME: dict[str, type[Strategy]] = {
+    "replace": Replace,
+    "append": Append,
+    "merge": Merge,
+    "full_merge": FullMerge,
+    "hash_merge": HashMerge,
+    "incremental": Incremental,
+    "scd": Scd,
+    "view": View,
+}
+
+
+def named_strategy(name: str) -> type[Strategy] | None:
+    """The strategy class for a config keyword, for flag checks outside the resolver."""
+    return _BY_NAME.get(name)
 
 
 def resolve_strategy(

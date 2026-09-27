@@ -12,6 +12,7 @@ server-side. Requires DuckDB >= 1.5.3 (quack is a core extension there).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from uuid import uuid4
 
 import duckdb
@@ -19,8 +20,10 @@ import pyarrow as pa
 from sqlglot import exp
 
 from interlace.engines.base import LoadMode, note_statement
-from interlace.engines.duckdb import DuckDBAdapter
+from interlace.engines.duckdb import _DUCKDB_CAPS, DuckDBAdapter
 from interlace.ir.relation import TableRef
+
+_QUACK_CAPS = replace(_DUCKDB_CAPS, supports_attach=False)
 
 _REMOTE = "__interlace_remote"
 
@@ -34,6 +37,7 @@ class QuackAdapter(DuckDBAdapter):
 
     def __init__(self, connection: duckdb.DuckDBPyConnection, uri: str) -> None:
         super().__init__(connection)
+        self.caps = _QUACK_CAPS  # SQL runs remotely; this process cannot ATTACH the source
         self._uri = uri
 
     @classmethod

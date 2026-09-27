@@ -17,7 +17,6 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from interlace.engines.base import EngineCaps
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.strategies.base import RowCounts
@@ -69,7 +68,7 @@ async def test_full_merge_ducklake_delete_rolls_back_without_aborting(tmp_path: 
 
         relation = SqlRelation.from_sql(_MODEL)
         target = TableRef(schema="main", name="target")
-        statements = FullMerge(("id",)).plan_statements(relation, target, EngineCaps())
+        statements = FullMerge(("id",)).plan_statements(relation, target, engine.caps)
         sqls = [engine.transpile(statement) for statement in statements]
         assert any(sql.startswith("DELETE") for sql in sqls)
         assert all("EXCEPT" not in sql for sql in sqls if sql.startswith("DELETE"))
@@ -83,7 +82,7 @@ async def test_full_merge_ducklake_delete_rolls_back_without_aborting(tmp_path: 
         assert engine.fetch_sync("SELECT 1 AS ok").read_all().to_pylist() == [{"ok": 1}]
 
         counts = await engine.execute_all(statements)
-        assert FullMerge(("id",)).row_counts(counts) == RowCounts(inserted=9, updated=69, deleted=2)
+        assert statements.row_counts(counts) == RowCounts(inserted=9, updated=69, deleted=2)
         rows = engine.fetch_sync("SELECT id, name FROM main.target ORDER BY id").read_all().to_pylist()
         assert [row["id"] for row in rows] == list(range(3, 81))
         assert all(row["name"] == f"v{row['id']}" for row in rows)

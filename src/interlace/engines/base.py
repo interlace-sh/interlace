@@ -74,6 +74,17 @@ class EngineCaps:
     enforced_constraints: frozenset[str] = frozenset()
     # DuckDB rejects ADD CONSTRAINT; NOT NULL is ALTER COLUMN … SET NOT NULL.
     not_null_as_column: bool = False
+    # DELETE/UPDATE conditions may contain a subquery. Delta rejects all of them
+    # (DELTA_UNSUPPORTED_SUBQUERY); Spark turns this off and the strategies that
+    # need it raise at plan time.
+    supports_mutation_subquery: bool = True
+    # EXCEPT may appear inside a DELETE. DuckLake's delete finalizer aborts the
+    # process when the subquery is ``source EXCEPT target``; that engine stages
+    # the key set into a temp table first. Every other engine keeps the direct delete.
+    except_in_delete: bool = True
+    # The connection can ATTACH another database and CTAS from it (local DuckDB
+    # and DuckLake). Quack cannot: its SQL runs on the remote server.
+    supports_attach: bool = False
 
 
 class EngineAdapter(ABC):
@@ -153,3 +164,17 @@ class EngineAdapter(ABC):
     def transpile(self, ast: exp.Expr) -> str:
         """Canonical AST -> this engine's SQL. The one place dialect leaks back in."""
         return ast.sql(dialect=self.dialect)
+
+    def refresh_inputs(self) -> None:
+        """Re-expand input views whose paths contain date tokens.
+
+        A local engine with configured inputs stores the hook on ``_refresh_inputs``.
+        Every other engine leaves it unset.
+        """
+        hook = getattr(self, "_refresh_inputs", None)
+        if callable(hook):
+            hook()
+
+    def attach(self, alias: str, uri: str) -> None:
+        """ATTACH another database under ``alias``. Only engines with ``supports_attach``."""
+        raise NotImplementedError(f"{type(self).__name__} cannot ATTACH another database")

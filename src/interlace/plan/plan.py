@@ -8,7 +8,7 @@ Apply executes it; nothing here runs SQL.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -167,14 +167,17 @@ def schedule_build(
     *,
     seed_from: TableRef | None = None,
     reuse_existing: bool = False,
+    windows: Sequence[Interval] | None = None,
+    bootstrap: bool = False,
 ) -> None:
     """Add the right tasks for a model: ephemeral builds nothing; a terminal
     table/file builds (delivers) but gets no environment view; a virtual/view model
     builds and is repointed by an environment view.
 
-    An incremental model (virtual, or a terminal ``table``) cannot build
-    without a window, so an apply fills the latest grain interval — the same default
-    as ``interlace run`` — leaving history to ``run --start/--end``.
+    An incremental model needs windows. ``bootstrap`` fills the source's whole range
+    as one interval. ``windows`` is the explicit list (``interlace run`` decides it
+    from the ledger). With neither, an apply fills the latest grain interval when
+    the table already has history, or bootstraps a fresh fingerprint.
 
     ``reuse_existing`` (the fingerprint is already materialised) skips the compute for a
     plain virtual/view build — never for a terminal delivery, a forward-only seed, or an
@@ -196,6 +199,15 @@ def schedule_build(
             )
 
     if model.strategy == "incremental":  # virtual or terminal table: windowed delete+insert
+        if bootstrap:
+            plan.backfills.append(BackfillTask(snapshot=snapshot, bootstrap=True, seed_from=seed_from))
+            add_view()
+            return
+        if windows is not None:
+            for window in windows:
+                plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
+            add_view()
+            return
         from datetime import datetime
 
         from interlace.state.interval import latest_complete_window, parse_grain
@@ -210,9 +222,10 @@ def schedule_build(
             add_view()
             return
         # forward-only inherit (history already carried) or backfill: none —
-        # the latest grain window, same default as a windowless `interlace run`;
-        # scheduled even when an inherited ledger covers the window: the task is what
-        # seeds forward-only history, creates the table, and records the snapshot
+        # the latest grain window. Scheduled even when an inherited ledger covers
+        # the window: the task seeds forward-only history, creates the table, and
+        # records the snapshot. ``interlace run`` passes ``windows`` instead, so it
+        # can skip intervals the ledger already covers.
         plan.backfills.append(BackfillTask(snapshot=snapshot, interval=window, seed_from=seed_from))
         add_view()
         return

@@ -16,7 +16,7 @@ from sqlglot import exp
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
+from interlace.strategies.base import Strategy, WritePlan, table_expr
 
 
 class ReplaceInPlace(Strategy):
@@ -29,7 +29,7 @@ class ReplaceInPlace(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
         query = relation.ast
         table = table_expr(target)
         ensure = exp.Create(
@@ -40,8 +40,4 @@ class ReplaceInPlace(Strategy):
         )
         wipe = exp.Delete(this=table.copy())  # empty in place, never drop
         insert = exp.Insert(this=table.copy(), expression=query.copy())
-        return [ensure, wipe, insert]
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        # [ensure, wipe, insert]: the wipe clears the previous delivery
-        return RowCounts(inserted=_at(counts, 2), deleted=_at(counts, 1))
+        return WritePlan([ensure, wipe, insert], ["ignore", "delete", "insert"])

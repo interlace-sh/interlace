@@ -16,7 +16,7 @@ from sqlglot import exp
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.state.interval import Interval
-from interlace.strategies.base import RowCounts, Strategy, _at, table_expr
+from interlace.strategies.base import Strategy, WritePlan, table_expr
 
 
 class Append(Strategy):
@@ -33,7 +33,7 @@ class Append(Strategy):
         caps: EngineCaps,
         interval: Interval | None = None,
         columns: Sequence[str] | None = None,
-    ) -> list[exp.Expr]:
+    ) -> WritePlan:
         query = relation.ast
         table = table_expr(target)
         ensure = exp.Create(
@@ -46,8 +46,4 @@ class Append(Strategy):
         if columns:  # aligned against an existing target: bind by name, leave the rest to DEFAULT
             into = exp.Schema(this=table.copy(), expressions=[exp.column(c) for c in columns])
         insert = exp.Insert(this=into, expression=query.copy())
-        return [ensure, insert]
-
-    def row_counts(self, counts: Sequence[int]) -> RowCounts:
-        # [ensure, insert]
-        return RowCounts(inserted=_at(counts, 1))
+        return WritePlan([ensure, insert], ["ignore", "insert"])

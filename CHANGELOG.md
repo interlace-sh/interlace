@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.8.2 (2026-09-27)
+
+**CLI, API, and scheduler share one write and plan path.** Keyed merges,
+DuckLake deletes, stream landing, and garbage collection were decided in more
+than one place. They now go through the same helpers.
+
+**The control plane, planner, CLI, and HTTP API are split by resource.** One
+SQLite connection still backs the store. Plan types and warehouse names no
+longer live in the planner, so physical layout and the janitor do not import
+it. Commands and routes are unchanged.
+
 ## 2.8.1 (2026-09-27)
 
 **Fix: `full_merge` on DuckLake no longer aborts the process.** The changed-key

@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 2.8.1 (2026-09-27)
+
+**Fix: `full_merge` on DuckLake no longer aborts the process.** The changed-key
+`DELETE` inlined `source EXCEPT target`. DuckLake's delete finalizer threw
+`Could not find matching file for written delete file`, invalidated the catalog,
+and `ROLLBACK` was a fatal exception off the Python thread. Both key sets are
+written to temporary tables first, and each `DELETE` reads only that table.
 
 **Postgres CDC starter.** `interlace init --template cdc` scaffolds a Docker Postgres
 with a logical slot, a `@stream` that follows it, and a `full_merge` replica.

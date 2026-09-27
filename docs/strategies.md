@@ -186,16 +186,20 @@ desired state and applies only the difference, so an identical run writes nothin
 
 ```
 CREATE TABLE IF NOT EXISTS target AS (SELECT * FROM (<query>) _s LIMIT 0)
-DELETE FROM target WHERE <key> IN (fresh keys)        -- old versions of changed rows
-DELETE FROM target WHERE <key> NOT IN (source keys)   -- keys deleted upstream
+CREATE TEMPORARY TABLE changed AS <fresh keys>        -- staged before the DELETE
+CREATE TEMPORARY TABLE vanished AS <target keys absent from the source>
+DELETE FROM target WHERE <key> IN (SELECT <key> FROM changed)
+DELETE FROM target WHERE <key> IN (SELECT <key> FROM vanished)
 INSERT INTO target SELECT * FROM (fresh rows)          -- new keys + new versions
 ```
 
 where `fresh = source EXCEPT current` (set difference — `EXCEPT` *is* the row hash, no
-column list needed). Because the source is the full state, a key that vanished from it is a
-**delete**. Unchanged rows appear in no difference, so they aren't rewritten (no new
-DuckLake files). Keys must be non-NULL (a NULL key never compares equal and would churn
-every run). Duplicate source rows collapse via `EXCEPT`'s distinct semantics.
+column list needed). The key sets are written to temporary tables first, and each
+`DELETE` reads only that table: inlining `EXCEPT` in the changed-key `DELETE` makes
+DuckLake abort the process. Because the source is the full state, a key that vanished
+from it is a **delete**. Unchanged rows appear in no difference, so they aren't rewritten
+(no new DuckLake files). Keys must be non-NULL (a NULL key never compares equal and would
+churn every run). Duplicate source rows collapse via `EXCEPT`'s distinct semantics.
 
 `full_merge` vs `merge`: both are keyed, but `merge` only touches the keys in
 this run (no deletes), while `full_merge` treats the query as the whole world and deletes

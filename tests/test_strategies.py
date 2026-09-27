@@ -6,7 +6,7 @@ import pytest
 
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef
-from interlace.strategies import HashMerge, Incremental, Merge, Replace, View, resolve_strategy
+from interlace.strategies import FullMerge, HashMerge, Incremental, Merge, Replace, View, resolve_strategy
 
 pytestmark = pytest.mark.unit
 
@@ -122,6 +122,37 @@ def test_merge_key_only_table_omits_the_update_clause() -> None:
     sql = _sql(statements)[0]
     assert "WHEN MATCHED" not in sql  # nothing to update when every column is a key
     assert "WHEN NOT MATCHED THEN INSERT (id) VALUES (_s.id)" in sql
+
+
+def test_full_merge_stages_key_sets_outside_the_delete() -> None:
+    """DuckLake aborts if EXCEPT (or the source scan) is nested inside the DELETE.
+    The deletes read temp tables; the insert's EXCEPT stays a read."""
+    relation = SqlRelation.from_sql("SELECT id, v FROM src")
+    statements = FullMerge(("id",)).plan_statements(relation, _TARGET, _CAPS)
+    rendered = _sql(statements)
+    assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
+    assert rendered[1] == "DROP TABLE IF EXISTS _interlace_fm_changed"
+    assert rendered[2].startswith("CREATE TEMPORARY TABLE _interlace_fm_changed AS")
+    assert "EXCEPT" in rendered[2] and "FROM src" in rendered[2]
+    assert rendered[3] == "DROP TABLE IF EXISTS _interlace_fm_vanished"
+    assert rendered[4].startswith("CREATE TEMPORARY TABLE _interlace_fm_vanished AS")
+    assert "WHERE NOT id IN" in rendered[4] and "EXCEPT" not in rendered[4]
+    changed = "DELETE FROM interlace__main.orders__abc WHERE id IN (SELECT id FROM _interlace_fm_changed)"
+    vanished = "DELETE FROM interlace__main.orders__abc WHERE id IN (SELECT id FROM _interlace_fm_vanished)"
+    assert rendered[5] == changed and rendered[6] == vanished
+    assert rendered[7].startswith("INSERT INTO interlace__main.orders__abc ") and "EXCEPT" in rendered[7]
+    assert "FROM src" not in changed and "FROM src" not in vanished
+
+    # stage sizes (100, 50) are not writes; tail is delete changed=11, delete vanished=2, insert=20
+    counts = FullMerge(("id",)).row_counts([0, 0, 100, 0, 50, 11, 2, 20])
+    assert (counts.inserted, counts.updated, counts.deleted) == (9, 11, 2)
+
+    multi = _sql(FullMerge(("a", "b")).plan_statements(relation, _TARGET, _CAPS))
+    assert "WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_changed)" in multi[5]
+    assert "WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_vanished)" in multi[6]
+    postgres = [statement.sql(dialect="postgres") for statement in statements]
+    assert postgres[2].startswith("CREATE TEMPORARY TABLE _interlace_fm_changed AS")
+    assert all("EXCEPT" not in sql for sql in postgres if sql.startswith("DELETE"))
 
 
 def test_merge_row_counts_native_is_a_single_written_count() -> None:

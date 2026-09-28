@@ -80,7 +80,7 @@ async def get_stream(name: FromPath[str], state: State) -> StreamDetail:
 
 
 @post("/streams/{name:str}", opt={"scope": "write"})
-async def publish(name: FromPath[str], data: dict | list, state: State) -> PublishResult:
+async def publish(name: FromPath[str], data: dict | list, state: State) -> PublishResult:  # noqa: C901
     """Publish one event (object) or a batch (array). Durable before this returns.
 
     Backpressure: when the warehouse can't keep up, the durable-but-unmaterialized
@@ -153,7 +153,7 @@ _CONSUMER_BATCH = 100
 
 
 @get("/streams/{name:str}/events", opt={"no_compress": True, "query_token": True})
-async def stream_log_events(
+async def stream_log_events(  # noqa: C901
     name: FromPath[str],
     state: State,
     request: Request,

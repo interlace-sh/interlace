@@ -105,8 +105,10 @@ work natively there.
 
 ### Capability flags (`EngineCaps`, drive strategy fallbacks)
 
-`EngineCaps` carries three flags; each strategy consults them and picks a portable path when
-a capability is absent:
+Each strategy consults the flags and picks a portable path when a capability is absent.
+The full per-engine table, including transactions, enforced constraints, mutation
+subqueries, `EXCEPT` inside `DELETE`, and `ATTACH`, is in [engines](../engines.md).
+The three that rewrite SQL:
 
 | Cap | DuckDB family / Snowflake / BigQuery | Postgres / Redshift |
 |---|---|---|
@@ -114,9 +116,13 @@ a capability is absent:
 | `supports_star_exclude` | ✓ | ✗ → `scd` enumerates the model's columns instead of `SELECT * EXCLUDE` |
 | `supports_merge` | ✓ | ✓ → `merge` uses a native `MERGE` (else DELETE+INSERT) |
 
-Everything else is portable by construction: Arrow ingest is `register` on DuckDB and
-`adbc_ingest` on the ADBC engines, and cross-engine `ATTACH` is a DuckDB-only fast lane the
-transfer planner opportunistically uses (falling back to Arrow fetch→load).
+DuckLake turns `except_in_delete` off: `full_merge` stages the key set, because
+DuckLake aborts if `EXCEPT` sits inside `DELETE`. Spark turns off mutation
+subqueries and `except_in_delete`, so `scd` and `full_merge` raise at plan time.
+Arrow ingest is `register` on DuckDB and `adbc_ingest` on the ADBC engines, and
+cross-engine `ATTACH` is a DuckDB-only fast lane the transfer planner uses when
+`supports_attach` is set (falling back to Arrow fetch→load). Quack is DuckDB SQL
+without `ATTACH`.
 
 Every strategy runs on every SQL engine — `merge` upserts natively where `MERGE` exists, and
 `scd` enumerates its columns where `SELECT * EXCLUDE` is missing (so on Postgres/Redshift an

@@ -57,7 +57,7 @@ class FullMerge(Strategy):
             raise PlanError("full_merge requires a non-empty key")
         self.key = key
 
-    def plan_statements(
+    def plan_statements(  # noqa: C901
         self,
         relation: SqlRelation,
         target: TableRef,

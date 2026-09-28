@@ -366,7 +366,7 @@ def _parse_sse(frame: str) -> dict[str, str]:
     return record
 
 
-async def _drive_sse(
+async def _drive_sse(  # noqa: C901
     app: object,
     path: str,
     *,
@@ -583,6 +583,34 @@ def test_stream_quarantine_mode_over_http(tmp_path: Path) -> None:
         )
         assert len(frames) == 2
         assert client.get("/streams/nope__quarantine/events").status_code == 404
+
+
+def test_publish_and_flush_stay_inside_the_regression_ceiling(tmp_path: Path) -> None:
+    """Durability is fsync-bound. CI guards a ceiling, not a 25 ms design target.
+
+    Twenty single-event publishes must each return within 250 ms. The rows must
+    be queryable (watermark caught up) within 2 s, and the consumer run must be
+    queued within 3 s of the first publish.
+    """
+    project_dir = _make_project(tmp_path)
+    (project_dir / "models" / "clicks_stream.py").write_text(
+        "from interlace import stream\n\n"
+        '@stream("clicks", schema={"event_id": "string", "amount": "double"}, idempotency_key="event_id")\n'
+        "def clicks(event):\n    return event\n"
+    )
+    (project_dir / "models" / "click_totals.sql").write_text("SELECT sum(amount) AS total FROM streams.clicks")
+    with TestClient(app=create_app(project_dir, "dev")) as client:
+        started = time.perf_counter()
+        samples: list[float] = []
+        for index in range(20):
+            one = time.perf_counter()
+            response = client.post("/streams/clicks", json={"event_id": f"e{index}", "amount": 1.0})
+            samples.append(time.perf_counter() - one)
+            assert response.json()["accepted"] == 1
+        assert max(samples) < 0.25
+        _wait_for(_drained(client, "clicks"), timeout=2.0)
+        _wait_for(lambda: len(client.get("/runs").json()) >= 1, timeout=3.0)
+        assert time.perf_counter() - started < 8.0
 
 
 def test_stream_flush_enqueues_consumer_models(tmp_path: Path) -> None:

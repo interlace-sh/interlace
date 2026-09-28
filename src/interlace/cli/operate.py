@@ -170,7 +170,14 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
     """Same loops as ``interlace serve``: reload, tick, trim, drain, flush, CDC."""
     from types import SimpleNamespace
 
-    from interlace.scheduler.daemon import cdc_loop, flush_once, flusher_loop, scheduler_loop, source_mtime
+    from interlace.scheduler.daemon import (
+        cdc_loop,
+        flush_once,
+        flusher_loop,
+        remember_runtime,
+        scheduler_loop,
+        source_mtime,
+    )
     from interlace.streaming.materializer import quarantine_stream, stream_consumers
 
     project = Project.load(path)
@@ -209,6 +216,7 @@ async def _scheduler(environment: str, path: Path, interval: float, once: bool) 
         stream_consumer_map={name: sorted(stream_consumers(compiled, name)) for name in streams},
     )
     host.flushed_heads = dict(host.log_heads)
+    remember_runtime(host, project.config)
     flusher: asyncio.Task[None] | None = None
     cdc: asyncio.Task[None] | None = None
     try:

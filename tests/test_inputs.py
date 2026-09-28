@@ -42,6 +42,63 @@ def test_missing_extension_is_a_clear_error() -> None:
         engine.close()
 
 
+def test_watched_input_bytes_change_the_fingerprint(tmp_path: Path) -> None:
+    (tmp_path / "events.csv").write_text("id\n1\n")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "orders.sql").write_text("SELECT id FROM events")
+    (tmp_path / "models" / "constant.sql").write_text("SELECT 1 AS n")
+    (tmp_path / "interlace.yaml").write_text(
+        "inputs:\n  events:\n    format: csv\n    path: events.csv\n    watch: true\n"
+    )
+    first = Project.load(tmp_path).compile()
+    orders = first.models["orders"].fingerprint
+    constant = first.models["constant"].fingerprint
+    (tmp_path / "events.csv").write_text("id\n2\n")
+    second = Project.load(tmp_path).compile()
+    assert second.models["orders"].fingerprint != orders
+    assert second.models["constant"].fingerprint == constant
+
+
+def test_unwatched_input_bytes_do_not_change_the_fingerprint(tmp_path: Path) -> None:
+    (tmp_path / "events.csv").write_text("id\n1\n")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "orders.sql").write_text("SELECT id FROM events")
+    (tmp_path / "interlace.yaml").write_text("inputs:\n  events:\n    format: csv\n    path: events.csv\n")
+    first = Project.load(tmp_path).compile().models["orders"].fingerprint
+    (tmp_path / "events.csv").write_text("id\n2\n")
+    assert Project.load(tmp_path).compile().models["orders"].fingerprint == first
+
+
+def test_watched_input_must_exist_and_be_local(tmp_path: Path) -> None:
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "orders.sql").write_text("SELECT id FROM events")
+    (tmp_path / "interlace.yaml").write_text(
+        "inputs:\n  events:\n    format: csv\n    path: missing.csv\n    watch: true\n"
+    )
+    with pytest.raises(ConfigurationError, match="matched no files"):
+        Project.load(tmp_path).compile()
+    (tmp_path / "interlace.yaml").write_text(
+        "inputs:\n  events:\n    format: parquet\n    path: s3://bucket/events.parquet\n    watch: true\n"
+    )
+    with pytest.raises(ConfigurationError, match="not a local path"):
+        Project.load(tmp_path).compile()
+
+
+def test_watched_glob_includes_every_matching_file(tmp_path: Path) -> None:
+    folder = tmp_path / "data"
+    folder.mkdir()
+    (folder / "a.csv").write_text("id\n1\n")
+    (folder / "b.csv").write_text("id\n2\n")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "orders.sql").write_text("SELECT id FROM events")
+    (tmp_path / "interlace.yaml").write_text(
+        "inputs:\n  events:\n    format: csv\n    path: data/*.csv\n    watch: true\n"
+    )
+    first = Project.load(tmp_path).compile().models["orders"].fingerprint
+    (folder / "b.csv").write_text("id\n3\n")
+    assert Project.load(tmp_path).compile().models["orders"].fingerprint != first
+
+
 def test_input_on_a_non_duckdb_engine_is_rejected(tmp_path: Path) -> None:
     (tmp_path / "models").mkdir()
     (tmp_path / "models" / "orders.sql").write_text("/* interlace: {engine: pg} */\nSELECT id FROM events")

@@ -113,11 +113,11 @@ select = [
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
+    "C901",  # mccabe; existing hotspots are allow-listed with noqa
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # function calls in argument defaults
-    "C901",  # too complex
 ]
 
 [tool.ruff.lint.per-file-ignores]

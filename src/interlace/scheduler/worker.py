@@ -104,7 +104,7 @@ async def drain(
         event_actor.reset(actor)
 
 
-async def _execute_run(
+async def _execute_run(  # noqa: C901
     run: QueuedRun,
     store: SqliteStateStore,
     project: CompiledProject,

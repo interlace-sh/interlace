@@ -73,11 +73,15 @@ class EngineAdapter(ABC):
         return ast.sql(dialect=self.dialect)  # canonical AST → engine SQL, one line
 ```
 
-`EngineCaps` carries the flags strategies branch on: `supports_create_or_replace`,
-`supports_star_exclude` (for `scd`'s `SELECT * EXCLUDE` — absent, `scd` enumerates the
-model's columns instead), and `supports_merge` (present, `merge` emits a native single
-`MERGE`; absent, it falls back to `DELETE`+`INSERT`). All default off (conservative);
-adapters set what their engine supports and strategies degrade accordingly.
+`EngineCaps` carries the flags strategies and delivery branch on. The three that
+rewrite SQL are `supports_create_or_replace`, `supports_star_exclude` (absent, `scd`
+enumerates columns instead of `SELECT * EXCLUDE`), and `supports_merge` (absent,
+`merge` falls back to `DELETE`+`INSERT`). The rest decide transactions, which
+constraints are real, how `NOT NULL` is altered, whether a mutation may contain a
+subquery, whether `EXCEPT` may sit inside `DELETE`, and whether the engine can
+`ATTACH` another database. All default off except the mutation and `EXCEPT` flags,
+which default on and are turned off where an engine aborts (DuckLake, Spark). The
+per-engine table is in `docs/engines.md`.
 
 ### 2.3 `Snapshot` — versioned model state (sqlmesh, adopted)
 
@@ -491,7 +495,10 @@ coordinating with the log; SQL models just `FROM streams.<name>`. Publish only a
 (durable ack, no warehouse work on the hot path); a signal-driven flusher coalesces
 publishes into one warehouse write moments later (`stream_flush_interval`, **50 ms**
 default), applies pending flushes before planning, and a clean shutdown drains the
-residue. A flush **enqueues the models that read the stream** (plus their downstream
+residue. Publish durability is fsync-bound (`synchronous=FULL`). CI guards a
+regression ceiling — a single-event HTTP 200 under 250 ms across a short burst,
+rows queryable within 2 s, the consumer run queued within 3 s — and does not
+treat a tighter millisecond target as a contract. A flush **enqueues the models that read the stream** (plus their downstream
 closure) onto the durable run queue, with the watermark as the idempotency key — repeated
 flushes debounce, new data re-enqueues.
 
@@ -698,8 +705,8 @@ src/interlace/
   ir/          # Relation types; canonicalisation; fingerprints; macros; Arrow schema
   graph/       # dag (toposort, stdlib), column_lineage, selectors
   state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc, reset)
-  plan/        # differ (sqlglot.diff + classification), plan, apply, run, orchestrate (plan_and_apply),
-               #   comment (PR markdown), table_diff
+  plan/        # differ, plan, apply (schedule + promote), backfill, delivery, fit, transfer,
+               #   schedule, result, run, orchestrate, comment, table_diff
   physical/    # indexes/constraints specs, drift, reconcile DDL (third hash, not data fp)
   engines/     # base (EngineAdapter, EngineCaps); adbc (shared ADBC base); duckdb (+ DuckLake),
                #   postgres, redshift/snowflake/bigquery (alpha), spark (beta), quack, registry
@@ -776,26 +783,20 @@ one-process wedge, close trust gaps, defer scale-out until a named user hits the
 Already shipped (do not look for these here): snapshots and virtual environments,
 column-pruned plan/apply, AST macros, `hash_merge`, indexes/constraints, `reset`,
 cross-process apply lock, fixture tests (`interlace test`), cron/interval/`watch`/
-webhook schedules, Postgres CDC, named `connections:` / `inputs:`, runtime
-`register_model`, MCP, inspect/preview, stream SSE consumers, event-log NDJSON,
-`interlace diff` (env/table compare), GitHub Action plan comment.
+webhook schedules, Postgres CDC, named `connections:` / `inputs:` (including
+`watch: true` content hashes), runtime `register_model`, MCP, inspect/preview,
+stream SSE consumers, event-log NDJSON, `interlace diff` (env/table compare),
+GitHub Action plan comment, daemon refusal when engines / connections / inputs /
+cdc / warehouse change under `serve`, stream publish and flush regression ceilings,
+macOS `init`+`apply` smoke in CI.
 
 ### Next
 
-- **Seed/file content hash** — optional `watch:` of file bytes in the fingerprint so
-  editing a CSV is a real plan change (`schedule: {watch:}` is operational, not that).
 - **Typed `@vars` for model SQL** — path tokens (`${date}` / `${datetime}` /
   `${workspace}`) exist; lintable AST-resolved vars inside SQL do not (§5).
 - **Live-validate MotherDuck**, then one of Snowflake / BigQuery. Adapters are wired
-  and dialect-correct but have not run against a live account (§4).
-- **macOS CI smoke** — `interlace init` + `apply` on the quickstart. Linux is what CI
-  runs today.
-- **Measured stream SLOs** — the envelope (200-OK p99 < 25 ms; POST→queryable p95 <
-  1 s; POST→downstream start < 3 s) is a design goal, not a test (§9). Group-commit
-  only if that envelope is missed.
-- **Hot-reload topology** — `serve` recompiles models on mtime; `cdc:` / `connections:`
-  / `engines:` still need a restart. Fail loudly on those yaml changes, or pick them up.
-  Document `.interlace/dynamic` vs git.
+  and dialect-correct but have not run against a live account (§4). That validation
+  needs a named account; it is not something the tree can close on its own.
 
 ### Later
 

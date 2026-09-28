@@ -51,7 +51,7 @@ def named_strategy(name: str) -> type[Strategy] | None:
     return _BY_NAME.get(name)
 
 
-def resolve_strategy(
+def resolve_strategy(  # noqa: C901
     materialise: str,
     strategy: str,
     key: Sequence[str] = (),

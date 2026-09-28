@@ -66,20 +66,36 @@ delivery into a fresh table).
 
 ## Capabilities
 
-Strategies adapt to capability flags (`EngineCaps`):
+Strategies adapt to capability flags (`EngineCaps`). Defaults are off, except
+`supports_mutation_subquery` and `except_in_delete`, which default on and are
+cleared where an engine aborts.
 
-| Cap | DuckDB family / Snowflake / BigQuery | Postgres / Redshift | Effect when absent |
-|---|---|---|---|
-| `supports_create_or_replace` | ✓ | ✗ | `replace` falls back to `DROP` + `CREATE TABLE AS`. |
-| `supports_star_exclude` | ✓ | ✗ | `scd` enumerates the model's columns instead of `SELECT * EXCLUDE(...)` (so a `scd` model needs an explicit projection, not `SELECT *`). |
-| `supports_merge` | ✓ | ✓ | `merge` uses a portable `DELETE`+`INSERT` instead of a native `MERGE`. |
+| Cap | DuckDB file | DuckLake | Quack | Postgres | Redshift | Snowflake / BigQuery | Spark |
+|---|---|---|---|---|---|---|---|
+| `supports_create_or_replace` | ✓ | ✓ | ✓ | | | ✓ | |
+| `supports_star_exclude` | ✓ | ✓ | ✓ | | | ✓ | |
+| `supports_merge` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `supports_transactions` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| `supports_mutation_subquery` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| `except_in_delete` | ✓ | | ✓ | ✓ | ✓ | ✓ | |
+| `supports_attach` | ✓ | ✓ | | | | | |
+| `not_null_as_column` | ✓ | ✓ | ✓ | | | | |
+| Enforced constraints | NOT NULL | NOT NULL | NOT NULL | PK, unique, NOT NULL, check, FK | NOT NULL | NOT NULL | NOT NULL |
 
-Everything is portable by construction. `merge` upserts with a native `MERGE` where available
-(DuckDB, Postgres, Redshift, Snowflake, BigQuery), falling back to `DELETE`+`INSERT` when the
-column list isn't known or the engine lacks `MERGE`. **`scd` now runs everywhere** — engines
-without `SELECT * EXCLUDE` (Postgres, Redshift) enumerate the model's own columns to compare
-open rows, so history tracking is no longer DuckDB-only; it just needs an explicit projection.
-`replace`, `view`, `full_merge` and `incremental` run on every engine.
+When a flag is off: `replace` emits `DROP` + `CREATE`; `scd` enumerates columns
+instead of `SELECT * EXCLUDE` (so the model needs an explicit projection);
+`merge` uses `DELETE`+`INSERT`; a stream flush refuses an engine without
+transactions;
+`scd` and `full_merge` raise at plan time when mutations cannot contain a
+subquery; `full_merge` stages its key set when `EXCEPT` cannot sit inside
+`DELETE`. `not_null_as_column` means `NOT NULL` is `ALTER COLUMN`, not
+`ADD CONSTRAINT`.
+
+`merge` upserts with a native `MERGE` on every engine in the table, falling
+back to `DELETE`+`INSERT` when the column list isn't known yet. **`scd` runs
+everywhere except Spark** — Postgres and Redshift enumerate the model's own
+columns to compare open rows. `replace`, `view`, and `incremental` run on every
+engine. `full_merge` runs everywhere except Spark.
 
 ## Multi-engine and cross-engine transfers
 

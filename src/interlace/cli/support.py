@@ -243,7 +243,7 @@ def _window(value: str, flag: str) -> datetime | None:
         raise typer.Exit(2) from exc
 
 
-def _render(plan: Plan, environment: str) -> None:
+def _render(plan: Plan, environment: str) -> None:  # noqa: C901
     if not plan.changes and not plan.physical and not plan.transfers and not plan.drift and not plan.warnings:
         console.print(f"No changes for [bold]{environment}[/bold].")
         return

@@ -143,6 +143,9 @@ class InputConfig(BaseModel):
     format: Literal["parquet", "csv", "json", "delta", "iceberg"]
     path: str
     connection: str | None = None  # http connection or an engine secret, for remote paths
+    # Hash the local file bytes into every model that reads this input, so an edit
+    # is a plan change. ``schedule: {watch:}`` only re-runs; it does not do this.
+    watch: bool = False
 
     @model_validator(mode="after")
     def _env_resolved(self) -> InputConfig:

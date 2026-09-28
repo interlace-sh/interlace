@@ -22,11 +22,11 @@ from typing import Any
 import pyarrow as pa
 from sqlglot import exp
 
-from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement
+from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement, relation_is_absent
 from interlace.ir.relation import TableRef
 
 
-def arrow_type_name(dtype: pa.DataType) -> str:
+def arrow_type_name(dtype: pa.DataType) -> str:  # noqa: C901
     """A canonical SQL type name for an Arrow type, in the vocabulary the planner's
     alignment/widening logic understands (see ``plan.apply``)."""
     if pa.types.is_boolean(dtype):
@@ -162,6 +162,8 @@ class AdbcAdapter(EngineAdapter):
         with self._lock:
             try:
                 schema = self._conn.adbc_get_table_schema(table.name, db_schema_filter=table.schema)
-            except Exception:  # driver raises when the table is absent -> treat as "no columns"
-                return {}
+            except Exception as exc:
+                if relation_is_absent(exc):
+                    return {}
+                raise
         return {field.name: arrow_type_name(field.type) for field in schema}

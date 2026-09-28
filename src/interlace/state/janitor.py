@@ -93,7 +93,7 @@ async def _drop_relation(adapter: EngineAdapter, schema: str, name: str) -> None
     await adapter.execute(drop(TableRef(schema=schema, name=name), kind=kind))
 
 
-async def rollback_environment(
+async def rollback_environment(  # noqa: C901
     state: SqliteStateStore,
     engine: EngineAdapter | None = None,
     *,
@@ -202,7 +202,7 @@ async def drop_environment(
     return dropped
 
 
-async def reset(
+async def reset(  # noqa: C901
     state: SqliteStateStore,
     engine: EngineAdapter | None = None,
     *,

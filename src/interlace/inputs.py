@@ -8,8 +8,10 @@ engines that references an input fails at compile.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
+from pathlib import Path
 
 from sqlglot import exp
 
@@ -82,6 +84,26 @@ def reject_inputs_on_other_engines(
             )
 
 
+def referenced_inputs(ast: object, names: set[str]) -> list[str]:
+    """Input names ``ast`` reads, in first-seen order, restricted to ``names``."""
+    return list(dict.fromkeys(_referenced_inputs(ast, names)))
+
+
+def watched_input_hashes(root: Path, inputs: dict[str, InputConfig], *, workspace: str) -> dict[str, str]:
+    """Content hashes for inputs with ``watch: true``.
+
+    Remote paths and empty matches fail at compile: a watched input that cannot
+    be read would otherwise keep a fingerprint that ignores the file.
+    """
+    hashes: dict[str, str] = {}
+    for name, spec in inputs.items():
+        if not spec.watch:
+            continue
+        path = expand_path_tokens(spec.path, workspace=workspace)
+        hashes[name] = _hash_watched(root, path, name)
+    return hashes
+
+
 def _referenced_inputs(ast: object, names: set[str]) -> list[str]:
     from sqlglot import exp as expression
 
@@ -93,6 +115,55 @@ def _referenced_inputs(ast: object, names: set[str]) -> list[str]:
         if ref in names or bare in names:
             found.append(ref if ref in names else bare)
     return found
+
+
+def _hash_watched(root: Path, path: str, name: str) -> str:
+    if path.startswith(_REMOTE):
+        raise ConfigurationError(
+            f"input {name!r} sets watch: true, which hashes local file bytes; {path!r} is not a local path"
+        )
+    files = _watched_files(root, path)
+    if not files:
+        raise ConfigurationError(f"input {name!r} sets watch: true but {path!r} matched no files")
+    digest = hashlib.sha256()
+    for file in files:
+        digest.update(_watch_label(root, file).encode())
+        digest.update(b"\0")
+        digest.update(_sha256_file(file).encode())
+        digest.update(b"\n")
+    return digest.hexdigest()[:16]
+
+
+def _watched_files(root: Path, raw: str) -> list[Path]:
+    if any(char in raw for char in "*?["):
+        pattern = Path(raw)
+        if pattern.is_absolute():
+            matches = sorted(Path(pattern.anchor).glob(raw[len(pattern.anchor) :]))
+        else:
+            matches = sorted(root.glob(raw))
+        return [match for match in matches if match.is_file()]
+    target = Path(raw) if Path(raw).is_absolute() else root / raw
+    if target.is_file():
+        return [target]
+    if target.is_dir():
+        return sorted(path for path in target.rglob("*") if path.is_file())
+    return []
+
+
+def _watch_label(root: Path, file: Path) -> str:
+    resolved = file.resolve()
+    try:
+        return resolved.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _extensions(spec: InputConfig, path: str) -> list[str]:

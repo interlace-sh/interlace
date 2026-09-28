@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+**Watched inputs change the plan.** `inputs.<name>.watch: true` hashes local
+file bytes into the fingerprint of every model that reads that input. A remote
+path or a pattern that matches nothing fails at compile. `schedule: {watch:}`
+is unchanged: it re-runs, it does not fingerprint.
+
+**A running daemon refuses runtime-config drift.** Model files still reload.
+A change to engines, connections, inputs, CDC, or the warehouse fails the next
+plan, apply, or scheduler tick until the process restarts. Reverting the file
+clears the refusal.
+
 ## 2.8.2 (2026-09-27)
 
 **CLI, API, and scheduler share one write and plan path.** Keyed merges,

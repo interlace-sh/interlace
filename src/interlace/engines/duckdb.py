@@ -39,7 +39,7 @@ import pyarrow as pa
 import tenacity
 from sqlglot import exp
 
-from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement
+from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement, relation_is_absent
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
@@ -307,8 +307,10 @@ class DuckDBAdapter(EngineAdapter):
         )
         try:
             reader = await self.fetch_sql(sql)
-        except Exception:
-            return []
+        except Exception as exc:
+            if relation_is_absent(exc):
+                return []
+            raise
         return [str(row[column]) for row in reader.read_all().to_pylist() if row.get(column)]
 
     # --- sync workers (run in a thread) -------------------------------------

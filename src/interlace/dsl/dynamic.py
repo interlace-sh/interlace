@@ -95,7 +95,7 @@ def render_model_sql(definition: ModelDef) -> str:
     return f"/*\n{header}\n*/\n{definition.sql.strip()}\n"
 
 
-def model_to_config(definition: ModelDef) -> dict[str, Any]:
+def model_to_config(definition: ModelDef) -> dict[str, Any]:  # noqa: C901
     """The ``interlace:`` mapping ``_sql_model`` reads. Defaults are omitted."""
     config: dict[str, Any] = {"name": definition.name}
     _keep(config, "materialise", definition.materialise, MATERIALISE_DEFAULT)

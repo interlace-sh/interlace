@@ -20,7 +20,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from interlace.engines.adbc import AdbcAdapter
-from interlace.engines.base import EngineCaps
+from interlace.engines.base import EngineCaps, relation_is_absent
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
@@ -83,8 +83,10 @@ class PostgresAdapter(AdbcAdapter):
             reader = await self.fetch_sql(
                 f"SELECT indexname FROM pg_indexes WHERE schemaname = {schema} AND tablename = {name}"
             )
-        except Exception:
-            return []
+        except Exception as exc:
+            if relation_is_absent(exc):
+                return []
+            raise
         return [str(row["indexname"]) for row in reader.read_all().to_pylist() if row.get("indexname")]
 
     async def list_constraints(self, table: TableRef) -> list[str]:
@@ -97,6 +99,8 @@ class PostgresAdapter(AdbcAdapter):
                 "JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace "
                 f"WHERE nsp.nspname = {schema} AND rel.relname = {name}"
             )
-        except Exception:
-            return []
+        except Exception as exc:
+            if relation_is_absent(exc):
+                return []
+            raise
         return [str(row["name"]) for row in reader.read_all().to_pylist() if row.get("name")]

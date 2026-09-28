@@ -42,6 +42,19 @@ def note_statement(exc: BaseException, sql: str) -> None:
         return
 
 
+def relation_is_absent(exc: BaseException) -> bool:
+    """Whether ``exc`` means the relation is missing, not that the probe itself failed.
+
+    Catalog helpers treat a missing table as an empty description. Any other
+    error has to surface: swallowing it makes a broken catalog look like no columns.
+    """
+    message = str(exc).casefold()
+    if "table function" in message:
+        return False
+    markers = ("does not exist", "doesn't exist", "not found", "no such table", "undefined table", "unknown table")
+    return any(marker in message for marker in markers)
+
+
 def statement_of(exc: BaseException) -> str | None:
     """The SQL attached to ``exc`` or to the error it was raised from."""
     seen: set[int] = set()

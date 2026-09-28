@@ -7,7 +7,7 @@ from interlace.plan.plan import ChangeType, Plan
 _MARKER = "<!-- interlace-plan -->"
 
 
-def plan_markdown(plan: Plan, environment: str) -> str:
+def plan_markdown(plan: Plan, environment: str) -> str:  # noqa: C901
     """GitHub-flavoured summary of ``plan`` for a PR comment.
 
     Starts with ``<!-- interlace-plan -->`` so the Action can replace an earlier

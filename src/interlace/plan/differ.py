@@ -111,7 +111,7 @@ def _positional_hazard(ast: exp.Select) -> bool:
     return any(isinstance(e, exp.Literal) for e in ordinals)
 
 
-def _direct_impact(
+def _direct_impact(  # noqa: C901
     previous_sql: str | None, ast: exp.Expr | None
 ) -> tuple[tuple[str, ...] | None, frozenset[str] | None]:
     """Prove what a direct change did to the model's output: ``(added, touched)``.
@@ -190,7 +190,7 @@ def _selects_star(ast: exp.Expr | None) -> bool:
     return False
 
 
-def _consumed_columns(ast: exp.Expr | None, dependency: str) -> frozenset[str] | None:
+def _consumed_columns(ast: exp.Expr | None, dependency: str) -> frozenset[str] | None:  # noqa: C901
     """The folded columns of ``dependency`` that ``ast`` provably reads, or None
     when attribution is impossible (Python models, ``*`` / COLUMNS projections,
     NATURAL joins, unqualified references in a multi-source query) — None means
@@ -310,7 +310,7 @@ def expand_to_changed_ancestors(compiled: CompiledProject, selected: set[str], c
     return expanded
 
 
-async def diff(
+async def diff(  # noqa: C901
     compiled: CompiledProject,
     environment: str,
     state: StateStore,

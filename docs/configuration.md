@@ -89,6 +89,11 @@ list names and types with those secret values redacted.
 reject a model that reads one. `${date}`, `${datetime}`, and `${workspace}` expand
 in `path` the same way as a file materialisation. `connection` is an `http`
 connection (sent as an httpfs secret) or the name of an engine `secrets:` entry.
+`watch: true` hashes the local file bytes into the fingerprint of every model
+that reads the input, so editing the file is a plan change. A remote path or a
+pattern that matches nothing fails at compile. This is separate from
+`schedule: {watch:}`, which only re-runs a model when a glob's path, size, or
+mtime changes.
 
 ```yaml
 inputs:

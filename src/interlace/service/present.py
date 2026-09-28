@@ -29,8 +29,9 @@ from interlace.streaming.materializer import (
 # The project is compiled once at startup, then recompiled on demand when a model
 # file changes on disk — so editing a `.sql`/`.py` model and pressing Plan/Apply in
 # the UI reflects the edit, matching what `interlace plan` (a fresh process) shows.
-# Only the model graph is re-derived; changing engine/stream/path topology in
-# interlace.yaml still needs a daemon restart.
+# Engines, connections, inputs, CDC, and the warehouse stay as opened. A change
+# to those in interlace.yaml fails the next plan, apply, or scheduler tick until
+# the process restarts. Reverting the file clears that refusal.
 
 
 def _event_progress(state: State, extra: dict[str, Any]) -> tuple[ProgressCallback, Callable[[], Awaitable[None]]]:

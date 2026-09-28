@@ -127,6 +127,8 @@ class Project:
 
     def _compile(self, models: list[ModelDef]) -> CompiledProject:
         engine_cfgs = self.config.engine_configs()
+        from interlace.inputs import reject_inputs_on_other_engines, watched_input_hashes
+
         compiled = compile_models(
             models,
             default_dialect=self.config.default_dialect,
@@ -135,8 +137,8 @@ class Project:
             known_engines=set(engine_cfgs),
             checks=self.checks,
             macros=self.macros,
+            input_hashes=watched_input_hashes(self.root, self.config.inputs, workspace=self.root.name),
         )
-        from interlace.inputs import reject_inputs_on_other_engines
 
         reject_inputs_on_other_engines(
             compiled, self.config.inputs, {name: cfg.type for name, cfg in engine_cfgs.items()}
@@ -194,7 +196,7 @@ class Project:
                 uris[name] = database  # DuckDB's postgres extension attaches DSNs/URIs
         return uris
 
-    def _open_engine_config(self, name: str, cfg: EngineConfig) -> EngineAdapter:
+    def _open_engine_config(self, name: str, cfg: EngineConfig) -> EngineAdapter:  # noqa: C901
         """Open a single engine from its config (duckdb / ducklake / quack / postgres)."""
         self._reject_unresolved_env(cfg)
         if cfg.type in ("postgres", "redshift", "snowflake", "bigquery"):

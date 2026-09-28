@@ -39,7 +39,7 @@ def widens(current: str, incoming: str) -> bool:
     )
 
 
-def column_drift(
+def column_drift(  # noqa: C901
     model: str,
     target: str,
     policy: str,

@@ -391,7 +391,7 @@ def _tool_map() -> dict[str, tuple[str, dict[str, Any], Tool]]:
     return {name: (description, schema, fn) for name, description, schema, fn in _TOOLS}
 
 
-def handle(path: Path, message: dict[str, Any]) -> dict[str, Any] | None:
+def handle(path: Path, message: dict[str, Any]) -> dict[str, Any] | None:  # noqa: C901
     """Answer one JSON-RPC message. Notifications return None (no response)."""
     method = str(message.get("method") or "")
     msg_id = message.get("id")

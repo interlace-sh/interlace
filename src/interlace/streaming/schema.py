@@ -105,7 +105,7 @@ def sql_columns(stream: StreamDef) -> list[tuple[str, str]]:
     return [*columns, ("_offset", "BIGINT"), ("_ingested_at", "TIMESTAMP")]
 
 
-def _row_error(stream: StreamDef, row: Any, *, allow_unknown: bool) -> str | None:
+def _row_error(stream: StreamDef, row: Any, *, allow_unknown: bool) -> str | None:  # noqa: C901
     """The first validation problem in ``row``, or None if it conforms."""
     declared = stream.schema
     if not isinstance(row, dict):

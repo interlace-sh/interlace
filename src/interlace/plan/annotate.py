@@ -16,7 +16,7 @@ from interlace.plan.plan import Plan
 from interlace.sinks import target_ref
 
 
-async def annotate_plan(plan: Plan, compiled: CompiledProject, registry: EngineRegistry) -> None:
+async def annotate_plan(plan: Plan, compiled: CompiledProject, registry: EngineRegistry) -> None:  # noqa: C901
     """Rewrite physical actions with the engine's real caps, and report external drift."""
     if plan.annotated:
         return

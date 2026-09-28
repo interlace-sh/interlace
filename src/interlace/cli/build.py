@@ -311,7 +311,7 @@ async def _table_diff(
         engines.close()
 
 
-async def _apply(
+async def _apply(  # noqa: C901
     environment: str,
     path: Path,
     select: list[str],
@@ -420,7 +420,7 @@ def restate(
     asyncio.run(_execute(environment, path, select, start, end, restate=True, parallelism=parallelism))
 
 
-async def _execute(
+async def _execute(  # noqa: C901
     environment: str,
     path: Path,
     select: list[str],

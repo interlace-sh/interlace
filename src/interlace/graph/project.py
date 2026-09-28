@@ -13,6 +13,7 @@ from __future__ import annotations
 import inspect
 import textwrap
 from collections.abc import Iterable, Mapping
+from typing import Any
 from dataclasses import dataclass, field
 
 from sqlglot import exp
@@ -153,7 +154,7 @@ def _fingerprint_query(model: ModelDef, ast: exp.Query | None) -> str | exp.Quer
     raise DefinitionError(f"model {model.name!r} has neither SQL nor a function body")
 
 
-def compile_models(
+def compile_models(  # noqa: C901
     models: Iterable[ModelDef],
     *,
     default_dialect: str = "duckdb",
@@ -163,6 +164,7 @@ def compile_models(
     catalog: str | None = None,
     checks: Iterable[CheckDef] = (),
     macros: Mapping[str, Macro] | None = None,
+    input_hashes: Mapping[str, str] | None = None,
 ) -> CompiledProject:
     """Compile models into a fingerprinted, topologically-ordered project.
 
@@ -170,6 +172,8 @@ def compile_models(
     ``engine_dialects`` maps engine name → sqlglot dialect (used when a model
     omits ``dialect``). ``known_engines`` validates model ``engine`` pins.
     ``macros`` are expanded into every model's AST before it is fingerprinted.
+    ``input_hashes`` are content digests of watched inputs; a model that reads
+    one folds those digests into its fingerprint.
     """
     definitions = {m.name: m for m in models}
     names = set(definitions)
@@ -223,7 +227,7 @@ def compile_models(
                     f"{compiled[dep].engine!r}; an ephemeral model must share its consumers' engine "
                     f"(see docs/architecture/MULTI_ENGINE.md)"
                 )
-        strategy_config = {
+        strategy_config: dict[str, Any] = {
             "materialise": definition.materialise,
             "strategy": definition.strategy,
             "key": list(definition.key),
@@ -240,6 +244,12 @@ def compile_models(
             "environments": sorted(definition.environments),
             "dialect": dialect,
         }
+        if input_hashes and ast is not None:
+            from interlace.inputs import referenced_inputs
+
+            watched = {name: input_hashes[name] for name in referenced_inputs(ast, set(input_hashes))}
+            if watched:
+                strategy_config["inputs"] = watched
         query = _fingerprint_query(definition, ast)
         # render the canonical SQL once: it feeds both fingerprints and definition_sql
         canonical = canonical_sql(query) if isinstance(query, exp.Expr) else query

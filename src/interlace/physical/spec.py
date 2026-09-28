@@ -179,7 +179,7 @@ def parse_constraints(value: Any, model: str) -> tuple[ConstraintSpec, ...]:
     return tuple(entry if isinstance(entry, ConstraintSpec) else _parse_constraint(entry, model) for entry in value)
 
 
-def _parse_constraint(entry: Any, model: str) -> ConstraintSpec:
+def _parse_constraint(entry: Any, model: str) -> ConstraintSpec:  # noqa: C901
     if not isinstance(entry, dict) or not entry:
         raise DefinitionError(f"invalid constraint entry on {model!r}: {entry!r}")
     if "type" in entry:

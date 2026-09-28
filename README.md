@@ -42,12 +42,11 @@ pip install 'interlaced[service]'   # the CLI + daemon; core CLI only: pip insta
 # more extras: [adbc] postgres/redshift · [spark] · [polars] · [all]
 ```
 
-> **Platforms.** Developed on Linux; CI runs Linux only. Nothing in the codebase is
-> platform-specific — no `fork`, no signal handling, no POSIX-only calls, no shelling out — and
-> every dependency ships macOS and Windows wheels, so both are expected to work. But
-> **neither is tested**, so treat them as unverified rather than supported. If you run interlace
-> on macOS or Windows, please open an issue either way; that is the fastest route to changing
-> this paragraph.
+> **Platforms.** Developed on Linux. CI runs the full suite on Linux, and a macOS job runs
+> `interlace init` plus `apply` on the quickstart. Nothing in the codebase is platform-specific —
+> no `fork`, no signal handling, no POSIX-only calls, no shelling out — and every dependency
+> ships macOS and Windows wheels. Windows is still unverified. If you run interlace on Windows,
+> please open an issue either way; that is the fastest route to changing this paragraph.
 
 ## Sixty seconds
 

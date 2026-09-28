@@ -11,13 +11,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from interlace.dsl.decorators import StreamDef
 from interlace.dsl.dynamic import DYNAMIC_ROOT
+from interlace.exceptions import ConfigurationError
 from interlace.graph.column_lineage import column_lineage
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.worker import drain
@@ -50,6 +51,64 @@ def source_mtime(root: Path, model_paths: list[str]) -> float:
     return latest
 
 
+_RUNTIME_FIELDS = (
+    "engines",
+    "connections",
+    "cdc",
+    "inputs",
+    "database",
+    "attach",
+    "secrets",
+    "data_path",
+    "metadata_schema",
+    "alias",
+    "quack_token",
+    "default_engine",
+)
+_WAREHOUSE_FIELDS = (
+    "database",
+    "attach",
+    "secrets",
+    "data_path",
+    "metadata_schema",
+    "alias",
+    "quack_token",
+    "default_engine",
+)
+
+
+def runtime_parts(config: Any) -> dict[str, Any]:
+    """The config a running process opened and cannot swap underneath itself."""
+    dumped = config.model_dump(mode="json")
+    return {key: dumped[key] for key in _RUNTIME_FIELDS}
+
+
+def remember_runtime(state: Any, config: Any) -> None:
+    """Record the runtime config this process opened. Later drift refuses to apply."""
+    state.runtime_opened = runtime_parts(config)
+    state.restart_required = None
+
+
+def runtime_restart_reason(opened: Mapping[str, Any], current: Mapping[str, Any]) -> str | None:
+    """Why this process must be restarted, or None when the opened config still matches."""
+    changed: list[str] = []
+    for key in ("engines", "connections", "cdc", "inputs"):
+        if opened.get(key) != current.get(key):
+            changed.append(key)
+    if any(opened.get(key) != current.get(key) for key in _WAREHOUSE_FIELDS):
+        changed.append("warehouse")
+    if not changed:
+        return None
+    return f"{', '.join(changed)} changed in interlace.yaml; restart this process to pick that up"
+
+
+def _note_restart(state: Any, message: str) -> None:
+    state.restart_required = message
+    if getattr(state, "restart_logged", None) != message:
+        logger.error("%s", message)
+        state.restart_logged = message
+
+
 def publish_compiled(state: Any, compiled: Any) -> None:
     """Swap the live graph. Lineage and the stream-consumer map follow it."""
     state.compiled = compiled
@@ -59,7 +118,13 @@ def publish_compiled(state: Any, compiled: Any) -> None:
 
 
 async def reload_if_stale(state: Any) -> None:
-    """Recompile when a model source is newer than the graph this process holds."""
+    """Recompile when a model source is newer than the graph this process holds.
+
+    Model files are picked up. Engines, connections, inputs, CDC, and the
+    warehouse were opened with this process and are not swapped in place: a
+    change there raises until the process restarts. Reverting the file clears
+    the refusal.
+    """
     from interlace.project import Project
 
     async with state.reload_lock:
@@ -67,10 +132,19 @@ async def reload_if_stale(state: Any) -> None:
         if mtime <= state.source_mtime:
             return
         project = await asyncio.to_thread(Project.load, state.root)
+        opened = getattr(state, "runtime_opened", None)
+        if opened is not None:
+            reason = runtime_restart_reason(opened, runtime_parts(project.config))
+            if reason:
+                _note_restart(state, reason)
+                raise ConfigurationError(reason)
+            state.restart_required = None
         compiled = await asyncio.to_thread(project.compile)
         state.project = project
         publish_compiled(state, compiled)
         state.source_mtime = mtime
+        state.connections = project.config.connections
+        state.cdc = project.config.cdc
 
 
 async def enqueue_stream_consumers(state: Any, stream: StreamDef) -> None:
@@ -165,6 +239,10 @@ async def scheduler_loop(
             if state.streams:
                 state.flush_wanted.set()
                 await sweep_streams(state.streams.values(), state.stream_log, state.engine)
+        except ConfigurationError as exc:
+            _note_restart(state, exc.message)
+            if once:
+                raise
         except Exception:
             logger.exception("scheduler tick failed; retrying next interval")
         if on_ran is not None and ran:

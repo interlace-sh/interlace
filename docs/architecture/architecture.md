@@ -70,7 +70,7 @@ class EngineAdapter(ABC):
     async def describe(self, table) -> dict[str, str]: ...
 
     def transpile(self, ast) -> str:
-        return ast.sql(dialect=self.dialect)  # canonical AST → engine SQL, one line
+        return render_sql(ast, self.dialect)  # canonical AST → engine SQL
 ```
 
 `EngineCaps` carries the flags strategies and delivery branch on. The three that
@@ -99,11 +99,13 @@ class Snapshot:
 SQL models fingerprint over their canonical (normalised, comment-free) AST plus their
 strategy config plus their upstreams' fingerprints. **Python models fingerprint over
 their dedented function source** (`textwrap.dedent(inspect.getsource(fn))`) plus the
-same strategy config and upstreams. This is honest about Python's opacity at the
-source level; it does **not** hash closure state or bytecode, so a change that only
-mutates a captured constant will not be detected — keep model logic in the function
-body. (A `volatility`/`--forward-only` escape hatch for pure refactors is a possible
-future refinement, not a current feature.)
+same strategy config and upstreams. A literal written in the signature is already in
+that source. A factory default (`tenant=tenant`) and every closure cell are hashed
+too, so two models generated from one function body get different fingerprints and
+editing the captured value replans. Plain data is hashed in full; a client or other
+object is hashed by type only, because its `repr` can contain a memory address.
+Bytecode is not hashed. (A `volatility`/`--forward-only` escape hatch for pure
+refactors is a possible future refinement, not a current feature.)
 
 ### 2.4 `Plan` — terraform-style change preview
 
@@ -235,10 +237,11 @@ Transfer execution picks the cheapest mechanism:
 2. Otherwise → **ADBC**: `source.fetch()` → `pa.RecordBatchReader` → `target.load()`.
 
 Contract: `docs/architecture/MULTI_ENGINE.md`. Cloud-warehouse adapters (Redshift,
-Snowflake, BigQuery, MotherDuck) **ship as alpha** — wired and dialect-correct via the
-`fetch/load` / ADBC contract, but not yet run against a live account (§14). Promoting
-them out of alpha is the remaining multi-engine validation work; Arrow Flight can still
-land on the same contract later without a redesign.
+Snowflake, BigQuery, MotherDuck) **ship as alpha**. Snowflake has been exercised
+against one account (not in CI). Redshift, BigQuery, and MotherDuck are wired and
+dialect-correct via the `fetch/load` / ADBC contract, and have not run against a
+live account (§14). Promoting any of them out of alpha is still validation work;
+Arrow Flight can still land on the same contract later without a redesign.
 
 ---
 
@@ -257,8 +260,10 @@ land on the same contract later without a redesign.
   before fingerprint, lineage, and transpile — one definition, every engine. The SQL
   header is a YAML block comment namespaced under `interlace:` — valid SQL, no Jinja,
   no text substitution. Path tokens (`${date}` / `${datetime}` / `${workspace}`) expand
-  in `inputs:` and file materialisation paths. A typed `{{ }}` / `@vars` layer for
-  model SQL is *not* implemented (§14).
+  in `inputs:` and file materialisation paths. Typed project vars live under `vars:`
+  and a SQL model reads one with `var('name')`. That call is an AST node, replaced
+  with a typed literal before fingerprint, lineage, and transpile — not a `{{ }}`
+  text splice. `@name` is not the syntax: DuckDB already uses `@` for absolute value.
 - **`ref()` as text macro: rejected.** References resolve at the AST level during
   qualification — which is what makes lineage parseable.
 
@@ -702,7 +707,7 @@ worker host).
 ```
 src/interlace/
   dsl/         # @model @stream @check; SQL loader; discovery; dynamic register_model
-  ir/          # Relation types; canonicalisation; fingerprints; macros; Arrow schema
+  ir/          # Relation types; canonicalisation; fingerprints; macros; vars; Arrow schema
   graph/       # dag (toposort, stdlib), column_lineage, selectors
   state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc, reset)
   plan/        # differ, plan, apply (schedule + promote), backfill, delivery, fit, transfer,
@@ -788,15 +793,15 @@ webhook schedules, Postgres CDC, named `connections:` / `inputs:` (including
 stream SSE consumers, event-log NDJSON, `interlace diff` (env/table compare),
 GitHub Action plan comment, daemon refusal when engines / connections / inputs /
 cdc / warehouse change under `serve`, stream publish and flush regression ceilings,
-macOS `init`+`apply` smoke in CI.
+macOS `init`+`apply` smoke in CI, typed `vars:` read from SQL with `var('name')`,
+Python fingerprints that include factory defaults and closure cells.
 
 ### Next
 
-- **Typed `@vars` for model SQL** — path tokens (`${date}` / `${datetime}` /
-  `${workspace}`) exist; lintable AST-resolved vars inside SQL do not (§5).
-- **Live-validate MotherDuck**, then one of Snowflake / BigQuery. Adapters are wired
-  and dialect-correct but have not run against a live account (§4). That validation
-  needs a named account; it is not something the tree can close on its own.
+- **Live-validate MotherDuck and BigQuery.** Adapters are wired and dialect-correct
+  but have not run against a live account (§4). Snowflake has been exercised against
+  one account, outside CI. That validation needs a named account; it is not something
+  the tree can close on its own.
 
 ### Later
 
@@ -866,9 +871,9 @@ instead of eager DataFrames); dbt `state:modified` (fingerprints in the state st
 artifact diffing); dbt tests (typed checks + `@check`, gating promotion). Reject: the
 Jinja/macro layer and `ref()`-as-text (Python is the macro language; references resolve
 at the AST level), the external orchestrator (built-in durable work queue), and pandas as
-interchange (Arrow only). Build (neither has it): durable streaming ingestion. *(The
-"typed `@vars`" and first-class streaming models that this scorecard originally cited as
-differentiators are design intent, not shipped — see §14.)*
+interchange (Arrow only). Build (neither has it): durable streaming ingestion. *(Typed
+`vars:` shipped. First-class streaming models, the other differentiator this
+scorecard originally cited, are still design intent — see §14.)*
 
 **What ported from v0.2.1** (concepts, not code): the `@model`/`@stream`/`@check`
 decorator DX; unified Python+SQL models; YAML config with env interpolation; the checks

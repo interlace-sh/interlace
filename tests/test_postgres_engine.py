@@ -224,3 +224,101 @@ async def test_cross_engine_transfer_duckdb_to_postgres(
     assert result.transfers == ["seed: default -> pg (interlace__xfer.seed, arrow)"]
     reader = await registry.get("pg").fetch_sql(f'SELECT n FROM "dev_{marker}__main".agg')
     assert reader.read_all().to_pylist() == [{"n": 3}]
+
+
+@requires_pg
+@pytest.mark.requires_db
+async def test_duckdb_sql_runs_in_postgres(pg_env: tuple[EngineRegistry, SqliteStateStore, str]) -> None:
+    """round, generate_series, a computed interval, range(), and hash()."""
+    registry, store, marker = pg_env
+    env_name = f"dev_{marker}"
+    models = [
+        ModelDef(
+            name="days",
+            sql=(
+                "SELECT count(*) AS n FROM ("
+                "SELECT cast(unnest(generate_series(date '2020-01-01', date '2020-01-03', interval 1 day)) as date)"
+                " AS day) s"
+            ),
+            engine="pg",
+        ),
+        ModelDef(
+            name="revenue",
+            sql="SELECT round(sum(amount), 2) AS revenue FROM (VALUES (1.25), (2.25)) AS t(amount)",
+            engine="pg",
+        ),
+        ModelDef(
+            name="events",
+            sql=(
+                "SELECT (hash(r) % 4) AS bucket, "
+                "TIMESTAMP '2026-06-01 00:00:00' + INTERVAL (r) SECOND AS ts "
+                "FROM range(3) AS t(r)"
+            ),
+            engine="pg",
+        ),
+    ]
+    await apply(await diff(_compile(models), env_name, store), compiled=_compile(models), engines=registry, state=store)
+    pg = registry.get("pg")
+    days = await pg.fetch_sql(f'SELECT n FROM "{env_name}__main".days')
+    assert days.read_all().to_pylist() == [{"n": 3}]
+    revenue = await pg.fetch_sql(f'SELECT revenue FROM "{env_name}__main".revenue')
+    assert float(revenue.read_all().to_pylist()[0]["revenue"]) == 3.5
+    events = await pg.fetch_sql(f'SELECT bucket, ts FROM "{env_name}__main".events ORDER BY ts')
+    rows = events.read_all().to_pylist()
+    assert len(rows) == 3
+    assert all(0 <= row["bucket"] < 4 for row in rows)
+
+
+@requires_pg
+@pytest.mark.requires_db
+async def test_csv_seed_and_reverse_etl_from_postgres(
+    pg_env: tuple[EngineRegistry, SqliteStateStore, str], tmp_path: Path
+) -> None:
+    """A read_csv_auto seed loads through DuckDB; the terminal table lands in the attached file."""
+    import duckdb
+
+    registry, store, marker = pg_env
+    env_name = f"dev_{marker}"
+    seeds = tmp_path / "seeds"
+    seeds.mkdir()
+    (seeds / "raw.csv").write_text("id,name\n1,ada\n2,grace\n")
+    registry.sinks["ext"] = str(tmp_path / "ext.duckdb")
+    models = [
+        ModelDef(name="raw", sql="SELECT * FROM read_csv_auto('seeds/raw.csv')", engine="pg"),
+        ModelDef(
+            name="push",
+            sql="SELECT id, name FROM raw",
+            engine="pg",
+            materialise="table",
+            target="ext.main.contacts",
+            strategy="append",
+            environments=(env_name,),
+        ),
+        ModelDef(
+            name="exported",
+            sql="SELECT id, name FROM raw",
+            engine="pg",
+            materialise="file",
+            format="csv",
+            path="out/contacts.csv",
+            environments=(env_name,),
+        ),
+    ]
+    compiled = _compile(models)
+    await apply(
+        await diff(compiled, env_name, store),
+        compiled=compiled,
+        engines=registry,
+        state=store,
+        base_path=tmp_path,
+    )
+    listed = (tmp_path / "out" / "contacts.csv").read_text().strip().splitlines()
+    assert listed[0] == "id,name"
+    assert sorted(listed[1:]) == ["1,ada", "2,grace"]
+
+    external = duckdb.connect(str(tmp_path / "ext.duckdb"))
+    try:
+        got = external.execute("SELECT id, name FROM contacts ORDER BY id").fetchall()
+    finally:
+        external.close()
+    assert got == [(1, "ada"), (2, "grace")]

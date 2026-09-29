@@ -40,9 +40,16 @@ def target_table(stream: StreamDef) -> TableRef:
     return TableRef(schema=_SCHEMA, name=stream.name)
 
 
+# Bare words an engine rejects even when another dialect would fold them. Quoted so
+# the CREATE parses; ordinary names stay unquoted so Snowflake's uppercase fold and
+# DuckDB's lowercase fold agree with the model's unquoted SQL.
+_FORCE_QUOTE = frozenset({"at", "user", "order", "group", "select", "from", "where", "table", "values", "by"})
+
+
 def _ident(name: str) -> exp.Expression:
-    """Quote every name. Stream columns are caller-chosen and include reserved words (`at`)."""
-    return exp.to_identifier(name, quoted=True)
+    """An identifier in a stream table. Reserved words are quoted; the rest fold."""
+    plain = name.replace("_", "a")
+    return exp.to_identifier(name, quoted=name.casefold() in _FORCE_QUOTE or not plain.isidentifier())
 
 
 def _column_def(name: str, sql_type: str, *, exists: bool = False) -> exp.ColumnDef:

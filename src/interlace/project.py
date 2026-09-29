@@ -138,6 +138,7 @@ class Project:
             checks=self.checks,
             macros=self.macros,
             input_hashes=watched_input_hashes(self.root, self.config.inputs, workspace=self.root.name),
+            variables=self.config.vars,
         )
 
         reject_inputs_on_other_engines(
@@ -174,6 +175,7 @@ class Project:
             opener,
             default=self.config.default_engine,
             attach_uris=self._attachable_uris(configs),
+            sinks=self._sink_uris(configs),
         )
 
     def _attachable_uris(self, configs: dict[str, EngineConfig]) -> dict[str, str]:
@@ -271,13 +273,27 @@ class Project:
             engine._refresh_inputs = refresh
             refresh()
         for alias, uri in cfg.attach.items():
-            target = uri
-            if uri.startswith(("postgres:", "postgres://", "postgresql://")):
-                _require_explicit_pg_host(uri, f"attach {alias!r}")
-            elif "://" not in uri and ":" not in uri.split("/")[0] and not Path(uri).is_absolute():
-                target = str(self.root / uri)
-            engine.attach(alias, target)
+            engine.attach(alias, self._resolve_attach_uri(uri, context=f"attach {alias!r}"))
         return engine
+
+    def _sink_uris(self, configs: dict[str, EngineConfig]) -> dict[str, str]:
+        """Reverse-ETL targets: project ``attach:`` plus each engine's own map.
+
+        An explicit ``engines.default`` does not drop the project-level map.
+        Paths are resolved here so delivery can open the file without the project.
+        """
+        raw = dict(self.config.attach)
+        for cfg in configs.values():
+            raw.update(cfg.attach)
+        return {alias: self._resolve_attach_uri(uri, context=f"attach {alias!r}") for alias, uri in raw.items()}
+
+    def _resolve_attach_uri(self, uri: str, *, context: str) -> str:
+        if uri.startswith(("postgres:", "postgres://", "postgresql://")):
+            _require_explicit_pg_host(uri, context)
+            return uri
+        if "://" not in uri and ":" not in uri.split("/")[0] and not Path(uri).is_absolute():
+            return str((self.root / uri).resolve())
+        return uri
 
     def _open_adbc_engine(self, name: str, cfg: EngineConfig) -> EngineAdapter:
         """Open a remote ADBC engine (postgres / redshift / snowflake / bigquery) from its DSN.
@@ -338,8 +354,11 @@ class Project:
             resolved_data.mkdir(parents=True, exist_ok=True)
             data_path = str(resolved_data)
         extensions = ["ducklake"]
-        if database.removeprefix("ducklake:").startswith("postgres:"):
+        catalog = database.removeprefix("ducklake:")
+        if catalog.startswith("postgres:"):
             extensions.append("postgres")
+        elif catalog.startswith("mysql:"):
+            extensions.append("mysql")
         if (data_path or "").startswith(("s3://", "gcs://", "r2://")) or any(
             s.type == "s3" for s in cfg.secrets.values()
         ):

@@ -6,9 +6,10 @@ one engine; the strategy AST is transpiled to that engine's dialect at execution
 ## Types
 
 The DuckDB family and Postgres are fully tested. Spark is tested against a local Spark+Delta
-session (with a strategy caveat, below). The cloud warehouses are **alpha** — wired and
-dialect-correct, but not yet exercised against a live account (there's no local target to test
-them on), so treat them as ready-to-try, not production-blessed.
+session (with a strategy caveat, below). The cloud warehouses are **alpha**. Snowflake has
+been exercised against one account and is not in CI. MotherDuck, Redshift, and BigQuery are
+wired and dialect-correct, but have not run against a live account, so treat them as
+ready-to-try, not production-blessed.
 
 | `type` | Backed by | Status | Role |
 |---|---|---|---|
@@ -19,7 +20,7 @@ them on), so treat them as ready-to-try, not production-blessed.
 | `postgres` | Postgres over ADBC | stable | Strategies execute *inside* Postgres; Arrow in/out via `adbc_ingest`. Needs the `adbc` extra. |
 | `spark` | a PySpark `SparkSession` (local or Spark Connect) | beta | SQL runs in Spark; Arrow via `toArrow`/`createDataFrame` (no ADBC). Mutations need a Delta/Iceberg catalog. Needs the `spark` extra. **`scd`/`full_merge` unsupported** (below). |
 | `redshift` | Redshift over the Postgres ADBC driver (PG wire) | alpha | Reuses the Postgres transport; Redshift dialect + a native `MERGE`. Needs the `adbc` extra. |
-| `snowflake` | Snowflake over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-snowflake` extra. |
+| `snowflake` | Snowflake over ADBC | alpha | Full strategy set (incl. `scd`). Exercised against one account, not in CI. Needs the `adbc-snowflake` extra. |
 | `bigquery` | BigQuery over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-bigquery` extra. |
 
 The default warehouse is a plain DuckDB file (`.interlace/warehouse.duckdb`) — simplest to
@@ -115,8 +116,26 @@ Streams always live on the default warehouse engine.
 ## Reverse-ETL targets
 
 External databases are wired in with `attach: {alias: uri}`. A terminal model
-(`materialise: table, target: alias.schema.table, ...`) then delivers into that attached
-database (Postgres, SQLite, another DuckDB) — see [streaming § reverse ETL](streaming.md#reverse-etl-terminal-table--file).
+(`materialise: table, target: alias.schema.table, ...`) then delivers into that
+database — see [streaming § reverse ETL](streaming.md#reverse-etl-terminal-table--file).
+A DuckDB warehouse `ATTACH`es the URI and writes it in SQL. A warehouse that cannot
+`ATTACH` (Postgres, and the other remote engines) fetches the model as Arrow and
+applies the same strategy inside that database, so `attach: {ext: external.duckdb}`
+still lands in the DuckDB file. `materialise: file` on those engines is written
+from Arrow on the host; DuckDB keeps `COPY`.
+
+## Author dialect on Postgres and Redshift
+
+Models stay DuckDB SQL. Rendering to Postgres or Redshift fixes the forms sqlglot
+would otherwise emit as illegal SQL: `round(x, n)` casts `x` to `DECIMAL` and the
+result back to `DOUBLE` (Postgres has no `round(double precision, integer)`, and an
+unconstrained `NUMERIC` reaches Python as an opaque string); `unnest(generate_series(...))` becomes
+the set-returning `generate_series` (and DuckDB `range(n)` becomes the same series);
+a computed `INTERVAL <expr> <unit>` multiplies `INTERVAL '1' <unit>` instead of
+dropping `<expr>`. DuckDB `hash()` becomes a non-negative `hashtextextended` on
+Postgres only — a different function, so bucket values will not match DuckDB.
+`read_csv_auto` and the other local file scans run in a short-lived DuckDB and
+are loaded into the warehouse.
 
 ## Spark
 

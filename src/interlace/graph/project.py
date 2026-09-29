@@ -11,10 +11,9 @@ and build the snapshots it persists.
 from __future__ import annotations
 
 import inspect
-import textwrap
 from collections.abc import Iterable, Mapping
-from typing import Any
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlglot import exp
 
@@ -23,9 +22,16 @@ from interlace.dsl.decorators import CheckDef, ModelDef, ModelFn
 from interlace.exceptions import CompilationError, DefinitionError
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import as_query, parse, table_references
-from interlace.ir.fingerprint import canonical_sql, data_fingerprint, metadata_fingerprint, physical_fingerprint
+from interlace.ir.fingerprint import (
+    canonical_sql,
+    data_fingerprint,
+    metadata_fingerprint,
+    physical_fingerprint,
+    python_source,
+)
 from interlace.ir.macros import Macro, expand_macros
 from interlace.ir.relation import TableRef
+from interlace.ir.vars import TypedVar, expand_vars
 from interlace.physical.spec import ConstraintSpec, IndexSpec, SchemaPolicy, physical_payload
 
 # Snapshot tables live in `interlace__<logical schema>` — exclusively owned, never a
@@ -103,7 +109,11 @@ def _physical_table(name: str, fingerprint: str, catalog: str | None) -> TableRe
 
 
 def _resolve_dependencies(
-    model: ModelDef, names: set[str], default_dialect: str, macros: Mapping[str, Macro]
+    model: ModelDef,
+    names: set[str],
+    default_dialect: str,
+    macros: Mapping[str, Macro],
+    variables: Mapping[str, TypedVar],
 ) -> tuple[tuple[str, ...], exp.Query | None, str]:
     dialect = model.dialect or default_dialect
     deps: list[str] = []
@@ -129,6 +139,9 @@ def _resolve_dependencies(
         # here is what makes a macro edit rebuild its callers, and what lets a macro body
         # reference a model and have that count as a dependency.
         ast = as_query(expand_macros(ast, macros, model.name), what=f"model {model.name}")
+        # After macros, so a macro body may call var() and the literal lands in
+        # the fingerprint. An unknown name fails here, before the warehouse sees it.
+        ast = as_query(expand_vars(ast, variables, model.name), what=f"model {model.name}")
         for ref in table_references(ast):
             if ref in names:
                 add(ref)
@@ -150,7 +163,7 @@ def _fingerprint_query(model: ModelDef, ast: exp.Query | None) -> str | exp.Quer
     if ast is not None:
         return ast
     if model.fn is not None:
-        return textwrap.dedent(inspect.getsource(model.fn))
+        return python_source(model.fn)
     raise DefinitionError(f"model {model.name!r} has neither SQL nor a function body")
 
 
@@ -165,6 +178,7 @@ def compile_models(  # noqa: C901
     checks: Iterable[CheckDef] = (),
     macros: Mapping[str, Macro] | None = None,
     input_hashes: Mapping[str, str] | None = None,
+    variables: Mapping[str, TypedVar] | None = None,
 ) -> CompiledProject:
     """Compile models into a fingerprinted, topologically-ordered project.
 
@@ -174,6 +188,7 @@ def compile_models(  # noqa: C901
     ``macros`` are expanded into every model's AST before it is fingerprinted.
     ``input_hashes`` are content digests of watched inputs; a model that reads
     one folds those digests into its fingerprint.
+    ``variables`` replace ``var('name')`` with a typed literal before fingerprinting.
     """
     definitions = {m.name: m for m in models}
     names = set(definitions)
@@ -197,7 +212,9 @@ def compile_models(  # noqa: C901
             )
         # Authoring dialect: explicit model dialect, else the engine's, else project default.
         model_default_dialect = dialects_by_engine.get(engine, default_dialect)
-        deps, ast, dialect = _resolve_dependencies(definition, names, model_default_dialect, macros or {})
+        deps, ast, dialect = _resolve_dependencies(
+            definition, names, model_default_dialect, macros or {}, variables or {}
+        )
         resolved[name] = (deps, ast, dialect, engine)
         graph.add_node(name)
         for dep in deps:

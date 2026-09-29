@@ -42,7 +42,9 @@ GROUP BY c.country
 
 Paths resolve relative to the **project root** (where `interlace.yaml` lives), not the model
 file. `read_parquet`, `read_json_auto` and `read_csv` work the same way, and a glob
-(`read_csv_auto('seeds/*.csv')`) unions matching files.
+(`read_csv_auto('seeds/*.csv')`) unions matching files. On DuckDB the scan runs in the
+warehouse. On any other engine the file is read in a short-lived DuckDB and loaded, so
+the same seed applies on Postgres.
 
 Two consequences worth knowing:
 
@@ -158,6 +160,11 @@ Things to know:
   that replaces the model an earlier run created.
 - **Closure late-binding** — the classic Python trap; bind the loop variable via a factory or
   a default argument (as above), or every generated function filters on the *last* value.
+  That captured value is part of the fingerprint. `tenant=tenant` is not a literal in the
+  source, so `orders_acme` and `orders_globex` plan as different models, and changing the
+  tenant list rebuilds the ones whose value changed. A literal default such as
+  `cursor=None` is already in the source and is not hashed again. A captured client or
+  connection is hashed by type only; keep values that should replan as plain data.
 - **`depends_on` for Python models** — a function's parameters must each be a declared
   dependency (SQL models auto-discover dependencies from their table references; Python models
   don't).
@@ -234,6 +241,32 @@ Details:
 
 `examples/jaffle-shop` uses macros for exactly the two cases dbt's does — a project macro and a
 `dbt_utils` one it has no package to install.
+
+## Vars
+
+A project var is a typed literal, declared in `interlace.yaml` and read from SQL
+with `var('name')`:
+
+```yaml
+vars:
+  region: {type: string, value: eu}
+  minimum: {type: int, value: 3}
+  since: {type: date, value: "2024-01-01"}
+```
+
+```sql
+SELECT * FROM orders
+WHERE region = var('region') AND n >= var('minimum') AND ordered_at >= var('since')
+```
+
+Types are `string`, `int`, `float`, `bool`, `date` (`YYYY-MM-DD`), and `timestamp`
+(ISO-8601). The call is replaced in the AST before the fingerprint, so changing
+`value` replans every model that names it, and naming a var that is not declared
+fails at compile. `var(column)` is an ordinary function call: only a single
+string literal is a lookup. `@name` is not this feature — DuckDB uses `@` for
+absolute value. `${VAR}` in the YAML value is the usual environment substitution,
+applied before the type check. The value is inlined into the model's SQL, so it
+is not a place for a secret.
 
 ## Materialisations
 

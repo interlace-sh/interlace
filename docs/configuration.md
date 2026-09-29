@@ -17,6 +17,7 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 | `engines` | map | `{}` | Named engines `{name: EngineConfig}` for multi-engine projects. The top-level `database`/`data_path`/etc. synthesize the `default` engine. |
 | `model_paths` | list | `["models"]` | Directories scanned for `*.sql` and `@model` `*.py`. |
 | `macro_paths` | list | `["macros"]` | Directories scanned for `CREATE MACRO` definitions, expanded into models at compile time (see [models](models.md#macros)). Missing directories are ignored. |
+| `vars` | map | `{}` | Typed literals SQL models read with `var('name')` (see [models](models.md#vars)). A changed value replans the models that reference it. |
 | `parallelism` | int (≥1) | `4` | Max models built concurrently by `apply`/`run`. |
 | `state_path` | str | `.interlace/state.db` | SQLite control-plane database. |
 | `stream_path` | str | `.interlace/streams.db` | Durable stream log (SQLite WAL). |
@@ -67,6 +68,11 @@ engines:
 attach:
   crm: "postgresql://etl@crm.internal:5432/crm"   # a reverse-ETL (materialise: table) target
 ```
+
+A DuckDB warehouse `ATTACH`es each URI. A warehouse that cannot (Postgres does not
+`ATTACH` a DuckDB file) opens the URI and writes the delivery there. A relative
+path is resolved from the project root. An explicit `engines.default` does not
+drop this map.
 
 `connections:` names sources that are not warehouse engines. A Python model
 resolves one with `interlace.connections.connection` while it is building:

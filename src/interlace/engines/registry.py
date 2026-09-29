@@ -33,6 +33,7 @@ class EngineRegistry(Mapping[str, EngineAdapter]):
         *,
         default: str = "default",
         attach_uris: Mapping[str, str] | None = None,
+        sinks: Mapping[str, str] | None = None,
     ) -> None:
         self._names = frozenset(names)
         self._opener = opener
@@ -41,6 +42,9 @@ class EngineRegistry(Mapping[str, EngineAdapter]):
         # engine name -> URI another DuckDB-family engine could ATTACH (transfer
         # fast lane); absent/None = only reachable through its own adapter.
         self.attach_uris: dict[str, str] = dict(attach_uris or {})
+        # reverse-ETL alias -> database URI. A DuckDB warehouse ATTACHes these.
+        # An engine that cannot ATTACH opens the URI and writes the delivery there.
+        self.sinks: dict[str, str] = dict(sinks or {})
         if default not in self._names:
             raise ConfigurationError(
                 f"default_engine {default!r} is not a configured engine",

@@ -13,6 +13,7 @@ left literal so a missing one surfaces as an obvious ``${VAR}`` in errors.
 
 from __future__ import annotations
 
+import datetime
 import os
 import re
 from pathlib import Path
@@ -157,8 +158,9 @@ class EngineConfig(BaseModel):
     """One named execution engine (warehouse gateway).
 
     DuckDB-family types (``duckdb`` / ``ducklake`` / ``quack``) and ``postgres`` are
-    the tested set. ``spark`` is beta; ``motherduck`` / ``redshift`` / ``snowflake`` /
-    ``bigquery`` are alpha (wired and dialect-correct, not yet live-validated).
+    the tested set. ``spark`` is beta. ``snowflake`` is alpha and has been exercised
+    against one account (not in CI). ``motherduck`` / ``redshift`` / ``bigquery`` are
+    alpha (wired and dialect-correct, not yet live-validated).
     """
 
     type: str = "duckdb"
@@ -182,6 +184,60 @@ class EngineConfig(BaseModel):
         if self.dialect:
             return self.dialect
         return _TYPE_DIALECT.get(self.type, "duckdb")
+
+
+class VarConfig(BaseModel):
+    """A typed value a SQL model reads with ``var('name')``.
+
+    The call is replaced in the AST before fingerprinting, so editing ``value``
+    rebuilds every model that references the name. ``${VAR}`` in the YAML is
+    already expanded by the time this is parsed.
+    """
+
+    type: Literal["string", "int", "float", "bool", "date", "timestamp"]
+    value: str | int | float | bool
+
+    @model_validator(mode="after")
+    def _value_matches_type(self) -> VarConfig:
+        kind = self.type
+        value = self.value
+        if kind == "string":
+            if not isinstance(value, str):
+                raise ValueError("string var value must be a string")
+        elif kind == "int":
+            if type(value) is not int:
+                raise ValueError("int var value must be an integer")
+        elif kind == "float":
+            if type(value) not in (int, float):
+                raise ValueError("float var value must be a number")
+        elif kind == "bool":
+            if type(value) is not bool:
+                raise ValueError("bool var value must be true or false")
+        elif kind == "date":
+            self.value = _as_date(value)
+        else:
+            self.value = _as_timestamp(value)
+        return self
+
+
+def _as_date(value: object) -> str:
+    if isinstance(value, str):
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"date var value must be YYYY-MM-DD, got {value!r}") from exc
+        return value
+    raise ValueError("date var value must be a YYYY-MM-DD string")
+
+
+def _as_timestamp(value: object) -> str:
+    if isinstance(value, str):
+        try:
+            datetime.datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"timestamp var value must be ISO-8601, got {value!r}") from exc
+        return value
+    raise ValueError("timestamp var value must be an ISO-8601 string")
 
 
 class ProjectConfig(BaseModel):
@@ -237,9 +293,19 @@ class ProjectConfig(BaseModel):
     connections: dict[str, ConnectionConfig] = Field(default_factory=dict)
     # External files DuckDB scans as relations models can FROM. Other engines reject them.
     inputs: dict[str, InputConfig] = Field(default_factory=dict)
+    # Typed literals SQL models read with var('name'). Expanded into the AST at
+    # compile time, so a changed value is a plan change for the models that use it.
+    vars: dict[str, VarConfig] = Field(default_factory=dict)
     # Postgres logical replication into a declared @stream. Empty means the daemon
     # does not open a replication connection.
     cdc: dict[str, CdcConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _var_names_are_identifiers(self) -> ProjectConfig:
+        for name in self.vars:
+            if not _ENV_KEY.fullmatch(name):
+                raise ValueError(f"var {name!r} must be an identifier")
+        return self
 
     @model_validator(mode="after")
     def _cdc_uses_postgres(self) -> ProjectConfig:

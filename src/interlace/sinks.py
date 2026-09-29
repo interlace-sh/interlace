@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 
+import pyarrow as pa
 import sqlglot
 from sqlglot import exp
 
@@ -67,6 +69,43 @@ def target_ref(target: str) -> TableRef:
         f"materialise: table target {target!r} must be <alias>.<schema>.<table> "
         f"(or <alias>.<table> for the main schema)"
     )
+
+
+def _csv_cell(value: object) -> str:
+    """A CSV field. Quote only when the text contains a comma, quote, or newline."""
+    if value is None:
+        return ""
+    text = str(value)
+    if any(ch in text for ch in ",\"\r\n"):
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
+def write_arrow_file(fmt: str, table: pa.Table, path: str) -> None:
+    """Write ``table`` to ``path``. Used when the warehouse cannot ``COPY`` to the host.
+
+    CSV includes a header, matching DuckDB's ``COPY ... (FORMAT csv, HEADER)``.
+    JSON is one object per line.
+    """
+    if fmt == "csv":
+        names = table.column_names
+        lines = [",".join(names)]
+        lines.extend(",".join(_csv_cell(row[name]) for name in names) for row in table.to_pylist())
+        Path(path).write_text("\n".join(lines) + "\n")
+        return
+    if fmt == "parquet":
+        import pyarrow.parquet as parquet
+
+        parquet.write_table(table, path)
+        return
+    if fmt == "json":
+        import json
+
+        rows = table.to_pylist()
+        text = "".join(json.dumps(row, default=str) + "\n" for row in rows)
+        Path(path).write_text(text)
+        return
+    raise PlanError(f"unsupported file format: {fmt!r}", details={"format": fmt})
 
 
 def file_statements(fmt: str, query: exp.Expr, resolved_path: str, dialect: str) -> list[exp.Expr]:

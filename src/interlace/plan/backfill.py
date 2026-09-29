@@ -23,14 +23,15 @@ from interlace.exceptions import CheckError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.physical.spec import PhysicalObject
-from interlace.plan.delivery import _deliver_table, _physical_ddl
+from interlace.plan.delivery import _deliver_table, _physical_ddl, open_external_delivery
+from interlace.plan.files import drop_file_stages, stage_file_scans
 from interlace.plan.fit import _align_stage_to_target, _remember
 from interlace.plan.plan import BackfillTask, Plan
 from interlace.plan.resolve import resolve_model_query
 from interlace.plan.result import ApplyResult, _record_build, _record_timing
 from interlace.plan.transfer import _stage_cross_engine_inputs
 from interlace.runtime.python_model import build_python_model, run_python_model
-from interlace.sinks import file_statements, target_ref
+from interlace.sinks import file_statements, write_arrow_file
 from interlace.state.interval import Interval
 from interlace.state.snapshot import Snapshot
 from interlace.state.store import StateStore
@@ -240,6 +241,70 @@ async def _accumulate_interval(state: StateStore, snapshot: Snapshot, interval: 
     return replace(snapshot, intervals=filled.add(interval))
 
 
+async def _deliver_terminal(
+    model: CompiledModel,
+    target_engine: EngineAdapter,
+    resolved: exp.Query,
+    task: BackfillTask,
+    plan: Plan,
+    compiled: CompiledProject,
+    registry: EngineRegistry,
+    state: StateStore,
+    base_path: Path | None,
+    result: ApplyResult,
+    resolution: Mapping[str, TableRef],
+    snapshot: Snapshot,
+    task_started: float,
+) -> None:
+    """Deliver a terminal model: a host file, or a table in an attached database."""
+    if model.materialise == "file":
+        export_path = _resolve_export_path(base_path, model.path or "")
+        Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+        if target_engine.dialect == "duckdb":
+            copied = await target_engine.execute_all(
+                file_statements(model.format or "", resolved, export_path, model.dialect)
+            )
+            inserted = copied[0] if copied else 0
+        else:
+            exported = (await target_engine.fetch(resolved)).read_all()
+            write_arrow_file(model.format or "", exported, export_path)
+            inserted = exported.num_rows
+        result.record_rows(snapshot.name, RowCounts(inserted=inserted))
+        await state.add_snapshot(snapshot)
+        _record_build(result, snapshot.name, task_started)
+        return
+
+    strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
+    interval = task.interval
+    if task.bootstrap:  # incremental first delivery: fill the source's whole range in one window
+        interval = await _bootstrap_window(model, resolved, target_engine)
+    previous_objects = await _external_objects(state, plan.environment, snapshot.name, snapshot.fingerprint)
+    delivery = await open_external_delivery(model, target_engine, resolved, registry.sinks)
+    try:
+        delivered, objects = await _deliver_table(
+            model,
+            delivery.engine,
+            delivery.query,
+            strategy,
+            interval,
+            previous_objects,
+            plan.warnings,
+            destination=delivery.table,
+        )
+        result.record_rows(snapshot.name, delivered)
+        snapshot = replace(snapshot, physical_hash=model.physical_hash, physical_objects=objects)
+        snapshot = await _accumulate_interval(state, snapshot, interval)
+        if model.columns:  # validate the delivered external table against the contract
+            validate_contract(model.name, await delivery.engine.describe(delivery.table), model.columns)
+        await state.add_snapshot(snapshot)
+        await _gate_checks(
+            model, compiled, delivery.engine, state, plan.environment, result, resolution, target=delivery.table
+        )
+        _record_build(result, snapshot.name, task_started)
+    finally:
+        await delivery.close()
+
+
 async def _run_backfill(  # noqa: C901
     task: BackfillTask,
     plan: Plan,
@@ -324,70 +389,53 @@ async def _run_backfill(  # noqa: C901
         return
 
     resolved = resolve_model_query(model, compiled, resolution)
-
-    if model.is_terminal:  # deliver into an external table/file — no snapshot table, no env view
-        if plan.environment not in model.environments:
-            # environment-gated: a dev apply must never fire a side effect at a live
-            # destination. Record the snapshot so the plan settles; deliver nothing.
-            await state.add_snapshot(snapshot)
-            result.gated.append(snapshot.name)
-            _record_timing(result, snapshot.name, task_started)
-            return
-        if model.materialise == "file":  # overwrite a file via COPY
-            export_path = _resolve_export_path(base_path, model.path or "")
-            Path(export_path).parent.mkdir(parents=True, exist_ok=True)
-            copied = await target_engine.execute_all(
-                file_statements(model.format or "", resolved, export_path, model.dialect)
-            )
-            result.record_rows(snapshot.name, RowCounts(inserted=copied[0] if copied else 0))
-        else:  # materialise: table — reverse ETL into an attached database via the strategy
-            strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
-            interval = task.interval
-            if task.bootstrap:  # incremental first delivery: fill the source's whole range in one window
-                interval = await _bootstrap_window(model, resolved, target_engine)
-            previous_objects = await _external_objects(state, plan.environment, snapshot.name, snapshot.fingerprint)
-            delivered, objects = await _deliver_table(
-                model, target_engine, resolved, strategy, interval, previous_objects, plan.warnings
-            )
-            result.record_rows(snapshot.name, delivered)
-            snapshot = replace(snapshot, physical_hash=model.physical_hash, physical_objects=objects)
-            snapshot = await _accumulate_interval(state, snapshot, interval)
-            if model.columns:  # validate the delivered external table against the contract
-                validate_contract(
-                    model.name, await target_engine.describe(target_ref(model.target or "")), model.columns
-                )
+    if model.is_terminal and plan.environment not in model.environments:
+        # environment-gated: a dev apply must never fire a side effect at a live
+        # destination. Record the snapshot so the plan settles; deliver nothing.
         await state.add_snapshot(snapshot)
-        if model.materialise == "table":  # checks run against the delivered external table (gate promotion)
-            await _gate_checks(
-                model,
-                compiled,
-                target_engine,
-                state,
-                plan.environment,
-                result,
-                resolution,
-                target=target_ref(model.target or ""),
-            )
-        _record_build(result, snapshot.name, task_started)
+        result.gated.append(snapshot.name)
+        _record_timing(result, snapshot.name, task_started)
         return
 
-    relation = SqlRelation(ast=resolved)
-    strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
+    resolved, file_stages = await stage_file_scans(target_engine, resolved, base_path or Path.cwd(), model.name)
+    try:
+        if model.is_terminal:  # deliver into an external table/file — no snapshot table, no env view
+            await _deliver_terminal(
+                model,
+                target_engine,
+                resolved,
+                task,
+                plan,
+                compiled,
+                registry,
+                state,
+                base_path,
+                result,
+                resolution,
+                snapshot,
+                task_started,
+            )
+            return
 
-    await target_engine.create_schema(snapshot.physical_table.schema)
-    if task.seed_from is not None:  # forward-only: history moves onto the new table first
-        await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
-    interval = task.interval
-    if task.bootstrap:  # incremental first build: fill the source's whole range in one window
-        interval = await _bootstrap_window(model, resolved, target_engine)
-    columns = await _named_columns(strategy, target_engine, snapshot.physical_table)
-    planned = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, interval, columns)
-    counts = await target_engine.execute_all(planned)
-    result.record_rows(snapshot.name, planned.row_counts(counts))
-    if model.columns:  # validate the built schema against the contract before recording it
-        validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
+        relation = SqlRelation(ast=resolved)
+        strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
 
-    snapshot = await _accumulate_interval(state, snapshot, interval)
-    await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
-    await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-    _record_build(result, snapshot.name, task_started)
+        await target_engine.create_schema(snapshot.physical_table.schema)
+        if task.seed_from is not None:  # forward-only: history moves onto the new table first
+            await _seed_history(target_engine, task.seed_from, snapshot.physical_table)
+        interval = task.interval
+        if task.bootstrap:  # incremental first build: fill the source's whole range in one window
+            interval = await _bootstrap_window(model, resolved, target_engine)
+        columns = await _named_columns(strategy, target_engine, snapshot.physical_table)
+        planned = strategy.plan_statements(relation, snapshot.physical_table, target_engine.caps, interval, columns)
+        counts = await target_engine.execute_all(planned)
+        result.record_rows(snapshot.name, planned.row_counts(counts))
+        if model.columns:  # validate the built schema against the contract before recording it
+            validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
+
+        snapshot = await _accumulate_interval(state, snapshot, interval)
+        await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
+        await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
+        _record_build(result, snapshot.name, task_started)
+    finally:
+        await drop_file_stages(target_engine, file_stages)

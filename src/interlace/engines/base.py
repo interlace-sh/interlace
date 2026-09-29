@@ -176,7 +176,9 @@ class EngineAdapter(ABC):
 
     def transpile(self, ast: exp.Expr) -> str:
         """Canonical AST -> this engine's SQL. The one place dialect leaks back in."""
-        return ast.sql(dialect=self.dialect)
+        from interlace.ir.dialect import render_sql
+
+        return render_sql(ast, self.dialect)
 
     def refresh_inputs(self) -> None:
         """Re-expand input views whose paths contain date tokens.

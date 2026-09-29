@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter
+from interlace.exceptions import PlanError
 from interlace.graph.project import CompiledModel
 from interlace.ir.layout import XFER_SCHEMA
 from interlace.ir.relation import SqlRelation, TableRef, drop
@@ -89,6 +90,94 @@ async def _execute_delivery(
     return planned.row_counts(counts[len(pre) + len(ddl) :]), objects
 
 
+class ExternalDelivery:
+    """Where a terminal table is written, and the query that feeds the strategy.
+
+    ``owned`` is a database opened because the model engine cannot ATTACH the
+    target. ``close`` drops the staged source and closes that connection.
+    """
+
+    def __init__(
+        self,
+        engine: EngineAdapter,
+        query: exp.Query,
+        table: TableRef,
+        *,
+        owned: EngineAdapter | None = None,
+        stage: TableRef | None = None,
+    ) -> None:
+        self.engine = engine
+        self.query = query
+        self.table = table
+        self._owned = owned
+        self._stage = stage
+
+    async def close(self) -> None:
+        if self._owned is None:
+            return
+        try:
+            if self._stage is not None:
+                await self._owned.execute(drop(self._stage.to_expr(), kind="TABLE"))
+        finally:
+            _close_engine(self._owned)
+
+
+def _close_engine(engine: EngineAdapter) -> None:
+    close = getattr(engine, "close", None)
+    if callable(close):
+        close()
+
+
+def open_sink(uri: str) -> EngineAdapter:
+    """Open a reverse-ETL target that the warehouse could not ATTACH."""
+    if uri.startswith(("postgresql://", "postgres://")):
+        from interlace.engines.postgres import PostgresAdapter
+
+        return PostgresAdapter.connect(uri)
+    if uri.startswith("postgres:"):
+        raise PlanError(
+            f"attach URI {uri!r} is DuckDB's postgres ATTACH form. A warehouse that cannot "
+            f"ATTACH needs a postgresql:// URI to open that database itself."
+        )
+    from interlace.engines.duckdb import DuckDBAdapter
+
+    return DuckDBAdapter.connect(uri)
+
+
+async def open_external_delivery(
+    model: CompiledModel,
+    source: EngineAdapter,
+    query: exp.Query,
+    sinks: Mapping[str, str],
+) -> ExternalDelivery:
+    """Point delivery at the attached database, opening it when SQL cannot.
+
+    DuckDB-family engines write ``alias.schema.table`` in one statement. Other
+    engines fetch the model as Arrow and apply the strategy inside the target
+    database, so a Postgres warehouse can still fill ``ext.main.crm_log``.
+    """
+    target = target_ref(model.target or "")
+    if source.caps.supports_attach or not target.catalog:
+        return ExternalDelivery(source, query, target)
+    uri = sinks.get(target.catalog)
+    if uri is None:
+        raise PlanError(
+            f"model {model.name!r} delivers to {model.target}, and its engine cannot ATTACH "
+            f"{target.catalog!r}. Set attach.{target.catalog} to that database."
+        )
+    owned = open_sink(uri)
+    stage = TableRef(schema=XFER_SCHEMA, name=f"{model.name.replace('.', '_')}__src")
+    try:
+        await owned.create_schema(stage.schema)
+        await owned.load(stage, await source.fetch(query), "create")
+    except Exception:
+        _close_engine(owned)
+        raise
+    local = TableRef(schema=target.schema, name=target.name)
+    staged: exp.Query = exp.select("*").from_(stage.to_expr())
+    return ExternalDelivery(owned, staged, local, owned=owned, stage=stage)
+
+
 async def _deliver_table(
     model: CompiledModel,
     engine: EngineAdapter,
@@ -97,6 +186,7 @@ async def _deliver_table(
     interval: Interval | None,
     previous: tuple[PhysicalObject, ...] = (),
     notes: list[str] | None = None,
+    destination: TableRef | None = None,
 ) -> tuple[RowCounts, tuple[PhysicalObject, ...]]:
     """Deliver ``resolved`` into an external table (``materialise: table``) via
     ``strategy`` (replace / append / merge / full_merge / incremental).
@@ -119,7 +209,7 @@ async def _deliver_table(
     matches the source). A later windowed delivery probes ``LIMIT 0`` for column types
     and projects the query — it does not CTAS the whole source once per window. A later
     full delivery stages the source so the strategy reads a frozen copy."""
-    target = target_ref(model.target or "")
+    target = destination or target_ref(model.target or "")
     exists = await engine.table_exists(target)
     if not exists:
         return await _execute_delivery(

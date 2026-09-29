@@ -12,6 +12,24 @@ A change to engines, connections, inputs, CDC, or the warehouse fails the next
 plan, apply, or scheduler tick until the process restarts. Reverting the file
 clears the refusal.
 
+**SQL models can read typed project vars.** `vars.<name>` in `interlace.yaml`
+declares a string, int, float, bool, date, or timestamp. `var('name')` in a
+model is replaced with that literal while the model compiles, so editing the
+value is a plan change. An unknown name fails at compile.
+
+**Postgres runs the DuckDB SQL the examples are written in.** `round(x, n)`
+casts through numeric and back to a float, `unnest(generate_series(...))` and `range(n)` become a
+set-returning series, and a computed `INTERVAL` keeps its expression.
+`hash()` becomes a non-negative `hashtextextended` (a different function).
+Local file scans are read in DuckDB and loaded. Reverse ETL into `attach:`
+opens that database when the warehouse cannot `ATTACH`, and file exports are
+written on the host.
+
+**Python models fingerprint the values they capture.** A factory default
+(`tenant=tenant`) and closure cells are part of the data fingerprint, so one
+function body generated per tenant plans each tenant separately, and a changed
+value rebuilds. A literal written in the signature is already in the source.
+
 ## 2.8.2 (2026-09-27)
 
 **CLI, API, and scheduler share one write and plan path.** Keyed merges,

@@ -189,6 +189,15 @@ class SqliteStateStore:
         requested — stop cooperatively), or "lost" (another worker holds the run)."""
         return await self.queue.renew_lease(run_id, owner=owner, lease_seconds=lease_seconds)
 
+    def renew_lease_sync(self, run_id: int, *, owner: str, lease_seconds: float = 60.0) -> str:
+        """Same verdicts as :meth:`renew_lease`, called off the event loop.
+
+        The run heartbeat uses this so a model that blocks the loop still keeps
+        its lease. The lease is how soon a dead process is reclaimed, not how
+        long a model may run.
+        """
+        return self.queue._renew_lease_sync(run_id, owner, lease_seconds)
+
     async def request_cancel(self, run_id: int) -> str | None:
         """Cancel a run: queued runs cancel immediately; running runs get a
         cooperative flag their worker honours at the next heartbeat. Returns the

@@ -119,6 +119,49 @@ async def test_timeout_bounds_an_attempt(store: SqliteStateStore) -> None:
     engine.close()
 
 
+async def test_a_blocking_model_keeps_its_lease(store: SqliteStateStore) -> None:
+    """The lease is a crash window. A model that blocks the loop past that window
+    still owns the run, because renewal does not run on the loop."""
+    import threading
+    import time
+    from datetime import UTC, datetime
+
+    import pyarrow as pa
+
+    started = threading.Event()
+
+    async def blocking() -> object:
+        started.set()
+        time.sleep(0.8)  # longer than the lease, and it does not yield
+        return pa.table({"x": [1]})
+
+    sampled: list[datetime] = []
+
+    def sample() -> None:
+        assert started.wait(timeout=2)
+        time.sleep(0.45)  # past the original 0.25s lease
+        with store.queue._db.lock:
+            row = store.queue._db.conn.execute("SELECT lease_expires_at FROM work_queue").fetchone()
+        assert row is not None and row["lease_expires_at"] is not None
+        sampled.append(datetime.now(UTC))
+        sampled.append(datetime.fromisoformat(row["lease_expires_at"]))
+
+    compiled = compile_models([ModelDef(name="blocking", fn=blocking)])
+    engine = DuckDBAdapter.in_memory()
+    await store.enqueue_run("k-block", ["blocking"], None, 0)
+    watcher = threading.Thread(target=sample)
+    watcher.start()
+    try:
+        await drain(store, compiled, engine, lease_seconds=0.25, max_attempts=1)
+    finally:
+        watcher.join(timeout=3)
+    assert len(sampled) == 2
+    taken_at, expires = sampled
+    assert expires > taken_at  # renewed after the original lease would have lapsed
+    assert (await store.list_runs())[0]["state"] == "succeeded"
+    engine.close()
+
+
 async def test_running_run_cancels_cooperatively(store: SqliteStateStore) -> None:
     started = asyncio.Event()
 

@@ -79,12 +79,31 @@ def _trigger_for(model: CompiledModel, root: Path | None) -> Trigger | None:
     return None
 
 
+def scheduled_closure(project: CompiledProject, models: list[str]) -> list[str]:
+    """The triggered models plus every model downstream of them.
+
+    A cron, interval, file watch, or webhook means that model's inputs changed.
+    Downstream snapshots would otherwise keep the previous build. An explicit
+    ``run --select`` is not expanded here: ``model``, ``model+``, and ``+model``
+    stay exactly what was asked for.
+    """
+    chosen: set[str] = set()
+    for name in models:
+        chosen.add(name)
+        if name in project.models:
+            chosen |= project.graph.descendants(name)
+    return sorted(chosen)
+
+
 class TriggerEngine:
     """Evaluates triggers on each tick and enqueues due runs."""
 
-    def __init__(self, triggers: list[Trigger], store: SqliteStateStore) -> None:
+    def __init__(
+        self, triggers: list[Trigger], store: SqliteStateStore, project: CompiledProject | None = None
+    ) -> None:
         self.triggers = triggers
         self.store = store
+        self.project = project
 
     async def tick(self, now: datetime) -> int:
         """Enqueue all runs due at ``now``; returns how many were newly enqueued."""
@@ -93,17 +112,18 @@ class TriggerEngine:
             last_fired = await self.store.get_trigger_last_fired(trigger.id)
             requests = trigger.due(now, last_fired)
             for request in requests:
+                selector = request.flow_selector
+                if self.project is not None:
+                    selector = scheduled_closure(self.project, selector)
                 partition = (
                     (request.partition.start.isoformat(), request.partition.end.isoformat())
                     if request.partition is not None
                     else None
                 )
-                if await self.store.enqueue_run(
-                    request.idempotency_key, request.flow_selector, partition, request.priority
-                ):
+                if await self.store.enqueue_run(request.idempotency_key, selector, partition, request.priority):
                     enqueued += 1
                     await self.store.append_event(
-                        "run.enqueued", entity=request.idempotency_key, payload={"models": request.flow_selector}
+                        "run.enqueued", entity=request.idempotency_key, payload={"models": selector}
                     )
             if requests:
                 await self.store.set_trigger_last_fired(trigger.id, now)

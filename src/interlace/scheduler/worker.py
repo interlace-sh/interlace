@@ -1,14 +1,18 @@
 """Worker — drains the durable run queue with leases, retries, and cancellation.
 
-Each claimed run holds a **lease**: a heartbeat task renews it while the run
-executes, so a crashed worker's runs are reclaimed by the next `claim_runs`
-once the lease expires (and marked failed once retries are exhausted). The
-heartbeat doubles as the **cooperative cancellation** channel — a cancel
-request flips a flag the next heartbeat sees, which cancels the executing task
-and records the run as ``cancelled``. Failures requeue for a durable retry
-until ``max_attempts``; ``task_timeout`` bounds a single attempt. Runs execute
-concurrently up to ``slots`` (the DAG's per-apply ordering still holds inside
-each run).
+Each claimed run holds a **lease**: a thread renews it while the run executes,
+so a crashed worker's runs are reclaimed by the next `claim_runs` once the
+lease expires (and marked failed once retries are exhausted). The lease is
+that crash window — one minute by default — not a limit on how long a model
+may run. A model can take hours; the thread keeps renewing even when the
+model blocks the event loop. The heartbeat doubles as the **cooperative
+cancellation** channel — a cancel request flips a flag the next heartbeat
+sees, which cancels the executing task and records the run as ``cancelled``.
+There is no runtime cap unless ``task_timeout`` is set. Failures requeue for
+a durable retry until ``max_attempts``. A retry rebuilds only models that did
+not reach ``model.done``; the ones that finished are promoted again and not
+recomputed. Runs execute concurrently up to ``slots`` (the DAG's per-apply
+ordering still holds inside each run).
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from interlace.graph.project import CompiledProject
 from interlace.plan.apply import apply
 from interlace.plan.run import run_plan
 from interlace.project import Project
+from interlace.state.beat import start_heartbeat, stop_heartbeat
 from interlace.state.store import QueuedRun, SqliteStateStore, event_actor
 
 logger = logging.getLogger("interlace.worker")
@@ -127,21 +132,37 @@ async def _execute_run(  # noqa: C901
     )
     logger.info("run %s started (attempt %s): %s", run.id, run.attempts, ", ".join(run.flow_selector) or "all")
     cancelled = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
-    async def heartbeat() -> None:
-        interval = max(lease_seconds / 3.0, 0.05)
-        while True:
-            await asyncio.sleep(interval)
-            verdict = await store.renew_lease(run.id, owner=owner, lease_seconds=lease_seconds)
-            if verdict != "ok":
-                cancelled.set()  # cancel requested, or another worker reclaimed the lease
-                return
+    def renew() -> bool:
+        verdict = store.renew_lease_sync(run.id, owner=owner, lease_seconds=lease_seconds)
+        if verdict == "ok":
+            return True
+        if verdict == "lost":
+            logger.error("run %s lost its lease to another worker", run.id)
+        try:
+            loop.call_soon_threadsafe(cancelled.set)
+        except RuntimeError:
+            return False
+        return False
+
+    stop_beat, beat = start_heartbeat(f"interlace-lease-{run.id}", max(lease_seconds / 3.0, 0.05), renew)
 
     async def execute() -> dict[str, object]:
         start = datetime.fromisoformat(run.partition_start) if run.partition_start else None
         end = datetime.fromisoformat(run.partition_end) if run.partition_end else None
+        finished = await _finished_models(store, run.id)
+        if finished:
+            logger.info("run %s resuming; already built %s", run.id, ", ".join(sorted(finished)))
         plan = await run_plan(
-            project, environment, store, start=start, end=end, select=set(run.flow_selector), restate=run.restate
+            project,
+            environment,
+            store,
+            start=start,
+            end=end,
+            select=set(run.flow_selector),
+            restate=run.restate,
+            already_built=finished,
         )
         loop = asyncio.get_running_loop()
         background: set[asyncio.Task] = set()
@@ -200,7 +221,6 @@ async def _execute_run(  # noqa: C901
             },
         }
 
-    beat = asyncio.create_task(heartbeat())
     work = asyncio.create_task(execute())
     watcher = asyncio.create_task(cancelled.wait())
     try:
@@ -224,11 +244,16 @@ async def _execute_run(  # noqa: C901
     except Exception as exc:  # a bad run must not kill the worker loop
         await _fail_or_retry(store, run, str(exc), max_attempts, owner)
     finally:
-        beat.cancel()
+        stop_heartbeat(stop_beat, beat)
         watcher.cancel()
-        for task in (beat, watcher):
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
+
+
+async def _finished_models(store: SqliteStateStore, run_id: int) -> set[str]:
+    """Models that reached ``model.done`` on an earlier attempt of this run."""
+    events = await store.events_for_run(run_id)
+    return {str(event["entity"]) for event in events if event.get("type") == "model.done" and event.get("entity")}
 
 
 async def _fail_or_retry(store: SqliteStateStore, run: QueuedRun, error: str, max_attempts: int, owner: str) -> None:

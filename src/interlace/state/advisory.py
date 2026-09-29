@@ -60,7 +60,9 @@ class AdvisoryLockStore:
                 row = self._db.conn.execute(
                     "SELECT owner, expires_at FROM advisory_locks WHERE name = ?", (name,)
                 ).fetchone()
-                if row is None or row["owner"] != owner or datetime.fromisoformat(row["expires_at"]) <= now:
+                # An expired row we still own has not been stolen. Extending it is what
+                # lets a late heartbeat recover; a thief already replaced ``owner``.
+                if row is None or row["owner"] != owner:
                     self._db.conn.commit()
                     return False
                 expires = (now + timedelta(seconds=lease_seconds)).isoformat()

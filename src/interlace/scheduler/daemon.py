@@ -220,7 +220,9 @@ async def scheduler_loop(
         try:
             await reload_if_stale(state)
             compiled = state.compiled
-            await TriggerEngine(build_triggers(compiled, root=state.project.root), state.store).tick(datetime.now())
+            await TriggerEngine(build_triggers(compiled, root=state.project.root), state.store, compiled).tick(
+                datetime.now()
+            )
             if asyncio.get_running_loop().time() >= next_trim:
                 await state.store.trim_logs()
                 next_trim = asyncio.get_running_loop().time() + 6 * 3600

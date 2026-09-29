@@ -18,7 +18,9 @@ The return value — a ``pyarrow.Table``, ``RecordBatchReader``, ``RecordBatch``
 or an iterable of batches (generators stream with bounded memory) — is loaded
 at the sink by the caller (``plan.apply``): directly for ``replace``, or via a
 stage table for keyed strategies. Sync functions run in a worker thread; async
-functions run on the event loop.
+functions run on the event loop. A blocking async body does not expire the run
+lease: renewal happens on a thread, and there is no limit on how long the
+function may take.
 """
 
 from __future__ import annotations

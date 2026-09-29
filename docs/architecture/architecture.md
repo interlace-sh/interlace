@@ -614,10 +614,13 @@ class WorkQueue(Protocol):
 **Current state.** A `TriggerEngine` ticks `Trigger`s (`CronTrigger` via `cronsim`,
 `IntervalTrigger`, `WatchTrigger`) against durable per-trigger state in the state DB; due runs enqueue
 (idempotency-keyed) onto a **durable run queue** (`work_queue` table). `worker.drain`
-claims runs under a **lease**, heartbeats while executing (the heartbeat doubles as the
+claims runs under a **lease** (one minute, renewed from a thread — a crash window, not a limit on how long a model may run), heartbeats while executing (the heartbeat doubles as the
 cooperative **cancellation** channel — `interlace cancel <id>` / `POST /runs/{id}/
-cancel`), retries durably up to `max_attempts` with a per-attempt timeout, and executes
-them as forced runs (so they pick up new data). Stream flushes enqueue the consuming
+cancel`), retries durably up to `max_attempts`, and executes
+them as forced runs (so they pick up new data). There is no runtime cap unless a caller sets one. A retry rebuilds only models that
+did not finish; models that reached `model.done` are promoted again and not
+recomputed. A cron, interval, watch, or webhook enqueues that model and its
+downstream closure. `run --select` is not expanded. Stream flushes enqueue the consuming
 models with the watermark as the idempotency key. `interlace serve` ties tick → enqueue →
 drain in one process (`interlace scheduler --once` for a single pass). No APScheduler — we
 own the loop; `cronsim` only parses. Models declare `schedule: {cron: …}`,

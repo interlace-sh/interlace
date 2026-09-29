@@ -13,18 +13,75 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from interlace.graph.project import CompiledProject
+from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.plan.differ import expand_to_changed_ancestors, snapshot_of
 from interlace.plan.plan import (
     ChangeType,
     ModelChange,
     Plan,
+    ViewSwap,
     collect_transfers,
+    env_view,
     schedule_build,
 )
 from interlace.state.interval import Interval, latest_complete_window, parse_grain, slice_interval
 from interlace.state.snapshot import ChangeCategory
 from interlace.state.store import StateStore
+
+
+async def _resume_built(plan: Plan, model: CompiledModel, environment: str, state: StateStore) -> bool:
+    """Keep a model this run already finished. False when its snapshot is gone."""
+    recorded = await state.get_snapshot(model.name, model.fingerprint)
+    if recorded is None:
+        return False
+    if model.materialise in ("virtual", "view"):
+        plan.virtual_updates.append(
+            ViewSwap(env_view(environment, model.name), recorded.physical_table, engine=model.engine)
+        )
+    return True
+
+
+async def _schedule_forced(
+    plan: Plan,
+    model: CompiledModel,
+    environment: str,
+    state: StateStore,
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    restate: bool,
+) -> None:
+    """One forced model: incremental windows, or a single full rebuild."""
+    is_incremental = model.strategy == "incremental" and model.materialise != "ephemeral"
+    if not is_incremental:
+        schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
+        return
+    grain = parse_grain(model.interval or "1d")
+    filled = await state.get_intervals(model.name, model.fingerprint)
+    snapshot = snapshot_of(model, ChangeCategory.BREAKING)
+    if start is None and end is None and not len(filled) and model.backfill != "none":
+        # nothing filled yet and no window given: bootstrap — apply derives
+        # the source's time-column range and fills it as one interval
+        schedule_build(plan, model, snapshot, environment, bootstrap=True)
+        return
+    if start is None and end is None:
+        window_hint = _window(start, end, grain)
+        plan.warnings.append(
+            f"{model.name}: no --start/--end given — only the most recent complete "
+            f"{model.interval or '1d'} window ({window_hint.start:%Y-%m-%d %H:%M} → "
+            f"{window_hint.end:%Y-%m-%d %H:%M}) is considered; other ranges need an explicit window"
+        )
+    windows = [
+        window for window in slice_interval(_window(start, end, grain), grain) if restate or not filled.covers(window)
+    ]
+    if len(windows) > 366:  # more than a year of daily windows: probably a wider range than meant
+        span = _window(start, end, grain)
+        plan.warnings.append(
+            f"{model.name}: {len(windows)} {model.interval or '1d'} windows "
+            f"({span.start:%Y-%m-%d} → {span.end:%Y-%m-%d}) — one build task each. "
+            f"Pass --end (it defaults to now) to bound the range if that's wider than intended."
+        )
+    schedule_build(plan, model, snapshot, environment, windows=windows)
 
 
 def _window(start: datetime | None, end: datetime | None, grain: timedelta) -> Interval:
@@ -46,11 +103,14 @@ async def run_plan(
     end: datetime | None = None,
     select: set[str] | None = None,
     restate: bool = False,
+    already_built: set[str] | None = None,
 ) -> Plan:
     """Build a forced plan; incremental models are expanded over ``[start, end)``.
 
     ``select`` limits which models run (None = all). ``restate`` reprocesses every
     interval in the window instead of skipping the ones already filled (catchup).
+    ``already_built`` names models this same run already finished: they are
+    promoted again and not recomputed, so a retry continues from the failure.
     """
     selected = set(compiled.models) if select is None else select
     if select is not None:
@@ -62,41 +122,9 @@ async def run_plan(
         if model.name not in selected:
             continue
         plan.changes.append(ModelChange(model.name, ChangeType.MODIFIED, None, None, model.fingerprint))
-
-        # incremental into the interlace-owned virtual plane, or into a terminal
-        # `table` (windowed delete+insert against the external target)
-        is_incremental = model.strategy == "incremental" and model.materialise != "ephemeral"
-        if is_incremental:
-            grain = parse_grain(model.interval or "1d")
-            filled = await state.get_intervals(model.name, model.fingerprint)
-            snapshot = snapshot_of(model, ChangeCategory.BREAKING)
-            if start is None and end is None and not len(filled) and model.backfill != "none":
-                # nothing filled yet and no window given: bootstrap — apply derives
-                # the source's time-column range and fills it as one interval
-                schedule_build(plan, model, snapshot, environment, bootstrap=True)
-                continue
-            if start is None and end is None:
-                window_hint = _window(start, end, grain)
-                plan.warnings.append(
-                    f"{model.name}: no --start/--end given — only the most recent complete "
-                    f"{model.interval or '1d'} window ({window_hint.start:%Y-%m-%d %H:%M} → "
-                    f"{window_hint.end:%Y-%m-%d %H:%M}) is considered; other ranges need an explicit window"
-                )
-            windows = [
-                window
-                for window in slice_interval(_window(start, end, grain), grain)
-                if restate or not filled.covers(window)
-            ]
-            if len(windows) > 366:  # more than a year of daily windows: probably a wider range than meant
-                span = _window(start, end, grain)
-                plan.warnings.append(
-                    f"{model.name}: {len(windows)} {model.interval or '1d'} windows "
-                    f"({span.start:%Y-%m-%d} → {span.end:%Y-%m-%d}) — one build task each. "
-                    f"Pass --end (it defaults to now) to bound the range if that's wider than intended."
-                )
-            schedule_build(plan, model, snapshot, environment, windows=windows)
-        else:
-            schedule_build(plan, model, snapshot_of(model, ChangeCategory.BREAKING), environment)
+        if already_built and model.name in already_built and await _resume_built(plan, model, environment, state):
+            continue
+        await _schedule_forced(plan, model, environment, state, start=start, end=end, restate=restate)
 
     if select is None:
         # An unscoped run asserts the full desired set (it promotes every model),

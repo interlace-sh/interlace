@@ -119,7 +119,7 @@ async def post_hook(name: FromPath[str], state: State, request: Request) -> Hook
     ``Idempotency-Key`` dedupes a retried delivery. Without it, every POST is a new run.
     """
     from interlace.exceptions import DefinitionError
-    from interlace.scheduler.engine import webhook_targets
+    from interlace.scheduler.engine import scheduled_closure, webhook_targets
 
     await reload_if_stale(state)
     try:
@@ -131,9 +131,10 @@ async def post_hook(name: FromPath[str], state: State, request: Request) -> Hook
         raise NotFoundException(detail=f"unknown webhook: {name}")
     supplied = request.headers.get("Idempotency-Key", "").strip()
     key = supplied or f"webhook:{name}:{uuid4().hex}"
-    enqueued = await state.store.enqueue_run(key, [model], None)
+    models = scheduled_closure(state.compiled, [model])
+    enqueued = await state.store.enqueue_run(key, models, None)
     if enqueued:
-        await state.store.append_event("run.enqueued", entity=key, payload={"models": [model], "webhook": name})
+        await state.store.append_event("run.enqueued", entity=key, payload={"models": models, "webhook": name})
         state.drain_wanted.set()
     return HookResult(model=model, idempotency_key=key, enqueued=enqueued)
 

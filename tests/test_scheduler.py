@@ -15,9 +15,9 @@ from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.exceptions import DefinitionError
 from interlace.graph.project import compile_models
-from interlace.scheduler.engine import TriggerEngine, build_triggers
+from interlace.scheduler.engine import TriggerEngine, build_triggers, scheduled_closure
 from interlace.scheduler.triggers import CronTrigger, IntervalTrigger
-from interlace.scheduler.worker import drain
+from interlace.scheduler.worker import _finished_models, drain
 from interlace.state.store import SqliteStateStore
 
 pytestmark = pytest.mark.unit
@@ -88,12 +88,27 @@ def test_webhook_names_must_be_unique() -> None:
 async def test_engine_tick_enqueues_then_dedupes(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     _, store = env
     project = compile_models([ModelDef(name="m", sql="SELECT 1 AS x", schedule={"every": "1h"})])
-    engine = TriggerEngine(build_triggers(project), store)
+    engine = TriggerEngine(build_triggers(project), store, project)
 
     now = datetime(2026, 1, 1, 12, 0)
     assert await engine.tick(now) == 1  # first tick enqueues
     assert await engine.tick(now) == 0  # same tick: last_fired advanced, nothing new
     assert await store.count_pending_runs() == 1
+
+
+async def test_a_trigger_enqueues_downstream_models(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    _, store = env
+    project = compile_models(
+        [
+            ModelDef(name="raw", sql="SELECT 1 AS id", schedule={"every": "1h"}),
+            ModelDef(name="mart", sql="SELECT id FROM raw"),
+        ]
+    )
+    engine = TriggerEngine(build_triggers(project), store, project)
+    assert await engine.tick(datetime(2026, 1, 1, 12, 0)) == 1
+    runs = await store.list_runs()
+    assert set(runs[0]["flow_selector"]) == {"raw", "mart"}
+    assert scheduled_closure(project, ["mart"]) == ["mart"]
 
 
 async def test_worker_drains_and_executes_a_run(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
@@ -107,6 +122,14 @@ async def test_worker_drains_and_executes_a_run(env: tuple[DuckDBAdapter, Sqlite
 
     reader = await engine.fetch(sqlglot.parse_one("SELECT x FROM main.m"))
     assert reader.read_all().to_pylist() == [{"x": 7}]
+
+
+async def test_a_retry_sees_only_models_that_finished(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    _, store = env
+    await store.append_event("model.done", entity="raw", payload={"run": 4})
+    await store.append_event("model.failed", entity="mart", payload={"run": 4, "message": "boom"})
+    await store.append_event("model.done", entity="other", payload={"run": 9})
+    assert await _finished_models(store, 4) == {"raw"}
 
 
 async def test_event_log_append_and_read(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:

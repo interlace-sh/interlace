@@ -80,6 +80,17 @@ async def test_run_with_selection(env: tuple[DuckDBAdapter, SqliteStateStore]) -
     assert plan.promote == ["a"]
 
 
+async def test_retry_skips_models_this_run_already_built(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    project = compile_models([sql_model("a", "SELECT 1 AS x"), sql_model("b", "SELECT x FROM a")])
+    await apply(await run_plan(project, "prod", store), compiled=project, engine=engine, state=store)
+
+    plan = await run_plan(project, "prod", store, select={"a", "b"}, already_built={"a"})
+    assert {task.snapshot.name for task in plan.backfills} == {"b"}
+    assert set(plan.promote) == {"a", "b"}
+    assert any(swap.view.name == "a" for swap in plan.virtual_updates)
+
+
 def test_run_command_on_example(tmp_path: Path) -> None:
     project_dir = tmp_path / "getting_started"
     shutil.copytree(EXAMPLE, project_dir, ignore=shutil.ignore_patterns(".interlace"))

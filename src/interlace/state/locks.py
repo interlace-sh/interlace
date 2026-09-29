@@ -9,12 +9,11 @@ section runs.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from interlace.exceptions import LockError
+from interlace.state.beat import start_heartbeat, stop_heartbeat
 from interlace.state.store import SqliteStateStore
 
 APPLY_LOCK = "apply"
@@ -36,24 +35,15 @@ async def hold_apply_lock(
             "another process is applying, flushing streams, or draining runs",
             details={"lock": APPLY_LOCK, "owner": owner},
         )
-    stop = asyncio.Event()
-
-    async def _heartbeat() -> None:
-        interval = max(1.0, lease_seconds / 3.0)
-        while not stop.is_set():
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=interval)
-                return
-            except TimeoutError:
-                if not await store.locks.renew_lock(APPLY_LOCK, owner=owner, lease_seconds=lease_seconds):
-                    return  # lost the lock; the holder may fail on its own
-
-    beat = asyncio.create_task(_heartbeat())
+    # Off the event loop, same reason as the run lease: a model that blocks the
+    # loop must not drop this lock and let a second process start another apply.
+    stop, beat = start_heartbeat(
+        "interlace-apply-lock",
+        max(lease_seconds / 3.0, 0.05),
+        lambda: store.locks._renew_lock_sync(APPLY_LOCK, owner, lease_seconds),
+    )
     try:
         yield
     finally:
-        stop.set()
-        beat.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await beat
+        stop_heartbeat(stop, beat)
         await store.locks.release_lock(APPLY_LOCK, owner=owner)

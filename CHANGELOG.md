@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 2.8.3 (2026-09-29)
+
+**A schedule refreshes downstream models.** A cron, interval, file watch, or
+webhook runs the scheduled model and everything downstream of it, so a
+materialised child does not keep the previous build. `interlace run --select`
+is unchanged: `model`, `model+`, and `+model` stay exact.
+
+**A failed run retries what did not finish.** Models that reached `model.done`
+are promoted again and not recomputed. The run lease is a one-minute crash
+window renewed from its own thread, so a model that runs for hours — including
+one that blocks the event loop — does not lose the run. There is no runtime
+cap unless a caller sets one.
 
 **Watched inputs change the plan.** `inputs.<name>.watch: true` hashes local
 file bytes into the fingerprint of every model that reads that input. A remote

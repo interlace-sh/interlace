@@ -205,9 +205,11 @@ async def test_python_scd2_model_survives_reruns(env: tuple[DuckDBAdapter, Sqlit
     model = ModelDef(name="dim", fn=dim, depends_on=("raw",), strategy="scd", key=("id",))
     await _build(env, [RAW, model])
 
+    # The closed-over dict is part of the fingerprint, so compile while it still
+    # says gold. The rerun reads silver at execution time: same model, new rows.
+    compiled = compile_models([RAW, model])
     state["tier"] = "silver"  # every key changes: old versions close, new ones open
     engine, store = env
-    compiled = compile_models([RAW, model])
     await apply(await run_plan(compiled, "dev", store), compiled=compiled, engine=engine, state=store)
 
     rows = await _rows(engine, "SELECT tier, _valid_to IS NULL AS open FROM dev__main.dim WHERE id = 1 ORDER BY open")

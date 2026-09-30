@@ -8,6 +8,8 @@ missing-driver guard)."""
 
 from __future__ import annotations
 
+import builtins
+
 import pyarrow as pa
 import pytest
 
@@ -76,8 +78,16 @@ def test_scd_transpiles_to_each_dialect(dialect: str, star_exclude: bool) -> Non
         assert statement.sql(dialect=dialect)
 
 
-def test_snowflake_and_bigquery_connect_need_their_extra() -> None:
-    # the optional ADBC drivers are not installed in the base/dev environment
+def test_snowflake_and_bigquery_connect_need_their_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing optional driver fails before any connection is attempted."""
+    real_import = builtins.__import__
+
+    def blocked(name: str, *args: object, **kwargs: object) -> object:
+        if name.startswith(("adbc_driver_snowflake", "adbc_driver_bigquery")):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
     with pytest.raises(ConfigurationError, match="adbc-snowflake"):
         SnowflakeAdapter.connect("user:pw@account/db/schema")
     with pytest.raises(ConfigurationError, match="adbc-bigquery"):

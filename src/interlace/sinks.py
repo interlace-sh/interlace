@@ -76,7 +76,7 @@ def _csv_cell(value: object) -> str:
     if value is None:
         return ""
     text = str(value)
-    if any(ch in text for ch in ",\"\r\n"):
+    if any(ch in text for ch in ',"\r\n'):
         return '"' + text.replace('"', '""') + '"'
     return text
 

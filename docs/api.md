@@ -154,8 +154,9 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
   upstream build; `tests/golden/<model>.csv` is the expected result. `update_golden`
   rewrites the golden file. Does not run live checks or the promotion gate.
 - **`POST /hooks/{name}`** (write) → `HookResult {model, idempotency_key, enqueued}`.
-  Enqueues the model whose `schedule.webhook` is `name`. `Idempotency-Key` dedupes a
-  retried delivery; without it every POST is a new run. Unknown name is 404.
+  Enqueues the model whose `schedule.webhook` is `name`, and everything downstream of it.
+  `Idempotency-Key` dedupes a retried delivery; without it every POST is a new run.
+  Unknown name is 404.
 - **`GET /apikeys`** (admin) → `[ApiKeyInfo]` `{name, scopes, created_at}`.
 - **`POST /apikeys`** (admin) → `{name, scopes, token}` (token shown once). Body `{name,
   scopes=["read"]}`.

@@ -61,7 +61,8 @@ service = [
     "msgspec>=0.18,<1.0",  # the wire types (litestar serialises msgspec structs natively)
 ]
 # Remote engines via Arrow-native ADBC transfer. postgres (+ redshift, same wire)
-# are the tested transport; snowflake/bigquery are ALPHA (wired, not run live).
+# are the tested transport. snowflake and bigquery are ALPHA: snowflake has been
+# exercised against one account, outside CI; bigquery has not been run live.
 adbc = [
     "adbc-driver-manager>=1.2,<2.0",
     "adbc-driver-postgresql>=1.2,<2.0",

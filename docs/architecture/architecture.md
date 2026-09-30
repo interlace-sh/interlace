@@ -1,20 +1,25 @@
 # Interlace — Architecture & Design
 
-*Written during the 2026 rebuild of the 0.x line. This is the design rationale and
-the contract for the platform now shipping as **v2.8** (`interlaced` on PyPI). Short
-*current state* notes in each section record where the implementation actually stands;
-a consolidated **Roadmap** section (§14) lists what is designed but not yet built, ranked
-Now / Next / Later. When this document says "we do X", read it as the shipped behaviour
-unless a note says otherwise.*
+*Design of the current platform. A **Roadmap** section (§14) lists what is designed
+but not yet built, ranked Now / Next / Later. When this document says "we do X",
+read it as the shipped behaviour unless a note says otherwise.*
 
 **Status:** Implemented, single-node. **Scope:** clean-slate design of the whole
-platform. **Goal:** a comprehensive, independent, MIT-licensed alternative to
-sqlmesh/dbt with built-in orchestration (no Airflow) and durable real-time streaming
-ingestion (Cloudflare-data-platform-style functionality), deployable as a single
-process. **Deployment model:** single-node first — one process does everything — with
-the store/queue/log abstractions designed as Protocols so worker nodes and a shared
-Postgres tier can be added later without a redesign (that swap is roadmap, not shipped;
-see §12, §14).
+platform.
+
+**Goal.** One MIT-licensed process that replaces the stack people assemble from a
+transformation tool (dbt, SQLMesh), an orchestrator (Airflow, Prefect), and an
+ingestion service (dlt, Hevo, Cloudflare Pipelines). SQL and Python models share one
+fingerprinted DAG. The daemon schedules that DAG, and a trigger refreshes the model
+and everything downstream of it. Events fsync into a log and land in the same
+warehouse the models read. The control plane stays on one machine until a named user
+hits that ceiling. Store, queue, and log are Protocols so a later Postgres tier does
+not require a redesign (§12, §14). That swap is not shipped.
+
+**Not the goal.** A semantic layer, a package hub, a general-purpose task runner, a
+connector marketplace, or a hosted multi-tenant ELT product. Ideas from other tools
+are kept only when they deepen this one process or close a trust gap. Everything else
+waits, or is rejected outright (§14).
 
 ---
 
@@ -24,20 +29,13 @@ see §12, §14).
 > Arrow `RecordBatchReader`. Materialisation happens exactly once, at the sink, as a
 > single native SQL statement executed inside the owning engine.**
 
-The framework's internal contract is deliberately independent of any dataframe library:
-
-- **sqlglot** is the most load-bearing dependency: parsing, qualification, type
-  annotation, transpilation across dialects, semantic diff, and column lineage.
-  v30 split the AST: `exp.Expr` is the universal node; `Expression` is a
-  constructible subclass; `Query` / `Condition` are parallel traits (a `Select`
-  is both). `.subquery()` lives on `Query`. `DROP` names its target in `tables=`
-  — construct it with `interlace.ir.relation.drop`.
-- **Arrow** is the only interchange format. pandas never appears in core (optional
-  extra only).
-- **ibis** is not used. Its two roles are both covered without it: as a data plane it
-  sits on Arrow anyway, and as an expression builder it compiles to sqlglot — which
-  *is* our IR. Dropping it removes a heavyweight dependency and its governance risk for
-  zero lost capability. Remote engines connect via ADBC, not ibis backends.
+- **sqlglot** parses, qualifies, type-annotates, transpiles, diffs, and traces
+  column lineage. `exp.Expr` is the universal node; `Expression` is a constructible
+  subclass; `Query` / `Condition` are parallel traits (a `Select` is both).
+  `.subquery()` lives on `Query`. `DROP` names its target in `tables=` — construct
+  it with `interlace.ir.relation.drop`.
+- **Arrow** is the only interchange format. pandas is an optional extra, not a
+  core type. Remote engines connect via ADBC.
 
 An **SQL model** never leaves the logical plane: a model selecting from three upstreams
 in the same engine compiles to *one* `CREATE TABLE AS` (or `MERGE INTO`, via the keyed
@@ -83,7 +81,7 @@ subquery, whether `EXCEPT` may sit inside `DELETE`, and whether the engine can
 which default on and are turned off where an engine aborts (DuckLake, Spark). The
 per-engine table is in `docs/engines.md`.
 
-### 2.3 `Snapshot` — versioned model state (sqlmesh, adopted)
+### 2.3 `Snapshot` — versioned model state
 
 ```python
 @dataclass(frozen=True)
@@ -255,17 +253,17 @@ Arrow Flight can still land on the same contract later without a redesign.
   gone — it reappears only in `EngineAdapter.transpile()`. You can therefore author in
   one dialect and transpile to another; *running* against a given engine still requires
   that engine's adapter (DuckDB and Postgres today — §4).
-- **Jinja macros: rejected.** Python is the macro language for generated models. Scalar
-  SQL macros live in `macros/*.sql` as `CREATE MACRO` and are expanded into the AST
+- **Macros are SQL, expanded in the AST.** Python generates models. Scalar SQL
+  macros live in `macros/*.sql` as `CREATE MACRO` and are expanded into the AST
   before fingerprint, lineage, and transpile — one definition, every engine. The SQL
-  header is a YAML block comment namespaced under `interlace:` — valid SQL, no Jinja,
-  no text substitution. Path tokens (`${date}` / `${datetime}` / `${workspace}`) expand
-  in `inputs:` and file materialisation paths. Typed project vars live under `vars:`
-  and a SQL model reads one with `var('name')`. That call is an AST node, replaced
-  with a typed literal before fingerprint, lineage, and transpile — not a `{{ }}`
-  text splice. `@name` is not the syntax: DuckDB already uses `@` for absolute value.
-- **`ref()` as text macro: rejected.** References resolve at the AST level during
-  qualification — which is what makes lineage parseable.
+  header is a YAML block comment namespaced under `interlace:`. Path tokens
+  (`${date}` / `${datetime}` / `${workspace}`) expand in `inputs:` and file
+  materialisation paths. Typed project vars live under `vars:` and a SQL model reads
+  one with `var('name')`. That call is an AST node, replaced with a typed literal
+  before fingerprint, lineage, and transpile. The syntax is `var('name')`, not
+  `@name`: DuckDB already uses `@` for absolute value.
+- **References resolve in the AST** during qualification, which is what makes
+  lineage parseable.
 
 ---
 
@@ -282,26 +280,17 @@ reclaim), trigger_state, event_log, check_results, api_keys, promotion_history
 `consumer_state` — and stream watermarks live in the warehouse, committed atomically
 with the data; see §9.)
 
-**Why SQLite and not the warehouse DuckDB.** The architecture has two planes that want
-opposite things from a database, so it uses the right engine for each:
+The control plane and the warehouse are different databases:
 
 | Plane | Holds | Access pattern | Engine |
 |---|---|---|---|
-| Data plane | model tables, materialisations | bulk scans/aggregations, few large writes | **DuckDB/DuckLake** (OLAP, columnar) |
-| Control plane | state store, work queue, stream log | many tiny indexed point-writes, frequent durable commits | **SQLite** (OLTP, row store) |
+| Data plane | model tables, materialisations | bulk scans/aggregations, few large writes | **DuckDB/DuckLake** |
+| Control plane | state store, work queue, stream log | many small durable writes | **SQLite** |
 
-The control plane is an OLTP workload — claim a task row, heartbeat, commit a stream
-offset, append an event, bump an interval. DuckDB is the wrong tool for it: it is
-columnar and built to scan/aggregate (thousands of tiny single-row commits/s is close
-to pathological), it allows one writer per file (every heartbeat would contend with
-materialisation), and its single-writer MVCC does not express atomic multi-worker row
-claims. SQLite's B-tree row store does exactly this (WAL: ~10k–50k durable commits/s on
-one node), which is what makes "HTTP 200 ⇒ fsynced" achievable on the stream path, and
-`BEGIN IMMEDIATE` expresses the atomic work-queue claim cleanly. The cost of "an
-additional technology" is near zero: `sqlite3` is in the standard library, and
-DuckLake's catalog is *already* SQLite locally. This is the conventional split (sqlmesh
-keeps state in a transactional DB; Airflow/Dagster use Postgres for metadata, never the
-warehouse). The store protocols are written so the backend can be swapped to Postgres
+The control plane claims a task row, heartbeats, commits a stream offset, appends an
+event, and bumps an interval. `BEGIN IMMEDIATE` is the atomic work-queue claim, and a
+stream publish fsyncs before it returns 200. The store protocols are written so the
+backend can be swapped to Postgres
 for a shared/multi-node deployment — but **no Postgres store backend is built today**;
 that is the scale-out contract (§12) and roadmap (§14), not a shipped option.
 
@@ -310,7 +299,7 @@ live at `<schema>.<model>` (`main.orders`), which is what BI tools connect to. E
 other environment is a prefixed sandbox (`dev__main.orders`). CLI/API/daemon default to
 prod; `--env dev` opts into a sandbox.
 
-**Virtual data environments** (sqlmesh, adopted):
+**Virtual data environments:**
 
 - Physical layer: `interlace__<schema>.<model>__<fp_short>` — one table per snapshot version.
 - Virtual layer: `<env>__<schema>.<model>` views pointing at snapshot tables.
@@ -321,7 +310,7 @@ prod; `--env dev` opts into a sandbox.
   GCs unreferenced snapshots past `retention: 14d`; `reset` wipes Interlace-owned state
   (views, snapshots, runs, streams) without dropping terminal `table`/`file` destinations.
 
-**Interval ledger** (sqlmesh, adopted): per snapshot, a compact set of filled
+**Interval ledger:** per snapshot, a compact set of filled
 `[start, end)` ranges at the model's declared grain (`interval="1d"`). Backfill, catchup
 after downtime, and restatement (`interlace restate model --start … --end …`) reduce to
 set arithmetic. Stream cursors are the same structure with offset grain — one
@@ -381,7 +370,7 @@ external `table`. Only `replace` differs by ownership: it rewrites the owned tab
 (`CREATE OR REPLACE` → `Replace`) but empties an external one in place (DELETE all +
 INSERT → `ReplaceInPlace`), which **never drops it**, so grants and readers survive. `append`
 is external-only. `view` is virtual-only. `resolve_strategy(materialise, strategy, …)` is the
-single dispatch; `plan.apply` routes a terminal build to `_deliver_table` (stage → align →
+single dispatch; `plan.apply` routes a terminal build to `deliver_table` (stage → align →
 strategy) or the file COPY instead of a snapshot build + view swap.
 
 **Indexes and constraints** are a third hash (`physical_hash`), not part of the data
@@ -394,18 +383,14 @@ plan note, and checks remain the portable gate. On an external table the same sp
 with a narrower column policy (`schema.columns`: `additive` default, `reject`, or `ignore`);
 there is still no drop-column mode.
 
-**Why the six virtual-plane powers can't apply to a terminal.** The snapshot+view layer works
-only because interlace owns its tables — it shadow-builds `model__<fp>` beside the live one
-and atomically repoints a view. A terminal target conflates the build target with the read
-target, so a **breaking change cannot apply to a `table`**: there is no old version to serve
-during the build and no atomic cutover. A terminal table therefore evolves **additively only**
-(new columns via `ALTER … ADD COLUMN`, widening, NULL-fill/cast in `_align_stage_to_target`)
-and is never dropped; a definition change simply re-delivers. `schema.columns: reject` stops
-that delivery when the live table is not a compatible superset; `ignore` skips `ALTER`
-entirely. Reuse-skip, sandboxes, rollback,
-gc, and forward-only are likewise inherent to content-addressing and do not exist for a
-terminal (its phantom snapshot row exists only so an unchanged fingerprint isn't re-delivered).
-This mirrors how Census/Hightouch split "model in the warehouse" from "sync to destination".
+A terminal target is both the build target and the read target, so a **breaking change
+cannot apply to a `table`**: there is no previous snapshot to serve during the build
+and no view to cut over. A terminal table evolves **additively only** (new columns via
+`ALTER … ADD COLUMN`, widening, NULL-fill/cast in `align_stage_to_target`) and is never
+dropped; a definition change re-delivers. `schema.columns: reject` stops that delivery
+when the live table is not a compatible superset; `ignore` skips `ALTER` entirely.
+Reuse-skip, sandboxes, rollback, gc, and forward-only apply to owned snapshots and not
+to a terminal. Its snapshot row exists so an unchanged fingerprint is not re-delivered.
 
 **Spectrum of output kinds and their rollback story:**
 
@@ -442,10 +427,9 @@ SELECT * FROM orders
   model is a column-lineage barrier (all-to-all) — conservative and correct.
   (`@model(columns=…)` declares an *output contract* — column names/types validated
   after every build, before promotion — not lineage.)
-- **Selector syntax:** dbt's, adopted — `interlace run --select +silver.orders+
-  tag:finance` (`model`, `+model`, `model+`, `+model+`, `tag:x`; selectors union). dbt's
-  `state:modified` needs no selector here: modified-ness is what the plan computes from
-  fingerprints in the state store (improvement over dbt's fragile `--defer --state`).
+- **Selector syntax:** `interlace run --select +silver.orders+ tag:finance`
+  (`model`, `+model`, `model+`, `+model+`, `tag:x`; selectors union). Modified-ness
+  is what the plan computes from fingerprints in the state store.
 - **Impact analysis feeds plan:** changed columns → walk the column DAG → downstream
   models partition into *invalidated* (rebuild) vs *safe* (reuse the existing snapshot
   table). Also exposed to humans: `interlace lineage <model> --columns` and per-change
@@ -482,8 +466,8 @@ not implemented — `RunRequest.priority` exists but is a plain integer, unused 
 
 ## 9. Durable streaming
 
-Vocabulary deliberately mirrors Cloudflare's **Streams → Pipelines → Sinks** model; the
-pitch is "self-hosted Cloudflare Pipelines that lands in DuckDB/DuckLake."
+A stream is a durable log. The materialiser lands it in the warehouse, and SQL
+models read that table.
 
 **Current state.** `SqliteStreamLog` (WAL; offsets from 1, idempotency-key dedup via a
 partial unique index, consumer-group lease/commit with fencing tokens, trim, a waiting
@@ -576,8 +560,8 @@ coordinating with the log. The watermark
 lives in the warehouse (`streams._watermarks`) precisely so it commits atomically with
 the data. Evolve-mode `ALTER ADD COLUMN` statements ride in the same batch.
 
-Note this path deliberately does **not** use the log's consumer-group lease/commit
-machinery — that is for external consumers. The flusher is signal-driven off publishes
+This path does not use the log's consumer-group lease/commit machinery. That is
+for external consumers. The flusher is signal-driven off publishes
 and coalesces at `stream_flush_interval` (50 ms default); draining (not a single batch)
 is what lets callers assume the warehouse has caught up when a flush returns. When a
 flush lands new rows, the stream's consumers (models reading `streams.<name>`, plus their
@@ -622,8 +606,8 @@ did not finish; models that reached `model.done` are promoted again and not
 recomputed. A cron, interval, watch, or webhook enqueues that model and its
 downstream closure. `run --select` is not expanded. Stream flushes enqueue the consuming
 models with the watermark as the idempotency key. `interlace serve` ties tick → enqueue →
-drain in one process (`interlace scheduler --once` for a single pass). No APScheduler — we
-own the loop; `cronsim` only parses. Models declare `schedule: {cron: …}`,
+drain in one process (`interlace scheduler --once` for a single pass). `cronsim`
+parses cron expressions. Models declare `schedule: {cron: …}`,
 `{every: …}`, `{watch: "inbox/*.csv"}` (a glob of path, size, and mtime on the
 existing tick — no directory watcher), or `{webhook: name}` (`POST /hooks/{name}`).
 
@@ -633,12 +617,6 @@ lease expires and the task is re-claimed). This is **not** leader election: ther
 loops directly. Backfill/catchup is `interlace run` (forced) and `interlace restate
 --start … --end …` (marks intervals pending and cascades via lineage); there is no
 separate `interlace backfill` command.
-
-**Deliberately not built:** arbitrary-Python-task orchestration (Airflow's operator zoo),
-distributed executors (K8s-pod-per-task, Celery), DAG-versioning UI, multi-region, and
-any Redis dependency. We match Dagster on asset-centric scheduling + partitions, beat
-Airflow/Dagster/Prefect on built-in durable ingestion (none have it), and concede their
-executor ecosystems.
 
 **Not yet built (roadmap, §14):** SLA monitors + alerting (`@model(sla=…)`, an
 `AlertRouter`, an `alerts` table), leader election for multi-node singleton loops, and
@@ -747,7 +725,7 @@ src/interlace/
 | `pydantic` v2 | `>=2.5,<3.0` | Config + manifest validation only (cold paths). |
 | `typer` | `>=0.12,<1.0` | CLI. |
 | `rich` | `>=13.0,<16.0` | CLI display, strictly an event subscriber. |
-| `cronsim` | `>=2.5,<3.0` | Cron parsing for the trigger engine (we own the loop; APScheduler rejected). |
+| `cronsim` | `>=2.5,<3.0` | Cron parsing for the trigger engine. |
 | `tenacity` | `>=8.2,<10.0` | Retries: tasks, DuckLake commit conflicts, transfers. |
 | `pyyaml` | `>=6.0,<7.0` | Project config (config + env overlays). |
 
@@ -767,18 +745,12 @@ Logging is the **standard library `logging`** — there is no `structlog` depend
   (state/queue/log) is still unbuilt (§12, §14).
 - **`polars`** — `polars`, the preferred eager frame a user can build from
   `handle.table()`.
-- **`pandas`** — `pandas`, compatibility only.
+- **`pandas`** — `pandas`, optional DataFrame interop.
 - **`all`** — `service,adbc,postgres,polars,sources`.
 - **`dev`** — test/lint toolchain: `pytest`, `pytest-asyncio`, `ruff`, `black`, `mypy`,
-  and **`httpx`** (litestar's TestClient transport — httpx is dev-only, not a runtime
-  dep). No `argon2-cffi` / `joserfc` (those would come with OIDC — roadmap) and no
-  `watchfiles`.
+  and **`httpx`** (litestar's TestClient transport). httpx is not a runtime dependency.
 
-**Build vs buy:** the StreamLog + WorkQueue are built over `sqlite3` — they *are* the
-product; no off-the-shelf embeddable Python option has consumer groups/offsets/replay.
-
-**Rejected outright:** pandas in core, Jinja2, SQLAlchemy, networkx (toposort is a few
-dozen lines), APScheduler, Celery, Redis, Airflow-anything, ibis.
+The stream log and work queue are built on `sqlite3`.
 
 ---
 
@@ -788,10 +760,24 @@ Shipped behaviour is described in the body. This section is only what is still u
 ranked so a later reader does not treat every bullet as equal. Principle: deepen the
 one-process wedge, close trust gaps, defer scale-out until a named user hits the ceiling.
 
+A feature from another tool is in scope only when it serves that principle.
+
+| Tool | Take, because it fits the goal | Leave |
+|---|---|---|
+| SQLMesh | Plan/apply, virtual environments, and the interval ledger are already the state model. Column-level impact is the improvement on their change classification. | Their Airflow and Dagster scheduler integrations. This process owns the loop. |
+| dbt | Selector grammar, and tests that gate promotion. Source freshness is the missing half of "downstream stays current" — cron already refreshes descendants; a stale source does not yet. | MetricFlow, the package hub, and Jinja. Python is the macro language. |
+| Airflow | Retries, leases, and data-aware scheduling of *our* DAG. A trigger already enqueues the model and its descendants. | Arbitrary operators, executors, and a second deployment. |
+| Prefect | Event-driven automations, once they mean "this model finished, run what depends on it." That is the sensor item below. | Work pools and general Python flows. Those are a task runner, which this is not. |
+| dlt | Call it inside a Python model when a connector is the job. Schema drift on streams is the same idea as their schema evolution, already shipped for `@stream`. | Becoming a connector catalog. |
+| Hevo, Census, Hightouch | The terminal plane: deliver into a table the warehouse does not own, and later a delivery ledger for API sinks. | Hosted ELT and a long list of SaaS connectors as the product. |
+| Cloudflare Pipelines | The ingestion reference: fsync before ack, then land where SQL can read it. | Edge scale and a managed Iceberg catalog. Iceberg/R2 remains a sink idea, not the runtime. |
+
 Already shipped (do not look for these here): snapshots and virtual environments,
 column-pruned plan/apply, AST macros, `hash_merge`, indexes/constraints, `reset`,
 cross-process apply lock, fixture tests (`interlace test`), cron/interval/`watch`/
-webhook schedules, Postgres CDC, named `connections:` / `inputs:` (including
+webhook schedules (a trigger enqueues that model and its descendants; an explicit
+`run --select` does not), retry that skips models already recorded as `model.done`,
+lease renewal on a thread rather than a task timeout, Postgres CDC, named `connections:` / `inputs:` (including
 `watch: true` content hashes), runtime `register_model`, MCP, inspect/preview,
 stream SSE consumers, event-log NDJSON, `interlace diff` (env/table compare),
 GitHub Action plan comment, daemon refusal when engines / connections / inputs /
@@ -837,60 +823,3 @@ Python fingerprints that include factory defaults and closure cells.
 Semantic layer / MetricFlow; a package hub; arbitrary-Python-task orchestration;
 Kafka before a Postgres stream log; a DBSP engine; matching dbt-mcp's remote Fusion
 toolset.
-
----
-
-## Appendix — historical context
-
-This document was written to justify a first-principles rebuild of the 0.x line; that
-argument is preserved here in brief. It reasons against the old v0.2.1 codebase, which
-does not live in this tree (it is on branch `v0`).
-
-**Why the rebuild.** Three independent reviews of v0.2.1 found structural defects that
-could not be patched incrementally: (1) broken laziness — ibis was a veneer, every model
-boundary ran `.execute()` → pandas → `ibis.memtable()`; (2) dialect lock-in — strategies
-emitted raw DuckDB SQL strings; (3) no state model — file-hash change detection only, no
-versioned snapshots / virtual environments / plan-apply / interval backfill; (4)
-non-durable streaming — in-memory asyncio queues (restart = loss), ack-before-process;
-(5) cron-loop orchestration — one global run lock serialising all flows; (6) fake async —
-sync `.execute()` blocking workers, a semaphore-of-fresh-connections "pool"; (7) a
-1,000-line Executor coupled to the Rich display; (8) column lineage computed but never
-used for planning. The design above maps each defect to a fix (sqlglot IR + Arrow
-contract, snapshots + virtual environments, durable StreamLog, durable WorkQueue,
-event-subscriber display, lineage-driven planning).
-
-**Market timing (verified June 2026).** Fivetran completed its dbt Labs merger (June 1,
-2026) having already acquired Tobiko (SQLMesh/SQLGlot, Sept 2025); SQLMesh went to the
-Linux Foundation (March 2026) — both major transformation frameworks now sit in one
-company's portfolio. dbt Fusion (Rust) is beta and ELv2-licensed. DuckLake 1.0 is
-production-ready (April 2026). No OSS tool owns ingestion + transformation + orchestration
-in one process — that is the niche.
-
-**Scorecard vs sqlmesh & dbt.** Adopt: sqlmesh snapshots + fingerprints + virtual
-environments + plan/apply + interval ledger (the state-of-the-art state model), and dbt's
-selector syntax verbatim. Improve: sqlmesh change classification (column-level impact
-narrows invalidation); sqlmesh Python models (lazy Arrow handles + streaming generators
-instead of eager DataFrames); dbt `state:modified` (fingerprints in the state store, not
-artifact diffing); dbt tests (typed checks + `@check`, gating promotion). Reject: the
-Jinja/macro layer and `ref()`-as-text (Python is the macro language; references resolve
-at the AST level), the external orchestrator (built-in durable work queue), and pandas as
-interchange (Arrow only). Build (neither has it): durable streaming ingestion. *(Typed
-`vars:` shipped. First-class streaming models, the other differentiator this
-scorecard originally cited, are still design intent — see §14.)*
-
-**What ported from v0.2.1** (concepts, not code): the `@model`/`@stream`/`@check`
-decorator DX; unified Python+SQL models; YAML config with env interpolation; the checks
-subsystem (with results now *gating promotion*); the event-bus concept (made durable);
-the `plan` CLI concept (upgraded to real plan/apply).
-
----
-
-## Sources (verified June 2026)
-
-DuckLake 1.0 (ducklake.select, 2026-04-13); DuckDB 1.5.3 + Iceberg features (duckdb.org,
-2026-05); DuckDB concurrency docs; ducklake#233 (commit conflicts); ADBC driver status
-(adbc-drivers.org, 2026-01); ibis releases (12.0.0, 2026-02) + Voltron Data layoffs (The
-Information, 2024-11); sqlglot lineage API; Fivetran–dbt merger completion (fivetran.com,
-2026-06-01); SQLMesh → Linux Foundation (2026-03-25); dbt Fusion ELv2 licensing;
-Cloudflare Data Platform / Pipelines pricing (2026-05-11); Vector.dev buffering model
-(disk_v2); APScheduler release status; Feldera/DBSP; litestar vs FastAPI benchmarks.

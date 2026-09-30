@@ -1,6 +1,6 @@
 # interlace — reference documentation
 
-The base reference for interlace, written from the shipped code (v2.0.0). interlace is a
+The base reference for interlace. interlace is a
 single-process Python/SQL data platform: transformation (plan/apply over a fingerprinted DAG),
 built-in orchestration, and durable streaming ingestion. Published to PyPI as `interlaced`
 (import and CLI: `interlace`).

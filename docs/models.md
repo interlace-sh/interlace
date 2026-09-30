@@ -212,10 +212,8 @@ before lineage, before transpilation. That ordering is the design, and it buys t
   (`CREATE MACRO` on the engine) would be invisible to the fingerprint: the SQL of every
   caller stays byte-identical, so nothing would rebuild and the tables would quietly disagree
   with the definition.
-- **One definition per dialect, not one per adapter.** The expansion is dialect-agnostic AST,
-  so the transpiler renders it per engine. dbt writes `default__cents_to_dollars`,
-  `postgres__cents_to_dollars`, `bigquery__cents_to_dollars` and so on, because Jinja renders
-  *text* and the text has to differ. Here the one line above becomes:
+- **One definition, rendered per engine.** The expansion is dialect-agnostic AST,
+  so the transpiler renders it per engine. The one line above becomes:
 
   | engine | rendered |
   | --- | --- |
@@ -239,8 +237,7 @@ Details:
 - **The macro does not exist in the warehouse.** This is the real cost: someone querying the
   built tables by hand cannot call `cents_to_dollars`. It is a build-time abstraction.
 
-`examples/jaffle-shop` uses macros for exactly the two cases dbt's does — a project macro and a
-`dbt_utils` one it has no package to install.
+`examples/jaffle-shop` defines project macros this way.
 
 ## Vars
 

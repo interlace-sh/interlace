@@ -57,7 +57,8 @@ projection — not `SELECT *`.
 
 **Status:** *stable* = tested in CI (and locally). *beta* = tested against a local Spark + Delta
 session, with the caveats above. *alpha* = wired and dialect-correct, unit-tested for SQL shape,
-but **not yet run against a live account** (no local target). Not built: **Databricks** (its
+and not in CI. Snowflake has been exercised against one account. MotherDuck, BigQuery, and
+Redshift have not been run against a live account. Not built: **Databricks** (its
 connector is Arrow-native but has no `adbc_ingest` bulk-load path).
 
 Notes: `replace` and `view` are always available; `append` requires `materialise: table` (an

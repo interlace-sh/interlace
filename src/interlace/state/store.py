@@ -196,7 +196,7 @@ class SqliteStateStore:
         its lease. The lease is how soon a dead process is reclaimed, not how
         long a model may run.
         """
-        return self.queue._renew_lease_sync(run_id, owner, lease_seconds)
+        return self.queue.renew_lease_sync(run_id, owner, lease_seconds)
 
     async def request_cancel(self, run_id: int) -> str | None:
         """Cancel a run: queued runs cancel immediately; running runs get a

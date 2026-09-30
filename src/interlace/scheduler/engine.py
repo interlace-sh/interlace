@@ -98,9 +98,7 @@ def scheduled_closure(project: CompiledProject, models: list[str]) -> list[str]:
 class TriggerEngine:
     """Evaluates triggers on each tick and enqueues due runs."""
 
-    def __init__(
-        self, triggers: list[Trigger], store: SqliteStateStore, project: CompiledProject | None = None
-    ) -> None:
+    def __init__(self, triggers: list[Trigger], store: SqliteStateStore, project: CompiledProject) -> None:
         self.triggers = triggers
         self.store = store
         self.project = project
@@ -112,9 +110,7 @@ class TriggerEngine:
             last_fired = await self.store.get_trigger_last_fired(trigger.id)
             requests = trigger.due(now, last_fired)
             for request in requests:
-                selector = request.flow_selector
-                if self.project is not None:
-                    selector = scheduled_closure(self.project, selector)
+                selector = scheduled_closure(self.project, request.flow_selector)
                 partition = (
                     (request.partition.start.isoformat(), request.partition.end.isoformat())
                     if request.partition is not None

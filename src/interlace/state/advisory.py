@@ -50,9 +50,10 @@ class AdvisoryLockStore:
 
     async def renew_lock(self, name: str, *, owner: str, lease_seconds: float = 180.0) -> bool:
         """Extend a lock only if ``owner`` still holds it. Returns False if lost."""
-        return await self._db.io(self._renew_lock_sync, name, owner, lease_seconds)
+        return await self._db.io(self.renew_lock_sync, name, owner, lease_seconds)
 
-    def _renew_lock_sync(self, name: str, owner: str, lease_seconds: float) -> bool:
+    def renew_lock_sync(self, name: str, owner: str, lease_seconds: float) -> bool:
+        """Extend the lock off the event loop. False when ``owner`` no longer holds it."""
         with self._db.lock:
             self._db.conn.execute("BEGIN IMMEDIATE")
             try:

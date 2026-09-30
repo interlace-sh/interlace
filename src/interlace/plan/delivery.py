@@ -17,14 +17,14 @@ from interlace.ir.layout import XFER_SCHEMA
 from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.physical.reconcile import model_objects, object_changes, reconcile_statements
 from interlace.physical.spec import PhysicalObject
-from interlace.plan.fit import _prepare_alignment, _remember
+from interlace.plan.fit import prepare_alignment, remember
 from interlace.sinks import target_ref
 from interlace.state.interval import Interval
 from interlace.strategies import Strategy
 from interlace.strategies.base import RowCounts
 
 
-async def _physical_ddl(
+async def physical_ddl(
     engine: EngineAdapter,
     model: CompiledModel,
     table: TableRef,
@@ -75,12 +75,12 @@ async def _execute_delivery(
     aligned: exp.Query = resolved
     columns: list[str] | None = None
     if source_columns is not None and source_from is not None:
-        pre, aligned, columns = _prepare_alignment(
+        pre, aligned, columns = prepare_alignment(
             model, strategy, source_columns, source_from, target, await engine.describe(target), notes
         )
-    ddl, objects, warnings = await _physical_ddl(engine, model, target, previous, same_table=same_table)
+    ddl, objects, warnings = await physical_ddl(engine, model, target, previous, same_table=same_table)
     for warning in warnings:
-        _remember(notes, warning)
+        remember(notes, warning)
     planned = strategy.plan_statements(SqlRelation(ast=aligned), target, engine.caps, interval, columns)
     if source_columns is None:
         # The strategy's ensure-create makes the table; indexes land after it exists.
@@ -119,13 +119,7 @@ class ExternalDelivery:
             if self._stage is not None:
                 await self._owned.execute(drop(self._stage.to_expr(), kind="TABLE"))
         finally:
-            _close_engine(self._owned)
-
-
-def _close_engine(engine: EngineAdapter) -> None:
-    close = getattr(engine, "close", None)
-    if callable(close):
-        close()
+            self._owned.close()
 
 
 def open_sink(uri: str) -> EngineAdapter:
@@ -171,14 +165,14 @@ async def open_external_delivery(
         await owned.create_schema(stage.schema)
         await owned.load(stage, await source.fetch(query), "create")
     except Exception:
-        _close_engine(owned)
+        owned.close()
         raise
     local = TableRef(schema=target.schema, name=target.name)
     staged: exp.Query = exp.select("*").from_(stage.to_expr())
     return ExternalDelivery(owned, staged, local, owned=owned, stage=stage)
 
 
-async def _deliver_table(
+async def deliver_table(
     model: CompiledModel,
     engine: EngineAdapter,
     resolved: exp.Query,

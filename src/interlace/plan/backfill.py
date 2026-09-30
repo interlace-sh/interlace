@@ -23,13 +23,13 @@ from interlace.exceptions import CheckError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import SqlRelation, TableRef, drop
 from interlace.physical.spec import PhysicalObject
-from interlace.plan.delivery import _deliver_table, _physical_ddl, open_external_delivery
+from interlace.plan.delivery import deliver_table, open_external_delivery, physical_ddl
 from interlace.plan.files import drop_file_stages, stage_file_scans
-from interlace.plan.fit import _align_stage_to_target, _remember
+from interlace.plan.fit import align_stage_to_target, remember
 from interlace.plan.plan import BackfillTask, Plan
 from interlace.plan.resolve import resolve_model_query
-from interlace.plan.result import ApplyResult, _record_build, _record_timing
-from interlace.plan.transfer import _stage_cross_engine_inputs
+from interlace.plan.result import ApplyResult, record_build, record_timing
+from interlace.plan.transfer import stage_cross_engine_inputs
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.sinks import file_statements, write_arrow_file
 from interlace.state.interval import Interval
@@ -76,7 +76,7 @@ async def _merge_python_output(
     pre_statements: list[exp.Expr] = []
     columns: list[str] | None = None
     if exists:
-        alignment = await _align_stage_to_target(engine, stage, target, strategy)
+        alignment = await align_stage_to_target(engine, stage, target, strategy)
         pre_statements = alignment.pre_statements
         source, columns = alignment.for_strategy(strategy)
     elif strategy.writes_named_columns and strategy.managed_columns:
@@ -208,9 +208,9 @@ async def _stamp_owned(
         return replace(snapshot, physical_hash=model.physical_hash)
     same = recorded is not None and recorded.physical_table == snapshot.physical_table
     previous = recorded.physical_objects if same and recorded is not None else ()
-    ddl, objects, warnings = await _physical_ddl(engine, model, snapshot.physical_table, previous, same_table=same)
+    ddl, objects, warnings = await physical_ddl(engine, model, snapshot.physical_table, previous, same_table=same)
     for warning in warnings:
-        _remember(notes, warning)
+        remember(notes, warning)
     if ddl:
         await engine.execute_all(ddl)
     return replace(snapshot, physical_hash=model.physical_hash, physical_objects=objects)
@@ -271,7 +271,7 @@ async def _deliver_terminal(
             inserted = exported.num_rows
         result.record_rows(snapshot.name, RowCounts(inserted=inserted))
         await state.add_snapshot(snapshot)
-        _record_build(result, snapshot.name, task_started)
+        record_build(result, snapshot.name, task_started)
         return
 
     strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
@@ -281,7 +281,7 @@ async def _deliver_terminal(
     previous_objects = await _external_objects(state, plan.environment, snapshot.name, snapshot.fingerprint)
     delivery = await open_external_delivery(model, target_engine, resolved, registry.sinks)
     try:
-        delivered, objects = await _deliver_table(
+        delivered, objects = await deliver_table(
             model,
             delivery.engine,
             delivery.query,
@@ -300,12 +300,12 @@ async def _deliver_terminal(
         await _gate_checks(
             model, compiled, delivery.engine, state, plan.environment, result, resolution, target=delivery.table
         )
-        _record_build(result, snapshot.name, task_started)
+        record_build(result, snapshot.name, task_started)
     finally:
         await delivery.close()
 
 
-async def _run_backfill(  # noqa: C901
+async def run_backfill(  # noqa: C901
     task: BackfillTask,
     plan: Plan,
     compiled: CompiledProject,
@@ -322,7 +322,7 @@ async def _run_backfill(  # noqa: C901
     snapshot = task.snapshot
     model = compiled.models[snapshot.name]
     target_engine = registry.require(model.engine, model=model.name)
-    resolution = await _stage_cross_engine_inputs(model, compiled, registry, physical, staged, stage_lock, result)
+    resolution = await stage_cross_engine_inputs(model, compiled, registry, physical, staged, stage_lock, result)
 
     if task.reuse_existing and await target_engine.table_exists(snapshot.physical_table):
         # fingerprint already materialised (e.g. by another environment): the content-
@@ -336,7 +336,7 @@ async def _run_backfill(  # noqa: C901
         if snapshot.name not in result.built and snapshot.name not in result.reused:
             result.reused.append(snapshot.name)
         await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-        _record_timing(result, snapshot.name, task_started)
+        record_timing(result, snapshot.name, task_started)
         return
 
     if model.ast is None:  # Python model: run the function, load Arrow into the snapshot table
@@ -385,7 +385,7 @@ async def _run_backfill(  # noqa: C901
             validate_contract(model.name, await target_engine.describe(snapshot.physical_table), model.columns)
         await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
         await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-        _record_build(result, snapshot.name, task_started)
+        record_build(result, snapshot.name, task_started)
         return
 
     resolved = resolve_model_query(model, compiled, resolution)
@@ -394,7 +394,7 @@ async def _run_backfill(  # noqa: C901
         # destination. Record the snapshot so the plan settles; deliver nothing.
         await state.add_snapshot(snapshot)
         result.gated.append(snapshot.name)
-        _record_timing(result, snapshot.name, task_started)
+        record_timing(result, snapshot.name, task_started)
         return
 
     resolved, file_stages = await stage_file_scans(target_engine, resolved, base_path or Path.cwd(), model.name)
@@ -436,6 +436,6 @@ async def _run_backfill(  # noqa: C901
         snapshot = await _accumulate_interval(state, snapshot, interval)
         await state.add_snapshot(await _stamp_owned(snapshot, model, target_engine, state, plan.warnings))
         await _gate_checks(model, compiled, target_engine, state, plan.environment, result, resolution)
-        _record_build(result, snapshot.name, task_started)
+        record_build(result, snapshot.name, task_started)
     finally:
         await drop_file_stages(target_engine, file_stages)

@@ -47,6 +47,13 @@ def test_metadata_fingerprint_is_independent_of_data() -> None:
     assert metadata_fingerprint({"owner": "alice"}) != metadata_fingerprint({"owner": "bob"})
 
 
+def test_a_computed_default_is_part_of_the_python_fingerprint() -> None:
+    def orders(raw: object, n: int = 1 + 1) -> int:
+        return n
+
+    assert python_source(orders) != textwrap.dedent(inspect.getsource(orders))
+
+
 def test_literal_default_stays_out_of_the_python_fingerprint() -> None:
     def plain(cursor: object = None) -> object:
         return cursor

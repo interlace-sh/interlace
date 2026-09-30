@@ -35,7 +35,7 @@ class ApplyResult:
 ProgressCallback = Callable[[str, str, dict[str, Any]], None]
 
 
-def _build_detail(result: ApplyResult, name: str) -> dict[str, Any]:
+def build_detail(result: ApplyResult, name: str) -> dict[str, Any]:
     """What a finished model did: wall-clock seconds and the row delta."""
     detail: dict[str, Any] = {"seconds": round(result.timings.get(name, 0.0), 3)}
     counts = result.rows.get(name)
@@ -44,7 +44,7 @@ def _build_detail(result: ApplyResult, name: str) -> dict[str, Any]:
     return detail
 
 
-def _failure_detail(exc: BaseException) -> dict[str, Any]:
+def failure_detail(exc: BaseException) -> dict[str, Any]:
     """The message and, when an engine statement failed, the SQL that failed."""
     if isinstance(exc, InterlaceError):
         message = exc.message
@@ -57,12 +57,12 @@ def _failure_detail(exc: BaseException) -> dict[str, Any]:
     return detail
 
 
-def _record_timing(result: ApplyResult, name: str, started: float) -> None:
+def record_timing(result: ApplyResult, name: str, started: float) -> None:
     result.timings[name] = result.timings.get(name, 0.0) + (time.perf_counter() - started)
 
 
-def _record_build(result: ApplyResult, name: str, started: float) -> None:
+def record_build(result: ApplyResult, name: str, started: float) -> None:
     """One ``built`` entry per model, timings summed across interval windows."""
     if name not in result.built:
         result.built.append(name)
-    _record_timing(result, name, started)
+    record_timing(result, name, started)

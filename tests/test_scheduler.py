@@ -59,7 +59,7 @@ async def test_watch_trigger_enqueues_on_change_and_dedupes(
     inbox.mkdir()
     (inbox / "a.csv").write_text("id\n1\n")
     project = compile_models([ModelDef(name="m", sql="SELECT 1 AS x", schedule={"watch": "inbox/*.csv"})])
-    engine = TriggerEngine(build_triggers(project, root=tmp_path), store)
+    engine = TriggerEngine(build_triggers(project, root=tmp_path), store, project)
     now = datetime(2026, 1, 1, 12, 0)
     assert await engine.tick(now) == 1
     assert await engine.tick(now) == 0  # same path, size, and mtime

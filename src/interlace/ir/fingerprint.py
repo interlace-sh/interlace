@@ -12,10 +12,10 @@ chars) because it becomes part of physical table names.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import json
-import re
 import textwrap
 from collections.abc import Callable
 from datetime import date, datetime
@@ -82,7 +82,7 @@ def _python_source(fn: Callable[..., Any], seen: set[int]) -> str:
 
 
 def _captured(fn: Callable[..., Any], source: str, seen: set[int]) -> dict[str, Any]:
-    defaults = _bound_defaults(fn, _signature_header(source), seen)
+    defaults = _bound_defaults(fn, source, seen)
     closures = _bound_closures(fn, seen)
     captured: dict[str, Any] = {}
     if defaults:
@@ -92,14 +92,15 @@ def _captured(fn: Callable[..., Any], source: str, seen: set[int]) -> dict[str, 
     return captured
 
 
-def _bound_defaults(fn: Callable[..., Any], header: str, seen: set[int]) -> dict[str, Any]:
+def _bound_defaults(fn: Callable[..., Any], source: str, seen: set[int]) -> dict[str, Any]:
     try:
         signature = inspect.signature(fn)
     except (TypeError, ValueError):
         return {}
+    written = _literal_defaults(source)
     defaults: dict[str, Any] = {}
     for name, param in signature.parameters.items():
-        if param.default is inspect.Parameter.empty or _written_as_literal(header, name, param.default):
+        if param.default is inspect.Parameter.empty or name in written:
             continue
         defaults[name] = _stable_value(param.default, seen)
     return defaults
@@ -119,45 +120,45 @@ def _bound_closures(fn: Callable[..., Any], seen: set[int]) -> dict[str, Any]:
     return closures
 
 
-def _signature_header(source: str) -> str:
-    """The ``def`` line only, so a mention of ``cursor=None`` in the body is not a literal."""
-    start = source.find("def ")
-    if start < 0:
-        return source
-    depth = 0
-    seen_paren = False
-    for index, char in enumerate(source[start:], start):
-        if char == "(":
-            depth += 1
-            seen_paren = True
-        elif char == ")":
-            depth -= 1
-        elif char == ":" and seen_paren and depth == 0:
-            return source[start:index]
-    return source[start:]
+def _literal_defaults(source: str) -> set[str]:
+    """Parameter names whose default expression is a constant in the source.
+
+    ``cursor=None`` is already in the function text. ``tenant=tenant`` is a name,
+    so the captured value still has to be hashed.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    function = next(
+        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))),
+        None,
+    )
+    if function is None:
+        return set()
+    args = function.args
+    names: set[str] = set()
+    positional = [*args.posonlyargs, *args.args]
+    if args.defaults:
+        paired = positional[-len(args.defaults) :]
+        for arg, default in zip(paired, args.defaults, strict=True):
+            if _is_literal(default):
+                names.add(arg.arg)
+    for kwarg, kw_default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+        if kw_default is not None and _is_literal(kw_default):
+            names.add(kwarg.arg)
+    return names
 
 
-def _written_as_literal(header: str, name: str, value: object) -> bool:
-    for form in _literal_forms(value):
-        # An annotation may sit between the name and `=`: `cursor: object = None`.
-        pattern = rf"(?<!\w){re.escape(name)}(?:\s*:\s*[^=]+?)?\s*=\s*{re.escape(form)}(?!\w)"
-        if re.search(pattern, header):
-            return True
-    return False
-
-
-def _literal_forms(value: object) -> tuple[str, ...]:
-    if value is None:
-        return ("None",)
-    if isinstance(value, bool):
-        return ("True",) if value else ("False",)
-    if isinstance(value, int):
-        return (repr(value),)
-    if isinstance(value, float):
-        return (repr(value),)
-    if isinstance(value, str):
-        return tuple(dict.fromkeys((repr(value), json.dumps(value))))
-    return ()
+def _is_literal(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    # ``-1`` parses as a unary minus of a constant, and it is still a literal.
+    return (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, (ast.UAdd, ast.USub))
+        and isinstance(node.operand, ast.Constant)
+    )
 
 
 def _stable_value(value: object, seen: set[int]) -> Any:

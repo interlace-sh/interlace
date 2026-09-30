@@ -22,9 +22,9 @@ from interlace.engines.registry import EngineRegistry
 from interlace.exceptions import ExecutionError, InterlaceError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import TableRef
-from interlace.plan.backfill import _run_backfill
+from interlace.plan.backfill import run_backfill
 from interlace.plan.plan import BackfillTask, Plan
-from interlace.plan.result import ApplyResult, ProgressCallback, _build_detail, _failure_detail
+from interlace.plan.result import ApplyResult, ProgressCallback, build_detail, failure_detail
 from interlace.state.store import StateStore
 
 logger = logging.getLogger("interlace.apply")
@@ -134,7 +134,7 @@ async def schedule_builds(  # noqa: C901
                 if on_progress is not None:
                     on_progress(name, "start", {})
                 for model_task in per_model[name]:
-                    await _run_backfill(
+                    await run_backfill(
                         model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
                     )
         except asyncio.CancelledError:  # a SIBLING failed; this model is collateral
@@ -145,7 +145,7 @@ async def schedule_builds(  # noqa: C901
             # Name the failing model as live feedback; the full message is surfaced once
             # by the caller (the CLI prints it, the API returns it) — don't duplicate it here.
             logger.warning("model %s failed (%s)", name, type(exc).__name__)
-            detail = _failure_detail(exc)
+            detail = failure_detail(exc)
             if on_progress is not None:
                 on_progress(name, "failed", detail)
             # Wrap a plain build error (engine/SQL/Python-model exception) so it reads as one
@@ -162,7 +162,7 @@ async def schedule_builds(  # noqa: C901
             raise
         finished[name].set()
         if on_progress is not None:
-            on_progress(name, "done", _build_detail(result, name))
+            on_progress(name, "done", build_detail(result, name))
 
     # Copied into each build task at creation, so a Python model that registers
     # models (including from a worker thread) appends to this same list.

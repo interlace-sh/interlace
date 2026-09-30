@@ -193,3 +193,7 @@ class EngineAdapter(ABC):
     def attach(self, alias: str, uri: str) -> None:
         """ATTACH another database under ``alias``. Only engines with ``supports_attach``."""
         raise NotImplementedError(f"{type(self).__name__} cannot ATTACH another database")
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release the connection this adapter holds."""

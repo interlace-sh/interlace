@@ -124,9 +124,10 @@ class WorkQueue:
     async def renew_lease(self, run_id: int, *, owner: str, lease_seconds: float = 60.0) -> str:
         """Heartbeat: extend the lease. Returns "ok", "cancel" (cancellation was
         requested — stop cooperatively), or "lost" (another worker holds the run)."""
-        return await self._db.io(self._renew_lease_sync, run_id, owner, lease_seconds)
+        return await self._db.io(self.renew_lease_sync, run_id, owner, lease_seconds)
 
-    def _renew_lease_sync(self, run_id: int, owner: str, lease_seconds: float) -> str:
+    def renew_lease_sync(self, run_id: int, owner: str, lease_seconds: float) -> str:
+        """Same verdicts as :meth:`renew_lease`, called on the heartbeat thread."""
         # BEGIN IMMEDIATE + owner-fenced UPDATE: without it a starved worker whose
         # lease already expired can read its own stale ownership just before a
         # reclaimer's claim commits, then extend the reclaimer's lease — and both

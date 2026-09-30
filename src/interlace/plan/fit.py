@@ -135,7 +135,7 @@ def _fit_columns(
     )
 
 
-async def _align_stage_to_target(
+async def align_stage_to_target(
     engine: EngineAdapter, stage: TableRef, target: TableRef, strategy: Strategy
 ) -> Alignment:
     """Describe a staged source and fit it to an existing target. See :func:`_fit_columns`."""
@@ -174,12 +174,12 @@ def _require_managed_columns(strategy: Strategy, target: TableRef, target_column
         )
 
 
-def _remember(notes: list[str] | None, warning: str) -> None:
+def remember(notes: list[str] | None, warning: str) -> None:
     if notes is not None and warning not in notes:
         notes.append(warning)
 
 
-def _prepare_alignment(
+def prepare_alignment(
     model: CompiledModel,
     strategy: Strategy,
     source_columns: Mapping[str, str],
@@ -199,7 +199,7 @@ def _prepare_alignment(
             if column not in source_columns and column not in strategy.managed_columns
         ]
         if extras:
-            _remember(
+            remember(
                 notes,
                 f"{model.name}: {qualified} has columns the model does not produce ({', '.join(extras)}); left in place",
             )
@@ -215,7 +215,7 @@ def _prepare_alignment(
             details={"model": model.name, "target": model.target},
         )
     if alignment.unproduced:
-        _remember(
+        remember(
             notes,
             f"{model.name}: {qualified} has columns the model does not produce "
             f"({', '.join(alignment.unproduced)}); left in place",

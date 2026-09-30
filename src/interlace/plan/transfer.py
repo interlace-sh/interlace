@@ -20,7 +20,7 @@ from interlace.ir.relation import TableRef
 from interlace.plan.result import ApplyResult
 
 
-async def _stage_cross_engine_inputs(
+async def stage_cross_engine_inputs(
     model: CompiledModel,
     compiled: CompiledProject,
     registry: EngineRegistry,

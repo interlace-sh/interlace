@@ -33,8 +33,8 @@ from interlace.exceptions import PlanError
 from interlace.graph.project import CompiledProject
 from interlace.ir.relation import TableRef, drop
 from interlace.plan.annotate import annotate_plan
-from interlace.plan.delivery import _physical_ddl
-from interlace.plan.fit import _remember
+from interlace.plan.delivery import physical_ddl
+from interlace.plan.fit import remember
 from interlace.plan.plan import ChangeType, Plan, env_view
 from interlace.plan.result import ApplyResult, ProgressCallback
 from interlace.plan.schedule import schedule_builds
@@ -123,9 +123,9 @@ async def apply(  # noqa: C901
             table = recorded.physical_table if recorded is not None else model.physical_table
         if not await target_engine.table_exists(table):
             continue
-        ddl, objects, warnings = await _physical_ddl(target_engine, model, table, action.previous, same_table=True)
+        ddl, objects, warnings = await physical_ddl(target_engine, model, table, action.previous, same_table=True)
         for warning in warnings:
-            _remember(plan.warnings, warning)
+            remember(plan.warnings, warning)
         if ddl:
             await target_engine.execute_all(ddl)
         recorded = await state.get_snapshot(model.name, model.fingerprint)

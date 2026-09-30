@@ -40,7 +40,7 @@ async def hold_apply_lock(
     stop, beat = start_heartbeat(
         "interlace-apply-lock",
         max(lease_seconds / 3.0, 0.05),
-        lambda: store.locks._renew_lock_sync(APPLY_LOCK, owner, lease_seconds),
+        lambda: store.locks.renew_lock_sync(APPLY_LOCK, owner, lease_seconds),
     )
     try:
         yield

@@ -130,7 +130,7 @@ class ModelDef:
     path: str | None = None  # output path for materialise: file
     format: str | None = None  # csv | parquet | json for materialise: file
     environments: tuple[str, ...] = ("prod",)  # which environments actually deliver a terminal model
-    schedule: dict[str, str] | None = None  # cron, every, watch (glob), on_change (column), or webhook name
+    schedule: dict[str, str] | None = None  # cron, every, watch, on_change, fresh, or webhook
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
     indexes: tuple[IndexSpec, ...] = ()  # physical indexes; not part of the data fingerprint
     constraints: tuple[ConstraintSpec, ...] = ()  # physical constraints; engine-enforced, not checks
@@ -151,6 +151,12 @@ class ModelDef:
         self.constraints = parse_constraints(self.constraints, self.name)
         self.schema_policy = parse_schema_policy(self.schema_policy, self.name)
         validate_physical_allowed(self.name, self.materialise, self.indexes, self.constraints, self.schema_policy)
+        # ``fresh: {column, within}`` is the readable form; everything downstream
+        # stores schedule values as strings ("updated_at 2h"). Imported here:
+        # a module-level import of the scheduler package cycles back into this one.
+        from interlace.scheduler.triggers import normalize_schedule
+
+        self.schedule = normalize_schedule(self.schedule, model=self.name)
 
     @property
     def is_terminal(self) -> bool:
@@ -242,7 +248,7 @@ def model(
     owner: str | None = None,
     description: str | None = None,
     columns: dict[str, str | None] | Sequence[str] | None = None,
-    schedule: dict[str, str] | None = None,
+    schedule: dict[str, Any] | None = None,
     checks: Sequence[dict[str, Any] | CheckSpec] | None = None,
     indexes: Sequence[dict[str, Any] | IndexSpec] | None = None,
     constraints: Sequence[dict[str, Any] | ConstraintSpec] | None = None,
@@ -290,6 +296,8 @@ def model(
     )
 
     def decorator(fn: ModelFn) -> ModelFn:
+        from interlace.scheduler.triggers import normalize_schedule
+
         REGISTRY.register_model(
             ModelDef(
                 name=name or fn.__name__,
@@ -307,7 +315,7 @@ def model(
                 owner=owner,
                 description=description,
                 columns=_as_columns(columns),
-                schedule=schedule,
+                schedule=normalize_schedule(schedule, model=name or fn.__name__),
                 checks=parse_checks(checks, name or fn.__name__),
                 indexes=parse_indexes(indexes, name or fn.__name__),
                 constraints=parse_constraints(constraints, name or fn.__name__),

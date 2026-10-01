@@ -141,6 +141,7 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
             "every": f"interval:{name}",
             "watch": f"watch:{name}",
             "on_change": f"change:{name}",
+            "fresh": f"fresh:{name}",
         }.get(kind)
         last = await state.store.get_trigger_last_fired(trigger_id) if trigger_id else None
 
@@ -153,11 +154,12 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
         if kind == "cron":
             with contextlib.suppress(Exception):
                 next_fire = next(CronSim(expression, last or datetime.now()))
-        elif kind == "every" and last is not None:
+        elif kind in ("every", "fresh") and last is not None:
             from interlace.state.interval import parse_grain
 
+            grain = expression.rsplit(" ", 1)[-1] if kind == "fresh" else expression
             with contextlib.suppress(Exception):
-                next_fire = last + parse_grain(expression)
+                next_fire = last + parse_grain(grain)
         infos.append(
             ScheduleInfo(
                 model=name,

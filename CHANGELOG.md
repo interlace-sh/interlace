@@ -11,6 +11,12 @@ value changes. A missing source table waits.
 scheduler starts. `--no-apply` serves the warehouse as it is. A breaking plan
 is logged and the process still comes up.
 
+**A stale source can schedule a run.** `schedule: {fresh: "updated_at 2h"}`
+(or `{fresh: {column: updated_at, within: 2h}}`) reads `max(column)` the same
+way as `on_change` and enqueues that model and its descendants when the
+timestamp is older than the window. An empty table counts. A missing table
+waits. A source that stays stale enqueues once per window.
+
 ## 2.8.3 (2026-09-30)
 
 **A schedule refreshes downstream models.** A cron, interval, file watch, or

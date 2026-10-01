@@ -143,17 +143,20 @@ class RunRequest:
 ```
 
 A cron or interval trigger is pure: given the current time and when it last fired,
-it returns the runs now due. **Four ticking implementations ship: `CronTrigger`
+it returns the runs now due. **Five ticking implementations ship: `CronTrigger`
 (parsed by `cronsim`), `IntervalTrigger`, `WatchTrigger`** (a glob hashed from path,
-size, and mtime on the same tick — no directory watcher), **and `OnChangeTrigger`**
+size, and mtime on the same tick — no directory watcher), **`OnChangeTrigger`**
 (`schedule: {on_change: column}` reads `max(column)` from the one table the model
 reads, or from `table.column` / `schema.table.column`, and enqueues when that value
-changes). Each keys its `RunRequest` so a crash between enqueue and the last-fired
-write re-lands on the same idempotency key and the durable queue dedupes instead of
-double-running. An inbound `{webhook: name}` is not a tick: `POST /hooks/{name}`
-enqueues that model. Stream arrival does *not* go through a trigger: a flush
-enqueues the stream's downstream consumers directly (§9). A staleness threshold and
-upstream-completion sensors are roadmap (§14).
+changes), **and `FreshTrigger`** (`schedule: {fresh: "updated_at 2h"}`, or
+`{fresh: {column: updated_at, within: 2h}}`, enqueues when that maximum is older
+than the window; an empty table counts, a missing table waits, and a source that
+stays stale fires once per window). Each keys its `RunRequest` so a crash between
+enqueue and the last-fired write re-lands on the same idempotency key and the
+durable queue dedupes instead of double-running. An inbound `{webhook: name}` is
+not a tick: `POST /hooks/{name}` enqueues that model. Stream arrival does *not* go
+through a trigger: a flush enqueues the stream's downstream consumers directly (§9).
+Upstream-completion sensors are roadmap (§14).
 
 ---
 
@@ -599,22 +602,23 @@ class WorkQueue(Protocol):
 ```
 
 **Current state.** A `TriggerEngine` ticks `Trigger`s (`CronTrigger` via `cronsim`,
-`IntervalTrigger`, `WatchTrigger`, `OnChangeTrigger`) against durable per-trigger state in the state DB; due runs enqueue
+`IntervalTrigger`, `WatchTrigger`, `OnChangeTrigger`, `FreshTrigger`) against durable per-trigger state in the state DB; due runs enqueue
 (idempotency-keyed) onto a **durable run queue** (`work_queue` table). `worker.drain`
 claims runs under a **lease** (one minute, renewed from a thread — a crash window, not a limit on how long a model may run), heartbeats while executing (the heartbeat doubles as the
 cooperative **cancellation** channel — `interlace cancel <id>` / `POST /runs/{id}/
 cancel`), retries durably up to `max_attempts`, and executes
 them as forced runs (so they pick up new data). There is no runtime cap unless a caller sets one. A retry rebuilds only models that
 did not finish; models that reached `model.done` are promoted again and not
-recomputed. A cron, interval, watch, or webhook enqueues that model and its
+recomputed. A cron, interval, watch, table change, freshness, or webhook enqueues that model and its
 downstream closure. `run --select` is not expanded. Stream flushes enqueue the consuming
 models with the watermark as the idempotency key. `interlace serve` applies the
 project once, then ties tick → enqueue → drain in one process (`--no-apply` skips
 the apply; `interlace scheduler --once` is a single tick). `cronsim`
 parses cron expressions. Models declare `schedule: {cron: …}`,
 `{every: …}`, `{watch: "inbox/*.csv"}` (a glob of path, size, and mtime on the
-existing tick — no directory watcher), `{on_change: column}`, or `{webhook: name}`
-(`POST /hooks/{name}`).
+existing tick — no directory watcher), `{on_change: column}`, `{fresh: "updated_at 2h"}`
+(or `{fresh: {column, within}}`; a missing table waits, an empty one counts as stale),
+or `{webhook: name}` (`POST /hooks/{name}`).
 
 The lease columns on `work_queue` provide crash-reclaim of *work items* (a dead worker's
 lease expires and the task is re-claimed). This is **not** leader election: there is no
@@ -625,7 +629,7 @@ separate `interlace backfill` command.
 
 **Not yet built (roadmap, §14):** SLA monitors + alerting (`@model(sla=…)`, an
 `AlertRouter`, an `alerts` table), leader election for multi-node singleton loops, and
-staleness thresholds and upstream-completion sensors. File-watch, table-change, and inbound webhook schedules ship.
+upstream-completion sensors. File-watch, table-change, freshness, and inbound webhook schedules ship.
 
 ---
 
@@ -770,7 +774,7 @@ A feature from another tool is in scope only when it serves that principle.
 | Tool | Take, because it fits the goal | Leave |
 |---|---|---|
 | SQLMesh | Plan/apply, virtual environments, and the interval ledger are already the state model. Column-level impact is the improvement on their change classification. | Their Airflow and Dagster scheduler integrations. This process owns the loop. |
-| dbt | Selector grammar, and tests that gate promotion. `on_change` runs a model when a source column's max moves. A staleness threshold that fires on its own is still later. | MetricFlow, the package hub, and Jinja. Python is the macro language. |
+| dbt | Selector grammar, and tests that gate promotion. `on_change` runs a model when a source column's max moves. `fresh` runs it when that maximum is older than a window. | MetricFlow, the package hub, and Jinja. Python is the macro language. |
 | Airflow | Retries, leases, and data-aware scheduling of *our* DAG. A trigger already enqueues the model and its descendants. | Arbitrary operators, executors, and a second deployment. |
 | Prefect | Event-driven automations, once they mean "this model finished, run what depends on it." That is the sensor item below. | Work pools and general Python flows. Those are a task runner, which this is not. |
 | dlt | Call it inside a Python model when a connector is the job. Schema drift on streams is the same idea as their schema evolution, already shipped for `@stream`. | Becoming a connector catalog. |
@@ -780,7 +784,7 @@ A feature from another tool is in scope only when it serves that principle.
 Already shipped (do not look for these here): snapshots and virtual environments,
 column-pruned plan/apply, AST macros, `hash_merge`, indexes/constraints, `reset`,
 cross-process apply lock, fixture tests (`interlace test`), cron/interval/`watch`/
-`on_change`/webhook schedules (a trigger enqueues that model and its descendants; an explicit
+`on_change`/`fresh`/webhook schedules (a trigger enqueues that model and its descendants; an explicit
 `run --select` does not), retry that skips models already recorded as `model.done`,
 lease renewal on a thread rather than a task timeout, Postgres CDC, named `connections:` / `inputs:` (including
 `watch: true` content hashes), runtime `register_model`, MCP, inspect/preview,
@@ -799,9 +803,9 @@ Python fingerprints that include factory defaults and closure cells.
 
 ### Later
 
-- **Sensor triggers** — a staleness threshold (fire when `max(column)` is older than
-  a window) and upstream-completion. Cron, interval, file-watch, `on_change`, and
-  inbound webhook already ship (§2.6, §10).
+- **Upstream completion** — fire when an upstream model finishes, rather than on a
+  clock. Cron, interval, file-watch, `on_change`, `fresh`, and inbound webhook
+  already ship (§2.6, §10).
 - **SLA + alerting** — `@model(sla=…)`, `AlertRouter` to Slack/webhook/email, `alerts`
   table, UI history (§10).
 - **Leader election / multi-node** — `leases` for singleton loops, Postgres

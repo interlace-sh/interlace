@@ -4,17 +4,20 @@ One abstraction (``Trigger.due``) for cron, interval, and file watch. A cron or
 interval trigger is pure: given the current time and when it last fired, it
 returns the runs that are now due. A file watch hashes matching files. A table
 change (``OnChangeTrigger``) is probed by the engine, which reads ``max(column)``
-from a source table. Inbound webhooks are not triggers; ``POST /hooks/{name}``
-enqueues them.
+from a source table. A freshness trigger (``FreshTrigger``) enqueues when that
+maximum is older than a window. Inbound webhooks are not triggers;
+``POST /hooks/{name}`` enqueues them.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from cronsim import CronSim
 from sqlglot import exp
@@ -156,3 +159,70 @@ class OnChangeTrigger:
 def change_query(table: TableRef, column: str) -> exp.Select:
     """``SELECT max(column) AS watermark FROM table``."""
     return exp.select(exp.alias_(exp.Max(this=exp.to_identifier(column)), "watermark")).from_(table.to_expr())
+
+
+_FRESH_UNITS = {"s": "SECOND", "m": "MINUTE", "h": "HOUR", "d": "DAY", "w": "WEEK"}
+_FRESH_RE = re.compile(r"^(\d+)([smhdw])$")
+
+
+def normalize_schedule(schedule: Mapping[str, Any] | None, *, model: str) -> dict[str, str] | None:
+    """Schedules are string values. ``fresh: {column, within}`` becomes ``"column within"``."""
+    if not schedule:
+        return None
+    normalised: dict[str, str] = {}
+    for key, value in schedule.items():
+        if key == "fresh" and isinstance(value, dict):
+            column = value.get("column")
+            window = value.get("within")
+            if not isinstance(column, str) or not column.strip():
+                raise DefinitionError(f"model {model!r}: fresh.column must name a timestamp column")
+            if not isinstance(window, str) or not window.strip():
+                raise DefinitionError(f"model {model!r}: fresh.within must be a window like '2h'")
+            normalised[key] = f"{column.strip()} {window.strip()}"
+            continue
+        if not isinstance(value, str):
+            raise DefinitionError(f"model {model!r}: schedule {key!r} must be a string")
+        normalised[key] = value
+    return normalised
+
+
+@dataclass
+class FreshTrigger:
+    """Enqueued by the engine when ``max(column)`` is older than ``window``.
+
+    A missing source table waits. An empty table, or a null maximum, is stale.
+    While it stays stale, one run is enqueued per window.
+    """
+
+    model: str
+    column: str
+    table: TableRef
+    engine: str
+    window: str
+    within: timedelta
+    id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.id = f"fresh:{self.model}"
+
+    def due(self, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
+        del now, last_fired
+        return []
+
+    def request(self, now: datetime) -> RunRequest:
+        seconds = max(1, int(self.within.total_seconds()))
+        slot = int(now.timestamp()) // seconds * seconds
+        stamp = datetime.fromtimestamp(slot, tz=UTC).isoformat()
+        return RunRequest([self.model], idempotency_key=f"fresh:{self.model}:{stamp}")
+
+
+def fresh_query(table: TableRef, column: str, window: str) -> exp.Select:
+    """``max(column)`` is null or older than ``window`` (a grain like ``2h``)."""
+    match = _FRESH_RE.fullmatch(window.strip())
+    if match is None:
+        raise DefinitionError(f"invalid freshness window {window!r}; expected like '2h', '30m', '1d'")
+    newest = exp.Max(this=exp.to_identifier(column))
+    interval = exp.Interval(this=exp.Literal.string(match.group(1)), unit=exp.Var(this=_FRESH_UNITS[match.group(2)]))
+    threshold = exp.Sub(this=exp.CurrentTimestamp(), expression=interval)
+    stale = exp.or_(exp.LT(this=newest, expression=threshold), newest.copy().is_(exp.null()))
+    return exp.select(exp.alias_(stale, "stale")).from_(table.to_expr())

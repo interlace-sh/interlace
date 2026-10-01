@@ -131,6 +131,94 @@ def test_on_change_rejects_a_non_identifier() -> None:
         build_triggers(project)
 
 
+async def test_fresh_enqueues_when_the_timestamp_is_old_and_dedupes_within_the_window(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, store = env
+    await engine.execute_sql("CREATE TABLE events (id INTEGER, updated_at TIMESTAMP)")
+    await engine.execute_sql("INSERT INTO events VALUES (1, TIMESTAMP '2020-01-01')")
+    project = compile_models(
+        [
+            ModelDef(name="m", sql="SELECT id FROM events", schedule={"fresh": "updated_at 2h"}),
+            ModelDef(name="mart", sql="SELECT id FROM m"),
+        ]
+    )
+    trigger = TriggerEngine(build_triggers(project), store, project, engines=engine)
+    now = datetime(2026, 1, 1, 12, 0)
+    assert await trigger.tick(now) == 1
+    assert await trigger.tick(now) == 0  # same window, still stale
+    assert await trigger.tick(now + timedelta(hours=3)) == 1  # next window, still stale
+    runs = await store.list_runs()
+    assert len(runs) == 2
+    assert all(set(run["flow_selector"]) == {"m", "mart"} for run in runs)
+
+
+async def test_fresh_stays_quiet_when_the_timestamp_is_recent(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, store = env
+    await engine.execute_sql("CREATE TABLE events (id INTEGER, updated_at TIMESTAMP)")
+    await engine.execute_sql("INSERT INTO events VALUES (1, now())")
+    project = compile_models([ModelDef(name="m", sql="SELECT id FROM events", schedule={"fresh": "updated_at 2h"})])
+    trigger = TriggerEngine(build_triggers(project), store, project, engines=engine)
+    assert await trigger.tick(datetime(2026, 1, 1, 12, 0)) == 0
+
+
+async def test_fresh_treats_an_empty_table_as_stale_and_a_missing_table_as_waiting(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, store = env
+    await engine.execute_sql("CREATE TABLE events (updated_at TIMESTAMP)")
+    empty = compile_models(
+        [ModelDef(name="m", sql="SELECT updated_at FROM events", schedule={"fresh": "updated_at 2h"})]
+    )
+    trigger = TriggerEngine(build_triggers(empty), store, empty, engines=engine)
+    assert await trigger.tick(datetime(2026, 1, 1, 12, 0)) == 1
+    missing = compile_models(
+        [ModelDef(name="m", sql="SELECT updated_at FROM absent", schedule={"fresh": "updated_at 2h"})]
+    )
+    waiting = TriggerEngine(build_triggers(missing), store, missing, engines=engine)
+    assert await waiting.tick(datetime(2026, 1, 1, 12, 0)) == 0
+
+
+async def test_fresh_raises_when_the_column_is_not_a_timestamp(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, store = env
+    await engine.execute_sql("CREATE TABLE events (updated_at INTEGER)")
+    await engine.execute_sql("INSERT INTO events VALUES (10)")
+    project = compile_models(
+        [ModelDef(name="m", sql="SELECT updated_at FROM events", schedule={"fresh": "updated_at 2h"})]
+    )
+    trigger = TriggerEngine(build_triggers(project), store, project, engines=engine)
+    with pytest.raises(Exception, match="INTEGER"):
+        await trigger.tick(datetime(2026, 1, 1, 12, 0))
+
+
+def test_fresh_mapping_normalises_to_column_and_window() -> None:
+    definition = ModelDef(
+        name="m",
+        sql="SELECT id FROM events",
+        schedule={"fresh": {"column": "events.updated_at", "within": "2h"}},  # type: ignore[dict-item]
+    )
+    assert definition.schedule == {"fresh": "events.updated_at 2h"}
+    project = compile_models([definition])
+    triggers = build_triggers(project)
+    assert len(triggers) == 1
+    assert triggers[0].id == "fresh:m"
+
+
+def test_fresh_rejects_a_bad_window_and_a_non_identifier() -> None:
+    bad_window = compile_models([ModelDef(name="m", sql="SELECT 1 FROM events", schedule={"fresh": "updated_at 2x"})])
+    with pytest.raises(DefinitionError, match="grain"):
+        build_triggers(bad_window)
+    bad_column = compile_models([ModelDef(name="m", sql="SELECT 1 FROM events", schedule={"fresh": "updated at 2h"})])
+    with pytest.raises(DefinitionError, match="column"):
+        build_triggers(bad_column)
+    with pytest.raises(DefinitionError, match="within"):
+        ModelDef(name="m", sql="SELECT 1", schedule={"fresh": {"column": "updated_at"}})  # type: ignore[dict-item]
+
+
 def test_watch_pattern_must_be_relative(tmp_path: Path) -> None:
     project = compile_models([ModelDef(name="m", sql="SELECT 1", schedule={"watch": "/tmp/*.csv"})])
     with pytest.raises(DefinitionError, match="relative"):

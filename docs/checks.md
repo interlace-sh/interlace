@@ -74,6 +74,10 @@ name for logic a SQL check can't express.
 `relationships` and `sql` reference *other* models; `apply` schedules those referenced
 models to build first so the check runs against fresh data.
 
+`freshness` runs when the model is built. It does not start a build.
+`schedule: {fresh: {column: updated_at, within: 2h}}` does: the scheduler
+enqueues the model when `max(column)` is older than the window.
+
 ## Running checks
 
 - **During `apply`** — every model's checks run after it builds; a blocking failure stops

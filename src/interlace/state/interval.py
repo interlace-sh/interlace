@@ -28,7 +28,8 @@ def naive_local(value: str) -> datetime:
 
 
 _GRAIN_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
-_GRAIN_RE = re.compile(r"(\d+)([smhdw])")
+_SQL_UNITS = {"s": "SECOND", "m": "MINUTE", "h": "HOUR", "d": "DAY", "w": "WEEK"}
+_GRAIN_RE = re.compile(r"\s*(\d+)\s*([smhdw])\s*")
 
 
 @dataclass(frozen=True, order=True)
@@ -142,12 +143,28 @@ def latest_complete_window(now: datetime, grain: timedelta) -> Interval:
     return Interval(floor - grain, floor)
 
 
-def parse_grain(grain: str) -> timedelta:
-    """Parse a grain like ``1d``, ``6h``, ``15m`` into a timedelta. (``m`` = minutes.)"""
+@dataclass(frozen=True)
+class Grain:
+    """A parsed grain: ``2h`` is 2 hours, and the SQL unit ``HOUR``."""
+
+    amount: int
+    every: timedelta
+    sql_unit: str
+
+
+def as_grain(grain: str) -> Grain:
+    """Parse a grain like ``1d``, ``6h``, ``15m``. (``m`` = minutes.) Raises ValueError."""
     match = _GRAIN_RE.fullmatch(grain.strip())
     if match is None:
         raise ValueError(f"invalid grain {grain!r}; expected like '1d', '6h', '15m'")
-    return timedelta(**{_GRAIN_UNITS[match.group(2)]: int(match.group(1))})
+    key = match.group(2)
+    amount = int(match.group(1))
+    return Grain(amount, timedelta(**{_GRAIN_UNITS[key]: amount}), _SQL_UNITS[key])
+
+
+def parse_grain(grain: str) -> timedelta:
+    """Parse a grain like ``1d``, ``6h``, ``15m`` into a timedelta. (``m`` = minutes.)"""
+    return as_grain(grain).every
 
 
 def slice_interval(interval: Interval, grain: timedelta) -> list[Interval]:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from sqlglot import exp
 
@@ -308,7 +308,7 @@ def compile_models(  # noqa: C901
             cursor=definition.cursor,
             interval=definition.interval,
             tags=definition.tags,
-            schedule=definition.schedule,
+            schedule=cast(dict[str, str] | None, definition.schedule),  # __post_init__ stores strings
             columns=definition.columns,
             target=definition.target,
             path=definition.path,

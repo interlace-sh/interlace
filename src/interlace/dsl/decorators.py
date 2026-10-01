@@ -9,7 +9,7 @@ Compilation, planning, and execution happen later over the registry. UK spelling
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,6 +29,28 @@ from interlace.sinks import FILE_FORMATS
 from interlace.strategies import named_strategy
 
 ModelFn = Callable[..., Any]
+
+
+def normalize_schedule(schedule: Mapping[str, Any] | None, *, model: str) -> dict[str, str] | None:
+    """Schedules are string values. ``fresh: {column, within}`` becomes ``"column within"``."""
+    if not schedule:
+        return None
+    normalised: dict[str, str] = {}
+    for key, value in schedule.items():
+        if key == "fresh" and isinstance(value, dict):
+            column = value.get("column")
+            window = value.get("within")
+            if not isinstance(column, str) or not column.strip():
+                raise DefinitionError(f"model {model!r}: fresh.column must name a timestamp column")
+            if not isinstance(window, str) or not window.strip():
+                raise DefinitionError(f"model {model!r}: fresh.within must be a window like '2h'")
+            normalised[key] = f"{column.strip()} {window.strip()}"
+            continue
+        if not isinstance(value, str):
+            raise DefinitionError(f"model {model!r}: schedule {key!r} must be a string")
+        normalised[key] = value
+    return normalised
+
 
 # Set while a Python model function is running. Registrations then replace a
 # model this run already created, and are recorded for the apply that builds them.
@@ -130,7 +152,9 @@ class ModelDef:
     path: str | None = None  # output path for materialise: file
     format: str | None = None  # csv | parquet | json for materialise: file
     environments: tuple[str, ...] = ("prod",)  # which environments actually deliver a terminal model
-    schedule: dict[str, str] | None = None  # cron, every, watch, on_change, fresh, or webhook
+    # cron, every, watch, on_change, fresh, or webhook. ``fresh`` may be the
+    # mapping ``{column, within}`` at construction; __post_init__ stores "column within".
+    schedule: dict[str, Any] | None = None
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
     indexes: tuple[IndexSpec, ...] = ()  # physical indexes; not part of the data fingerprint
     constraints: tuple[ConstraintSpec, ...] = ()  # physical constraints; engine-enforced, not checks
@@ -151,11 +175,6 @@ class ModelDef:
         self.constraints = parse_constraints(self.constraints, self.name)
         self.schema_policy = parse_schema_policy(self.schema_policy, self.name)
         validate_physical_allowed(self.name, self.materialise, self.indexes, self.constraints, self.schema_policy)
-        # ``fresh: {column, within}`` is the readable form; everything downstream
-        # stores schedule values as strings ("updated_at 2h"). Imported here:
-        # a module-level import of the scheduler package cycles back into this one.
-        from interlace.scheduler.triggers import normalize_schedule
-
         self.schedule = normalize_schedule(self.schedule, model=self.name)
 
     @property
@@ -296,8 +315,6 @@ def model(
     )
 
     def decorator(fn: ModelFn) -> ModelFn:
-        from interlace.scheduler.triggers import normalize_schedule
-
         REGISTRY.register_model(
             ModelDef(
                 name=name or fn.__name__,
@@ -315,7 +332,7 @@ def model(
                 owner=owner,
                 description=description,
                 columns=_as_columns(columns),
-                schedule=normalize_schedule(schedule, model=name or fn.__name__),
+                schedule=schedule,
                 checks=parse_checks(checks, name or fn.__name__),
                 indexes=parse_indexes(indexes, name or fn.__name__),
                 constraints=parse_constraints(constraints, name or fn.__name__),

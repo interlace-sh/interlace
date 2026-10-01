@@ -14,7 +14,6 @@ NULLs as pattern/range failures, which conflated the two).
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -24,10 +23,9 @@ from interlace.checks.spec import CheckSpec
 from interlace.exceptions import DefinitionError
 from interlace.ir.canonicalize import as_query
 from interlace.ir.relation import TableRef
+from interlace.state.interval import as_grain
 
 _FAILURES = "failures"
-_AGE_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$")
-_AGE_UNITS = {"s": "SECOND", "m": "MINUTE", "h": "HOUR", "d": "DAY", "w": "WEEK"}
 
 ResolveTable = Callable[[str], TableRef]
 """Maps an upstream model name to its physical table (for ``relationships``)."""
@@ -59,11 +57,24 @@ def _parse_expr(sql: str, dialect: str) -> exp.Expr:
     return parse_one(sql, read=dialect)
 
 
+def sql_interval(amount: int, unit: str) -> exp.Interval:
+    """``amount`` of a SQL unit (``HOUR``, ``DAY``, …) as an interval expression."""
+    return exp.Interval(this=exp.Literal.string(str(amount)), unit=exp.Var(this=unit))
+
+
+def max_is_stale(column: exp.Expr, interval: exp.Expr) -> exp.Expr:
+    """``max(column)`` is null or older than ``interval``. An empty table counts."""
+    newest = exp.Max(this=column)
+    threshold = exp.Sub(this=exp.CurrentTimestamp(), expression=interval)
+    return exp.or_(exp.LT(this=newest, expression=threshold), newest.copy().is_(exp.null()))
+
+
 def _interval(max_age: str) -> exp.Interval:
-    match = _AGE_RE.fullmatch(str(max_age))
-    if match is None:
-        raise DefinitionError(f"invalid max_age {max_age!r}; expected like '2h', '30m', '1d'")
-    return exp.Interval(this=exp.Literal.string(match.group(1)), unit=exp.Var(this=_AGE_UNITS[match.group(2)]))
+    try:
+        parsed = as_grain(str(max_age))
+    except ValueError as exc:
+        raise DefinitionError(f"invalid max_age {max_age!r}; expected like '2h', '30m', '1d'") from exc
+    return sql_interval(parsed.amount, parsed.sql_unit)
 
 
 def _row_predicate(spec: CheckSpec, model: str, dialect: str, resolve: ResolveTable) -> exp.Expr | None:
@@ -147,10 +158,7 @@ def build_check_query(spec: CheckSpec, table: TableRef, model: str, dialect: str
 
     if spec.type == "freshness":
         _require(spec, model, columns=1, params=("max_age",))
-        threshold = exp.Sub(this=exp.CurrentTimestamp(), expression=_interval(str(params["max_age"])))
-        newest = exp.Max(this=cols[0])
-        stale = exp.or_(exp.LT(this=newest, expression=threshold), newest.copy().is_(exp.null()))  # no rows = stale
-        return _flag(table, stale)
+        return _flag(table, max_is_stale(cols[0], _interval(str(params["max_age"]))))
 
     if spec.type == "sql":
         _require(spec, model, params=("query",))

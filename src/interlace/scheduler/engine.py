@@ -9,8 +9,11 @@ it survives restarts and is unified with runs and snapshots.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
+from typing import cast
+
+from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter, relation_is_absent
 from interlace.engines.registry import EngineRegistry
@@ -20,17 +23,15 @@ from interlace.ir.canonicalize import table_references
 from interlace.ir.layout import env_view
 from interlace.ir.relation import TableRef
 from interlace.scheduler.triggers import (
+    ABSENT,
     CronTrigger,
     FreshTrigger,
     IntervalTrigger,
     OnChangeTrigger,
-    RunRequest,
     Trigger,
     WatchTrigger,
-    change_query,
-    fresh_query,
 )
-from interlace.state.interval import parse_grain
+from interlace.state.interval import Grain, as_grain, parse_grain
 from interlace.state.store import SqliteStateStore
 
 _SCHEDULE_KINDS = ("cron", "every", "watch", "on_change", "fresh", "webhook")
@@ -95,13 +96,12 @@ def _trigger_for(model: CompiledModel, project: CompiledProject, root: Path | No
             raise DefinitionError(f"model {model.name!r}: a watch schedule needs the project root")
         return WatchTrigger(model.name, value, root)
     if kind == "on_change":
-        table, column, engine = resolve_on_change(model, project, environment, value)
+        table, column, engine = resolve_column(model, project, environment, value)
         return OnChangeTrigger(model.name, column, table, engine)
     if kind == "fresh":
         column_spec, window = _fresh_parts(model.name, value)
-        within = _fresh_window(model.name, window)
-        table, column, engine = resolve_on_change(model, project, environment, column_spec, label="fresh")
-        return FreshTrigger(model.name, column, table, engine, window, within)
+        table, column, engine = resolve_column(model, project, environment, column_spec, label="fresh")
+        return FreshTrigger(model.name, column, table, engine, _fresh_grain(model.name, window))
     return None
 
 
@@ -112,14 +112,14 @@ def _fresh_parts(model: str, value: str) -> tuple[str, str]:
     return column_spec.strip(), window.strip()
 
 
-def _fresh_window(model: str, window: str) -> timedelta:
+def _fresh_grain(model: str, window: str) -> Grain:
     try:
-        return parse_grain(window)
+        return as_grain(window)
     except ValueError as exc:
         raise DefinitionError(f"model {model!r}: {exc}") from exc
 
 
-def resolve_on_change(
+def resolve_column(
     model: CompiledModel, project: CompiledProject, environment: str, value: str, *, label: str = "on_change"
 ) -> tuple[TableRef, str, str]:
     """The table, column, and engine a column schedule probes.
@@ -212,7 +212,7 @@ class TriggerEngine:
         enqueued = 0
         for trigger in self.triggers:
             last_fired = await self.store.get_trigger_last_fired(trigger.id)
-            requests = await self._due(trigger, now, last_fired)
+            requests = await trigger.due(now, last_fired, self)
             for request in requests:
                 selector = scheduled_closure(self.project, request.flow_selector)
                 partition = (
@@ -229,38 +229,21 @@ class TriggerEngine:
                 await self.store.set_trigger_last_fired(trigger.id, now)
         return enqueued
 
-    async def _due(self, trigger: Trigger, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
-        if isinstance(trigger, OnChangeTrigger):
-            watermark = await self._watermark(trigger)
-            if watermark is None:
-                return []
-            return [trigger.request(watermark)]
-        if isinstance(trigger, FreshTrigger):
-            if not await self._is_stale(trigger):
-                return []
-            return [trigger.request(now)]
-        return trigger.due(now, last_fired)
-
-    async def _watermark(self, trigger: OnChangeTrigger) -> str | None:
-        """``max(column)`` as text, or None when the source table is not there yet."""
-        engine = self._engine(trigger.engine)
-        if not await engine.table_exists(trigger.table):
-            return None
+    async def scalar(self, engine: str, table: TableRef, query: exp.Expression) -> object | None:
+        """First cell of ``query``. ``ABSENT`` when the table is not there yet; ``None`` when the cell is NULL."""
+        adapter = self._engine(engine)
+        if not await adapter.table_exists(table):
+            return ABSENT
         try:
-            reader = await engine.fetch(change_query(trigger.table, trigger.column))
+            reader = await adapter.fetch(query)
         except Exception as exc:
             if relation_is_absent(exc):
-                return None
+                return ABSENT
             raise
         rows = reader.read_all()
         if rows.num_rows == 0:
-            return None
-        value = rows.column(0)[0].as_py()
-        if value is None:
-            return "null"
-        if isinstance(value, datetime):
-            return value.isoformat()
-        return str(value)
+            return ABSENT
+        return cast(object | None, rows.column(0)[0].as_py())
 
     def _engine(self, name: str) -> EngineAdapter:
         engines = self.engines
@@ -269,23 +252,3 @@ class TriggerEngine:
         if isinstance(engines, EngineAdapter):
             return engines
         raise DefinitionError("a column schedule needs the project's engines")
-
-    async def _is_stale(self, trigger: FreshTrigger) -> bool:
-        """Whether ``max(column)`` is missing or older than the window.
-
-        A source table that does not exist yet is not stale: the project may
-        still be applying. An empty table is stale.
-        """
-        engine = self._engine(trigger.engine)
-        if not await engine.table_exists(trigger.table):
-            return False
-        try:
-            reader = await engine.fetch(fresh_query(trigger.table, trigger.column, trigger.window))
-        except Exception as exc:
-            if relation_is_absent(exc):
-                return False
-            raise
-        rows = reader.read_all()
-        if rows.num_rows == 0:
-            return False
-        return bool(rows.column(0)[0].as_py())

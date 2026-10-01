@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.8.4 (2026-10-02)
 
 **A table change can schedule a run.** `schedule: {on_change: column}` reads
 `max(column)` from the one table the model reads, or from `table.column` /

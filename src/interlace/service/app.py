@@ -83,12 +83,15 @@ def create_app(
     scheduler: bool = False,
     scheduler_interval: float = 60.0,
     stream_flush_interval: float = 0.05,
+    apply_on_start: bool = False,
 ) -> Litestar:
     """Build the Litestar app for the project at ``root``.
 
     ``scheduler=True`` makes this the combined daemon: the HTTP API plus a
     background scheduler loop (tick triggers, drain the run queue) in one
-    process — the default for ``interlace serve``. ``quack`` (a
+    process — the default for ``interlace serve``. ``apply_on_start`` applies the
+    project once before the loops start; the ``serve`` command turns it on.
+    ``quack`` (a
     ``quack:<host>:<port>`` URI) additionally serves the warehouse over the
     quack protocol so other processes — CLI runs, ad-hoc DuckDB clients —
     share this process's warehouse concurrently.
@@ -102,6 +105,7 @@ def create_app(
         scheduler=scheduler,
         scheduler_interval=scheduler_interval,
         stream_flush_interval=stream_flush_interval,
+        apply_on_start=apply_on_start,
     )
 
     # The UI is self-contained and air-gapped: a CSP locks every fetch to same-origin,

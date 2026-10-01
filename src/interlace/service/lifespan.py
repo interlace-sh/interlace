@@ -28,6 +28,7 @@ from interlace.scheduler.daemon import (
     remember_runtime,
     scheduler_loop,
     source_mtime,
+    startup_apply,
 )
 from interlace.service.present import _broadcast
 from interlace.streaming.materializer import (
@@ -46,6 +47,7 @@ def project_lifespan(  # noqa: C901
     scheduler: bool,
     scheduler_interval: float,
     stream_flush_interval: float,
+    apply_on_start: bool,
 ) -> Callable[[Litestar], AbstractAsyncContextManager[None, bool | None]]:
     """The Litestar lifespan for one project. Background loops retry; shutdown drains."""
 
@@ -156,6 +158,9 @@ def project_lifespan(  # noqa: C901
             for subscriber in list(app.state.sse_subscribers):
                 with contextlib.suppress(asyncio.QueueFull):
                     subscriber.put_nowait(None)
+
+        if apply_on_start:
+            await startup_apply(app.state)
 
         tail_task = asyncio.create_task(event_tail())
         flusher_task = (

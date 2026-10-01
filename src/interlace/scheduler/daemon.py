@@ -205,6 +205,35 @@ async def flusher_loop(state: Any, *, flush_interval: float) -> None:
             await asyncio.sleep(1.0)
 
 
+async def startup_apply(state: Any) -> None:
+    """Apply the project once, before the scheduler starts.
+
+    A breaking or blocked plan is logged and the process still serves. Any other
+    failure propagates: a warehouse that cannot be opened should not pretend to
+    be up.
+    """
+    from interlace.exceptions import PlanError
+    from interlace.plan.orchestrate import plan_and_apply
+
+    try:
+        _plan, result = await plan_and_apply(
+            state.compiled,
+            environment=state.environment,
+            project=state.project,
+            engines=state.engines,
+            state=state.store,
+            lock_owner=state.lock_owner,
+            connections=state.connections,
+            on_compiled=lambda fresh: publish_compiled(state, fresh),
+        )
+    except PlanError as exc:
+        logger.error("startup apply refused: %s", exc.message)
+        return
+    if result is None:
+        return
+    logger.info("startup apply built %s", ", ".join(result.built) or "nothing")
+
+
 async def scheduler_loop(
     state: Any,
     *,
@@ -220,9 +249,12 @@ async def scheduler_loop(
         try:
             await reload_if_stale(state)
             compiled = state.compiled
-            await TriggerEngine(build_triggers(compiled, root=state.project.root), state.store, compiled).tick(
-                datetime.now()
-            )
+            await TriggerEngine(
+                build_triggers(compiled, root=state.project.root, environment=state.environment),
+                state.store,
+                compiled,
+                engines=state.engines,
+            ).tick(datetime.now())
             if asyncio.get_running_loop().time() >= next_trim:
                 await state.store.trim_logs()
                 next_trim = asyncio.get_running_loop().time() + 6 * 3600

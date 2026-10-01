@@ -285,6 +285,11 @@ def serve(
         True, "--scheduler/--no-scheduler", help="Run the scheduler loop in this process (combined daemon)."
     ),
     interval: float = typer.Option(60.0, "--interval", help="Seconds between scheduler ticks."),
+    apply_on_start: bool = typer.Option(
+        True,
+        "--apply/--no-apply",
+        help="Apply the project once at startup. --no-apply serves the warehouse as it is.",
+    ),
     allow_open: bool = typer.Option(
         False,
         "--allow-open",
@@ -294,6 +299,7 @@ def serve(
     """Run the interlace daemon: HTTP API + scheduler in one process (requires the `service` extra).
 
     Use --no-scheduler for an API-only process (run `interlace scheduler` separately).
+    The project is applied once before the loops start; pass --no-apply to skip that.
     A `cdc:` block in the project config is read here: each Postgres slot appends into its stream.
     """
     try:
@@ -339,6 +345,7 @@ def serve(
         quack_token=token or None,
         scheduler=scheduler,
         scheduler_interval=interval,
+        apply_on_start=apply_on_start,
     )
     config = uvicorn.Config(
         app,

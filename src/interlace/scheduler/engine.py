@@ -8,20 +8,35 @@ it survives restarts and is unified with runs and snapshots.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
+from interlace.engines.base import EngineAdapter, relation_is_absent
+from interlace.engines.registry import EngineRegistry
 from interlace.exceptions import DefinitionError
 from interlace.graph.project import CompiledModel, CompiledProject
-from interlace.scheduler.triggers import CronTrigger, IntervalTrigger, Trigger, WatchTrigger
+from interlace.ir.canonicalize import table_references
+from interlace.ir.layout import env_view
+from interlace.ir.relation import TableRef
+from interlace.scheduler.triggers import (
+    CronTrigger,
+    IntervalTrigger,
+    OnChangeTrigger,
+    RunRequest,
+    Trigger,
+    WatchTrigger,
+    change_query,
+)
 from interlace.state.interval import parse_grain
 from interlace.state.store import SqliteStateStore
 
-_SCHEDULE_KINDS = ("cron", "every", "watch", "webhook")
+_SCHEDULE_KINDS = ("cron", "every", "watch", "on_change", "webhook")
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def schedule_kind(model: str, schedule: dict[str, str]) -> tuple[str, str]:
-    """The one schedule key and its value. Cron, interval, file watch, or webhook."""
+    """The one schedule key and its value. Cron, interval, file watch, table change, or webhook."""
     present = [key for key in _SCHEDULE_KINDS if key in schedule]
     if len(present) != 1:
         raise DefinitionError(
@@ -47,23 +62,24 @@ def webhook_targets(project: CompiledProject) -> dict[str, str]:
     return found
 
 
-def build_triggers(project: CompiledProject, *, root: Path | None = None) -> list[Trigger]:
+def build_triggers(project: CompiledProject, *, root: Path | None = None, environment: str = "prod") -> list[Trigger]:
     """Construct triggers from each model's ``schedule`` config.
 
-    ``root`` is the project directory a ``watch:`` glob is relative to. Webhook
-    schedules are validated here and enqueued by ``POST /hooks/{name}``, so they
-    do not become ticking triggers.
+    ``root`` is the project directory a ``watch:`` glob is relative to.
+    ``environment`` names the view an ``on_change`` schedule reads when its
+    source is another model. Webhook schedules are validated here and enqueued
+    by ``POST /hooks/{name}``, so they do not become ticking triggers.
     """
     triggers: list[Trigger] = []
     for model in project.models.values():
-        trigger = _trigger_for(model, root)
+        trigger = _trigger_for(model, project, root, environment)
         if trigger is not None:
             triggers.append(trigger)
     webhook_targets(project)  # reject two models sharing one hook name
     return triggers
 
 
-def _trigger_for(model: CompiledModel, root: Path | None) -> Trigger | None:
+def _trigger_for(model: CompiledModel, project: CompiledProject, root: Path | None, environment: str) -> Trigger | None:
     schedule = model.schedule
     if not schedule:
         return None
@@ -76,13 +92,70 @@ def _trigger_for(model: CompiledModel, root: Path | None) -> Trigger | None:
         if root is None:
             raise DefinitionError(f"model {model.name!r}: a watch schedule needs the project root")
         return WatchTrigger(model.name, value, root)
+    if kind == "on_change":
+        table, column, engine = resolve_on_change(model, project, environment, value)
+        return OnChangeTrigger(model.name, column, table, engine)
     return None
+
+
+def resolve_on_change(
+    model: CompiledModel, project: CompiledProject, environment: str, value: str
+) -> tuple[TableRef, str, str]:
+    """The table, column, and engine an ``on_change`` schedule probes.
+
+    A bare column is read from the one table the model reads. ``table.column``
+    and ``schema.table.column`` name it. A name that is a model is that model's
+    environment view; anything else is a table on the model's own engine.
+    """
+    parts = value.split(".")
+    if not parts or any(not _IDENT.match(part) for part in parts):
+        raise DefinitionError(
+            f"model {model.name!r}: on_change {value!r} must be a column, table.column, or schema.table.column"
+        )
+    column = parts[-1]
+    if len(parts) == 1:
+        table, engine = _infer_change_table(model, project, environment)
+        return table, column, engine
+    if len(parts) == 2:
+        schema = None
+        relation = parts[0]
+    elif len(parts) == 3:
+        schema, relation = parts[0], parts[1]
+    else:
+        raise DefinitionError(
+            f"model {model.name!r}: on_change {value!r} must be a column, table.column, or schema.table.column"
+        )
+    qualified = f"{schema}.{relation}" if schema else relation
+    if qualified in project.models:
+        upstream = project.models[qualified]
+        return env_view(environment, qualified), column, upstream.engine
+    return TableRef(schema=schema or "main", name=relation), column, model.engine
+
+
+def _infer_change_table(model: CompiledModel, project: CompiledProject, environment: str) -> tuple[TableRef, str]:
+    refs = table_references(model.ast) if model.ast is not None else []
+    external = [ref for ref in refs if ref not in project.models]
+    models = [ref for ref in refs if ref in project.models]
+    if model.ast is None:
+        external = []
+        models = list(model.dependencies)
+    if len(external) == 1 and not models:
+        ref = external[0]
+        schema, _, name = ref.rpartition(".")
+        return TableRef(schema=schema or "main", name=name), model.engine
+    if not external and len(models) == 1:
+        upstream = project.models[models[0]]
+        return env_view(environment, models[0]), upstream.engine
+    raise DefinitionError(
+        f"model {model.name!r}: on_change needs one source table; write table.column or schema.table.column",
+        details={"reads": refs or list(model.dependencies)},
+    )
 
 
 def scheduled_closure(project: CompiledProject, models: list[str]) -> list[str]:
     """The triggered models plus every model downstream of them.
 
-    A cron, interval, file watch, or webhook means that model's inputs changed.
+    A cron, interval, file watch, table change, or webhook means that model's inputs changed.
     Downstream snapshots would otherwise keep the previous build. An explicit
     ``run --select`` is not expanded here: ``model``, ``model+``, and ``+model``
     stay exactly what was asked for.
@@ -98,17 +171,25 @@ def scheduled_closure(project: CompiledProject, models: list[str]) -> list[str]:
 class TriggerEngine:
     """Evaluates triggers on each tick and enqueues due runs."""
 
-    def __init__(self, triggers: list[Trigger], store: SqliteStateStore, project: CompiledProject) -> None:
+    def __init__(
+        self,
+        triggers: list[Trigger],
+        store: SqliteStateStore,
+        project: CompiledProject,
+        *,
+        engines: EngineRegistry | EngineAdapter | None = None,
+    ) -> None:
         self.triggers = triggers
         self.store = store
         self.project = project
+        self.engines = engines
 
     async def tick(self, now: datetime) -> int:
         """Enqueue all runs due at ``now``; returns how many were newly enqueued."""
         enqueued = 0
         for trigger in self.triggers:
             last_fired = await self.store.get_trigger_last_fired(trigger.id)
-            requests = trigger.due(now, last_fired)
+            requests = await self._due(trigger, now, last_fired)
             for request in requests:
                 selector = scheduled_closure(self.project, request.flow_selector)
                 partition = (
@@ -124,3 +205,40 @@ class TriggerEngine:
             if requests:
                 await self.store.set_trigger_last_fired(trigger.id, now)
         return enqueued
+
+    async def _due(self, trigger: Trigger, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
+        if isinstance(trigger, OnChangeTrigger):
+            watermark = await self._watermark(trigger)
+            if watermark is None:
+                return []
+            return [trigger.request(watermark)]
+        return trigger.due(now, last_fired)
+
+    async def _watermark(self, trigger: OnChangeTrigger) -> str | None:
+        """``max(column)`` as text, or None when the source table is not there yet."""
+        engine = self._engine(trigger.engine)
+        if not await engine.table_exists(trigger.table):
+            return None
+        try:
+            reader = await engine.fetch(change_query(trigger.table, trigger.column))
+        except Exception as exc:
+            if relation_is_absent(exc):
+                return None
+            raise
+        rows = reader.read_all()
+        if rows.num_rows == 0:
+            return None
+        value = rows.column(0)[0].as_py()
+        if value is None:
+            return "null"
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
+    def _engine(self, name: str) -> EngineAdapter:
+        engines = self.engines
+        if isinstance(engines, EngineRegistry):
+            return engines.get(name)
+        if isinstance(engines, EngineAdapter):
+            return engines
+        raise DefinitionError("an on_change schedule needs the project's engines")

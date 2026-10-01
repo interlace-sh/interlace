@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+**A table change can schedule a run.** `schedule: {on_change: column}` reads
+`max(column)` from the one table the model reads, or from `table.column` /
+`schema.table.column`, and enqueues that model and its descendants when the
+value changes. A missing source table waits.
+
+**`interlace serve` applies once at startup.** The project is built before the
+scheduler starts. `--no-apply` serves the warehouse as it is. A breaking plan
+is logged and the process still comes up.
+
 ## 2.8.3 (2026-09-30)
 
 **A schedule refreshes downstream models.** A cron, interval, file watch, or

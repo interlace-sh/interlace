@@ -136,7 +136,12 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
         from interlace.scheduler.engine import schedule_kind
 
         kind, expression = schedule_kind(name, schedule)
-        trigger_id = {"cron": f"cron:{name}", "every": f"interval:{name}", "watch": f"watch:{name}"}.get(kind)
+        trigger_id = {
+            "cron": f"cron:{name}",
+            "every": f"interval:{name}",
+            "watch": f"watch:{name}",
+            "on_change": f"change:{name}",
+        }.get(kind)
         last = await state.store.get_trigger_last_fired(trigger_id) if trigger_id else None
 
         def _wire(moment: datetime | None) -> str | None:

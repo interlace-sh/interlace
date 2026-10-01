@@ -130,7 +130,7 @@ class ModelDef:
     path: str | None = None  # output path for materialise: file
     format: str | None = None  # csv | parquet | json for materialise: file
     environments: tuple[str, ...] = ("prod",)  # which environments actually deliver a terminal model
-    schedule: dict[str, str] | None = None  # cron, every, watch (glob), or webhook name
+    schedule: dict[str, str] | None = None  # cron, every, watch (glob), on_change (column), or webhook name
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
     indexes: tuple[IndexSpec, ...] = ()  # physical indexes; not part of the data fingerprint
     constraints: tuple[ConstraintSpec, ...] = ()  # physical constraints; engine-enforced, not checks

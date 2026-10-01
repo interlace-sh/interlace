@@ -90,7 +90,7 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
 ### Runs
 - **`GET /runs`** (read) → `[RunInfo]` `{id, flow_selector[], state, attempts, error,
   enqueued_at, priority, partition, restate, idempotency_key}`. The key's prefix names
-  the trigger: `cron:`, `interval:`, `watch:`, `webhook:`, `api:`, or `stream:`.
+  the trigger: `cron:`, `interval:`, `watch:`, `change:`, `webhook:`, `api:`, or `stream:`.
 - **`GET /runs/{id}`** (read) → `RunDetail` (adds `events: [EventInfo]`); 404 if unknown.
 - **`POST /runs`** (write) → `CreateRunResult {enqueued, models[]}`. Body `CreateRun
   {selectors[], environment, start, end, restate}` — enqueues onto the durable queue (a

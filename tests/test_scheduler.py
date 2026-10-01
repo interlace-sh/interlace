@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
@@ -15,6 +16,8 @@ from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.exceptions import DefinitionError
 from interlace.graph.project import compile_models
+from interlace.project import Project
+from interlace.scheduler.daemon import startup_apply
 from interlace.scheduler.engine import TriggerEngine, build_triggers, scheduled_closure
 from interlace.scheduler.triggers import CronTrigger, IntervalTrigger
 from interlace.scheduler.worker import _finished_models, drain
@@ -66,6 +69,66 @@ async def test_watch_trigger_enqueues_on_change_and_dedupes(
     (inbox / "a.csv").write_text("id\n1\n2\n")
     assert await engine.tick(now) == 1
     assert await store.count_pending_runs() == 2
+
+
+async def test_on_change_enqueues_when_the_column_max_moves(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, store = env
+    await engine.execute_sql("CREATE TABLE events (id INTEGER, updated_at INTEGER)")
+    await engine.execute_sql("INSERT INTO events VALUES (1, 10)")
+    project = compile_models(
+        [
+            ModelDef(name="m", sql="SELECT id FROM events", schedule={"on_change": "updated_at"}),
+            ModelDef(name="mart", sql="SELECT id FROM m"),
+        ]
+    )
+    trigger = TriggerEngine(build_triggers(project), store, project, engines=engine)
+    now = datetime(2026, 1, 1, 12, 0)
+    assert await trigger.tick(now) == 1
+    assert await trigger.tick(now) == 0  # same max
+    await engine.execute_sql("UPDATE events SET updated_at = 11")
+    assert await trigger.tick(now) == 1
+    runs = await store.list_runs()
+    assert len(runs) == 2
+    assert all(set(run["flow_selector"]) == {"m", "mart"} for run in runs)
+
+
+async def test_on_change_waits_until_the_source_table_exists(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, store = env
+    project = compile_models([ModelDef(name="m", sql="SELECT id FROM absent", schedule={"on_change": "updated_at"})])
+    trigger = TriggerEngine(build_triggers(project), store, project, engines=engine)
+    assert await trigger.tick(datetime(2026, 1, 1, 12, 0)) == 0
+
+
+async def test_on_change_reads_an_upstream_model_view(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    engine, store = env
+    raw = ModelDef(name="raw", sql="SELECT 1 AS id, 10 AS updated_at")
+    await store.enqueue_run("setup", ["raw"], None, 0)
+    await drain(store, compile_models([raw]), engine, "prod")
+    project = compile_models(
+        [raw, ModelDef(name="mart", sql="SELECT updated_at FROM raw", schedule={"on_change": "updated_at"})]
+    )
+    trigger = TriggerEngine(build_triggers(project, environment="prod"), store, project, engines=engine)
+    assert await trigger.tick(datetime(2026, 1, 1, 12, 0)) == 1
+    runs = await store.list_runs()
+    assert set(runs[0]["flow_selector"]) == {"mart"}
+
+
+def test_on_change_needs_one_source_table() -> None:
+    project = compile_models(
+        [ModelDef(name="m", sql="SELECT 1 FROM a CROSS JOIN b", schedule={"on_change": "updated_at"})]
+    )
+    with pytest.raises(DefinitionError, match="one source"):
+        build_triggers(project)
+
+
+def test_on_change_rejects_a_non_identifier() -> None:
+    project = compile_models([ModelDef(name="m", sql="SELECT 1 FROM events", schedule={"on_change": "updated at"})])
+    with pytest.raises(DefinitionError, match="column"):
+        build_triggers(project)
 
 
 def test_watch_pattern_must_be_relative(tmp_path: Path) -> None:
@@ -160,6 +223,39 @@ async def test_enqueue_is_idempotent(env: tuple[DuckDBAdapter, SqliteStateStore]
     assert await store.enqueue_run("dup", ["m"], None, 0) is True
     assert await store.enqueue_run("dup", ["m"], None, 0) is False  # same key, not re-queued
     assert await store.count_pending_runs() == 1
+
+
+async def test_startup_apply_builds_then_stays_current(tmp_path: Path) -> None:
+    project_dir = tmp_path / "proj"
+    (project_dir / "models").mkdir(parents=True)
+    (project_dir / "interlace.yaml").write_text("name: boot\n")
+    (project_dir / "models" / "m.sql").write_text("SELECT 5 AS x\n")
+    project = Project.load(project_dir)
+    engines = project.open_engines()
+    store = await project.open_state()
+    state = SimpleNamespace(
+        compiled=project.compile(),
+        environment="dev",
+        project=project,
+        engines=engines,
+        store=store,
+        lock_owner="test",
+        connections=project.config.connections,
+    )
+    try:
+        await startup_apply(state)
+        reader = await engines.get().fetch(sqlglot.parse_one("SELECT x FROM dev__main.m"))
+        assert reader.read_all().to_pylist() == [{"x": 5}]
+        await startup_apply(state)
+    finally:
+        await store.close()
+        engines.close()
+
+
+def test_serve_applies_on_startup_unless_told_not_to() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--apply" in result.output and "--no-apply" in result.output
 
 
 def test_scheduler_once_builds_a_scheduled_model(tmp_path: Path) -> None:

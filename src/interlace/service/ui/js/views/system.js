@@ -116,7 +116,7 @@ export async function render(el, { api, go, toast, modal, token }) {
           schedules,
           {
             empty: "no scheduled models",
-            hint: "add schedule: {cron: …}, {every: …}, {watch: …}, or {webhook: name}",
+            hint: "add schedule: {cron: …}, {every: …}, {watch: …}, {on_change: column}, or {webhook: name}",
           },
         ),
       );

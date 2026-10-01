@@ -1,11 +1,11 @@
 """Triggers — when a model should run.
 
-One abstraction (``Trigger.due``) for all kinds: cron, interval, and a file-watch
-sensor. Cron expressions are parsed by ``cronsim`` (we own the loop — see
-TriggerEngine — rather than delegating scheduling to APScheduler). A cron or
+One abstraction (``Trigger.due``) for cron, interval, and file watch. A cron or
 interval trigger is pure: given the current time and when it last fired, it
-returns the runs that are now due. A file watch hashes matching files instead.
-Inbound webhooks are not triggers; ``POST /hooks/{name}`` enqueues them.
+returns the runs that are now due. A file watch hashes matching files. A table
+change (``OnChangeTrigger``) is probed by the engine, which reads ``max(column)``
+from a source table. Inbound webhooks are not triggers; ``POST /hooks/{name}``
+enqueues them.
 """
 
 from __future__ import annotations
@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Protocol
 
 from cronsim import CronSim
+from sqlglot import exp
 
 from interlace.exceptions import DefinitionError
+from interlace.ir.relation import TableRef
 from interlace.state.interval import Interval
 
 
@@ -125,3 +127,32 @@ class WatchTrigger:
         if digest is None:
             return []
         return [RunRequest([self.model], idempotency_key=f"watch:{self.model}:{digest}")]
+
+
+@dataclass
+class OnChangeTrigger:
+    """Enqueued by the engine when ``max(column)`` on ``table`` changes.
+
+    ``due`` is unused. The engine probes the warehouse and calls :meth:`request`.
+    """
+
+    model: str
+    column: str
+    table: TableRef
+    engine: str
+    id: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.id = f"change:{self.model}"
+
+    def due(self, now: datetime, last_fired: datetime | None) -> list[RunRequest]:
+        del now, last_fired
+        return []
+
+    def request(self, watermark: str) -> RunRequest:
+        return RunRequest([self.model], idempotency_key=f"change:{self.model}:{watermark}")
+
+
+def change_query(table: TableRef, column: str) -> exp.Select:
+    """``SELECT max(column) AS watermark FROM table``."""
+    return exp.select(exp.alias_(exp.Max(this=exp.to_identifier(column)), "watermark")).from_(table.to_expr())

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+**A finished model can schedule the next one.** `schedule: {after: raw}` (or a list of model names) enqueues that model and its descendants when the named model reaches `model.done`, including an apply or an explicit `interlace run`. It is not a clock tick. A cycle in `after` is rejected.
+
+**A plan names the columns a semantic edit changed.** `impacted_columns` on a breaking change lists the output columns whose expressions changed, when that set can be proved, and the same columns on a downstream model that reads them. A non-breaking change still lists columns that were added. The plan view marks those as `~` and `+`.
+
+**The control plane can live in Postgres.** `state_url` and `stream_url` (`postgresql://…`) store snapshots, the work queue, the event log, and the stream log in Postgres (schemas `interlace` and `interlace_streams`). Unset, both stay SQLite files. The queue claim uses `FOR UPDATE SKIP LOCKED`. This is still one process.
+
 ## 2.8.4 (2026-10-02)
 
 **A table change can schedule a run.** `schedule: {on_change: column}` reads

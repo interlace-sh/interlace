@@ -66,6 +66,7 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
   differences (extra columns, unmanaged indexes); a `schema.columns: reject` mismatch fails
   the plan before any write. `Change`: `name, change_type, category,
   previous_fingerprint, new_fingerprint, impacted_columns[], new_sql, previous_sql, reused`.
+  On a non-breaking change `impacted_columns` lists columns that were added. On a breaking change it lists output columns whose expressions changed, when that set can be proved (and, for a downstream model, the upstream columns that forced the rebuild). Empty means the proof could not name them.
   Selector errors → 400.
 - **`POST /apply`** (write) → `ApplyResponse`. Body `ApplyRequest` `{selectors[], environment,
   force, forward_only}`. Runs diff → build → promote under a cross-process warehouse lock
@@ -90,7 +91,7 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
 ### Runs
 - **`GET /runs`** (read) → `[RunInfo]` `{id, flow_selector[], state, attempts, error,
   enqueued_at, priority, partition, restate, idempotency_key}`. The key's prefix names
-  the trigger: `cron:`, `interval:`, `watch:`, `change:`, `fresh:`, `webhook:`, `api:`, or `stream:`.
+  the trigger: `cron:`, `interval:`, `watch:`, `change:`, `fresh:`, `after:`, `webhook:`, `api:`, or `stream:`.
 - **`GET /runs/{id}`** (read) → `RunDetail` (adds `events: [EventInfo]`); 404 if unknown.
 - **`POST /runs`** (write) → `CreateRunResult {enqueued, models[]}`. Body `CreateRun
   {selectors[], environment, start, end, restate}` — enqueues onto the durable queue (a
@@ -148,7 +149,7 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
 - **`GET /engines`** (read) → `[EngineInfo]` `{name, type, dialect, database (redacted),
   default}`.
 - **`GET /schedules`** (read) → `[ScheduleInfo]` `{model, kind, expression, next_fire,
-  last_fired}`. `kind` is `cron`, `every`, `watch`, or `webhook`.
+  last_fired}`. `kind` is `cron`, `every`, `watch`, `on_change`, `fresh`, `after`, or `webhook`. `after` has no `next_fire`.
 - **`POST /tests/run`** (write) → `FixtureTestResponse {ok, passed[], messages[]}`. Builds the
   selected models in an ephemeral DuckDB. `tests/fixtures/<model>.csv` replaces an
   upstream build; `tests/golden/<model>.csv` is the expected result. `update_golden`

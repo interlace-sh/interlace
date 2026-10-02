@@ -338,6 +338,8 @@ async def diff(  # noqa: C901
     plan = Plan(environment=environment)
     impact: dict[str, str] = {}  # changed models only: "semantic" | "additive" | "clean"
     touched: dict[str, frozenset[str] | None] = {}  # semantic models: provably-changed columns (None = all)
+    # downstream models: the upstream columns that forced the rebuild
+    indirect: dict[str, frozenset[str]] = {}
 
     previous_snapshots = await state.get_snapshots(
         (name, fingerprint)
@@ -410,6 +412,8 @@ async def diff(  # noqa: C901
                     consumed = _consumed_columns(model.ast, dep)
                     if dep_touched is not None and consumed is not None and not (consumed & dep_touched):
                         continue  # column-pruned: reads only provably-unchanged columns
+                    if dep_touched is not None and consumed is not None:
+                        indirect[model.name] = consumed & dep_touched
                     verdict = "semantic"
                     break
                 if dep_impact == "additive" and _selects_star(model.ast):
@@ -436,8 +440,15 @@ async def diff(  # noqa: C901
         )
         if inherit:
             category = ChangeCategory.FORWARD_ONLY
+        shown = added
+        if impact.get(model.name) == "semantic":
+            own = touched.get(model.name)
+            if own:
+                shown = tuple(sorted(own))
+            elif model.name in indirect:
+                shown = tuple(sorted(indirect[model.name]))
         plan.changes.append(
-            ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint, added)
+            ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint, shown)
         )
         if inherit:  # copy-on-write: history seeds the NEW table; checks gate before views move
             snapshot = replace(

@@ -154,9 +154,11 @@ than the window; an empty table counts, a missing table waits, and a source that
 stays stale fires once per window). Each keys its `RunRequest` so a crash between
 enqueue and the last-fired write re-lands on the same idempotency key and the
 durable queue dedupes instead of double-running. An inbound `{webhook: name}` is
-not a tick: `POST /hooks/{name}` enqueues that model. Stream arrival does *not* go
+not a tick: `POST /hooks/{name}` enqueues that model. `{after: raw}` (or a list of
+model names) is not a tick either: when that model reaches `model.done` — an apply,
+a run, or a drained queue item — the waiting model and its descendants are enqueued.
+A cycle in `after` is rejected. Stream arrival does *not* go
 through a trigger: a flush enqueues the stream's downstream consumers directly (§9).
-Upstream-completion sensors are roadmap (§14).
 
 ---
 
@@ -275,14 +277,14 @@ Arrow Flight can still land on the same contract later without a redesign.
 
 ## 6. State & environments
 
-**State store:** SQLite (WAL mode). The control-plane schema (with built-in migrations):
+**State store:** SQLite (WAL mode) by default. `state_url: postgresql://…` keeps the same schema in Postgres, in a schema named `interlace` inside that database — not in the warehouse. The control-plane tables (with built-in migrations):
 
 ```
 snapshots, intervals, environments, work_queue (runs, with lease columns for crash
 reclaim), trigger_state, event_log, check_results, api_keys, promotion_history
 ```
 
-(The stream log keeps its own SQLite database — `stream_events`, `stream_heads`,
+(The stream log keeps its own database — SQLite at `stream_path`, or Postgres schema `interlace_streams` when `stream_url` is set — `stream_events`, `stream_heads`,
 `consumer_state` — and stream watermarks live in the warehouse, committed atomically
 with the data; see §9.)
 
@@ -291,14 +293,10 @@ The control plane and the warehouse are different databases:
 | Plane | Holds | Access pattern | Engine |
 |---|---|---|---|
 | Data plane | model tables, materialisations | bulk scans/aggregations, few large writes | **DuckDB/DuckLake** |
-| Control plane | state store, work queue, stream log | many small durable writes | **SQLite** |
+| Control plane | state store, work queue, stream log | many small durable writes | **SQLite, or Postgres** (`state_url` / `stream_url`) |
 
 The control plane claims a task row, heartbeats, commits a stream offset, appends an
-event, and bumps an interval. `BEGIN IMMEDIATE` is the atomic work-queue claim, and a
-stream publish fsyncs before it returns 200. The store protocols are written so the
-backend can be swapped to Postgres
-for a shared/multi-node deployment — but **no Postgres store backend is built today**;
-that is the scale-out contract (§12) and roadmap (§14), not a shipped option.
+event, and bumps an interval. On SQLite, `BEGIN IMMEDIATE` is the atomic work-queue claim. On Postgres the same claim is `SELECT … FOR UPDATE SKIP LOCKED`. A stream publish commits before it returns 200 (SQLite `synchronous=FULL`, or Postgres `synchronous_commit`). This is still one process: several worker hosts, `LISTEN/NOTIFY`, and leader election are the scale-out contract (§12), not a shipped option.
 
 **Environment naming:** production (`prod`) is the *unprefixed* namespace — its views
 live at `<schema>.<model>` (`main.orders`), which is what BI tools connect to. Every
@@ -351,7 +349,7 @@ join alias; unqualified refs only in single-source queries). Disjoint ⇒ the do
 is *clean* and skips. Both proofs bail to "everything" on ambiguity: `*`, DISTINCT,
 positional/computed GROUP BY, a changed alias referenced from other clauses or sibling
 projections, CTE indirection, duplicate output names. Conservative by construction — a
-false "touched"/"consumed" only costs a rebuild, never correctness.
+false "touched"/"consumed" only costs a rebuild, never correctness. When the touched set is proved, the plan records it on `impacted_columns` (a non-breaking change still lists columns that were added). An empty list means the proof could not name them.
 
 ### Two materialisation planes: virtual (owned) vs terminal (table / file)
 
@@ -439,7 +437,7 @@ SELECT * FROM orders
 - **Impact analysis feeds plan:** changed columns → walk the column DAG → downstream
   models partition into *invalidated* (rebuild) vs *safe* (reuse the existing snapshot
   table). Also exposed to humans: `interlace lineage <model> --columns` and per-change
-  impacted columns in `GET /plan`.
+  impacted columns in `GET /plan` (added columns on a non-breaking change; columns whose expressions changed on a semantic one).
 
 ---
 
@@ -522,8 +520,8 @@ class StreamLog(Protocol):
     async def trim(self, stream, *, before_offset=None, before_ts=None) -> int
 ```
 
-**The only backend is SQLite** (WAL, `synchronous=FULL`), fronted by a per-connection
-lock:
+**Backends.** SQLite (WAL, `synchronous=FULL`) is the default, fronted by a per-connection
+lock. `stream_url` selects Postgres: the same statements, with `BEGIN` in place of `BEGIN IMMEDIATE` and durability from `synchronous_commit`. Redpanda/NATS are not built.
 
 - **Durable append, honestly.** `append` runs a plain per-call `BEGIN IMMEDIATE` … 
   `INSERT` … `COMMIT` on a dedicated connection. `synchronous=FULL` (not NORMAL) is the
@@ -596,7 +594,7 @@ DBSP-style incremental engine as an optional accelerator later.
 class WorkQueue(Protocol):
     async def enqueue(self, task) -> str
     async def claim(self, worker_id, slots) -> list[ClaimedTask]
-        # SQLite: BEGIN IMMEDIATE; UPDATE … WHERE state='queued' ORDER BY priority LIMIT n
+        # SQLite: BEGIN IMMEDIATE. Postgres: SELECT … FOR UPDATE SKIP LOCKED
     async def heartbeat(self, task_id, lease_token) -> Command   # returns CANCEL → cooperative cancel
     async def finish(self, task_id, lease_token, result) -> None
 ```
@@ -609,8 +607,8 @@ cooperative **cancellation** channel — `interlace cancel <id>` / `POST /runs/{
 cancel`), retries durably up to `max_attempts`, and executes
 them as forced runs (so they pick up new data). There is no runtime cap unless a caller sets one. A retry rebuilds only models that
 did not finish; models that reached `model.done` are promoted again and not
-recomputed. A cron, interval, watch, table change, freshness, or webhook enqueues that model and its
-downstream closure. `run --select` is not expanded. Stream flushes enqueue the consuming
+recomputed. A cron, interval, watch, table change, freshness, upstream completion, or webhook enqueues that model and its
+downstream closure. `run --select` is not expanded. `schedule: {after: raw}` enqueues when `raw` reaches `model.done`, including an apply or an explicit run. Stream flushes enqueue the consuming
 models with the watermark as the idempotency key. `interlace serve` applies the
 project once, then ties tick → enqueue → drain in one process (`--no-apply` skips
 the apply; `interlace scheduler --once` is a single tick). `cronsim`
@@ -618,7 +616,7 @@ parses cron expressions. Models declare `schedule: {cron: …}`,
 `{every: …}`, `{watch: "inbox/*.csv"}` (a glob of path, size, and mtime on the
 existing tick — no directory watcher), `{on_change: column}`, `{fresh: "updated_at 2h"}`
 (or `{fresh: {column, within}}`; a missing table waits, an empty one counts as stale),
-or `{webhook: name}` (`POST /hooks/{name}`).
+`{after: raw}` (or a list of models), or `{webhook: name}` (`POST /hooks/{name}`).
 
 The lease columns on `work_queue` provide crash-reclaim of *work items* (a dead worker's
 lease expires and the task is re-claimed). This is **not** leader election: there is no
@@ -628,8 +626,8 @@ loops directly. Backfill/catchup is `interlace run` (forced) and `interlace rest
 separate `interlace backfill` command.
 
 **Not yet built (roadmap, §14):** SLA monitors + alerting (`@model(sla=…)`, an
-`AlertRouter`, an `alerts` table), leader election for multi-node singleton loops, and
-upstream-completion sensors. File-watch, table-change, freshness, and inbound webhook schedules ship.
+`AlertRouter`, an `alerts` table) and leader election for multi-node singleton loops.
+File-watch, table-change, freshness, upstream-completion (`after`), and inbound webhook schedules ship.
 
 ---
 
@@ -673,22 +671,19 @@ upstream-completion sensors. File-watch, table-change, freshness, and inbound we
 ## 12. Scale-out path (the designed contract, not yet shipped)
 
 The store/queue/log abstractions are Protocols so a single-node deployment can grow into
-a shared-Postgres, multi-worker one **without a caller-visible redesign**. This table is
-the *intended* contract; the right-hand column is roadmap (§14), not a shipped option —
-only the single-node defaults exist today.
+a shared-Postgres, multi-worker one **without a caller-visible redesign**. Postgres as
+the control plane and as the stream log ships (`state_url`, `stream_url`): one process,
+the same store code, claim via `FOR UPDATE SKIP LOCKED`. The right-hand column is what
+is still roadmap (§14).
 
-| Substrate | Single-node default (shipped) | Designed scale-out swap (roadmap) | Why no redesign |
+| Substrate | Shipped | Still roadmap | Why no redesign |
 |---|---|---|---|
-| State DB / WorkQueue / EventLog | SQLite (WAL) | Postgres (`SKIP LOCKED`, advisory locks, LISTEN/NOTIFY) | claim/lease/fence semantics live in the Protocols |
-| StreamLog | SQLite | Postgres → Redpanda/NATS; or object-store Arrow segments | offsets/leases/idempotency are interface-level concepts |
+| State DB / WorkQueue / EventLog | SQLite (WAL), or Postgres (`state_url`) | several worker hosts, LISTEN/NOTIFY, leader election | claim/lease/fence stay in the store |
+| StreamLog | SQLite, or Postgres (`stream_url`) | Redpanda/NATS, or object-store Arrow segments | offsets/leases/idempotency stay on the Protocol |
 | Warehouse | DuckDB/DuckLake (SQLite catalog) | DuckLake on Postgres catalog; MotherDuck; Snowflake/BigQuery | watermark pattern works everywhere; DuckLake catalog swap is config |
 | Workers | in-process claim loop | same loop, more processes/hosts — the queue is the protocol | nothing to redesign |
 
-A cross-backend conformance suite for these swaps is *planned* (it would be the thing that
-guarantees identical claim/lease semantics); it does not exist yet because the Postgres
-backends it would test have not been built. Forever single-node-only regardless:
-local-DuckDB-file concurrency, the SQLite backends, and a `ProcessPoolExecutor` (per
-worker host).
+A live check of enqueue, claim, the event log, and stream append runs when Postgres is reachable (`tests/test_control_plane_pg.py`). It is not a second copy of the suite. Still one process until a named limit: local-DuckDB-file concurrency, and a `ProcessPoolExecutor` (per worker host).
 
 ---
 
@@ -759,7 +754,7 @@ Logging is the **standard library `logging`** — there is no `structlog` depend
 - **`dev`** — test/lint toolchain: `pytest`, `pytest-asyncio`, `ruff`, `black`, `mypy`,
   and **`httpx`** (litestar's TestClient transport). httpx is not a runtime dependency.
 
-The stream log and work queue are built on `sqlite3`.
+The stream log and work queue are built on `sqlite3`, or on Postgres when `state_url` / `stream_url` is set (`psycopg`, the `postgres` extra).
 
 ---
 
@@ -773,10 +768,10 @@ A feature from another tool is in scope only when it serves that principle.
 
 | Tool | Take, because it fits the goal | Leave |
 |---|---|---|
-| SQLMesh | Plan/apply, virtual environments, and the interval ledger are already the state model. Column-level impact is the improvement on their change classification. | Their Airflow and Dagster scheduler integrations. This process owns the loop. |
+| SQLMesh | Plan/apply, virtual environments, and the interval ledger are already the state model. A semantic edit records the output columns that changed (`impacted_columns`). | Their Airflow and Dagster scheduler integrations. This process owns the loop. |
 | dbt | Selector grammar, and tests that gate promotion. `on_change` runs a model when a source column's max moves. `fresh` runs it when that maximum is older than a window. | MetricFlow, the package hub, and Jinja. Python is the macro language. |
 | Airflow | Retries, leases, and data-aware scheduling of *our* DAG. A trigger already enqueues the model and its descendants. | Arbitrary operators, executors, and a second deployment. |
-| Prefect | Event-driven automations, once they mean "this model finished, run what depends on it." That is the sensor item below. | Work pools and general Python flows. Those are a task runner, which this is not. |
+| Prefect | Event-driven automations: `schedule: {after: model}` runs a model when another one finishes. | Work pools and general Python flows. Those are a task runner, which this is not. |
 | dlt | Call it inside a Python model when a connector is the job. Schema drift on streams is the same idea as their schema evolution, already shipped for `@stream`. | Becoming a connector catalog. |
 | Hevo, Census, Hightouch | The terminal plane: deliver into a table the warehouse does not own, and later a delivery ledger for API sinks. | Hosted ELT and a long list of SaaS connectors as the product. |
 | Cloudflare Pipelines | The ingestion reference: fsync before ack, then land where SQL can read it. | Edge scale and a managed Iceberg catalog. Iceberg/R2 remains a sink idea, not the runtime. |
@@ -784,8 +779,8 @@ A feature from another tool is in scope only when it serves that principle.
 Already shipped (do not look for these here): snapshots and virtual environments,
 column-pruned plan/apply, AST macros, `hash_merge`, indexes/constraints, `reset`,
 cross-process apply lock, fixture tests (`interlace test`), cron/interval/`watch`/
-`on_change`/`fresh`/webhook schedules (a trigger enqueues that model and its descendants; an explicit
-`run --select` does not), retry that skips models already recorded as `model.done`,
+`on_change`/`fresh`/`after`/webhook schedules (a trigger enqueues that model and its descendants; an explicit
+`run --select` does not; `after` fires from `model.done`, including apply and run), retry that skips models already recorded as `model.done`,
 lease renewal on a thread rather than a task timeout, Postgres CDC, named `connections:` / `inputs:` (including
 `watch: true` content hashes), runtime `register_model`, MCP, inspect/preview,
 stream SSE consumers, event-log NDJSON, `interlace diff` (env/table compare),
@@ -803,16 +798,11 @@ Python fingerprints that include factory defaults and closure cells.
 
 ### Later
 
-- **Upstream completion** — fire when an upstream model finishes, rather than on a
-  clock. Cron, interval, file-watch, `on_change`, `fresh`, and inbound webhook
-  already ship (§2.6, §10).
 - **SLA + alerting** — `@model(sla=…)`, `AlertRouter` to Slack/webhook/email, `alerts`
   table, UI history (§10).
-- **Leader election / multi-node** — `leases` for singleton loops, Postgres
-  `SKIP LOCKED` + advisory locks + LISTEN/NOTIFY, multi-worker hosts (§10, §12).
-- **Postgres state/log backends + conformance suite** — OLTP control-plane swap
-  SQLite→Postgres. The `postgres` extra is already used for CDC and connections; it
-  does not yet back the store/queue/log (§6, §12).
+- **Leader election / multi-node** — `leases` for singleton loops, LISTEN/NOTIFY,
+  and more than one worker host (§10, §12). Claim on the Postgres control plane
+  already uses `FOR UPDATE SKIP LOCKED`; that is not multi-node by itself.
 - **Spark `scd`/`full_merge`** — MERGE rewrite for Delta (subqueries in `UPDATE`/
   `DELETE` are forbidden). Databricks `load()` needs a staged-COPY path (§4).
 - **Reverse-ETL SaaS connectors + delivery ledger** — `SinkConnector` beyond
@@ -820,8 +810,8 @@ Python fingerprints that include factory defaults and closure cells.
 - **First-class streaming models** — `kind="incremental_stream"`, `on_stream`,
   `ctx.stream_batch`. SSE consumer groups already ship; webhook/RabbitMQ/`__dlq`/
   GCRA and a DBSP accelerator do not (§9).
-- **Broker stream-log backends** — Postgres, Redpanda/Kafka, NATS, Arrow-IPC
-  segments; `max_lag`; richer retention (§9.1).
+- **Broker stream-log backends** — Redpanda/Kafka, NATS, Arrow-IPC
+  segments; `max_lag`; richer retention (§9.1). The Postgres stream log ships via `stream_url`.
 - **OIDC / JWKS** — browser SSO on top of API keys (§11).
 - **Iceberg / R2 sink** — Iceberg via DuckDB REST catalog (incl. Cloudflare R2 Data
   Catalog) (§9).
@@ -831,5 +821,5 @@ Python fingerprints that include factory defaults and closure cells.
 ### Not a product bet
 
 Semantic layer / MetricFlow; a package hub; arbitrary-Python-task orchestration;
-Kafka before a Postgres stream log; a DBSP engine; matching dbt-mcp's remote Fusion
+Kafka as the stream log; a DBSP engine; matching dbt-mcp's remote Fusion
 toolset.

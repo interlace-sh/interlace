@@ -7,7 +7,8 @@ committed transactionally with fencing tokens, which kills the read/ack race by
 construction. Idempotency keys give effectively-exactly-once.
 
 The default backend is SQLite (WAL, ``synchronous=FULL``, one durable commit per
-append batch — there is no group-commit deque). Postgres/Redpanda/NATS remain
+append batch — there is no group-commit deque). ``stream_url`` selects Postgres
+(a commit is durable under ``synchronous_commit``). Redpanda/NATS remain
 optional backends behind this same Protocol.
 """
 
@@ -20,10 +21,11 @@ import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from interlace.exceptions import StreamError
+from interlace.state.conn import ConnLike
 
 
 @dataclass(frozen=True)
@@ -115,12 +117,12 @@ class StreamLog(Protocol):
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS stream_events (
     stream   TEXT NOT NULL,
-    offset   INTEGER NOT NULL,
+    "offset" INTEGER NOT NULL,
     ts       TEXT NOT NULL,
     key      TEXT,
     headers  TEXT,
     payload  TEXT NOT NULL,
-    PRIMARY KEY (stream, offset)
+    PRIMARY KEY (stream, "offset")
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_stream_events_key
     ON stream_events (stream, key) WHERE key IS NOT NULL;
@@ -140,6 +142,19 @@ CREATE TABLE IF NOT EXISTS consumer_state (
 """
 
 
+def _open_postgres_log(dsn: str, schema: str) -> ConnLike:
+    from interlace.state.pg import connect
+
+    conn = connect(dsn, schema)
+    try:
+        conn.executescript(_SCHEMA)
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
 class SqliteStreamLog:
     """SQLite (WAL) :class:`StreamLog` — the single-node default backend.
 
@@ -149,7 +164,7 @@ class SqliteStreamLog:
     is a partial unique index — transactional by construction.
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: ConnLike) -> None:
         self._conn = connection
         self._lock = threading.Lock()
         # Waiting reads block on an Event. Append bumps the generation and wakes
@@ -161,7 +176,14 @@ class SqliteStreamLog:
 
     @classmethod
     async def open(cls, path: str | Path) -> SqliteStreamLog:
-        return cls(await asyncio.to_thread(cls._connect, str(path)))
+        # sqlite3.Connection's parameter type is narrower than the protocol's ``Any``.
+        return cls(cast(ConnLike, await asyncio.to_thread(cls._connect, str(path))))
+
+    @classmethod
+    async def open_postgres(cls, dsn: str, *, schema: str = "interlace_streams") -> SqliteStreamLog:
+        """Same log, on a Postgres schema. ``schema`` is created if missing."""
+        conn = await asyncio.to_thread(_open_postgres_log, dsn, schema)
+        return cls(conn)
 
     @staticmethod
     def _connect(path: str) -> sqlite3.Connection:
@@ -198,7 +220,7 @@ class SqliteStreamLog:
                 offset = int(row["next_offset"]) if row else 1
                 for event in events:
                     cursor = self._conn.execute(
-                        "INSERT OR IGNORE INTO stream_events (stream, offset, ts, key, headers, payload) "
+                        'INSERT OR IGNORE INTO stream_events (stream, "offset", ts, key, headers, payload) '
                         "VALUES (?, ?, ?, ?, ?, ?)",
                         (
                             stream,
@@ -215,7 +237,7 @@ class SqliteStreamLog:
                         offset += 1
                     else:  # idempotency key already seen: report its original offset
                         seen = self._conn.execute(
-                            "SELECT offset FROM stream_events WHERE stream = ? AND key = ?",
+                            'SELECT "offset" FROM stream_events WHERE stream = ? AND key = ?',
                             (stream, event.idempotency_key),
                         ).fetchone()
                         offsets.append(int(seen["offset"]) if seen else 0)
@@ -290,8 +312,8 @@ class SqliteStreamLog:
     def _read_sync(self, stream: str, after_offset: int, limit: int) -> list[StoredEvent]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT offset, ts, key, headers, payload FROM stream_events "
-                "WHERE stream = ? AND offset > ? ORDER BY offset LIMIT ?",
+                'SELECT "offset", ts, key, headers, payload FROM stream_events '
+                'WHERE stream = ? AND "offset" > ? ORDER BY "offset" LIMIT ?',
                 (stream, after_offset, limit),
             ).fetchall()
         return [
@@ -402,7 +424,7 @@ class SqliteStreamLog:
         clauses: list[str] = ["stream = ?"]
         params: list[object] = [stream]
         if before_offset is not None:
-            clauses.append("offset < ?")
+            clauses.append('"offset" < ?')
             params.append(before_offset)
         if before_ts is not None:
             clauses.append("ts < ?")

@@ -2,9 +2,10 @@
 
 Owns every non-warehouse table: snapshots, the interval ledger, environment
 pointers and promotion history, the durable run queue, per-trigger state, the
-event log, API keys, and check results. SQLite (WAL) is the single-node backend.
-See docs/architecture/architecture.md §6 for why this is SQLite and not the
-analytical DuckDB engine.
+event log, API keys, and check results. SQLite (WAL) is the default backend;
+``state_url`` opens the same stores on Postgres. See
+docs/architecture/architecture.md §6 for why this is not the analytical DuckDB
+engine.
 
 The tables share one connection (:class:`ControlDb`). Each surface is its own
 type (``snapshots``, ``queue``, ``events``, ``keys``, ``checks``, ``triggers``,
@@ -15,17 +16,16 @@ the historical methods, so plan/apply still depend only on :class:`StateStore`.
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from interlace.state.advisory import AdvisoryLockStore
 from interlace.state.cdc import CdcWatermarks
 from interlace.state.checks import CheckStore
 from interlace.state.codec import QueuedRun, RunRecord, event_actor
-from interlace.state.conn import ControlDb
+from interlace.state.conn import ConnLike, ControlDb
 from interlace.state.events import EventLogStore
 from interlace.state.interval import Interval, IntervalSet
 from interlace.state.keys import ApiKeyStore
@@ -63,8 +63,8 @@ class SqliteStateStore:
     or the same-named methods on this object, which forward to them.
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
-        self._db = ControlDb(connection)
+    def __init__(self, connection: ConnLike, *, dialect: str = "sqlite") -> None:
+        self._db = ControlDb(connection, dialect=dialect)
         self.snapshots = SnapshotStore(self._db)
         self.queue = WorkQueue(self._db)
         self.events = EventLogStore(self._db)
@@ -85,7 +85,14 @@ class SqliteStateStore:
     @classmethod
     async def open(cls, path: str | Path) -> SqliteStateStore:
         connection = await asyncio.to_thread(ControlDb.connect, str(path))
-        return cls(connection)
+        # sqlite3.Connection's parameter type is narrower than the protocol's ``Any``.
+        return cls(cast(ConnLike, connection))
+
+    @classmethod
+    async def open_postgres(cls, dsn: str, *, schema: str = "interlace") -> SqliteStateStore:
+        """Same store, on a Postgres schema. ``schema`` is created if missing."""
+        connection = await asyncio.to_thread(ControlDb.connect_postgres, dsn, schema)
+        return cls(connection, dialect="postgres")
 
     async def close(self) -> None:
         await self._db.close()

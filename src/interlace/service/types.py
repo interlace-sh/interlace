@@ -297,7 +297,7 @@ class ConnectionInfo(msgspec.Struct):
 
 class ScheduleInfo(msgspec.Struct):
     model: str
-    kind: str  # "cron" | "every" | "watch" | "on_change" | "fresh" | "webhook"
+    kind: str  # "cron" | "every" | "watch" | "on_change" | "fresh" | "after" | "webhook"
     expression: str
     next_fire: str | None
     last_fired: str | None

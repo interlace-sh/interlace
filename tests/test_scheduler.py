@@ -16,9 +16,11 @@ from interlace.dsl.decorators import ModelDef
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.exceptions import DefinitionError
 from interlace.graph.project import compile_models
+from interlace.plan.apply import apply
+from interlace.plan.differ import diff
 from interlace.project import Project
 from interlace.scheduler.daemon import startup_apply
-from interlace.scheduler.engine import TriggerEngine, build_triggers, scheduled_closure
+from interlace.scheduler.engine import TriggerEngine, after_waiters, build_triggers, scheduled_closure, wake_after
 from interlace.scheduler.triggers import CronTrigger, IntervalTrigger
 from interlace.scheduler.worker import _finished_models, drain
 from interlace.state.store import SqliteStateStore
@@ -360,3 +362,68 @@ def test_scheduler_once_builds_a_scheduled_model(tmp_path: Path) -> None:
         assert con.execute("SELECT x FROM dev__main.m").fetchone() == (5,)
     finally:
         con.close()
+
+
+def test_after_is_not_a_ticking_trigger() -> None:
+    project = compile_models(
+        [
+            ModelDef(name="raw", sql="SELECT 1 AS x"),
+            ModelDef(name="mart", sql="SELECT x FROM raw", schedule={"after": "raw"}),
+            ModelDef(name="dash", sql="SELECT x FROM mart", schedule={"after": ["raw", "mart"]}),
+        ]
+    )
+    assert build_triggers(project) == []
+    assert project.models["dash"].schedule == {"after": "raw,mart"}
+    waiters = after_waiters(project)
+    assert waiters["raw"] == ["mart", "dash"]
+    assert waiters["mart"] == ["dash"]
+
+
+def test_after_rejects_unknown_self_and_cycles() -> None:
+    missing = compile_models([ModelDef(name="m", sql="SELECT 1 AS x", schedule={"after": "nope"})])
+    with pytest.raises(DefinitionError, match="unknown"):
+        build_triggers(missing)
+    itself = compile_models([ModelDef(name="m", sql="SELECT 1 AS x", schedule={"after": "m"})])
+    with pytest.raises(DefinitionError, match="itself"):
+        build_triggers(itself)
+    cycle = compile_models(
+        [
+            ModelDef(name="a", sql="SELECT 1 AS x", schedule={"after": "b"}),
+            ModelDef(name="b", sql="SELECT 1 AS y", schedule={"after": "a"}),
+        ]
+    )
+    with pytest.raises(DefinitionError, match="cycle"):
+        build_triggers(cycle)
+
+
+async def test_after_enqueues_the_waiter_once_per_finish(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    _, store = env
+    project = compile_models(
+        [
+            ModelDef(name="raw", sql="SELECT 1 AS x"),
+            ModelDef(name="mart", sql="SELECT x FROM raw", schedule={"after": "raw"}),
+            ModelDef(name="dash", sql="SELECT x FROM mart"),
+        ]
+    )
+    assert await wake_after(store, project, "raw", building=set(), stamp="1") == 1
+    assert await wake_after(store, project, "raw", building=set(), stamp="1") == 0
+    runs = await store.list_runs()
+    assert runs[0]["flow_selector"] == ["dash", "mart"]
+    assert await wake_after(store, project, "raw", building={"mart"}, stamp="2") == 0
+    assert await store.count_pending_runs() == 1
+
+
+async def test_finishing_an_upstream_enqueues_its_after(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    engine, store = env
+    compiled = compile_models(
+        [
+            ModelDef(name="raw", sql="SELECT 1 AS x"),
+            ModelDef(name="mart", sql="SELECT x FROM raw", schedule={"after": "raw"}),
+        ]
+    )
+    plan = await diff(compiled, "prod", store, select={"raw"})
+    await apply(plan, compiled=compiled, engine=engine, state=store)
+    runs = await store.list_runs()
+    assert [run["flow_selector"] for run in runs] == [["mart"]]

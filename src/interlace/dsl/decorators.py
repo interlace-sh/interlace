@@ -32,7 +32,8 @@ ModelFn = Callable[..., Any]
 
 
 def normalize_schedule(schedule: Mapping[str, Any] | None, *, model: str) -> dict[str, str] | None:
-    """Schedules are string values. ``fresh: {column, within}`` becomes ``"column within"``."""
+    """Schedules are string values. ``fresh: {column, within}`` becomes ``"column within"``.
+    ``after: [a, b]`` becomes ``"a,b"``."""
     if not schedule:
         return None
     normalised: dict[str, str] = {}
@@ -46,6 +47,14 @@ def normalize_schedule(schedule: Mapping[str, Any] | None, *, model: str) -> dic
                 raise DefinitionError(f"model {model!r}: fresh.within must be a window like '2h'")
             normalised[key] = f"{column.strip()} {window.strip()}"
             continue
+        if key == "after" and isinstance(value, (list, tuple)):
+            names = [str(item).strip() for item in value]
+            if not names or any(not name for name in names):
+                raise DefinitionError(f"model {model!r}: after must name a model, or a list of models")
+            normalised[key] = ",".join(names)
+            continue
+        if key == "after" and not isinstance(value, str):
+            raise DefinitionError(f"model {model!r}: after must name a model, or a list of models")
         if not isinstance(value, str):
             raise DefinitionError(f"model {model!r}: schedule {key!r} must be a string")
         normalised[key] = value

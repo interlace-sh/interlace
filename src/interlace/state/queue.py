@@ -77,14 +77,18 @@ class WorkQueue:
         with self._db.lock:
             self._db.conn.execute("BEGIN IMMEDIATE")
             try:
-                rows = self._db.conn.execute(
+                claim = (
                     "SELECT id, flow_selector, partition_start, partition_end, priority, attempts, restate, "
                     "       cancel_requested "
                     "FROM work_queue WHERE state = 'queued' "
                     "   OR (state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?) "
-                    "ORDER BY priority DESC, id LIMIT ?",
-                    (now.isoformat(), limit),
-                ).fetchall()
+                    "ORDER BY priority DESC, id LIMIT ?"
+                )
+                # SQLite serialises writers with BEGIN IMMEDIATE. Postgres does not:
+                # two workers would otherwise read the same queued rows.
+                if self._db.dialect == "postgres":
+                    claim += " FOR UPDATE SKIP LOCKED"
+                rows = self._db.conn.execute(claim, (now.isoformat(), limit)).fetchall()
                 for row in rows:
                     if row["cancel_requested"]:  # cancelled between attempts: honour it, don't re-run
                         self._db.conn.execute(

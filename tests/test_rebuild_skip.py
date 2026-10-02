@@ -339,3 +339,16 @@ async def test_reuse_survives_plan_render_fields(env: tuple[DuckDBAdapter, Sqlit
     assert up.impacted_columns == ("y",)  # additive columns surfaced for diff display
     assert {s.name for s in plan.reuses} == {"down"}
     assert {t.snapshot.name for t in plan.backfills} == {"up"}
+
+
+async def test_semantic_edit_records_the_changed_column(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    """A projection edit names the output columns that moved, on the model and
+    on the downstream that reads them."""
+    _, store = env
+    await _apply(env, [sql_model("up", "SELECT 1 AS x, 2 AS y"), sql_model("down", "SELECT x, y FROM up")])
+    compiled = compile_models([sql_model("up", "SELECT 5 AS x, 2 AS y"), sql_model("down", "SELECT x, y FROM up")])
+    plan = await diff(compiled, "prod", store)
+    by_name = {change.name: change for change in plan.changes}
+    assert by_name["up"].impacted_columns == ("x",)
+    assert by_name["down"].impacted_columns == ("x",)
+    assert {t.snapshot.name for t in plan.backfills} == {"up", "down"}

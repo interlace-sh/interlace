@@ -142,6 +142,7 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
             "watch": f"watch:{name}",
             "on_change": f"change:{name}",
             "fresh": f"fresh:{name}",
+            "after": f"after:{name}",
         }.get(kind)
         last = await state.store.get_trigger_last_fired(trigger_id) if trigger_id else None
 

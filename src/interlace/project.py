@@ -375,15 +375,20 @@ class Project:
         )
 
     async def open_state(self) -> SqliteStateStore:
-        path = self.root / self.config.state_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        store = await SqliteStateStore.open(path)
+        if self.config.state_url:
+            store = await SqliteStateStore.open_postgres(self.config.state_url)
+        else:
+            path = self.root / self.config.state_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            store = await SqliteStateStore.open(path)
         if self.config.event_log_path:
             target = Path(self.config.event_log_path)
             store.event_log_path = str(target if target.is_absolute() else self.root / target)
         return store
 
     async def open_stream_log(self) -> SqliteStreamLog:
+        if self.config.stream_url:
+            return await SqliteStreamLog.open_postgres(self.config.stream_url)
         path = self.root / self.config.stream_path
         path.parent.mkdir(parents=True, exist_ok=True)
         return await SqliteStreamLog.open(path)

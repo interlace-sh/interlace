@@ -19,8 +19,10 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 | `macro_paths` | list | `["macros"]` | Directories scanned for `CREATE MACRO` definitions, expanded into models at compile time (see [models](models.md#macros)). Missing directories are ignored. |
 | `vars` | map | `{}` | Typed literals SQL models read with `var('name')` (see [models](models.md#vars)). A changed value replans the models that reference it. |
 | `parallelism` | int (≥1) | `4` | Max models built concurrently by `apply`/`run`. |
-| `state_path` | str | `.interlace/state.db` | SQLite control-plane database. |
-| `stream_path` | str | `.interlace/streams.db` | Durable stream log (SQLite WAL). |
+| `state_path` | str | `.interlace/state.db` | SQLite control-plane database. Ignored when `state_url` is set. |
+| `state_url` | str | — | `postgresql://…` control plane (schema `interlace`). Not the warehouse connection. Needs the `postgres` extra. |
+| `stream_path` | str | `.interlace/streams.db` | Durable stream log (SQLite WAL). Ignored when `stream_url` is set. |
+| `stream_url` | str | — | `postgresql://…` stream log (schema `interlace_streams`). A commit is durable under `synchronous_commit`. Needs the `postgres` extra. |
 | `attach` | map | `{}` | `{alias: uri}` — external databases wired into the warehouse (reverse-ETL targets, cross-engine ATTACH). |
 | `alias`, `data_path`, `metadata_schema`, `secrets`, `quack_token` | — | Warehouse-engine options mirrored from `EngineConfig` (below) for the default engine. |
 

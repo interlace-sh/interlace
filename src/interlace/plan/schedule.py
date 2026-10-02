@@ -123,6 +123,9 @@ async def schedule_builds(  # noqa: C901
                 deps.add(ref)
         blocking[name] = deps
 
+    from interlace.scheduler.engine import after_waiters, wake_after
+
+    waiting = after_waiters(compiled)
     finished = {name: asyncio.Event() for name in per_model}
     build_slots = asyncio.Semaphore(max(1, parallelism))
 
@@ -163,6 +166,7 @@ async def schedule_builds(  # noqa: C901
         finished[name].set()
         if on_progress is not None:
             on_progress(name, "done", build_detail(result, name))
+        await wake_after(state, compiled, name, building=set(per_model), waiters=waiting)
 
     # Copied into each build task at creation, so a Python model that registers
     # models (including from a worker thread) appends to this same list.

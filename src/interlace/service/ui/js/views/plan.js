@@ -143,7 +143,10 @@ export async function render(el, { api, toast, modal }) {
       ];
       if (change.category) headBits.push(pill(change.category.replace("_", "-"), CATEGORY_TONE[change.category] ?? ""));
       if (change.reused) headBits.push(pill("reused — no rebuild", "violet"));
-      if (change.impacted_columns.length) headBits.push(h("span", { class: "sub" }, `+ ${change.impacted_columns.join(", ")}`));
+      if (change.impacted_columns.length) {
+        const mark = change.category === "non_breaking" ? "+" : "~";
+        headBits.push(h("span", { class: "sub" }, `${mark} ${change.impacted_columns.join(", ")}`));
+      }
 
       const card = h("div", { class: "card" });
       const detail = h("div", { class: "card-body" });

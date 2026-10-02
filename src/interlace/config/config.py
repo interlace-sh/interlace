@@ -250,6 +250,9 @@ class ProjectConfig(BaseModel):
     default_engine: str = "default"
     engines: dict[str, EngineConfig] = Field(default_factory=dict)
     state_path: str = ".interlace/state.db"  # SQLite control-plane database
+    # When set, snapshots, the queue, and the event log live in this Postgres
+    # database (schema ``interlace``) instead of ``state_path``. Not the warehouse.
+    state_url: str | None = None
     # Optional NDJSON mirror of the operator event log. Unset writes nowhere.
     # One JSON line is appended after each SQLite commit (CLI and daemon share it).
     event_log_path: str | None = None
@@ -275,6 +278,11 @@ class ProjectConfig(BaseModel):
     secrets: dict[str, SecretConfig] = Field(default_factory=dict)
     quack_token: str | None = None  # token for quack: databases (or INTERLACE_QUACK_TOKEN)
     stream_path: str = ".interlace/streams.db"  # durable stream log (SQLite WAL)
+    # When set, the stream log lives in this Postgres database (schema
+    # ``interlace_streams``) instead of ``stream_path``. A commit is durable
+    # under Postgres ``synchronous_commit`` (the default), the same promise as
+    # the SQLite WAL fsync.
+    stream_url: str | None = None
     # Databases to ATTACH to the warehouse engine at open: alias -> DuckDB attach
     # URI/path (a .duckdb file, "postgres:...", "sqlite:...", ...). Models can read
     # them and table exports can write to them as <alias>.<schema>.<table>.

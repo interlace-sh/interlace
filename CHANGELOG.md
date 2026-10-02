@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.8.5 (2026-10-02)
 
 **A finished model can schedule the next one.** `schedule: {after: raw}` (or a list of model names) enqueues that model and its descendants when the named model reaches `model.done`, including an apply or an explicit `interlace run`. It is not a clock tick. A cycle in `after` is rejected.
 

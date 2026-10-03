@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.6 (2026-10-03)
+
+**The Postgres control plane reads run history, and keeps the apply lock exclusive.** Run detail and the runs list no longer depend on SQLite `json_extract`. A second process cannot take a live apply lease: the update lands only when that process already owns the row or the lease has expired. Renewing reports failure when the row has moved on.
+
 ## 2.8.5 (2026-10-02)
 
 **A finished model can schedule the next one.** `schedule: {after: raw}` (or a list of model names) enqueues that model and its descendants when the named model reaches `model.done`, including an apply or an explicit `interlace run`. It is not a clock tick. A cycle in `after` is rejected.

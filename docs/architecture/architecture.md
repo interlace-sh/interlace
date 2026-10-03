@@ -610,8 +610,8 @@ did not finish; models that reached `model.done` are promoted again and not
 recomputed. A cron, interval, watch, table change, freshness, upstream completion, or webhook enqueues that model and its
 downstream closure. `run --select` is not expanded. `schedule: {after: raw}` enqueues when `raw` reaches `model.done`, including an apply or an explicit run. Stream flushes enqueue the consuming
 models with the watermark as the idempotency key. `interlace serve` applies the
-project once, then ties tick → enqueue → drain in one process (`--no-apply` skips
-the apply; `interlace scheduler --once` is a single tick). `cronsim`
+project once while the API is already listening, then ties tick → enqueue → drain in one process (`--no-apply` skips
+the apply; writes return 503 until the startup apply finishes; `interlace scheduler --once` is a single tick). `cronsim`
 parses cron expressions. Models declare `schedule: {cron: …}`,
 `{every: …}`, `{watch: "inbox/*.csv"}` (a glob of path, size, and mtime on the
 existing tick — no directory watcher), `{on_change: column}`, `{fresh: "updated_at 2h"}`

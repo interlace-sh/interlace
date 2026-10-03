@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import cast
 
 from litestar import Litestar
-from litestar.exceptions import ImproperlyConfiguredException
+from litestar.connection import ASGIConnection
+from litestar.exceptions import ImproperlyConfiguredException, ServiceUnavailableException
+from litestar.handlers.base import BaseRouteHandler
 
 from interlace.graph.column_lineage import column_lineage
 from interlace.project import Project
@@ -36,6 +38,21 @@ from interlace.streaming.materializer import (
     quarantine_stream,
     stream_consumers,
 )
+
+
+async def startup_guard(connection: ASGIConnection, _route_handler: BaseRouteHandler) -> None:
+    """Refuse writes until the startup apply has finished.
+
+    The socket is open while that apply runs, so a client gets this response
+    instead of a refused connection. Reads stay available.
+    """
+    status = getattr(connection.app.state, "startup_status", "ok")
+    if status == "ok" or connection.scope.get("method", "GET") in ("GET", "HEAD", "OPTIONS"):
+        return
+    if status == "starting":
+        raise ServiceUnavailableException(detail="startup apply is still running")
+    detail = getattr(connection.app.state, "startup_error", "") or "startup apply failed"
+    raise ServiceUnavailableException(detail=detail)
 
 
 def project_lifespan(  # noqa: C901
@@ -140,6 +157,10 @@ def project_lifespan(  # noqa: C901
 
         if streams:
             app.state.flush_wanted.set()  # catch up anything durable but unflushed at last shutdown
+        # "starting" until the first apply finishes. The socket opens at the yield
+        # below, so clients reach /health instead of a refused connection.
+        app.state.startup_status = "starting" if apply_on_start else "ok"
+        app.state.startup_error = ""
 
         async def shutdown_watch() -> None:
             """End every open SSE stream the moment uvicorn begins shutting down.
@@ -159,16 +180,36 @@ def project_lifespan(  # noqa: C901
                 with contextlib.suppress(asyncio.QueueFull):
                     subscriber.put_nowait(None)
 
-        if apply_on_start:
-            await startup_apply(app.state)
+        flusher_task: asyncio.Task[None] | None = None
+        loop_task: asyncio.Task[None] | None = None
+        cdc_task: asyncio.Task[None] | None = None
+
+        async def open_service() -> None:
+            """Apply first, then the loops. The listen socket is already open."""
+            nonlocal flusher_task, loop_task, cdc_task
+            try:
+                if apply_on_start:
+                    logger.info("startup apply running; the API is accepting connections")
+                    await startup_apply(app.state)
+                app.state.startup_status = "ok"
+            except Exception as exc:
+                app.state.startup_status = "error"
+                app.state.startup_error = str(exc)
+                logger.exception("startup apply failed")
+                server = getattr(app.state, "uvicorn_server", None)
+                if server is not None:
+                    server.should_exit = True
+                return
+            if streams:
+                flusher_task = asyncio.create_task(flusher_loop(app.state, flush_interval=stream_flush_interval))
+            if scheduler:
+                loop_task = asyncio.create_task(scheduler_loop(app.state, interval=scheduler_interval))
+            if project.config.cdc:
+                cdc_task = asyncio.create_task(cdc_loop(app.state))
 
         tail_task = asyncio.create_task(event_tail())
-        flusher_task = (
-            asyncio.create_task(flusher_loop(app.state, flush_interval=stream_flush_interval)) if streams else None
-        )
-        loop_task = asyncio.create_task(scheduler_loop(app.state, interval=scheduler_interval)) if scheduler else None
-        cdc_task = asyncio.create_task(cdc_loop(app.state)) if project.config.cdc else None
         watch_task = asyncio.create_task(shutdown_watch())
+        service_task = asyncio.create_task(open_service())
         try:
             yield
         finally:
@@ -183,6 +224,10 @@ def project_lifespan(  # noqa: C901
             for subscriber in list(app.state.sse_subscribers):
                 with contextlib.suppress(asyncio.QueueFull):
                     subscriber.put_nowait(None)
+            # Stop the opener first so it cannot start a loop after this snapshot.
+            service_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await service_task
             for task in (cdc_task, loop_task, flusher_task, tail_task, watch_task):
                 if task is not None:
                     task.cancel()

@@ -33,7 +33,13 @@ from interlace.service.types import (
 
 @get("/health")
 async def health(state: State) -> dict[str, str]:
-    return {"status": "ok", "version": __version__, "environment": state.environment}
+    status = getattr(state, "startup_status", "ok")
+    body = {"status": status, "version": __version__, "environment": state.environment}
+    if status == "starting":
+        body["detail"] = "startup apply is still running"
+    elif status == "error":
+        body["detail"] = getattr(state, "startup_error", "") or "startup apply failed"
+    return body
 
 
 @get("/", include_in_schema=False)

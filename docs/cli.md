@@ -146,8 +146,9 @@ Run the scheduler loop: tick triggers, flush streams, drain due runs, sweep stre
 
 ### `interlace serve [--env] [--host 127.0.0.1] [--port 8000] [--scheduler/--no-scheduler] [--interval 60] [--apply/--no-apply] [--quack] [--quack-token] [--allow-open]`
 Run the daemon: HTTP API + web UI (`/ui`) + scheduler + streams in one process. Requires the
-`service` extra. The project is applied once before the loops start (`--no-apply` serves
-the warehouse as it is). A `cdc:` block is read in this process: each Postgres slot appends into
+`service` extra. The API listens immediately and the project is applied once at startup,
+before the scheduler loop (`--no-apply` serves the warehouse as it is). `GET /health`
+reports `starting` while that apply runs; writes return 503 until it finishes. A `cdc:` block is read in this process: each Postgres slot appends into
 its `@stream`. `--no-scheduler` runs API-only (pair with a separate `interlace scheduler`).
 `--quack` also serves the warehouse over the quack protocol. A non-loopback bind with no API
 keys is **refused** unless `--allow-open` (insecure); create a key first with

@@ -19,7 +19,7 @@ from litestar.static_files import create_static_files_router
 from interlace import __version__
 from interlace.exceptions import BreakingPlanError, LockError
 from interlace.service.auth import auth_guard
-from interlace.service.lifespan import project_lifespan
+from interlace.service.lifespan import project_lifespan, startup_guard
 from interlace.service.routes.admin import (
     delete_apikey,
     get_apikeys,
@@ -90,7 +90,8 @@ def create_app(
     ``scheduler=True`` makes this the combined daemon: the HTTP API plus a
     background scheduler loop (tick triggers, drain the run queue) in one
     process — the default for ``interlace serve``. ``apply_on_start`` applies the
-    project once before the loops start; the ``serve`` command turns it on.
+    project once while the API is already accepting connections; writes get
+    503 until that apply finishes. The ``serve`` command turns it on.
     ``quack`` (a
     ``quack:<host>:<port>`` URI) additionally serves the warehouse over the
     quack protocol so other processes — CLI runs, ad-hoc DuckDB clients —
@@ -220,7 +221,7 @@ def create_app(
             stream_events,
         ],
         lifespan=[lifespan],
-        guards=[auth_guard],
+        guards=[auth_guard, startup_guard],
         openapi_config=OpenAPIConfig(
             title="interlace",
             version=__version__,

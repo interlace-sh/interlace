@@ -288,7 +288,7 @@ def serve(
     apply_on_start: bool = typer.Option(
         True,
         "--apply/--no-apply",
-        help="Apply the project once at startup. --no-apply serves the warehouse as it is.",
+        help="Apply once at startup, while the API is already listening. --no-apply serves the warehouse as it is.",
     ),
     allow_open: bool = typer.Option(
         False,
@@ -299,7 +299,8 @@ def serve(
     """Run the interlace daemon: HTTP API + scheduler in one process (requires the `service` extra).
 
     Use --no-scheduler for an API-only process (run `interlace scheduler` separately).
-    The project is applied once before the loops start; pass --no-apply to skip that.
+    The API listens immediately. The project is applied once at startup, before the
+    scheduler loop; pass --no-apply to skip that. Writes return 503 until the apply finishes.
     A `cdc:` block in the project config is read here: each Postgres slot appends into its stream.
     """
     try:

@@ -27,7 +27,9 @@ wrong scope = 403. When an engine statement fails, the error body also includes 
 ## Endpoints
 
 ### Health & UI
-- **`GET /health`** (open) → `{status, version, environment}`.
+- **`GET /health`** (open) → `{status, version, environment}` and, unless `status` is `ok`,
+  `detail`. `status` is `ok`, `starting` (the startup apply is still running; writes return
+  503 with the same detail), or `error`.
 - **`GET /`** (open) → 302 redirect to `/ui/`.
 
 ### Models & lineage (read)

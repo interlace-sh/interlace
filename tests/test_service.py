@@ -29,6 +29,46 @@ def test_health(client: TestClient) -> None:
     assert body["version"]  # the UI's nav foot shows it
 
 
+def test_api_accepts_while_startup_apply_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The listen path does not wait for the startup apply. Writes say why they cannot run yet."""
+    release = asyncio.Event()
+    scheduler_started = asyncio.Event()
+
+    async def slow_apply(_state: object) -> None:
+        await release.wait()
+
+    async def parked_scheduler(*_args: object, **_kwargs: object) -> None:
+        scheduler_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("interlace.service.lifespan.startup_apply", slow_apply)
+    monkeypatch.setattr("interlace.service.lifespan.scheduler_loop", parked_scheduler)
+    app = create_app(_make_project(tmp_path), "dev", scheduler=True, apply_on_start=True)
+    with TestClient(app=app) as client:
+        body: dict[str, str] = {}
+        for _ in range(50):
+            body = client.get("/health").json()
+            if body["status"] == "starting":
+                break
+            time.sleep(0.02)
+        assert body["status"] == "starting"
+        assert body["detail"] == "startup apply is still running"
+        assert not scheduler_started.is_set()
+        refused = client.post("/reset", json={"confirm": True})
+        assert refused.status_code == 503
+        assert refused.json()["detail"] == "startup apply is still running"
+        release.set()
+        for _ in range(50):
+            body = client.get("/health").json()
+            if body["status"] == "ok" and scheduler_started.is_set():
+                break
+            time.sleep(0.02)
+        assert body["status"] == "ok"
+        assert body["environment"] == "dev"
+        assert "detail" not in body
+        assert scheduler_started.is_set()
+
+
 def test_ui_shell_is_served(client: TestClient) -> None:
     """The daemon serves the in-package UI; / redirects to it."""
     page = client.get("/ui/")

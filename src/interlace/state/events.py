@@ -49,8 +49,8 @@ class EventLogStore:
         with self._db.lock:
             rows = self._db.conn.execute(
                 "SELECT seq, ts, type, entity, payload FROM event_log "
-                "WHERE json_extract(payload, '$.run') = ? ORDER BY seq",
-                (run_id,),
+                "WHERE CAST(json_extract(payload, '$.run') AS TEXT) = ? ORDER BY seq",
+                (str(run_id),),
             ).fetchall()
         return [self._event_row(row) for row in rows]
 

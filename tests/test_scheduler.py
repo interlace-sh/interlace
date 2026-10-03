@@ -19,8 +19,9 @@ from interlace.graph.project import compile_models
 from interlace.plan.apply import apply
 from interlace.plan.differ import diff
 from interlace.project import Project
+from interlace.scheduler.completion import after_waiters, scheduled_closure, wake_after
 from interlace.scheduler.daemon import startup_apply
-from interlace.scheduler.engine import TriggerEngine, after_waiters, build_triggers, scheduled_closure, wake_after
+from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.triggers import CronTrigger, IntervalTrigger
 from interlace.scheduler.worker import _finished_models, drain
 from interlace.state.store import SqliteStateStore

@@ -1,10 +1,10 @@
 """Cross-process advisory locks for warehouse-mutating work.
 
 CLI ``apply`` / ``run`` and the daemon (HTTP apply, stream flush, scheduler drain,
-gc, env drop/rollback) all share one SQLite state file. An in-process
-``asyncio.Lock`` cannot serialise those writers — this module does, via
-:meth:`AdvisoryLockStore.acquire_lock` with a heartbeat while the critical
-section runs.
+gc, env drop/rollback) share one control plane: the SQLite state file, or the
+Postgres schema from ``state_url``. An in-process ``asyncio.Lock`` cannot
+serialise those writers — this module does, via :meth:`AdvisoryLockStore.acquire_lock`
+with a heartbeat while the critical section runs.
 """
 
 from __future__ import annotations

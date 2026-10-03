@@ -58,11 +58,12 @@ Blocking external-table drift (`schema.columns: reject`) refuses before any writ
 
 ## The state store
 
-A SQLite (WAL) database (`.interlace/state.db`) holds everything that isn't warehouse data:
+By default a SQLite (WAL) database (`.interlace/state.db`) holds everything that isn't warehouse data:
 snapshots, the interval ledger, environment pointers + promotion history, the durable run
 queue (with leases, retries, cancellation), per-trigger state, the event log, API keys, and
-check results. The warehouse (a plain DuckDB file by default) holds the actual model tables. The
-stream log is a separate SQLite WAL database (`.interlace/streams.db`).
+check results. `state_url` stores those same tables in Postgres (schema `interlace`) instead.
+The warehouse (a plain DuckDB file by default) holds the actual model tables. The
+stream log is separate: SQLite WAL at `.interlace/streams.db`, or Postgres schema `interlace_streams` when `stream_url` is set.
 
 ## The three surfaces
 

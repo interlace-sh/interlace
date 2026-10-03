@@ -296,7 +296,7 @@ The control plane and the warehouse are different databases:
 | Control plane | state store, work queue, stream log | many small durable writes | **SQLite, or Postgres** (`state_url` / `stream_url`) |
 
 The control plane claims a task row, heartbeats, commits a stream offset, appends an
-event, and bumps an interval. On SQLite, `BEGIN IMMEDIATE` is the atomic work-queue claim. On Postgres the same claim is `SELECT … FOR UPDATE SKIP LOCKED`. A stream publish commits before it returns 200 (SQLite `synchronous=FULL`, or Postgres `synchronous_commit`). This is still one process: several worker hosts, `LISTEN/NOTIFY`, and leader election are the scale-out contract (§12), not a shipped option.
+event, and bumps an interval. On SQLite, `BEGIN IMMEDIATE` is the atomic work-queue claim. On Postgres the same claim is `SELECT … FOR UPDATE SKIP LOCKED`. The apply lock is exclusive on both: Postgres updates that row in one conditional upsert, so a second process cannot take a live lease. A stream publish commits before it returns 200 (SQLite `synchronous=FULL`, or Postgres `synchronous_commit`). This is still one process: several worker hosts, `LISTEN/NOTIFY`, and leader election are the scale-out contract (§12), not a shipped option.
 
 **Environment naming:** production (`prod`) is the *unprefixed* namespace — its views
 live at `<schema>.<model>` (`main.orders`), which is what BI tools connect to. Every
@@ -550,8 +550,8 @@ lock. `stream_url` selects Postgres: the same statements, with `BEGIN` in place 
   age + watermark only — there is no `max_events` / `min_unconsumed` / `ConsumerLapped`
   behaviour.)
 
-Alternative broker backends behind the same Protocol (Postgres `SKIP LOCKED` leases,
-Redpanda/Kafka, NATS JetStream), and an Arrow-IPC segment backend, are roadmap (§14).
+The Postgres stream log ships (`stream_url`). `SKIP LOCKED` consumer leases, Redpanda/Kafka,
+NATS JetStream, and an Arrow-IPC segment backend are roadmap (§14).
 
 ### 9.2 Ingest → table: the materialiser
 
@@ -694,7 +694,7 @@ src/interlace/
   dsl/         # @model @stream @check; SQL loader; discovery; dynamic register_model
   ir/          # Relation types; canonicalisation; fingerprints; macros; vars; Arrow schema
   graph/       # dag (toposort, stdlib), column_lineage, selectors
-  state/       # store (SQLite control plane + migrations), snapshot, interval, janitor (gc, reset)
+  state/       # store (SQLite or Postgres control plane + migrations), snapshot, interval, janitor (gc, reset)
   plan/        # differ, plan, apply (schedule + promote), backfill, delivery, fit, transfer,
                #   schedule, result, run, orchestrate, comment, table_diff
   physical/    # indexes/constraints specs, drift, reconcile DDL (third hash, not data fp)
@@ -708,7 +708,7 @@ src/interlace/
   mcp_server.py # stdio MCP server; apply refuses unless confirm is true
   connections.py # named http/postgres connections a Python model reads while building
   inputs.py    # DuckDB file scans (parquet/csv/json/delta/iceberg) as FROM-able views
-  scheduler/   # triggers (cron/interval/watch/webhook), engine (TriggerEngine), worker (leases/retries/cancel)
+  scheduler/   # triggers (cron/interval/watch/on_change/fresh/after/webhook), engine, worker (leases/retries/cancel)
   runtime/     # execution context for Python models (Arrow handles)
   streaming/   # log (SqliteStreamLog), materializer (flush + watermark), schema (drift modes)
   service/     # types.py (msgspec wire structs), app.py (litestar), auth.py, ui/ (the /ui web app)

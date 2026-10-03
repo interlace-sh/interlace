@@ -33,6 +33,12 @@ async def test_same_owner_may_reacquire(store: SqliteStateStore) -> None:
     assert await store.acquire_lock(APPLY_LOCK, owner="a", lease_seconds=60.0, timeout=0.0)
 
 
+async def test_renew_extends_only_the_current_owner(store: SqliteStateStore) -> None:
+    assert await store.acquire_lock(APPLY_LOCK, owner="a", lease_seconds=60.0, timeout=0.0)
+    assert await store.renew_lock(APPLY_LOCK, owner="a", lease_seconds=60.0)
+    assert not await store.renew_lock(APPLY_LOCK, owner="b", lease_seconds=60.0)
+
+
 async def test_expired_lock_is_stealable(store: SqliteStateStore) -> None:
     assert await store.acquire_lock(APPLY_LOCK, owner="a", lease_seconds=0.0, timeout=0.0)  # already expired
     assert await store.acquire_lock(APPLY_LOCK, owner="b", lease_seconds=60.0, timeout=0.0)

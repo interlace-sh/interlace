@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.7 (2026-10-03)
+
+**`interlace serve` listens while the startup apply runs.** The API accepts connections during that first build. `GET /health` reports `starting`. Writes return 503 until the apply finishes, and the scheduler starts after it.
+
 ## 2.8.6 (2026-10-03)
 
 **The Postgres control plane reads run history, and keeps the apply lock exclusive.** Run detail and the runs list no longer depend on SQLite `json_extract`. A second process cannot take a live apply lease: the update lands only when that process already owns the row or the lease has expired. Renewing reports failure when the row has moved on.

@@ -155,7 +155,9 @@ class SnapshotStore:
             try:
                 referenced = {
                     (row["model_name"], row["fingerprint"])
-                    for row in self._db.conn.execute("SELECT DISTINCT model_name, fingerprint FROM environments")
+                    for row in self._db.conn.execute(
+                        "SELECT DISTINCT model_name, fingerprint FROM environments"
+                    ).fetchall()
                 }
                 rows = self._db.conn.execute(
                     "SELECT name, fingerprint, physical_schema, physical_name, engine, created_at FROM snapshots"

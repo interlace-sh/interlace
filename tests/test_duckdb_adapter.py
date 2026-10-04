@@ -124,7 +124,7 @@ async def test_write_paths_retry_transaction_conflicts() -> None:
         await exhausted_adapter.execute_sql("CREATE TABLE t AS SELECT 1")
 
 
-# --- concurrency: catalog writes are serialised, reads are not -------------------
+# --- concurrency: DuckLake cursors are serialised, plain DuckDB writes are not ------
 
 
 async def test_concurrent_ddl_keeps_its_schema_qualification() -> None:
@@ -283,3 +283,159 @@ def test_lock_error_helper_reraises_other_io_errors() -> None:
     with pytest.raises(duckdb.IOException):
         with _clean_lock_error("somewhere"):
             raise duckdb.IOException("disk is on fire")
+
+
+def test_created_tables_keeps_a_named_schema() -> None:
+    """The placement guard only fires for a CREATE that names its schema. The merge
+    path's ``CREATE TABLE IF NOT EXISTS schema.table AS …`` is the one DuckLake loses."""
+    from interlace.engines.duckdb import _created_tables
+
+    sql = (
+        "CREATE TABLE IF NOT EXISTS interlace__raw.assets__abc "
+        "AS SELECT * FROM interlace__raw.assets__abc__stage AS _s LIMIT 0"
+    )
+    assert _created_tables(sql) == [("interlace__raw", "assets__abc")]
+    assert _created_tables("BEGIN") == []
+    assert _created_tables("CREATE TABLE t AS SELECT 1") == []
+
+
+async def test_ducklake_qualified_create_stays_in_its_schema(tmp_path: Path) -> None:
+    adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
+    try:
+        await adapter.execute_sql("CREATE SCHEMA interlace__raw")
+        create = sqlglot.parse_one("CREATE TABLE interlace__raw.assets__abc AS SELECT 1 AS a", read="duckdb")
+        await adapter.execute_all([create])
+        placed = (
+            (
+                await adapter.fetch_sql(
+                    "SELECT table_schema FROM information_schema.tables WHERE table_name = 'assets__abc'"
+                )
+            )
+            .read_all()
+            .to_pylist()
+        )
+        assert placed == [{"table_schema": "interlace__raw"}]
+    finally:
+        adapter.close()
+
+
+async def test_ducklake_create_is_catalog_qualified(tmp_path: Path) -> None:
+    """The schema has to be part of the CREATE name. A two-part name is what DuckLake
+    resolves through the default schema when the qualifier is dropped."""
+    adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
+    try:
+        pinned = adapter._pin_create_catalog("CREATE TABLE IF NOT EXISTS interlace__raw.assets__abc AS SELECT 1 AS a")
+        assert pinned.startswith("CREATE TABLE IF NOT EXISTS warehouse.interlace__raw.assets__abc")
+    finally:
+        adapter.close()
+
+
+async def test_ducklake_refuses_a_table_created_in_main(tmp_path: Path) -> None:
+    """A CREATE that DuckLake files under ``main`` is not copied into the named schema.
+    The statement rolls back, so the empty schema name never commits."""
+    from interlace.engines.duckdb import CatalogPlacementError, _ensure_placed
+
+    adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
+    try:
+        await adapter.execute_sql("CREATE SCHEMA interlace__raw")
+        cur = adapter._cursor()
+        try:
+            cur.execute("BEGIN")
+            cur.execute("CREATE TABLE main.assets__abc AS SELECT 1 AS a")
+            with pytest.raises(CatalogPlacementError):
+                _ensure_placed(cur, "interlace__raw", "assets__abc")
+            cur.execute("ROLLBACK")
+        finally:
+            cur.close()
+        left = (
+            (
+                await adapter.fetch_sql(
+                    "SELECT count(*) AS n FROM information_schema.tables WHERE table_name = 'assets__abc'"
+                )
+            )
+            .read_all()
+            .to_pylist()
+        )
+        assert left == [{"n": 0}]
+    finally:
+        adapter.close()
+
+
+async def test_ducklake_drops_a_leftover_main_copy(tmp_path: Path) -> None:
+    """Once the named schema has the table, a same-named copy in main is the bug's
+    leftover (the failed SEI rebuild left one there) and is dropped."""
+    from interlace.engines.duckdb import _ensure_placed
+
+    adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
+    try:
+        await adapter.execute_sql("CREATE SCHEMA interlace__raw")
+        cur = adapter._cursor()
+        try:
+            cur.execute("BEGIN")
+            cur.execute("CREATE TABLE interlace__raw.assets__abc AS SELECT 2 AS a")
+            cur.execute("CREATE TABLE main.assets__abc AS SELECT 1 AS a")
+            _ensure_placed(cur, "interlace__raw", "assets__abc")
+            cur.execute("COMMIT")
+        finally:
+            cur.close()
+        placed = (
+            (
+                await adapter.fetch_sql(
+                    "SELECT table_schema, a FROM ("
+                    "SELECT table_schema FROM information_schema.tables WHERE table_name = 'assets__abc'"
+                    ") t, interlace__raw.assets__abc"
+                )
+            )
+            .read_all()
+            .to_pylist()
+        )
+        assert placed == [{"table_schema": "interlace__raw", "a": 2}]
+    finally:
+        adapter.close()
+
+
+async def test_ducklake_placement_failure_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CREATE we cannot put in its schema must not commit. The snapshot would otherwise
+    name a table that only exists under ``main``."""
+    from interlace.engines.duckdb import CatalogPlacementError
+
+    adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
+    try:
+        await adapter.execute_sql("CREATE SCHEMA interlace__raw")
+
+        def boom(_cur: object, _schema: str, _name: str) -> None:
+            raise CatalogPlacementError("forced")
+
+        monkeypatch.setattr("interlace.engines.duckdb._ensure_placed", boom)
+        create = sqlglot.parse_one("CREATE TABLE interlace__raw.assets__abc AS SELECT 1 AS a", read="duckdb")
+        with pytest.raises(CatalogPlacementError):
+            await adapter.execute_all([create])
+        left = (
+            (
+                await adapter.fetch_sql(
+                    "SELECT count(*) AS n FROM information_schema.tables WHERE table_name = 'assets__abc'"
+                )
+            )
+            .read_all()
+            .to_pylist()
+        )
+        assert left == [{"n": 0}]
+    finally:
+        adapter.close()
+
+
+async def test_ducklake_fetch_then_load_does_not_deadlock(tmp_path: Path) -> None:
+    """Reads materialise inside the catalog lock and release it before returning, so a
+    following load on the same connection cannot wait on a cursor this read still holds."""
+    import asyncio
+
+    adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
+    try:
+        await adapter.execute_sql("CREATE SCHEMA s")
+        await adapter.execute_sql("CREATE TABLE s.src AS SELECT 1 AS a")
+        reader = await adapter.fetch_sql("SELECT * FROM s.src")
+        await asyncio.wait_for(adapter.load(TableRef(schema="s", name="dst"), reader, "create"), timeout=5)
+        got = (await adapter.fetch_sql("SELECT a FROM s.dst")).read_all().to_pylist()
+        assert got == [{"a": 1}]
+    finally:
+        adapter.close()

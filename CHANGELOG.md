@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.8 (2026-10-04)
+
+**DuckLake keeps a new table in the schema the statement named.** A create during a parallel build could commit with an empty schema name and land in `main`, so the next model failed to find it. Catalog cursors no longer overlap, an attached catalog's create names that catalog as well as the schema, and a create that still misses its schema is rolled back and retried.
+
 ## 2.8.7 (2026-10-03)
 
 **`interlace serve` listens while the startup apply runs.** The API accepts connections during that first build. `GET /health` reports `starting`. Writes return 503 until the apply finishes, and the scheduler starts after it.

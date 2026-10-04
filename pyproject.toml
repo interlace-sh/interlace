@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interlaced"
-version = "2.8.7"
+version = "2.8.8"
 description = "Python and SQL models in one DAG. Transformation, orchestration and durable streaming in one process, on DuckDB and Postgres."
 readme = "README.md"
 requires-python = ">=3.12"

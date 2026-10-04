@@ -294,7 +294,7 @@ def test_created_tables_keeps_a_named_schema() -> None:
         "CREATE TABLE IF NOT EXISTS interlace__raw.assets__abc "
         "AS SELECT * FROM interlace__raw.assets__abc__stage AS _s LIMIT 0"
     )
-    assert _created_tables(sql) == [("interlace__raw", "assets__abc")]
+    assert _created_tables(sql) == [("interlace__raw", "assets__abc", "TABLE")]
     assert _created_tables("BEGIN") == []
     assert _created_tables("CREATE TABLE t AS SELECT 1") == []
 
@@ -403,7 +403,7 @@ async def test_ducklake_placement_failure_rolls_back(tmp_path: Path, monkeypatch
     try:
         await adapter.execute_sql("CREATE SCHEMA interlace__raw")
 
-        def boom(_cur: object, _schema: str, _name: str) -> None:
+        def boom(_cur: object, _schema: str, _name: str, **_kwargs: object) -> None:
             raise CatalogPlacementError("forced")
 
         monkeypatch.setattr("interlace.engines.duckdb._ensure_placed", boom)

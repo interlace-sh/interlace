@@ -128,8 +128,8 @@ def _qualified(schema: str, name: str) -> str:
     return f"{exp.to_identifier(schema).sql(dialect='duckdb')}.{exp.to_identifier(name).sql(dialect='duckdb')}"
 
 
-def _created_tables(sql: str) -> list[tuple[str, str]]:
-    """``(schema, name)`` for a CREATE TABLE/VIEW that names a schema. Empty when the
+def _created_tables(sql: str) -> list[tuple[str, str, str]]:
+    """``(schema, name, kind)`` for a CREATE TABLE/VIEW that names a schema. Empty when the
     statement is not one, or names no schema — an unqualified create cannot be told
     apart from the DuckLake bug that drops the schema."""
     try:
@@ -146,43 +146,52 @@ def _created_tables(sql: str) -> list[tuple[str, str]]:
         target = target.this
     if not isinstance(target, exp.Table) or not target.db or not target.name:
         return []
-    return [(target.db, target.name)]
+    return [(target.db, target.name, kind)]
 
 
-def _placed_schemas(cur: duckdb.DuckDBPyConnection, name: str) -> set[str]:
-    """Schemas in the current catalog that hold a table or view of this name."""
+def _placed_schemas(cur: duckdb.DuckDBPyConnection, name: str, *, kind: str) -> set[str]:
+    """Schemas in the current catalog that hold this table, or this view — not both.
+
+    Environment views share a short name (``main.a`` and ``dev__main.a``). Mixing the
+    two types made a view promotion look like the DuckLake bug and drop the other view.
+    """
+    table_type = "VIEW" if kind == "VIEW" else "BASE TABLE"
     rows = cur.execute(
         "SELECT table_schema FROM information_schema.tables "
-        "WHERE table_name = ? AND table_catalog = current_database()",
-        [name],
+        "WHERE table_name = ? AND table_type = ? AND table_catalog = current_database()",
+        [name, table_type],
     ).fetchall()
     return {str(row[0]) for row in rows if row and row[0]}
 
 
-def _drop_elsewhere(cur: duckdb.DuckDBPyConnection, schema: str, name: str) -> None:
-    """Drop copies of ``name`` that are not in ``schema``. An autocommitted CREATE has
-    already landed; a transaction instead rolls back and never calls this."""
-    for placed in _placed_schemas(cur, name):
-        if placed.casefold() != schema.casefold():
+def _drop_elsewhere(cur: duckdb.DuckDBPyConnection, schema: str, name: str, *, kind: str) -> None:
+    """Drop a table copy in ``main`` left by an autocommitted CREATE. A transaction
+    rolls back instead. Views are never dropped: another environment's view may share
+    the name."""
+    if kind != "TABLE":
+        return
+    for placed in _placed_schemas(cur, name, kind=kind):
+        if placed.casefold() == "main" and placed.casefold() != schema.casefold():
             cur.execute(f"DROP TABLE IF EXISTS {_qualified(placed, name)}")
 
 
-def _ensure_placed(cur: duckdb.DuckDBPyConnection, schema: str, name: str) -> None:
+def _ensure_placed(cur: duckdb.DuckDBPyConnection, schema: str, name: str, *, kind: str = "TABLE") -> None:
     """Reject a CREATE whose schema name did not survive.
 
     DuckLake sometimes records the new table under ``main`` (an empty schema name in
     the commit). That CREATE is wrong — copying the rows across would publish a table
     that was born without its schema. The caller rolls the statement back and retries
-    it. A leftover copy already in ``main`` beside a table that *did* land in the
-    named schema is the previous occurrence of this bug and is dropped.
+    it. A leftover *table* already in ``main`` beside one that did land in the named
+    schema is the previous occurrence of this bug and is dropped. Views are left alone.
     """
     if not schema or schema.casefold() == "main":
         return
-    found = _placed_schemas(cur, name)
+    found = _placed_schemas(cur, name, kind=kind)
     if any(placed.casefold() == schema.casefold() for placed in found):
-        for placed in found:
-            if placed.casefold() == "main":
-                cur.execute(f"DROP TABLE IF EXISTS {_qualified(placed, name)}")
+        if kind == "TABLE":
+            for placed in found:
+                if placed.casefold() == "main":
+                    cur.execute(f"DROP TABLE IF EXISTS {_qualified(placed, name)}")
         return
     if not found:
         return
@@ -421,8 +430,8 @@ class DuckDBAdapter(EngineAdapter):
         return expression.sql(dialect="duckdb")
 
     def _guard_creates(self, cur: duckdb.DuckDBPyConnection, sql: str) -> None:
-        for schema, name in _created_tables(sql):
-            _ensure_placed(cur, schema, name)
+        for schema, name, kind in _created_tables(sql):
+            _ensure_placed(cur, schema, name, kind=kind)
 
     def _execute_once(self, sql: str) -> None:
         cur = self._cursor()
@@ -432,8 +441,8 @@ class DuckDBAdapter(EngineAdapter):
         except CatalogPlacementError:
             # Autocommit: the empty-schema table is already stored. Drop it so the
             # retry creates the named schema, and so a failed retry leaves nothing in main.
-            for schema, name in _created_tables(sql):
-                _drop_elsewhere(cur, schema, name)
+            for schema, name, kind in _created_tables(sql):
+                _drop_elsewhere(cur, schema, name, kind=kind)
             raise
         except Exception as exc:
             note_statement(exc, sql)
@@ -541,8 +550,8 @@ class DuckDBAdapter(EngineAdapter):
                     try:
                         self._guard_creates(cur, sql)
                     except CatalogPlacementError:
-                        for schema, name in _created_tables(sql):
-                            _drop_elsewhere(cur, schema, name)
+                        for schema, name, kind in _created_tables(sql):
+                            _drop_elsewhere(cur, schema, name, kind=kind)
                         raise
                     return written
                 cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")

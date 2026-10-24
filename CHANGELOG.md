@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.8.9 (2026-10-24)
 
 **The warehouse engine is DuckDB 2.0.** A new `.duckdb` file cannot be opened by an older DuckDB. A file an older DuckDB wrote still opens, and stays in that format. Lambdas render as `lambda x : …`. Arrow reads stream from a relation. Cancelling a query interrupts the cursor that is running it. `'abc' ~ 'b'` is a partial match, a `MERGE` that hits one target row twice errors, an untyped `NULL` column stays type `NULL`, and integer division by zero raises.
 

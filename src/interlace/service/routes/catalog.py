@@ -131,11 +131,10 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
     infos: list[ScheduleInfo] = []
     for name in sorted(compiled.models):
         schedule = compiled.models[name].schedule
-        if not schedule:
+        if schedule is None:
             continue
-        from interlace.scheduler.engine import schedule_kind
-
-        kind, expression = schedule_kind(name, schedule)
+        kind = schedule.kind
+        expression = schedule.expression
         trigger_id = {
             "cron": f"cron:{name}",
             "every": f"interval:{name}",
@@ -158,7 +157,7 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
         elif kind in ("every", "fresh") and last is not None:
             from interlace.state.interval import parse_grain
 
-            grain = expression.rsplit(" ", 1)[-1] if kind == "fresh" else expression
+            grain = schedule.window if kind == "fresh" else expression
             with contextlib.suppress(Exception):
                 next_fire = last + parse_grain(grain)
         infos.append(

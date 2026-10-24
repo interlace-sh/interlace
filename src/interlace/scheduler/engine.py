@@ -22,7 +22,7 @@ from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.canonicalize import table_references
 from interlace.ir.layout import env_view
 from interlace.ir.relation import TableRef
-from interlace.scheduler.completion import after_waiters, schedule_kind, scheduled_closure
+from interlace.scheduler.completion import after_waiters, scheduled_closure
 from interlace.scheduler.triggers import (
     ABSENT,
     CronTrigger,
@@ -42,11 +42,10 @@ def webhook_targets(project: CompiledProject) -> dict[str, str]:
     """Map a webhook name to the model ``POST /hooks/{name}`` enqueues."""
     found: dict[str, str] = {}
     for model in project.models.values():
-        if not model.schedule or "webhook" not in model.schedule:
+        schedule = model.schedule
+        if schedule is None or schedule.kind != "webhook":
             continue
-        kind, name = schedule_kind(model.name, model.schedule)
-        if kind != "webhook":
-            continue
+        name = schedule.expression
         other = found.get(name)
         if other is not None:
             raise DefinitionError(f"webhook {name!r} is declared by both {other!r} and {model.name!r}")
@@ -75,32 +74,21 @@ def build_triggers(project: CompiledProject, *, root: Path | None = None, enviro
 
 def _trigger_for(model: CompiledModel, project: CompiledProject, root: Path | None, environment: str) -> Trigger | None:
     schedule = model.schedule
-    if not schedule:
+    if schedule is None or schedule.kind in ("after", "webhook"):
         return None
-    kind, value = schedule_kind(model.name, schedule)
-    if kind == "cron":
-        return CronTrigger(model.name, value)
-    if kind == "every":
-        return IntervalTrigger(model.name, parse_grain(value))
-    if kind == "watch":
+    if schedule.kind == "cron":
+        return CronTrigger(model.name, schedule.expression)
+    if schedule.kind == "every":
+        return IntervalTrigger(model.name, parse_grain(schedule.expression))
+    if schedule.kind == "watch":
         if root is None:
             raise DefinitionError(f"model {model.name!r}: a watch schedule needs the project root")
-        return WatchTrigger(model.name, value, root)
-    if kind == "on_change":
-        table, column, engine = resolve_column(model, project, environment, value)
+        return WatchTrigger(model.name, schedule.expression, root)
+    if schedule.kind == "on_change":
+        table, column, engine = resolve_column(model, project, environment, schedule.expression)
         return OnChangeTrigger(model.name, column, table, engine)
-    if kind == "fresh":
-        column_spec, window = _fresh_parts(model.name, value)
-        table, column, engine = resolve_column(model, project, environment, column_spec, label="fresh")
-        return FreshTrigger(model.name, column, table, engine, _fresh_grain(model.name, window))
-    return None
-
-
-def _fresh_parts(model: str, value: str) -> tuple[str, str]:
-    column_spec, _, window = value.strip().rpartition(" ")
-    if not column_spec.strip() or not window.strip():
-        raise DefinitionError(f"model {model!r}: fresh {value!r} must look like 'updated_at 2h'")
-    return column_spec.strip(), window.strip()
+    table, column, engine = resolve_column(model, project, environment, schedule.column, label="fresh")
+    return FreshTrigger(model.name, column, table, engine, _fresh_grain(model.name, schedule.window))
 
 
 def _fresh_grain(model: str, window: str) -> Grain:

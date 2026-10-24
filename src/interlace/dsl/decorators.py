@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from interlace.checks.spec import CheckSpec, parse_checks
+from interlace.dsl.schedule import Schedule, normalize_schedule
 from interlace.exceptions import DefinitionError
 from interlace.physical.spec import (
     ConstraintSpec,
@@ -29,36 +30,6 @@ from interlace.sinks import FILE_FORMATS
 from interlace.strategies import named_strategy
 
 ModelFn = Callable[..., Any]
-
-
-def normalize_schedule(schedule: Mapping[str, Any] | None, *, model: str) -> dict[str, str] | None:
-    """Schedules are string values. ``fresh: {column, within}`` becomes ``"column within"``.
-    ``after: [a, b]`` becomes ``"a,b"``."""
-    if not schedule:
-        return None
-    normalised: dict[str, str] = {}
-    for key, value in schedule.items():
-        if key == "fresh" and isinstance(value, dict):
-            column = value.get("column")
-            window = value.get("within")
-            if not isinstance(column, str) or not column.strip():
-                raise DefinitionError(f"model {model!r}: fresh.column must name a timestamp column")
-            if not isinstance(window, str) or not window.strip():
-                raise DefinitionError(f"model {model!r}: fresh.within must be a window like '2h'")
-            normalised[key] = f"{column.strip()} {window.strip()}"
-            continue
-        if key == "after" and isinstance(value, (list, tuple)):
-            names = [str(item).strip() for item in value]
-            if not names or any(not name for name in names):
-                raise DefinitionError(f"model {model!r}: after must name a model, or a list of models")
-            normalised[key] = ",".join(names)
-            continue
-        if key == "after" and not isinstance(value, str):
-            raise DefinitionError(f"model {model!r}: after must name a model, or a list of models")
-        if not isinstance(value, str):
-            raise DefinitionError(f"model {model!r}: schedule {key!r} must be a string")
-        normalised[key] = value
-    return normalised
 
 
 # Set while a Python model function is running. Registrations then replace a
@@ -161,9 +132,10 @@ class ModelDef:
     path: str | None = None  # output path for materialise: file
     format: str | None = None  # csv | parquet | json for materialise: file
     environments: tuple[str, ...] = ("prod",)  # which environments actually deliver a terminal model
-    # cron, every, watch, on_change, fresh, or webhook. ``fresh`` may be the
-    # mapping ``{column, within}`` at construction; __post_init__ stores "column within".
-    schedule: dict[str, Any] | None = None
+    # cron, every, watch, on_change, fresh, after, or webhook. Construction accepts
+    # the mapping form (``fresh: {column, within}``, ``after: [a, b]``); __post_init__
+    # stores a parsed :class:`Schedule`.
+    schedule: Schedule | None = None
     checks: tuple[CheckSpec, ...] = ()  # data-quality checks; error severity gates promotion
     indexes: tuple[IndexSpec, ...] = ()  # physical indexes; not part of the data fingerprint
     constraints: tuple[ConstraintSpec, ...] = ()  # physical constraints; engine-enforced, not checks
@@ -184,7 +156,13 @@ class ModelDef:
         self.constraints = parse_constraints(self.constraints, self.name)
         self.schema_policy = parse_schema_policy(self.schema_policy, self.name)
         validate_physical_allowed(self.name, self.materialise, self.indexes, self.constraints, self.schema_policy)
-        self.schedule = normalize_schedule(self.schedule, model=self.name)
+        incoming: object = self.schedule
+        if isinstance(incoming, Schedule) or incoming is None:
+            self.schedule = incoming
+        elif isinstance(incoming, Mapping):
+            self.schedule = normalize_schedule(incoming, model=self.name)
+        else:
+            raise DefinitionError(f"model {self.name!r}: schedule must be a mapping")
 
     @property
     def is_terminal(self) -> bool:
@@ -341,7 +319,7 @@ def model(
                 owner=owner,
                 description=description,
                 columns=_as_columns(columns),
-                schedule=schedule,
+                schedule=normalize_schedule(schedule, model=name or fn.__name__),
                 checks=parse_checks(checks, name or fn.__name__),
                 indexes=parse_indexes(indexes, name or fn.__name__),
                 constraints=parse_constraints(constraints, name or fn.__name__),

@@ -12,22 +12,6 @@ from interlace.exceptions import DefinitionError
 from interlace.graph.project import CompiledProject
 from interlace.state.store import SqliteStateStore
 
-_SCHEDULE_KINDS = ("cron", "every", "watch", "on_change", "fresh", "after", "webhook")
-
-
-def schedule_kind(model: str, schedule: dict[str, str]) -> tuple[str, str]:
-    """The one schedule key and its value.
-
-    Cron, interval, file watch, table change, freshness, upstream completion, or webhook.
-    """
-    present = [key for key in _SCHEDULE_KINDS if key in schedule]
-    if len(present) != 1:
-        raise DefinitionError(
-            f"model {model!r}: schedule needs exactly one of {', '.join(_SCHEDULE_KINDS)}",
-            details={"schedule": schedule},
-        )
-    return present[0], schedule[present[0]]
-
 
 def scheduled_closure(project: CompiledProject, models: list[str]) -> list[str]:
     """The triggered models plus every model downstream of them.
@@ -48,18 +32,16 @@ def scheduled_closure(project: CompiledProject, models: list[str]) -> list[str]:
 def after_waiters(project: CompiledProject) -> dict[str, list[str]]:
     """Map an upstream model to the models that run when it finishes.
 
-    ``schedule: {after: raw}`` or ``{after: [raw, staging]}`` (stored as
-    ``"raw,staging"``). A model cannot name itself, and the ``after`` edges
-    cannot cycle — otherwise two models would enqueue each other forever.
+    ``schedule: {after: raw}`` or ``{after: [a, b]}``. A model cannot name itself,
+    and the ``after`` edges cannot cycle — otherwise two models would enqueue
+    each other forever.
     """
     found: dict[str, list[str]] = {}
     for model in project.models.values():
-        if not model.schedule or "after" not in model.schedule:
+        schedule = model.schedule
+        if schedule is None or schedule.kind != "after":
             continue
-        kind, value = schedule_kind(model.name, model.schedule)
-        if kind != "after":
-            continue
-        names = list(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
+        names = list(schedule.after)
         if not names:
             raise DefinitionError(f"model {model.name!r}: after must name a model")
         if model.name in names:

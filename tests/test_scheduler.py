@@ -204,7 +204,10 @@ def test_fresh_mapping_normalises_to_column_and_window() -> None:
         sql="SELECT id FROM events",
         schedule={"fresh": {"column": "events.updated_at", "within": "2h"}},
     )
-    assert definition.schedule == {"fresh": "events.updated_at 2h"}
+    assert definition.schedule is not None
+    assert definition.schedule.as_dict() == {"fresh": "events.updated_at 2h"}
+    assert definition.schedule.column == "events.updated_at"
+    assert definition.schedule.window == "2h"
     project = compile_models([definition])
     triggers = build_triggers(project)
     assert len(triggers) == 1
@@ -374,7 +377,8 @@ def test_after_is_not_a_ticking_trigger() -> None:
         ]
     )
     assert build_triggers(project) == []
-    assert project.models["dash"].schedule == {"after": "raw,mart"}
+    dash = project.models["dash"].schedule
+    assert dash is not None and dash.after == ("raw", "mart")
     waiters = after_waiters(project)
     assert waiters["raw"] == ["mart", "dash"]
     assert waiters["mart"] == ["dash"]

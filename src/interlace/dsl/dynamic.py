@@ -121,7 +121,7 @@ def model_to_config(definition: ModelDef) -> dict[str, Any]:  # noqa: C901
     if definition.environments != ENVIRONMENTS_DEFAULT:
         config["environments"] = list(definition.environments)
     if definition.schedule:
-        config["schedule"] = definition.schedule
+        config["schedule"] = definition.schedule.as_dict()
     if definition.checks:
         config["checks"] = [_check_config(check) for check in definition.checks]
     if definition.indexes:

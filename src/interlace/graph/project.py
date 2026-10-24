@@ -13,12 +13,13 @@ from __future__ import annotations
 import inspect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 from sqlglot import exp
 
 from interlace.checks.spec import CheckSpec
 from interlace.dsl.decorators import CheckDef, ModelDef, ModelFn
+from interlace.dsl.schedule import Schedule
 from interlace.exceptions import CompilationError, DefinitionError
 from interlace.graph.dag import DependencyGraph
 from interlace.ir.canonicalize import as_query, parse, table_references
@@ -60,7 +61,7 @@ class CompiledModel:
     cursor: str | None  # column whose max is injected into a Python model's `cursor` param
     interval: str | None  # grain for incremental (e.g. "1d")
     tags: tuple[str, ...]  # for tag: selection
-    schedule: dict[str, str] | None  # cron/interval schedule for the trigger engine
+    schedule: Schedule | None  # parsed schedule; None when the model is not scheduled
     columns: dict[str, str | None] | None  # output contract validated at apply time
     # Terminal materialisation (materialise: table/file) — a destination interlace
     # does not own; empty/None for the interlace-owned virtual/view/ephemeral planes.
@@ -308,7 +309,7 @@ def compile_models(  # noqa: C901
             cursor=definition.cursor,
             interval=definition.interval,
             tags=definition.tags,
-            schedule=cast(dict[str, str] | None, definition.schedule),  # __post_init__ stores strings
+            schedule=definition.schedule,
             columns=definition.columns,
             target=definition.target,
             path=definition.path,

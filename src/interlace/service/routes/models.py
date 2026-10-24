@@ -79,7 +79,7 @@ async def get_model(name: FromPath[str], state: State) -> ModelDetail:
         columns={col: [f"{t}.{c}" for t, c in refs] for col, refs in cols.items()},
         tags=list(model.tags),
         owner=model.owner,
-        schedule=model.schedule,
+        schedule=None if model.schedule is None else model.schedule.as_dict(),
         sql=model.definition_sql,
         language="python" if model.ast is None else "sql",
         source=_python_source(model),

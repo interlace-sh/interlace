@@ -119,6 +119,7 @@ def publish_compiled(state: Any, compiled: Any) -> None:
     state.lineage = column_lineage(compiled)
     state.stream_consumer_map = {name: sorted(stream_consumers(compiled, name)) for name in state.streams}
     state.describe_cache = {}
+    state.lineage_cache = None
 
 
 async def reload_if_stale(state: Any) -> None:

@@ -16,6 +16,32 @@ from interlace.graph.project import compile_models
 pytestmark = pytest.mark.unit
 
 
+def test_described_lineage_is_cached_until_the_columns_change() -> None:
+    from types import SimpleNamespace
+
+    from interlace.service.routes.catalog import _cached_lineage
+
+    project = compile_models(
+        [
+            ModelDef(name="raw", sql="SELECT 1 AS id, 10 AS amount"),
+            ModelDef(name="agg", sql="SELECT id, sum(amount) AS total FROM raw GROUP BY id"),
+        ]
+    )
+    state = SimpleNamespace()
+    described = {"raw": ["id", "amount"], "agg": ["id", "total"]}
+    first = _cached_lineage(state, project, described)
+    second = _cached_lineage(state, project, dict(described))
+    assert first is second
+    changed = _cached_lineage(state, project, {"raw": ["id", "amount", "extra"], "agg": ["id", "total"]})
+    assert changed is not first
+
+    from interlace.scheduler.daemon import publish_compiled
+
+    state.streams = {}
+    publish_compiled(state, project)
+    assert state.lineage_cache is None
+
+
 def test_traces_output_columns_to_upstream_model() -> None:
     project = compile_models(
         [

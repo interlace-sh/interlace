@@ -252,6 +252,11 @@ class Project:
         # is only the same thing when you happen to run from the root — not under
         # `--path`, `interlace serve`, or the scheduler.
         engine.search_files_from(str(self.root))
+        # Instance caps (memory_limit, threads, …) before anything runs on it. After the
+        # ATTACH, because a DuckLake attach is itself a query DuckDB plans with whatever
+        # thread count is current — the cap must simply be in place before the first model.
+        if cfg.settings:
+            engine.apply_settings(cfg.settings)
         if self.config.inputs:
             from interlace.inputs import install_inputs
 
@@ -333,6 +338,9 @@ class Project:
         candidates = [cfg.database or "", cfg.data_path or ""]
         for secret in cfg.secrets.values():
             candidates += [secret.key_id, secret.secret, secret.endpoint or ""]
+        # A setting that survived as ``${VAR}`` would reach ``SET GLOBAL`` as a literal
+        # string — DuckDB rejects it, but with a message about the setting, not the env.
+        candidates += [str(value) for value in cfg.settings.values()]
         for value in candidates:
             refs.update(_ENV_REF.findall(value))
         if refs:

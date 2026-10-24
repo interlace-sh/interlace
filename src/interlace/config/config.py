@@ -26,7 +26,8 @@ from interlace.exceptions import ConfigurationError
 
 CONFIG_FILE = "interlace.yaml"
 
-_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+# ``${VAR}`` or ``${VAR:-default}`` (the shell's spelling). Group 2 is the default, or None.
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _SECRET_KEYWORD = re.compile(r"(?i)([a-z_]*(?:password|token|secret|key|pwd))\s*=\s*\S+")
@@ -178,6 +179,12 @@ class EngineConfig(BaseModel):
     secrets: dict[str, SecretConfig] = Field(default_factory=dict)
     quack_token: str | None = None
     attach: dict[str, str] = Field(default_factory=dict)
+    # DuckDB settings applied to the instance at open (``SET GLOBAL name = value``):
+    # ``memory_limit``, ``threads``, ``temp_directory`` and the rest. Unset, DuckDB takes
+    # 80% of the host's RAM and a thread per core — per process, so three daemons on one
+    # host each believe they own it. DuckDB-family engines opened in-process only; a
+    # ``quack:`` or ``md:`` engine is configured where it runs.
+    settings: dict[str, str | int | float | bool] = Field(default_factory=dict)
     dialect: str | None = None  # defaults from type (duckdb for DuckDB-family)
 
     def resolved_dialect(self) -> str:
@@ -288,6 +295,8 @@ class ProjectConfig(BaseModel):
     # them and table exports can write to them as <alias>.<schema>.<table>.
     # This is T0 federation (all SQL still runs in DuckDB) — see docs/architecture/MULTI_ENGINE.md.
     attach: dict[str, str] = Field(default_factory=dict)
+    # DuckDB instance settings for the default engine — see EngineConfig.settings.
+    settings: dict[str, str | int | float | bool] = Field(default_factory=dict)
     model_paths: list[str] = Field(default_factory=lambda: ["models"])
     # Directories of CREATE MACRO definitions, expanded into every model at compile
     # time (see interlace.ir.macros). Missing directories are ignored.
@@ -354,6 +363,7 @@ def _default_engine_from_top_level(config: ProjectConfig) -> EngineConfig:
         secrets=config.secrets,
         quack_token=config.quack_token,
         attach=config.attach,
+        settings=config.settings,
         dialect=config.default_dialect if config.default_dialect != "duckdb" else None,
     )
 
@@ -368,7 +378,10 @@ def _interpolate_env(text: str, fallback: dict[str, str] | None = None) -> str:
         name = match.group(1)
         if name in os.environ:
             return os.environ[name]
-        return extra.get(name, match.group(0))
+        if name in extra:
+            return extra[name]
+        default = match.group(2)
+        return match.group(0) if default is None else default
 
     return _ENV_REF.sub(resolve, text)
 

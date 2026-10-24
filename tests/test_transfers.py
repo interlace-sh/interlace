@@ -30,6 +30,35 @@ def _compile(models: list[ModelDef]):
     return compile_models(models, known_engines=ENGINES, engine_dialects=dict.fromkeys(ENGINES, "duckdb"))
 
 
+async def test_stage_locks_are_per_pair() -> None:
+    """The same upstream on the same engine waits. A different pair copies at the same time."""
+    import asyncio
+
+    from interlace.plan.transfer import StageLocks
+
+    locks = StageLocks()
+    same = ("orders", "second")
+    other = ("customers", "second")
+    held = asyncio.Event()
+    other_in = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold(key: tuple[str, str], started: asyncio.Event) -> None:
+        async with await locks.get(key):
+            started.set()
+            await release.wait()
+
+    first = asyncio.create_task(hold(same, held))
+    await asyncio.wait_for(held.wait(), 1)
+    blocked = asyncio.create_task(hold(same, asyncio.Event()))
+    overlapped = asyncio.create_task(hold(other, other_in))
+    await asyncio.wait_for(other_in.wait(), 1)
+    await asyncio.sleep(0)
+    assert not blocked.done()
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, blocked, overlapped), 1)
+
+
 @pytest.fixture()
 async def env(tmp_path: Path) -> AsyncIterator[tuple[EngineRegistry, SqliteStateStore]]:
     adapters = {name: DuckDBAdapter.in_memory() for name in ENGINES}

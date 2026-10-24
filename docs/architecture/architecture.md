@@ -13,8 +13,9 @@ ingestion service (dlt, Hevo, Cloudflare Pipelines). SQL and Python models share
 fingerprinted DAG. The daemon schedules that DAG, and a trigger refreshes the model
 and everything downstream of it. Events fsync into a log and land in the same
 warehouse the models read. The control plane stays on one machine until a named user
-hits that ceiling. Store, queue, and log are Protocols so a later Postgres tier does
-not require a redesign (§12, §14). That swap is not shipped.
+hits that ceiling. Store, queue, and log are Protocols. Postgres as that store
+ships (`state_url`, `stream_url`); several worker hosts are still the scale-out
+step (§12, §14).
 
 **Not the goal.** A semantic layer, a package hub, a general-purpose task runner, a
 connector marketplace, or a hosted multi-tenant ELT product. Ideas from other tools
@@ -748,9 +749,9 @@ Logging is the **standard library `logging`** — there is no `structlog` depend
   add those (alpha) drivers.
 - **`spark`** — the Spark engine (beta): `pyspark` + `delta-spark` (Spark 4.0–4.2 / Delta 4.4),
   a `SparkSession` transport rather than ADBC.
-- **`postgres`** — `psycopg[binary]`, used today by `cdc:` (logical replication into a
-  `@stream`) and `connections:` of type `postgres`. A Postgres *control-plane* store
-  (state/queue/log) is still unbuilt (§12, §14).
+- **`postgres`** — `psycopg[binary]`: the control plane and stream log when
+  `state_url` / `stream_url` is set, plus `cdc:` (logical replication into a
+  `@stream`) and `connections:` of type `postgres`.
 - **`polars`** — `polars`, the preferred eager frame a user can build from
   `handle.table()`.
 - **`pandas`** — `pandas`, optional DataFrame interop.

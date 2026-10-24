@@ -263,8 +263,37 @@ def test_dropping_an_unread_reader_defers_its_cursor() -> None:
         engine.close()
 
 
-def test_ducklake_fetch_spills_one_batch_and_releases_the_lock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The scan holds the catalog lock. The caller reads a file, not a live cursor."""
+def test_ducklake_small_fetch_stays_in_memory_and_releases_the_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A few rows never open a temp file. The catalog lock is free before the caller reads."""
+    calls: list[str] = []
+
+    def wrapped(*args: object, **kwargs: object) -> tuple[int, str]:
+        calls.append("mkstemp")
+        raise AssertionError("a small DuckLake read must not spill")
+
+    monkeypatch.setattr("interlace.engines.duckdb.tempfile.mkstemp", wrapped)
+    engine = DuckDBAdapter(duckdb.connect(":memory:"), serialise_writes=True)
+    try:
+        engine.execute_sync("CREATE TABLE t AS SELECT i FROM range(3) t(i)")
+        reader = engine.fetch_sync("SELECT * FROM t")
+        assert not engine._cursors
+        assert calls == []
+        engine.execute_sync("CREATE TABLE u AS SELECT 1 AS x")
+        table = reader.read_all()
+        assert table.num_rows == 3
+        assert table.column_names == ["i"]
+
+        empty = engine.fetch_sync("SELECT * FROM t WHERE false")
+        assert empty.schema.names == ["i"]
+        assert empty.read_all().num_rows == 0
+        assert calls == []
+    finally:
+        engine.close()
+
+
+def test_ducklake_fetch_spills_past_the_cap_and_releases_the_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the cap the scan is a file, and the cursor is closed before the caller reads it."""
+    monkeypatch.setattr("interlace.engines.duckdb._SPILL_BYTES", 0)
     paths: list[str] = []
     real = tempfile.mkstemp
 
@@ -285,11 +314,6 @@ def test_ducklake_fetch_spills_one_batch_and_releases_the_lock(monkeypatch: pyte
         assert table.num_rows == 3
         assert table.column_names == ["i"]
         assert not os.path.exists(paths[0])
-
-        empty = engine.fetch_sync("SELECT * FROM t WHERE false")
-        assert empty.schema.names == ["i"]
-        assert empty.read_all().num_rows == 0
-        assert not os.path.exists(paths[-1])
 
         abandoned = engine.fetch_sync("SELECT * FROM t")
         spilled = paths[-1]
@@ -553,3 +577,28 @@ def test_interrupt_cancels_a_cursor_query() -> None:
     assert not thread.is_alive()
     assert errors and isinstance(errors[0], duckdb.InterruptException)
     engine.close()
+
+
+def test_apply_settings_caps_the_instance() -> None:
+    """``memory_limit`` and ``threads`` land on the instance, and a numeric string is sent
+    bare — ``${THREADS:-4}`` arrives from YAML as text and ``threads`` is a BIGINT."""
+    adapter = DuckDBAdapter.in_memory()
+    try:
+        adapter.apply_settings({"memory_limit": "256MiB", "threads": "2", "preserve_insertion_order": False})
+        conn = adapter._conn
+        assert conn.execute("SELECT current_setting('threads')").fetchone() == (2,)
+        assert conn.execute("SELECT current_setting('memory_limit')").fetchone() == ("256.0 MiB",)
+        assert conn.execute("SELECT current_setting('preserve_insertion_order')").fetchone() == (False,)
+        # A cursor — what a model task runs on — sees the instance cap, not a session default.
+        assert conn.cursor().execute("SELECT current_setting('threads')").fetchone() == (2,)
+    finally:
+        adapter.close()
+
+
+def test_apply_settings_refuses_a_name_that_is_not_an_identifier() -> None:
+    adapter = DuckDBAdapter.in_memory()
+    try:
+        with pytest.raises(ValueError, match="not a setting name"):
+            adapter.apply_settings({"threads = 1; DROP TABLE x; --": "1"})
+    finally:
+        adapter.close()

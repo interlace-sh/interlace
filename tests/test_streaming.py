@@ -13,6 +13,7 @@ from conftest import fetch_rows as _rows
 from interlace.dsl.decorators import StreamDef
 from interlace.engines.duckdb import DuckDBAdapter
 from interlace.exceptions import StreamError
+from interlace.ir.relation import TableRef
 from interlace.streaming.log import Event, SqliteStreamLog
 from interlace.streaming.materializer import ensure_stream_tables, flush_stream, stream_watermark
 from interlace.streaming.schema import arrow_schema, validate_rows
@@ -223,6 +224,7 @@ async def test_flush_is_exactly_once(log: SqliteStreamLog) -> None:
         {"event_id": "e1", "user": "u1", "amount": 5.0, "_offset": 1},
         {"event_id": "e2", "user": "u2", "amount": 7.5, "_offset": 2},
     ]
+    assert not await engine.table_exists(TableRef(schema="streams", name="_stage_clicks"))
     engine.close()
 
 

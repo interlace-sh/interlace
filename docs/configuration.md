@@ -24,7 +24,7 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 | `stream_path` | str | `.interlace/streams.db` | Durable stream log (SQLite WAL). Ignored when `stream_url` is set. |
 | `stream_url` | str | — | `postgresql://…` stream log (schema `interlace_streams`). A commit is durable under `synchronous_commit`. Needs the `postgres` extra. |
 | `attach` | map | `{}` | `{alias: uri}` — external databases wired into the warehouse (reverse-ETL targets, cross-engine ATTACH). |
-| `alias`, `data_path`, `metadata_schema`, `secrets`, `quack_token` | — | Warehouse-engine options mirrored from `EngineConfig` (below) for the default engine. |
+| `alias`, `data_path`, `metadata_schema`, `secrets`, `settings`, `quack_token` | — | Warehouse-engine options mirrored from `EngineConfig` (below) for the default engine. |
 
 ## `EngineConfig` (per named engine, and the default)
 
@@ -39,6 +39,7 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 | `secrets` | map | `{}` | `{name: SecretConfig}` — object-store credentials (see below). |
 | `quack_token` | str | — | Auth token for a `quack:` database (or `INTERLACE_QUACK_TOKEN`). |
 | `attach` | map | `{}` | Databases attached into this engine at open. |
+| `settings` | map | `{}` | DuckDB settings applied to the instance at open, as `SET GLOBAL name = value`: `memory_limit`, `threads`, `temp_directory`, … Unset, DuckDB takes 80% of the host's RAM and a thread per core, per process. In-process DuckDB-family engines only. |
 
 ## `SecretConfig` (object-store credentials)
 

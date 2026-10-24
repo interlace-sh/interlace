@@ -163,13 +163,18 @@ async def test_a_blocking_model_keeps_its_lease(store: SqliteStateStore) -> None
 
 
 async def test_running_run_cancels_cooperatively(store: SqliteStateStore) -> None:
+    """Cancel is noticed on the next heartbeat.
+
+    The sleep is only the failure budget: a broken cancel should fail this
+    test in about a second, not hold the gate for half a minute.
+    """
     started = asyncio.Event()
 
     async def slow() -> object:
         import pyarrow as pa
 
         started.set()
-        await asyncio.sleep(30)
+        await asyncio.sleep(1)
         return pa.table({"x": [1]})
 
     compiled = compile_models([ModelDef(name="slow", fn=slow)])

@@ -196,6 +196,16 @@ def test_create_and_list_runs(client: TestClient) -> None:
     assert run["idempotency_key"].startswith("api:prod:")
 
 
+def test_list_runs_honours_limit(client: TestClient) -> None:
+    for _ in range(3):
+        created = client.post("/runs", json={"selectors": ["event_totals"], "environment": "prod"})
+        assert created.status_code < 400
+        assert created.json()["enqueued"] == 1
+    assert len(client.get("/runs", params={"limit": 1}).json()) == 1
+    assert len(client.get("/runs", params={"limit": 10}).json()) >= 3
+    assert client.get("/runs", params={"limit": 0}).status_code == 400
+
+
 def test_create_run_rejects_bad_selector(client: TestClient) -> None:
     assert client.post("/runs", json={"selectors": ["nope"]}).status_code == 400
 
@@ -658,3 +668,62 @@ def test_failing_check_rows_are_readable_when_promotion_is_blocked(tmp_path: Pat
         assert body["row_count"] == 1
         kind = body["columns"].index("kind")
         assert body["rows"][0][kind] == "b"
+
+
+def test_gc_and_environment_drop_over_http(tmp_path: Path) -> None:
+    """POST /gc and DELETE /environments. The janitor itself is covered in test_janitor."""
+    import os
+
+    root = _project(tmp_path, {"m.sql": "SELECT 1 AS x\n"})
+    with TestClient(app=create_app(root, "dev")) as client:
+        bad = client.post("/gc", json={"grace": "nope"})
+        assert bad.status_code == 400
+        assert "grain" in bad.json()["detail"]
+
+        assert client.post("/apply", json={"environment": "prod"}).status_code in (200, 201)
+        model = root / "models" / "m.sql"
+        model.write_text("SELECT 2 AS x\n")
+        os.utime(model, (time.time() + 2, time.time() + 2))  # mtime must move past startup
+        rebuilt = client.post("/apply", json={"environment": "prod", "force": True})
+        assert rebuilt.status_code in (200, 201), rebuilt.text
+
+        preview = client.post("/gc", json={"grace": "0s", "dry_run": True}).json()
+        assert preview["dry_run"] is True and preview["removed_snapshots"] == 1
+        assert _physical_tables(client) == 2  # dry-run reports the orphan and leaves it
+        assert _value(client) == 2
+
+        collected = client.post("/gc", json={"grace": "0s"}).json()
+        assert collected["dry_run"] is False and collected["removed_snapshots"] == 1
+        assert _physical_tables(client) == 1
+        assert _value(client) == 2
+        assert any(event["type"] == "gc.finished" for event in client.get("/events").json())
+
+        missing = client.delete("/environments/nope")
+        assert missing.status_code == 404
+        guarded = client.delete("/environments/prod")
+        assert guarded.status_code == 400
+        assert "force=true" in guarded.json()["detail"]
+        assert _value(client) == 2
+
+        dropped = client.delete("/environments/prod", params={"force": True})
+        assert dropped.status_code == 200
+        assert dropped.json()["environment"] == "prod"
+        assert client.get("/environments").json() == []
+
+
+def _physical_tables(client: TestClient) -> int:
+    body = client.post(
+        "/query",
+        json={
+            "sql": (
+                "SELECT count(*) AS n FROM information_schema.tables "
+                "WHERE table_name LIKE 'm__%' AND table_type = 'BASE TABLE'"
+            )
+        },
+    ).json()
+    return int(body["rows"][0][0])
+
+
+def _value(client: TestClient) -> int:
+    body = client.post("/query", json={"sql": "SELECT x FROM main.m"}).json()
+    return int(body["rows"][0][0])

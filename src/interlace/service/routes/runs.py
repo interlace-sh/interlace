@@ -27,8 +27,10 @@ from interlace.service.types import (
 
 @get("/runs")
 async def get_runs(state: State, limit: FromQuery[int | None] = None) -> list[RunInfo]:
+    if limit is not None and limit < 1:
+        raise ClientException(detail="limit must be at least 1")
     runs: list[RunInfo] = []
-    for run in await state.store.list_runs():
+    for run in await state.store.list_runs(limit if limit is not None else 50):
         partition = [str(run["partition_start"]), str(run["partition_end"])] if run["partition_start"] else None
         started, finished = run.get("started_at"), run.get("finished_at")
         duration = None
@@ -52,7 +54,7 @@ async def get_runs(state: State, limit: FromQuery[int | None] = None) -> list[Ru
                 duration=duration,
             )
         )
-    return runs[:limit] if limit else runs  # list_runs is newest-first
+    return runs
 
 
 @get("/runs/{run_id:int}")

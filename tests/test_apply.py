@@ -112,6 +112,38 @@ async def test_apply_reports_failed_progress_event(env: tuple[DuckDBAdapter, Sql
     assert events == [("broken", "start"), ("broken", "failed")]
 
 
+async def test_a_sibling_failure_keeps_the_previous_promotion(
+    env: tuple[DuckDBAdapter, SqliteStateStore],
+) -> None:
+    """One model's failure aborts the apply before any view moves.
+
+    The sibling may already have written its new physical table. Promotion is
+    what publishes it, and that step does not run.
+    """
+    engine, store = env
+    first = compile_models([sql_model("good", "SELECT 1 AS n"), sql_model("other", "SELECT 2 AS n")])
+    await apply(await diff(first, "prod", store), compiled=first, engine=engine, state=store)
+    promoted = await store.get_environment("prod")
+
+    second = compile_models(
+        [sql_model("good", "SELECT 9 AS n"), sql_model("other", "SELECT x FROM does_not_exist_anywhere")]
+    )
+    events: list[tuple[str, str]] = []
+    with pytest.raises(ExecutionError, match="other"):
+        await apply(
+            await diff(second, "prod", store),
+            compiled=second,
+            engine=engine,
+            state=store,
+            on_progress=lambda model, event, _detail: events.append((model, event)),
+        )
+
+    assert await store.get_environment("prod") == promoted
+    assert await _rows(engine, "SELECT n FROM main.good") == [{"n": 1}]
+    assert await _rows(engine, "SELECT n FROM main.other") == [{"n": 2}]
+    assert ("other", "failed") in events
+
+
 async def test_re_apply_is_a_no_op(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     engine, store = env
     models = [sql_model("a", "SELECT 1 AS x")]

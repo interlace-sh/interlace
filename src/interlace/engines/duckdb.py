@@ -15,10 +15,11 @@ On **DuckLake** connections every cursor — reads included — is serialised on
 one DatabaseInstance: under parallel builds a ``CREATE TABLE <schema>.<name>``
 intermittently commits with an empty schema name and lands in the catalog's
 default schema (``main``), silently. Serialising writes alone does not stop it;
-a read cursor open across the commit is enough. A read is written to a temporary
-Arrow file inside the lock, one batch at a time, and the cursor is closed before
-the lock is released. The caller then reads that file. Placement — pinning the
-catalog name, confirming the schema, and retrying a miss — lives in
+a read cursor open across the commit is enough. A read that fits in memory is
+copied there and the cursor closed before the lock is released. A larger read
+is written to a temporary Arrow file, one batch at a time, on the same terms.
+Placement — pinning the catalog name, confirming the schema, and retrying a
+miss — lives in
 :mod:`interlace.engines.placement` and runs only on these connections.
 
 Plain DuckDB catalogs don't have that bug, and the DAG already guarantees no
@@ -36,7 +37,7 @@ import os
 import re
 import tempfile
 import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from uuid import uuid4
 
@@ -71,6 +72,11 @@ _DUCKDB_CAPS = EngineCaps(
 # DuckLake's delete finalizer aborts when EXCEPT is nested in the DELETE.
 # Staging the key set is safe; file DuckDB keeps the direct delete.
 _DUCKLAKE_CAPS = replace(_DUCKDB_CAPS, except_in_delete=False)
+
+# DuckLake cannot leave the read cursor open, so a large scan is copied to a
+# file. A watermark or a catalog probe is a few rows: those stay in memory and
+# skip the temp file. The cap is the buffered batch size, not the final table.
+_SPILL_BYTES = 8 * 1024 * 1024
 
 
 # DuckLake uses optimistic concurrency: a concurrent writer's commit surfaces as
@@ -125,6 +131,23 @@ def _affected(cur: duckdb.DuckDBPyConnection) -> int:
         return int(rows[0][0]) if rows and rows[0] and isinstance(rows[0][0], int) else 0
     except Exception:
         return 0
+
+
+_SETTING_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_NUMERIC = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _setting_literal(value: object) -> str:
+    """A setting value as a SQL literal. Numbers go bare — including a numeric STRING,
+    because ``${THREADS:-4}`` arrives from YAML as text and ``threads`` is a BIGINT."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    text = str(value)
+    if _NUMERIC.fullmatch(text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
 
 
 class DuckDBAdapter(EngineAdapter):
@@ -306,6 +329,20 @@ class DuckDBAdapter(EngineAdapter):
         escaped = directory.replace("'", "''")
         self._conn.execute(f"SET GLOBAL file_search_path='{escaped}'")
 
+    def apply_settings(self, settings: Mapping[str, object]) -> None:
+        """``SET GLOBAL`` each configured DuckDB setting on the instance — ``memory_limit``,
+        ``threads``, ``temp_directory`` and the rest of ``duckdb_settings()``.
+
+        GLOBAL for the same reason as ``search_files_from``: the per-task cursors that run
+        the queries inherit instance settings, not a session's. Left unset, DuckDB takes 80%
+        of the host's RAM and a thread per core, and does so per process — the wrong default
+        for a daemon sharing a host with other daemons. The name is checked as an identifier
+        because it is interpolated into SQL; DuckDB rejects an unknown setting itself."""
+        for name, value in settings.items():
+            if not _SETTING_NAME.fullmatch(name):
+                raise ValueError(f"duckdb setting {name!r} is not a setting name")
+            self._conn.execute(f"SET GLOBAL {name} = {_setting_literal(value)}")
+
     def attach(self, alias: str, uri: str) -> None:
         """ATTACH another database (duckdb/sqlite/postgres/... URI) under ``alias``."""
         escaped = uri.replace("'", "''")
@@ -330,6 +367,17 @@ class DuckDBAdapter(EngineAdapter):
 
     async def execute_all(self, statements: Sequence[exp.Expr]) -> list[int]:
         return await asyncio.to_thread(self._execute_all_sync, [self.transpile(s) for s in statements])
+
+    async def commit_batch(self, source: str, reader: pa.RecordBatchReader, statements: Sequence[exp.Expr]) -> bool:
+        """Register ``reader`` as ``source`` and run ``statements`` in one transaction.
+
+        A stream landing uses this so the rows and the watermark commit together,
+        without a stage table. The reader is single-pass, so a conflict is not
+        retried: the caller rebuilds the batch.
+        """
+        sqls = [pin_catalog(self.transpile(statement), self._catalog_alias) for statement in statements]
+        await asyncio.to_thread(self._commit_batch_sync, source, reader, sqls)
+        return True
 
     async def fetch(self, ast: exp.Expr) -> pa.RecordBatchReader:
         return await self.fetch_sql(self.transpile(ast))
@@ -459,6 +507,34 @@ class DuckDBAdapter(EngineAdapter):
             self._close_cursor(cur)
         return counts
 
+    def _commit_batch_sync(self, source: str, reader: pa.RecordBatchReader, sqls: list[str]) -> None:
+        with self._write_lock:
+            cur = self._cursor()
+            try:
+                try:
+                    cur.execute("BEGIN")
+                    cur.register(source, reader)
+                    for sql in sqls:
+                        try:
+                            cur.execute(sql)
+                            if self._guard_catalog:
+                                confirm_statement(cur, sql)
+                        except CatalogPlacementError:
+                            raise
+                        except Exception as exc:
+                            note_statement(exc, sql)
+                            raise
+                    cur.execute("COMMIT")
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        cur.execute("ROLLBACK")
+                    raise
+                finally:
+                    with contextlib.suppress(Exception):
+                        cur.unregister(source)
+            finally:
+                self._close_cursor(cur)
+
     @_commit_retry
     def _execute_all_sync(self, sqls: list[str]) -> list[int]:
         sqls = [pin_catalog(sql, self._catalog_alias) for sql in sqls]
@@ -471,8 +547,9 @@ class DuckDBAdapter(EngineAdapter):
         # Plain DuckDB streams: the cursor must outlive the reader, and is closed
         # when that stream ends rather than left for the GC. DuckLake cannot: a
         # cursor left open across another task's CREATE is what drops the schema,
-        # so the scan is spilled to a file inside the lock and the cursor is
-        # closed before the caller sees a row.
+        # so the scan is buffered inside the lock and the cursor is closed
+        # before the caller sees a row. Past ``_SPILL_BYTES`` the buffer
+        # becomes a temp Arrow file.
         if not self._guard_catalog:
             return self._stream_sync(sql)
         return self._spill_sync(sql)
@@ -500,34 +577,59 @@ class DuckDBAdapter(EngineAdapter):
         return own_reader(reader, release=lambda: self._close_cursor(cur), defer=lambda: self._defer_cursor(cur))
 
     def _spill_sync(self, sql: str) -> pa.RecordBatchReader:
-        """Copy one DuckLake scan to a temp Arrow file, then close its cursor.
+        """Read one DuckLake scan with its cursor closed before the caller starts.
 
-        The write lock is held for the scan, which is the same critical section
-        as reading the whole table, but only one batch is in memory. The caller
-        reads the file after the lock and the cursor are both released.
+        The write lock covers the scan. Up to ``_SPILL_BYTES`` stays in memory.
+        A larger scan is written to a temp Arrow file one batch at a time, and
+        the caller reads that file after the lock and the cursor are released.
         """
-        descriptor, path = tempfile.mkstemp(prefix="interlace-", suffix=".arrow")
-        os.close(descriptor)
+        path: str | None = None
         try:
-            schema = self._write_spill(path, sql)
+            with self._write_lock:
+                cur = self._cursor()
+                try:
+                    source = self._arrow_reader(cur, sql)
+                    schema = source.schema
+                    held, overflow = self._buffer_until_cap(source)
+                    if overflow is None:
+                        return pa.RecordBatchReader.from_batches(schema, held)
+                    descriptor, path = tempfile.mkstemp(prefix="interlace-", suffix=".arrow")
+                    os.close(descriptor)
+                    self._write_spill(path, schema, held, overflow, source)
+                finally:
+                    self._close_cursor(cur)
+            assert path is not None
+            return self._read_spill(path, schema)
         except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(path)
+            if path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
             raise
-        return self._read_spill(path, schema)
 
-    def _write_spill(self, path: str, sql: str) -> pa.Schema:
-        with self._write_lock:
-            cur = self._cursor()
-            try:
-                source = self._arrow_reader(cur, sql)
-                schema = source.schema
-                with pa.ipc.new_file(path, schema) as writer:
-                    for batch in source:
-                        writer.write_batch(batch)
-                return schema
-            finally:
-                self._close_cursor(cur)
+    def _buffer_until_cap(self, source: pa.RecordBatchReader) -> tuple[list[pa.RecordBatch], pa.RecordBatch | None]:
+        held: list[pa.RecordBatch] = []
+        used = 0
+        for batch in source:
+            used += batch.nbytes
+            if used > _SPILL_BYTES:
+                return held, batch
+            held.append(batch)
+        return held, None
+
+    def _write_spill(
+        self,
+        path: str,
+        schema: pa.Schema,
+        held: list[pa.RecordBatch],
+        overflow: pa.RecordBatch,
+        source: pa.RecordBatchReader,
+    ) -> None:
+        with pa.ipc.new_file(path, schema) as writer:
+            for batch in held:
+                writer.write_batch(batch)
+            writer.write_batch(overflow)
+            for batch in source:
+                writer.write_batch(batch)
 
     def _read_spill(self, path: str, schema: pa.Schema) -> pa.RecordBatchReader:
         mapped = pa.memory_map(path, "r")

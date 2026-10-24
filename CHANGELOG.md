@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.8.11 (2026-10-24)
+
+**An engine takes `settings:`.** `memory_limit`, `threads`, `temp_directory` and the rest of `duckdb_settings()` are applied to the instance at open, as `SET GLOBAL`, so a daemon no longer inherits DuckDB's default of 80% of the host's RAM and a thread per core. `${VAR:-default}` interpolates with a default, the shell's spelling, anywhere `${VAR}` did; an unset variable with no default still stays literal and is rejected at engine open.
+
+**A dropped read releases its DuckDB cursor on the next use of the connection.** Closing it from the garbage collector aborts the process. A DuckLake read under 8 MiB stays in memory; a larger one is written to a file, and the cursor is closed before the caller sees a row. A DuckDB stream batch commits in the same transaction as its watermark. Run detail reads an indexed `run_id`, and `GET /runs` returns as many rows as `limit` asks for.
+
 ## 2.8.10 (2026-10-24)
 
 **Column lineage attributes columns read from an external table.** The service extra stays on multidict 6, which accepts the header list the API builds.

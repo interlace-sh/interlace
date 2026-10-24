@@ -6,7 +6,6 @@ and its checks have gated.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Mapping
 from dataclasses import replace
@@ -29,7 +28,7 @@ from interlace.plan.fit import align_stage_to_target, remember
 from interlace.plan.plan import BackfillTask, Plan
 from interlace.plan.resolve import resolve_model_query
 from interlace.plan.result import ApplyResult, record_build, record_timing
-from interlace.plan.transfer import stage_cross_engine_inputs
+from interlace.plan.transfer import StageLocks, stage_cross_engine_inputs
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.sinks import file_statements, write_arrow_file
 from interlace.state.interval import Interval
@@ -312,7 +311,7 @@ async def run_backfill(  # noqa: C901
     registry: EngineRegistry,
     physical: Mapping[str, TableRef],
     staged: set[tuple[str, str]],
-    stage_lock: asyncio.Lock,
+    stage_locks: StageLocks,
     state: StateStore,
     base_path: Path | None,
     result: ApplyResult,
@@ -322,7 +321,7 @@ async def run_backfill(  # noqa: C901
     snapshot = task.snapshot
     model = compiled.models[snapshot.name]
     target_engine = registry.require(model.engine, model=model.name)
-    resolution = await stage_cross_engine_inputs(model, compiled, registry, physical, staged, stage_lock, result)
+    resolution = await stage_cross_engine_inputs(model, compiled, registry, physical, staged, stage_locks, result)
 
     if task.reuse_existing and await target_engine.table_exists(snapshot.physical_table):
         # fingerprint already materialised (e.g. by another environment): the content-

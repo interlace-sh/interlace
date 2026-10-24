@@ -1,9 +1,10 @@
 """The stream materializer — micro-batches from the log into the warehouse.
 
 A flush drains everything past the stream's watermark in ``batch_rows`` chunks;
-each chunk stages one Arrow batch and moves ``stage -> target table + watermark``
-(plus any evolve ``ALTER``s) in a single engine transaction. Crash anywhere leaves
-either the old watermark (events re-read, stage overwritten — no duplicates) or
+each chunk lands one Arrow batch together with the watermark (plus any evolve
+``ALTER``s) in a single engine transaction. DuckDB registers the batch in that
+transaction. Other engines write a stage table first, then move it. Crash
+anywhere leaves either the old watermark (events re-read — no duplicates) or
 the new one — **exactly-once landing into the warehouse** given a transactional
 ``execute_all`` (DuckDB / ADBC), without coordinating with the log. The watermark
 lives in the warehouse (``streams._watermarks``) precisely so it commits atomically
@@ -34,6 +35,8 @@ from interlace.streaming.schema import arrow_schema, coerce_row, evolved_columns
 
 _SCHEMA = "streams"
 _WATERMARKS = TableRef(schema=_SCHEMA, name="_watermarks")
+# Session name of the Arrow batch inside commit_batch. Not a catalog table.
+_BATCH = "__interlace_batch"
 
 
 def target_table(stream: StreamDef) -> TableRef:
@@ -152,32 +155,34 @@ async def _flush_batch(
         for name, sql_type in extras.items()
     ]
 
-    stage = TableRef(schema=_SCHEMA, name=f"_stage_{stream.name}")
-    await engine.load(stage, batch.to_reader(), "create")
     last = events[-1].offset
     # Name every column. An evolved batch has more columns than older rows had;
     # a positional INSERT would land them in the wrong place, and BY NAME is DuckDB-only.
     names = [field.name for field in schema]
-    insert = exp.Insert(
-        this=exp.Schema(this=target.copy(), expressions=[_ident(name) for name in names]),
-        expression=exp.select(*(exp.column(name, quoted=True) for name in names)).from_(stage.to_expr()),
-    )
     stream_lit = exp.Literal.string(stream.name)
-    # data + watermark (+ evolve DDL) move together: crash-safe exactly-once landing
-    await engine.execute_all(
-        [
-            *alters,
-            insert,
-            exp.Delete(this=_WATERMARKS.to_expr(), where=exp.Where(this=exp.column("stream").eq(stream_lit))),
-            exp.Insert(
-                this=_WATERMARKS.to_expr(),
-                expression=exp.Values(
-                    expressions=[exp.Tuple(expressions=[stream_lit.copy(), exp.Literal.number(last)])]
-                ),
-            ),
-            drop(stage.to_expr(), kind="TABLE"),
-        ]
-    )
+    watermark_sql = [
+        exp.Delete(this=_WATERMARKS.to_expr(), where=exp.Where(this=exp.column("stream").eq(stream_lit))),
+        exp.Insert(
+            this=_WATERMARKS.to_expr(),
+            expression=exp.Values(expressions=[exp.Tuple(expressions=[stream_lit.copy(), exp.Literal.number(last)])]),
+        ),
+    ]
+
+    def insert_from(source: exp.Expression) -> exp.Insert:
+        return exp.Insert(
+            this=exp.Schema(this=target.copy(), expressions=[_ident(name) for name in names]),
+            expression=exp.select(*(exp.column(name, quoted=True) for name in names)).from_(source),
+        )
+
+    # DuckDB registers the batch and commits it with the watermark. Other engines
+    # write a stage table first: their load and their SQL transaction are separate.
+    reader = batch.to_reader()
+    if not await engine.commit_batch(_BATCH, reader, [*alters, insert_from(exp.table_(_BATCH)), *watermark_sql]):
+        stage = TableRef(schema=_SCHEMA, name=f"_stage_{stream.name}")
+        await engine.load(stage, reader, "create")
+        await engine.execute_all(
+            [*alters, insert_from(stage.to_expr()), *watermark_sql, drop(stage.to_expr(), kind="TABLE")]
+        )
     return len(events), last
 
 

@@ -118,6 +118,41 @@ def test_apply_blocks_breaking_changes_without_force(tmp_path: Path) -> None:
     assert forced.exit_code == 0 and "promoted" in forced.output
 
 
+def test_gc_and_apikey_commands(tmp_path: Path) -> None:
+    """gc and apikey are thin wrappers. The library and the HTTP API own the behavior."""
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "m.sql").write_text("SELECT 1 AS x")
+    assert runner.invoke(app, ["apply", "--path", str(tmp_path)]).exit_code == 0
+
+    bad = runner.invoke(app, ["gc", "--grace", "nope", "--path", str(tmp_path)])
+    assert bad.exit_code == 2
+    assert "grace" in bad.output
+
+    collected = runner.invoke(app, ["gc", "--grace", "0s", "--path", str(tmp_path)])
+    assert collected.exit_code == 0, collected.output
+    text = _plain(collected.output)
+    assert "Removed 0 snapshot" in text  # the live snapshot is still referenced
+    assert "kept" in text
+
+    created = runner.invoke(app, ["apikey", "create", "ci", "--scope", "admin", "--path", str(tmp_path)])
+    assert created.exit_code == 0, created.output
+    assert "ilk_" in created.output
+    spare = runner.invoke(app, ["apikey", "create", "spare", "--scope", "read", "--path", str(tmp_path)])
+    assert spare.exit_code == 0, spare.output
+
+    listed = runner.invoke(app, ["apikey", "list", "--path", str(tmp_path)])
+    assert listed.exit_code == 0, listed.output
+    assert "ci" in listed.output and "admin" in listed.output
+
+    revoked = runner.invoke(app, ["apikey", "revoke", "ci", "--path", str(tmp_path)])
+    assert revoked.exit_code == 0, revoked.output
+    assert "revoked" in _plain(revoked.output)
+
+    last = runner.invoke(app, ["apikey", "revoke", "spare", "--path", str(tmp_path)])
+    assert last.exit_code == 1
+    assert "last key" in last.output
+
+
 def test_reset_requires_yes(tmp_path: Path) -> None:
     _project(tmp_path)
     assert runner.invoke(app, ["apply", "--path", str(tmp_path)]).exit_code == 0

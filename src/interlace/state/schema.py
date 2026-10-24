@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from interlace.state.dialect import json_field
+
 _MIGRATIONS: list[str] = [
     # 0001 — snapshots, interval ledger, environment pointers
     """
@@ -154,7 +156,33 @@ _MIGRATIONS: list[str] = [
         PRIMARY KEY (stream, log_offset)
     );
     """,
+    # 0014 — run timelines and trim. run_id is filled from payload.run, including
+    # rows written before this column existed (see migration_followup).
+    """
+    ALTER TABLE event_log ADD COLUMN run_id INTEGER;
+    CREATE INDEX idx_event_log_run_id ON event_log (run_id, seq) WHERE run_id IS NOT NULL;
+    CREATE INDEX idx_event_log_ts ON event_log (ts);
+    CREATE INDEX idx_check_results_executed_at ON check_results (executed_at);
+    """,
 ]
+
+
+def migration_followup(version: int, dialect: str) -> str | None:
+    """Dialect-specific SQL that belongs in the same transaction as migration ``version``.
+
+    ``version`` is the zero-based index. The run-id backfill cannot live in the
+    shared script: SQLite and Postgres do not read a JSON field the same way.
+    """
+    if version != 13:
+        return None
+    field = json_field("payload", "run", dialect=dialect)
+    text = f"CAST({field} AS TEXT)"
+    # CAST of a non-numeric JSON value aborts the migration on Postgres.
+    if dialect == "postgres":
+        digits = f"{text} ~ '^[0-9]+$'"
+    else:
+        digits = f"{text} GLOB '[0-9]*' AND {text} NOT GLOB '*[^0-9]*'"
+    return f"UPDATE event_log SET run_id = CAST({field} AS INTEGER) WHERE run_id IS NULL AND {digits}"
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -175,6 +203,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
             for statement in _MIGRATIONS[version].split(";"):
                 if statement.strip():
                     conn.execute(statement)
+            followup = migration_followup(version, "sqlite")
+            if followup is not None:
+                conn.execute(followup)
             conn.execute(f"PRAGMA user_version = {version + 1}")  # transactional in SQLite
             conn.commit()
         except Exception:

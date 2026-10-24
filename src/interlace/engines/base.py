@@ -154,6 +154,16 @@ class EngineAdapter(ABC):
             await self.execute(statement)
         return [0] * len(statements)
 
+    async def commit_batch(self, source: str, reader: pa.RecordBatchReader, statements: Sequence[exp.Expr]) -> bool:
+        """Register ``reader`` as ``source`` and run ``statements`` in one transaction.
+
+        Returns False when this engine cannot see a registered reader inside the
+        same transaction as the statements. The caller then writes the batches
+        to a real table and runs the statements against that.
+        """
+        del source, reader, statements
+        return False
+
     async def execute_sql(self, sql: str) -> None:
         """Run one raw SQL statement written in this engine's dialect."""
         await self.execute(sqlglot.parse_one(sql, read=self.dialect))

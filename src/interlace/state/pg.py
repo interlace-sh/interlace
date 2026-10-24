@@ -13,7 +13,7 @@ import zlib
 from collections.abc import Sequence
 from typing import Any
 
-from interlace.state.schema import _MIGRATIONS
+from interlace.state.schema import _MIGRATIONS, migration_followup
 
 STATE_SCHEMA = "interlace"
 STREAM_SCHEMA = "interlace_streams"
@@ -149,6 +149,9 @@ def migrate(conn: PgConn, schema: str) -> None:
                 for statement in _MIGRATIONS[version].split(";"):
                     if statement.strip():
                         conn.execute(statement)
+                followup = migration_followup(version, "postgres")
+                if followup is not None:
+                    conn.execute(followup)
                 conn.execute("INSERT INTO schema_migrations (version) VALUES (?)", (version + 1,))
                 conn.commit()
             except Exception:

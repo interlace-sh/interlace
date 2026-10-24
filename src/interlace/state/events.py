@@ -7,7 +7,20 @@ import os
 
 from interlace.state.codec import _now_iso, _stamp_actor
 from interlace.state.conn import ControlDb
-from interlace.state.dialect import json_field
+
+
+def _run_id(payload: dict[str, object] | None) -> int | None:
+    """The run a model event belongs to. Apply events carry no run."""
+    if payload is None:
+        return None
+    run = payload.get("run")
+    if isinstance(run, bool) or run is None:
+        return None
+    if isinstance(run, int):
+        return run
+    if isinstance(run, str) and run.isdecimal():
+        return int(run)
+    return None
 
 
 class EventLogStore:
@@ -42,17 +55,14 @@ class EventLogStore:
         return [self._event_row(row) for row in rows]
 
     async def events_for_run(self, run_id: int) -> list[dict[str, object]]:
-        """A run's per-model events — keyed by ``payload.run`` (their entity is the model
-        name, not the run id), so the run detail can show a model-level timeline."""
+        """A run's per-model events. Their entity is the model name; ``run_id`` is the run."""
         return await self._db.io(self._events_for_run_sync, run_id)
 
     def _events_for_run_sync(self, run_id: int) -> list[dict[str, object]]:
         with self._db.lock:
-            run_id_text = json_field("payload", "run", dialect=self._db.dialect)
             rows = self._db.conn.execute(
-                "SELECT seq, ts, type, entity, payload FROM event_log "
-                f"WHERE CAST({run_id_text} AS TEXT) = ? ORDER BY seq",
-                (str(run_id),),
+                "SELECT seq, ts, type, entity, payload FROM event_log WHERE run_id = ? ORDER BY seq",
+                (run_id,),
             ).fetchall()
         return [self._event_row(row) for row in rows]
 
@@ -74,8 +84,8 @@ class EventLogStore:
         ts = _now_iso()
         with self._db.lock:
             cursor = self._db.conn.execute(
-                "INSERT INTO event_log (ts, type, entity, payload) VALUES (?, ?, ?, ?)",
-                (ts, type, entity, json.dumps(payload) if payload is not None else None),
+                "INSERT INTO event_log (ts, type, entity, payload, run_id) VALUES (?, ?, ?, ?, ?)",
+                (ts, type, entity, json.dumps(payload) if payload is not None else None, _run_id(payload)),
             )
             self._db.conn.commit()
             seq = int(cursor.lastrowid or 0)

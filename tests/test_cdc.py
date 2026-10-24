@@ -54,6 +54,48 @@ def test_pgoutput_insert_and_delete_become_rows() -> None:
     assert deleted.row["id"] == "7"
 
 
+def test_pgoutput_update_keeps_the_before_image() -> None:
+    relations: dict[int, Relation] = {}
+    relation = (
+        b"R"
+        + struct.pack("!i", 10)
+        + b"public\x00orders\x00d"
+        + struct.pack("!h", 2)
+        + _column("id", 23)
+        + _column("status", 25)
+    )
+    assert decode_message(relation, relations, "0/1") is None
+    updated = decode_message(
+        b"U"
+        + struct.pack("!i", 10)
+        + b"K"
+        + struct.pack("!h", 2)
+        + _text("7")
+        + _text("open")
+        + b"N"
+        + struct.pack("!h", 2)
+        + _text("7")
+        + _text("shipped"),
+        relations,
+        "0/2",
+    )
+    assert updated is not None
+    assert updated.kind == "update"
+    assert updated.table == "public.orders"
+    assert updated.row == {"id": "7", "status": "shipped"}
+    assert updated.before == {"id": "7", "status": "open"}
+
+    # replica identity default can omit the old tuple; the new row still decodes
+    fresh = decode_message(
+        b"U" + struct.pack("!i", 10) + b"N" + struct.pack("!h", 2) + _text("8") + _text("open"),
+        relations,
+        "0/3",
+    )
+    assert fresh is not None
+    assert fresh.before is None
+    assert fresh.row == {"id": "8", "status": "open"}
+
+
 async def test_lsn_advances_only_after_the_watermark(tmp_path: Path) -> None:
     from interlace.cdc.decode import Change
 

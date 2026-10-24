@@ -111,6 +111,52 @@ async def test_events_for_run_selects_model_events_by_payload(tmp_path: Path) ->
     assert [(e["type"], e["entity"]) for e in got] == [("model.start", "orders"), ("model.done", "orders")]
 
 
+async def test_run_id_column_is_backfilled_and_indexed(tmp_path: Path) -> None:
+    """Rows written before run_id existed are still found, and trim/run scans have indexes."""
+    import sqlite3
+
+    from interlace.state.schema import _MIGRATIONS
+
+    path = tmp_path / "state.db"
+    conn = sqlite3.connect(path)
+    try:
+        for script in _MIGRATIONS[:-1]:
+            for statement in script.split(";"):
+                if statement.strip():
+                    conn.execute(statement)
+        conn.execute(f"PRAGMA user_version = {len(_MIGRATIONS) - 1}")
+        conn.execute(
+            "INSERT INTO event_log (ts, type, entity, payload) VALUES (?, ?, ?, ?)",
+            ("2026-01-01T00:00:00", "model.done", "orders", '{"run": 7}'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = await SqliteStateStore.open(path)
+    found = await store.events_for_run(7)
+    await store.append_event("model.start", entity="orders", payload={"run": 7})
+    again = await store.events_for_run(7)
+    await store.close()
+    assert [(event["type"], event["entity"]) for event in found] == [("model.done", "orders")]
+    assert [event["type"] for event in again] == ["model.done", "model.start"]
+
+    check = sqlite3.connect(path)
+    try:
+        names = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    finally:
+        check.close()
+    assert {"idx_event_log_run_id", "idx_event_log_ts", "idx_check_results_executed_at"} <= names
+
+    from interlace.state.schema import migration_followup
+
+    sqlite_sql = migration_followup(13, "sqlite")
+    postgres_sql = migration_followup(13, "postgres")
+    assert sqlite_sql is not None and "json_extract(payload, '$.run')" in sqlite_sql
+    assert postgres_sql is not None and "(payload::json ->> 'run')" in postgres_sql
+    assert postgres_sql is not None and "json_extract" not in postgres_sql
+
+
 async def test_list_runs_enriches_duration_and_environment(store: SqliteStateStore) -> None:
     """list_runs derives each run's wall-clock span and target env from its events,
     so the runs view can show duration + env without a per-run round-trip."""

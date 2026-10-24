@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import cast
 
 import pyarrow as pa
 from litestar import get, post
@@ -12,7 +13,7 @@ from litestar.exceptions import ClientException
 from litestar.params import FromQuery
 
 from interlace.exceptions import QueryError
-from interlace.graph.column_lineage import column_lineage
+from interlace.graph.column_lineage import ColumnSources, column_lineage
 from interlace.graph.project import CompiledProject
 from interlace.scheduler.daemon import (
     reload_if_stale,
@@ -172,6 +173,19 @@ async def get_schedules(state: State) -> list[ScheduleInfo]:
     return infos
 
 
+def _cached_lineage(
+    state: State, compiled: CompiledProject, described: dict[str, list[str]]
+) -> dict[str, ColumnSources]:
+    """One described lineage per open graph. ``publish_compiled`` drops the slot."""
+    key = tuple(sorted((name, tuple(columns)) for name, columns in described.items()))
+    slot = getattr(state, "lineage_cache", None)
+    if isinstance(slot, tuple) and len(slot) == 3 and slot[0] is compiled and slot[1] == key:
+        return cast(dict[str, ColumnSources], slot[2])
+    lineage = column_lineage(compiled, known_columns=described)
+    state.lineage_cache = (compiled, key, lineage)
+    return lineage
+
+
 @get("/lineage")
 async def get_lineage(state: State, environment: FromQuery[str | None] = None) -> LineageResponse:
     """The whole graph in one payload: nodes (with warehouse-described column
@@ -191,7 +205,7 @@ async def get_lineage(state: State, environment: FromQuery[str | None] = None) -
     # true output columns to the schema graph, so SQL models downstream of it qualify
     # and trace precisely (falling back to name-passthrough only where nothing's built).
     described = {name: list(types) for name, types in types_by_model.items() if types}
-    lineage = column_lineage(compiled, known_columns=described)
+    lineage = _cached_lineage(state, compiled, described)
 
     models: list[LineageModel] = []
     edges: list[list[str]] = []

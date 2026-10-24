@@ -11,6 +11,7 @@ has one place to live. quack is a core extension.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from uuid import uuid4
 
@@ -62,6 +63,12 @@ class QuackAdapter(DuckDBAdapter):
             raise
         finally:
             self._close_cursor(cur)
+
+    async def commit_batch(self, source: str, reader: pa.RecordBatchReader, statements: Sequence[exp.Expr]) -> bool:
+        # The Arrow register is local and the statements run on the server.
+        # They are not one transaction, so the caller keeps the stage table.
+        del source, reader, statements
+        return False
 
     def _execute_all_sync(self, sqls: list[str]) -> list[int]:
         # One payload, transactional server-side; quack executes it as a unit —

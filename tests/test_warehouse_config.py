@@ -16,6 +16,7 @@ import sqlglot
 
 from interlace.config.config import SecretConfig, load_config
 from interlace.engines.duckdb import DuckDBAdapter
+from interlace.exceptions import ConfigurationError
 from interlace.project import Project, _secret_sql
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "getting_started"
@@ -136,10 +137,7 @@ def test_alias_overrides_the_project_name(tmp_path: Path, monkeypatch: pytest.Mo
     ATTACH its catalog under a different alias — DuckDB cannot bind ``seccl.clients``
     when ``seccl`` is both a catalog and a schema."""
     (tmp_path / "interlace.yaml").write_text(
-        "name: seccl\n"
-        'database: "ducklake:postgres:dbname=lakes host=db"\n'
-        "metadata_schema: seccl\n"
-        "alias: warehouse\n"
+        'name: seccl\ndatabase: "ducklake:postgres:dbname=lakes host=db"\nmetadata_schema: seccl\nalias: warehouse\n'
     )
     captured: dict = {}
 
@@ -310,3 +308,47 @@ def test_redact_dsn_masks_credentials_in_all_dsn_shapes() -> None:
     # no credentials -> unchanged
     assert redact_dsn("ducklake:.interlace/wh.ducklake") == "ducklake:.interlace/wh.ducklake"
     assert redact_dsn("quack:host:4200") == "quack:host:4200"
+
+
+def test_settings_reach_the_engine_after_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``settings:`` is applied to the opened instance, with ``${VAR:-default}`` resolved —
+    the shell's spelling, so a daemon's cap has a default the deployment can override."""
+    monkeypatch.setenv("WH_MEM", "1GB")
+    monkeypatch.delenv("WH_THREADS", raising=False)
+    (tmp_path / "interlace.yaml").write_text(
+        "name: ml\n"
+        'database: "ducklake:postgres:dbname=lakes host=db"\n'
+        "metadata_schema: ml\n"
+        "settings:\n"
+        "  memory_limit: '${WH_MEM:-512MB}'\n"
+        "  threads: '${WH_THREADS:-4}'\n"
+    )
+
+    class _CappedEngine(_FakeEngine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.settings: dict[str, object] = {}
+
+        def apply_settings(self, settings: dict[str, object]) -> None:
+            self.settings = dict(settings)
+
+    monkeypatch.setattr(DuckDBAdapter, "connect_ducklake", staticmethod(lambda catalog, **kwargs: _CappedEngine()))
+    project = Project.load(tmp_path)
+    engine = project.open_engine()
+    assert isinstance(engine, _CappedEngine)
+    assert engine.settings == {"memory_limit": "1GB", "threads": "4"}
+
+
+def test_an_unset_setting_variable_is_rejected_before_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WH_MEM", raising=False)
+    (tmp_path / "interlace.yaml").write_text(
+        "name: ml\n"
+        'database: "ducklake:postgres:dbname=lakes host=db"\n'
+        "metadata_schema: ml\n"
+        "settings:\n"
+        "  memory_limit: '${WH_MEM}'\n"
+    )
+    project = Project.load(tmp_path)
+    with pytest.raises(ConfigurationError) as excinfo:
+        project.open_engine()
+    assert excinfo.value.details["variables"] == ["WH_MEM"]

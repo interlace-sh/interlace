@@ -20,13 +20,29 @@ from interlace.ir.relation import TableRef
 from interlace.plan.result import ApplyResult
 
 
+class StageLocks:
+    """One lock per ``(upstream, target engine)``. Distinct pairs copy together."""
+
+    def __init__(self) -> None:
+        self._guard = asyncio.Lock()
+        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+    async def get(self, key: tuple[str, str]) -> asyncio.Lock:
+        async with self._guard:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[key] = lock
+            return lock
+
+
 async def stage_cross_engine_inputs(
     model: CompiledModel,
     compiled: CompiledProject,
     registry: EngineRegistry,
     physical: Mapping[str, TableRef],
     staged: set[tuple[str, str]],
-    stage_lock: asyncio.Lock,
+    stage_locks: StageLocks,
     result: ApplyResult,
 ) -> dict[str, TableRef]:
     """Move cross-engine upstreams into staging tables on the model's engine.
@@ -34,9 +50,9 @@ async def stage_cross_engine_inputs(
     Returns the model's *local* resolution map: cross-engine deps point at their
     staged copies; everything else keeps the global physical map. Each
     (upstream, target-engine) pair transfers once per apply — always replaced,
-    so a re-run upstream (merge/incremental) is never read stale. The lock is
-    held across the transfer so a concurrent consumer of the same upstream
-    never reads a half-populated stage table.
+    so a re-run upstream (merge/incremental) is never read stale. That pair's
+    lock is held across the transfer so a concurrent consumer of the same
+    upstream never reads a half-populated stage table.
     """
     local = dict(physical)
     for dep in model.dependencies:
@@ -46,7 +62,7 @@ async def stage_cross_engine_inputs(
         stage = staging_table(dep)
         local[dep] = stage
         key = (dep, model.engine)
-        async with stage_lock:
+        async with await stage_locks.get(key):
             if key in staged:
                 continue
             target = registry.require(model.engine, model=model.name)

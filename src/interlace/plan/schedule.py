@@ -25,6 +25,7 @@ from interlace.ir.relation import TableRef
 from interlace.plan.backfill import run_backfill
 from interlace.plan.plan import BackfillTask, Plan
 from interlace.plan.result import ApplyResult, ProgressCallback, build_detail, failure_detail
+from interlace.plan.transfer import StageLocks
 from interlace.scheduler.completion import after_waiters, wake_after
 from interlace.state.store import SqliteStateStore, StateStore
 
@@ -80,7 +81,7 @@ async def schedule_builds(  # noqa: C901
     # concurrency. Waiting happens BEFORE the semaphore, so a blocked model
     # never holds a build slot its own upstream needs.
     staged: set[tuple[str, str]] = set()  # (upstream, target engine) pairs moved this apply
-    stage_lock = asyncio.Lock()
+    stage_locks = StageLocks()
     per_model: dict[str, list[BackfillTask]] = {}
     for task in plan.backfills:  # differ/run emit tasks in topological order
         per_model.setdefault(task.snapshot.name, []).append(task)
@@ -137,7 +138,7 @@ async def schedule_builds(  # noqa: C901
                     on_progress(name, "start", {})
                 for model_task in per_model[name]:
                     await run_backfill(
-                        model_task, plan, compiled, registry, physical, staged, stage_lock, state, base_path, result
+                        model_task, plan, compiled, registry, physical, staged, stage_locks, state, base_path, result
                     )
         except asyncio.CancelledError:  # a SIBLING failed; this model is collateral
             if on_progress is not None:

@@ -15,9 +15,10 @@ On **DuckLake** connections every cursor — reads included — is serialised on
 one DatabaseInstance: under parallel builds a ``CREATE TABLE <schema>.<name>``
 intermittently commits with an empty schema name and lands in the catalog's
 default schema (``main``), silently. Serialising writes alone does not stop it;
-a read cursor open across the commit is enough. Reads are materialised inside
-the lock so that cursor is closed first. Placement — pinning the catalog name,
-confirming the schema, and retrying a miss — lives in
+a read cursor open across the commit is enough. A read is written to a temporary
+Arrow file inside the lock, one batch at a time, and the cursor is closed before
+the lock is released. The caller then reads that file. Placement — pinning the
+catalog name, confirming the schema, and retrying a miss — lives in
 :mod:`interlace.engines.placement` and runs only on these connections.
 
 Plain DuckDB catalogs don't have that bug, and the DAG already guarantees no
@@ -31,7 +32,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
+import tempfile
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
@@ -52,6 +55,7 @@ from interlace.engines.placement import (
 )
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
+from interlace.readers import own_reader
 
 _DUCKDB_CAPS = EngineCaps(
     supports_create_or_replace=True,
@@ -151,7 +155,11 @@ class DuckDBAdapter(EngineAdapter):
         # Cursors with a statement in flight. interrupt() walks this set:
         # connection.interrupt() does not cancel a cursor's query.
         self._cursors: set[duckdb.DuckDBPyConnection] = set()
+        # Abandoned readers must not close their cursor on the GC thread.
+        # The next use of this connection, and close(), drains the list.
+        self._deferred: list[duckdb.DuckDBPyConnection] = []
         self._cursor_lock = threading.Lock()
+        self._closed = False
         self.caps = _DUCKLAKE_CAPS if serialise_writes else _DUCKDB_CAPS
         # Placement confirmation is DuckLake-only. Plain catalogs skip it, so a view
         # promotion does not probe information_schema for a same-named table.
@@ -165,6 +173,7 @@ class DuckDBAdapter(EngineAdapter):
         )
 
     def _cursor(self) -> duckdb.DuckDBPyConnection:
+        self._drain_deferred()
         cur = self._conn.cursor()
         with self._cursor_lock:
             self._cursors.add(cur)
@@ -179,7 +188,27 @@ class DuckDBAdapter(EngineAdapter):
     def _close_cursor(self, cur: duckdb.DuckDBPyConnection) -> None:
         with self._cursor_lock:
             self._cursors.discard(cur)
-        cur.close()
+            self._deferred = [pending for pending in self._deferred if pending is not cur]
+        # Shutdown can close a cursor the reader is also closing.
+        with contextlib.suppress(Exception):
+            cur.close()
+
+    def _defer_cursor(self, cur: duckdb.DuckDBPyConnection) -> None:
+        """Remember a cursor whose reader was dropped, without closing it yet."""
+        with self._cursor_lock:
+            if cur not in self._cursors:
+                return
+            self._cursors.discard(cur)
+            self._deferred.append(cur)
+
+    def _drain_deferred(self) -> None:
+        """Close cursors whose readers were dropped. Runs on a connection thread."""
+        with self._cursor_lock:
+            pending = self._deferred
+            self._deferred = []
+        for cur in pending:
+            with contextlib.suppress(Exception):
+                cur.close()
 
     @classmethod
     def in_memory(cls) -> DuckDBAdapter:
@@ -230,14 +259,26 @@ class DuckDBAdapter(EngineAdapter):
         return cls(conn, session_init=[f"USE {alias_sql}"], serialise_writes=True, catalog_alias=alias)
 
     def close(self) -> None:
-        # DETACH long-lived attaches first: DuckLake leaks its DatabaseInstance when
-        # concurrent cursors were used (duckdb 1.5.4), which would otherwise keep the
-        # attached databases' file handles locked for the rest of the process.
+        # Cursors first, then DETACH. A cursor still open at shutdown leaks
+        # DuckLake's DatabaseInstance and keeps the connection busy, so closing
+        # the connection aborts the process. interrupt() is what makes a cursor
+        # that is inside a scan willing to close.
+        if self._closed:
+            return
+        self.interrupt()
+        self._drain_deferred()
+        with self._cursor_lock:
+            live = list(self._cursors)
+            self._cursors.clear()
+        for cur in live:
+            with contextlib.suppress(Exception):
+                cur.close()
         for alias in self._attached:
             with contextlib.suppress(Exception):
                 self._conn.execute(f"DETACH {exp.to_identifier(alias).sql('duckdb')}")
         self._attached.clear()
         self._conn.close()
+        self._closed = True
 
     def interrupt(self) -> None:
         """Cancel the currently-running statement(s) on this connection (best effort).
@@ -430,16 +471,11 @@ class DuckDBAdapter(EngineAdapter):
         # Plain DuckDB streams: the cursor must outlive the reader, and is closed
         # when that stream ends rather than left for the GC. DuckLake cannot: a
         # cursor left open across another task's CREATE is what drops the schema,
-        # so the scan is materialised inside the lock and the cursor closed first.
+        # so the scan is spilled to a file inside the lock and the cursor is
+        # closed before the caller sees a row.
         if not self._guard_catalog:
             return self._stream_sync(sql)
-        with self._write_lock:
-            cur = self._cursor()
-            try:
-                table = self._arrow_reader(cur, sql).read_all()
-            finally:
-                self._close_cursor(cur)
-        return table.to_reader()
+        return self._spill_sync(sql)
 
     def _stream_sync(self, sql: str) -> pa.RecordBatchReader:
         cur = self._cursor()
@@ -458,13 +494,63 @@ class DuckDBAdapter(EngineAdapter):
         return cur.sql(sql).to_arrow_reader()
 
     def _stream_reader(self, cur: duckdb.DuckDBPyConnection, reader: pa.RecordBatchReader) -> pa.RecordBatchReader:
-        def batches() -> Iterator[pa.RecordBatch]:
+        # Exhausting the reader closes the cursor on the caller's thread.
+        # Dropping it only defers the close: the finalizer must not call into
+        # DuckDB while another cursor is mid-query.
+        return own_reader(reader, release=lambda: self._close_cursor(cur), defer=lambda: self._defer_cursor(cur))
+
+    def _spill_sync(self, sql: str) -> pa.RecordBatchReader:
+        """Copy one DuckLake scan to a temp Arrow file, then close its cursor.
+
+        The write lock is held for the scan, which is the same critical section
+        as reading the whole table, but only one batch is in memory. The caller
+        reads the file after the lock and the cursor are both released.
+        """
+        descriptor, path = tempfile.mkstemp(prefix="interlace-", suffix=".arrow")
+        os.close(descriptor)
+        try:
+            schema = self._write_spill(path, sql)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            raise
+        return self._read_spill(path, schema)
+
+    def _write_spill(self, path: str, sql: str) -> pa.Schema:
+        with self._write_lock:
+            cur = self._cursor()
             try:
-                yield from reader
+                source = self._arrow_reader(cur, sql)
+                schema = source.schema
+                with pa.ipc.new_file(path, schema) as writer:
+                    for batch in source:
+                        writer.write_batch(batch)
+                return schema
             finally:
                 self._close_cursor(cur)
 
-        return pa.RecordBatchReader.from_batches(reader.schema, batches())
+    def _read_spill(self, path: str, schema: pa.Schema) -> pa.RecordBatchReader:
+        mapped = pa.memory_map(path, "r")
+        stored = pa.ipc.open_file(mapped)
+        released = False
+        gate = threading.Lock()
+
+        def release() -> None:
+            nonlocal released
+            with gate:
+                if released:
+                    return
+                released = True
+            with contextlib.suppress(Exception):
+                mapped.close()
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            for index in range(stored.num_record_batches):
+                yield stored.get_batch(index)
+
+        return own_reader(pa.RecordBatchReader.from_batches(schema, batches()), release=release, defer=release)
 
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
         # NOT wrapped in @_commit_retry: ``reader`` is a single-pass stream, and a

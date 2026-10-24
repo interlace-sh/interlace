@@ -18,6 +18,9 @@ external-browser auth go through ``db_kwargs``.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
+
 import pyarrow as pa
 from sqlglot import exp
 
@@ -25,6 +28,7 @@ from interlace.engines.adbc import AdbcAdapter
 from interlace.engines.base import EngineCaps, LoadMode
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
+from interlace.readers import own_reader
 
 _SNOWFLAKE_CAPS = EngineCaps(
     supports_create_or_replace=True,
@@ -53,8 +57,23 @@ class SnowflakeAdapter(AdbcAdapter):
         return cls(dbapi.connect(dsn))
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
-        table = super()._fetch_sync(sql).read_all()
-        return table.rename_columns([name.casefold() for name in table.column_names]).to_reader()
+        # The driver returns uppercase names. Fold each batch as it is read so
+        # the result is not copied into a second table first.
+        source = super()._fetch_sync(sql)
+        schema = pa.schema([field.with_name(field.name.casefold()) for field in source.schema])
+
+        def release() -> None:
+            with contextlib.suppress(Exception):
+                source.close()
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            try:
+                for batch in source:
+                    yield pa.record_batch(list(batch.columns), schema=schema)
+            finally:
+                release()
+
+        return own_reader(pa.RecordBatchReader.from_batches(schema, batches()), release=release)
 
     def _describe_sync(self, table: TableRef) -> dict[str, str]:
         # The driver quotes the name it is given. Unquoted SQL folds to uppercase,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +22,7 @@ from interlace.plan.apply import apply
 from interlace.plan.differ import diff
 from interlace.project import Project
 from interlace.scheduler.completion import after_waiters, scheduled_closure, wake_after
-from interlace.scheduler.daemon import startup_apply
+from interlace.scheduler.daemon import maintenance_loop, startup_apply
 from interlace.scheduler.engine import TriggerEngine, build_triggers
 from interlace.scheduler.triggers import CronTrigger, IntervalTrigger
 from interlace.scheduler.worker import _finished_models, drain
@@ -432,3 +434,24 @@ async def test_finishing_an_upstream_enqueues_its_after(
     await apply(plan, compiled=compiled, engine=engine, state=store)
     runs = await store.list_runs()
     assert [run["flow_selector"] for run in runs] == [["mart"]]
+
+
+async def test_maintenance_loop_trims_logs_and_sweeps_streams(monkeypatch: pytest.MonkeyPatch) -> None:
+    trimmed = asyncio.Event()
+    swept = asyncio.Event()
+
+    class Store:
+        async def trim_logs(self) -> None:
+            trimmed.set()
+
+    async def sweep(*_args: object) -> None:
+        swept.set()
+
+    monkeypatch.setattr("interlace.scheduler.daemon.sweep_streams", sweep)
+    state = SimpleNamespace(store=Store(), streams={"s": object()}, stream_log=object(), engine=object())
+    task = asyncio.create_task(maintenance_loop(state))
+    await asyncio.wait_for(trimmed.wait(), 2)
+    await asyncio.wait_for(swept.wait(), 2)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task

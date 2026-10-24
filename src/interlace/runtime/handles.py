@@ -11,6 +11,7 @@ from __future__ import annotations
 import pyarrow as pa
 
 from interlace.exceptions import DefinitionError
+from interlace.readers import release_owned
 
 
 class RelationHandle:
@@ -43,6 +44,13 @@ class RelationHandle:
         if self._reader is None:
             raise DefinitionError(f"upstream {self._name!r} was already consumed")
         return self._reader.schema
+
+    def close(self) -> None:
+        """Release an upstream the model did not read."""
+        reader = self._reader
+        self._reader = None
+        if reader is not None:
+            release_owned(reader)
 
     def __repr__(self) -> str:
         return f"RelationHandle({self._name!r})"

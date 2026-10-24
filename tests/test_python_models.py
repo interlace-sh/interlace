@@ -227,6 +227,17 @@ async def test_python_model_rejects_incremental(env: tuple[DuckDBAdapter, Sqlite
         await _build(env, [RAW, windowed_model])
 
 
+async def test_an_unread_upstream_releases_its_cursor(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
+    def unused(raw: RelationHandle) -> pa.Table:
+        assert raw.schema.names
+        return pa.table({"id": [1]})
+
+    engine, _store = env
+    await _build(env, [RAW, ModelDef(name="unused", fn=unused, depends_on=("raw",))])
+    assert not engine._cursors
+    assert not engine._deferred
+
+
 async def test_handle_is_single_pass(env: tuple[DuckDBAdapter, SqliteStateStore]) -> None:
     def greedy(raw: RelationHandle) -> pa.Table:
         raw.table()

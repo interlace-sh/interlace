@@ -149,3 +149,14 @@ def test_cli_column_lineage(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "kind" in result.output
     assert "raw_events" in result.output  # traced to the upstream model
+
+
+def test_describe_cache_keeps_one_fingerprint_per_model() -> None:
+    from interlace.inspect import _remember_described
+
+    cache: dict[tuple[str, str | None], dict[str, str]] = {}
+    _remember_described(cache, "orders", "aaa", {"id": "int"})
+    _remember_described(cache, "orders", "bbb", {"id": "int", "n": "int"})
+    _remember_described(cache, "customers", "aaa", {"id": "int"})
+    assert set(cache) == {("orders", "bbb"), ("customers", "aaa")}
+    assert cache[("orders", "bbb")] == {"id": "int", "n": "int"}

@@ -27,6 +27,10 @@ from interlace.streaming.materializer import flush_streams, stream_consumers, st
 
 logger = logging.getLogger("interlace.daemon")
 
+# Control-plane logs and stream retention. scheduler_loop and the serve
+# maintenance task both use it; running both is idempotent.
+_MAINTENANCE_INTERVAL = 6 * 3600
+
 
 def source_mtime(root: Path, model_paths: list[str]) -> float:
     """Newest mtime across the config file and every model source."""
@@ -257,7 +261,7 @@ async def scheduler_loop(
             ).tick(datetime.now())
             if asyncio.get_running_loop().time() >= next_trim:
                 await state.store.trim_logs()
-                next_trim = asyncio.get_running_loop().time() + 6 * 3600
+                next_trim = asyncio.get_running_loop().time() + _MAINTENANCE_INTERVAL
             async with hold_apply_lock(state.store, owner=state.lock_owner):
                 ran = await drain(
                     state.store,
@@ -287,6 +291,23 @@ async def scheduler_loop(
             return
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(state.drain_wanted.wait(), timeout=interval)
+
+
+async def maintenance_loop(state: Any) -> None:
+    """Trim the control-plane log and sweep stream retention.
+
+    ``interlace serve`` runs this whether or not the scheduler is on.
+    ``scheduler_loop`` does the same work; both calls are idempotent.
+    Streams with no retention are left untouched.
+    """
+    while True:
+        try:
+            await state.store.trim_logs()
+            if getattr(state, "streams", None):
+                await sweep_streams(state.streams.values(), state.stream_log, state.engine)
+        except Exception:
+            logger.exception("log maintenance failed; retrying")
+        await asyncio.sleep(_MAINTENANCE_INTERVAL)
 
 
 async def cdc_loop(state: Any) -> None:

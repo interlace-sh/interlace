@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import gc
+import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -230,6 +233,72 @@ async def test_fetch_closes_its_cursor_when_the_stream_ends() -> None:
     assert conn.log == [], "cursor closed before the stream was read"
     assert reader.read_all().num_rows == 5
     assert conn.log == ["closed"], "exhausting the stream must close the cursor"
+
+
+def test_close_releases_an_unread_reader() -> None:
+    """A reader still open at shutdown must not keep the connection busy."""
+    engine = DuckDBAdapter.in_memory()
+    engine.execute_sync("CREATE TABLE t AS SELECT 1 AS i")
+    reader = engine.fetch_sync("SELECT * FROM t")
+    assert engine._cursors
+    engine.close()
+    assert not engine._cursors
+    assert not engine._deferred
+    del reader
+
+
+def test_dropping_an_unread_reader_defers_its_cursor() -> None:
+    """Dropping a reader must not close the cursor on the garbage-collection thread."""
+    engine = DuckDBAdapter.in_memory()
+    try:
+        engine.execute_sync("CREATE TABLE t AS SELECT 1 AS i")
+        reader = engine.fetch_sync("SELECT * FROM t")
+        del reader
+        gc.collect()
+        assert not engine._cursors
+        assert engine._deferred
+        engine.execute_sync("SELECT 1")
+        assert not engine._deferred
+    finally:
+        engine.close()
+
+
+def test_ducklake_fetch_spills_one_batch_and_releases_the_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scan holds the catalog lock. The caller reads a file, not a live cursor."""
+    paths: list[str] = []
+    real = tempfile.mkstemp
+
+    def wrapped(suffix: str = "", prefix: str = "", dir: str | None = None, text: bool = False) -> tuple[int, str]:
+        found = real(suffix=suffix, prefix=prefix, dir=dir, text=text)
+        paths.append(found[1])
+        return found
+
+    monkeypatch.setattr("interlace.engines.duckdb.tempfile.mkstemp", wrapped)
+    engine = DuckDBAdapter(duckdb.connect(":memory:"), serialise_writes=True)
+    try:
+        engine.execute_sync("CREATE TABLE t AS SELECT i FROM range(3) t(i)")
+        reader = engine.fetch_sync("SELECT * FROM t")
+        assert not engine._cursors
+        assert paths and os.path.exists(paths[0])
+        engine.execute_sync("CREATE TABLE u AS SELECT 1 AS x")
+        table = reader.read_all()
+        assert table.num_rows == 3
+        assert table.column_names == ["i"]
+        assert not os.path.exists(paths[0])
+
+        empty = engine.fetch_sync("SELECT * FROM t WHERE false")
+        assert empty.schema.names == ["i"]
+        assert empty.read_all().num_rows == 0
+        assert not os.path.exists(paths[-1])
+
+        abandoned = engine.fetch_sync("SELECT * FROM t")
+        spilled = paths[-1]
+        assert os.path.exists(spilled)
+        del abandoned
+        gc.collect()
+        assert not os.path.exists(spilled)
+    finally:
+        engine.close()
 
 
 async def test_sandboxed_fetch_does_not_disable_file_writes(tmp_path: Path) -> None:

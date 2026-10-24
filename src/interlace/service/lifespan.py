@@ -1,8 +1,8 @@
 """Process lifetime for ``interlace serve``.
 
 Opens the project, warehouse, control plane, and stream log, then supervises
-the event tail, flusher, scheduler, and CDC loop. Route registration stays in
-``app.py``.
+the event tail, flusher, scheduler, log maintenance, and CDC loop. Route
+registration stays in ``app.py``.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from interlace.scheduler.daemon import (
     cdc_loop,
     flush_once,
     flusher_loop,
+    maintenance_loop,
     remember_runtime,
     scheduler_loop,
     source_mtime,
@@ -209,6 +210,9 @@ def project_lifespan(  # noqa: C901
 
         tail_task = asyncio.create_task(event_tail())
         watch_task = asyncio.create_task(shutdown_watch())
+        # Trim and stream retention run even when the scheduler is off.
+        # The scheduler loop does this too; both are idempotent.
+        maintenance_task = asyncio.create_task(maintenance_loop(app.state))
         service_task = asyncio.create_task(open_service())
         try:
             yield
@@ -228,7 +232,7 @@ def project_lifespan(  # noqa: C901
             service_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await service_task
-            for task in (cdc_task, loop_task, flusher_task, tail_task, watch_task):
+            for task in (cdc_task, loop_task, flusher_task, maintenance_task, tail_task, watch_task):
                 if task is not None:
                     task.cancel()
                     # suppress Exception too: a task that already died must not

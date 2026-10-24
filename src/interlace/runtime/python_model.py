@@ -39,6 +39,7 @@ from interlace.exceptions import DefinitionError, PlanError
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.relation import TableRef
 from interlace.plan.resolve import resolve_model_query
+from interlace.readers import release_owned
 from interlace.runtime.handles import RelationHandle
 
 RESERVED_PARAMS = frozenset({"cursor", "this"})
@@ -118,7 +119,10 @@ async def _cursor_value(model: CompiledModel, engine: EngineAdapter, previous: T
         return None
     query = exp.select(exp.func("max", exp.column(model.cursor))).from_(previous.to_expr())
     reader = await engine.fetch(query)
-    value = reader.read_all().column(0)[0]
+    try:
+        value = reader.read_all().column(0)[0]
+    finally:
+        release_owned(reader)
     return value.as_py()
 
 
@@ -155,25 +159,34 @@ async def run_python_model(
         )
 
     arguments: dict[str, Any] = {}
-    for param in parameters:
-        if param == "cursor":
-            arguments[param] = await _cursor_value(model, engine, previous)
-        elif param == "this":
-            arguments[param] = (
-                RelationHandle(model.name, await engine.fetch(_table_query(previous))) if previous else None
-            )
-        else:
-            dependency = spellings[param]
-            upstream = compiled.models[dependency]
-            arguments[param] = RelationHandle(dependency, await _upstream_reader(upstream, compiled, engine, physical))
+    handles: list[RelationHandle] = []
+    try:
+        for param in parameters:
+            if param == "cursor":
+                arguments[param] = await _cursor_value(model, engine, previous)
+            elif param == "this":
+                if previous is None:
+                    arguments[param] = None
+                else:
+                    handle = RelationHandle(model.name, await engine.fetch(_table_query(previous)))
+                    handles.append(handle)
+                    arguments[param] = handle
+            else:
+                dependency = spellings[param]
+                upstream = compiled.models[dependency]
+                handle = RelationHandle(dependency, await _upstream_reader(upstream, compiled, engine, physical))
+                handles.append(handle)
+                arguments[param] = handle
 
-    with registering(model.name):
-        if inspect.iscoroutinefunction(model.fn):
-            result = await model.fn(**arguments)
-        else:
-            result = await asyncio.to_thread(model.fn, **arguments)
-
-    return _to_reader(model.name, result)
+        with registering(model.name):
+            if inspect.iscoroutinefunction(model.fn):
+                result = await model.fn(**arguments)
+            else:
+                result = await asyncio.to_thread(model.fn, **arguments)
+        return _to_reader(model.name, result)
+    finally:
+        for handle in handles:
+            handle.close()
 
 
 async def build_python_model(

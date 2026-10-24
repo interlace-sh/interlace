@@ -353,6 +353,18 @@ async def described_outputs(
         if not columns:
             continue
         if cache is not None:
-            cache[key] = columns
+            _remember_described(cache, name, fingerprint, columns)
         described[name] = columns
     return described
+
+
+def _remember_described(
+    cache: dict[tuple[str, str | None], dict[str, str]],
+    name: str,
+    fingerprint: str | None,
+    columns: dict[str, str],
+) -> None:
+    """Keep one description per model. A new fingerprint replaces the previous one."""
+    for stale in [key for key in cache if key[0] == name]:
+        del cache[stale]
+    cache[(name, fingerprint)] = columns

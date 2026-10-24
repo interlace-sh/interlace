@@ -92,3 +92,13 @@ def test_snowflake_and_bigquery_connect_need_their_extra(monkeypatch: pytest.Mon
         SnowflakeAdapter.connect("user:pw@account/db/schema")
     with pytest.raises(ConfigurationError, match="adbc-bigquery"):
         BigQueryAdapter.connect("my-gcp-project")
+
+
+def test_snowflake_fetch_folds_names_a_batch_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    batch = pa.record_batch([pa.array([1])], names=["AMOUNT"])
+    source = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+    monkeypatch.setattr("interlace.engines.adbc.AdbcAdapter._fetch_sync", lambda self, sql: source)
+    adapter = SnowflakeAdapter.__new__(SnowflakeAdapter)
+    table = adapter._fetch_sync("select amount").read_all()
+    assert table.column_names == ["amount"]
+    assert table.column("amount")[0].as_py() == 1

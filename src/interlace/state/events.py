@@ -7,6 +7,7 @@ import os
 
 from interlace.state.codec import _now_iso, _stamp_actor
 from interlace.state.conn import ControlDb
+from interlace.state.dialect import json_field
 
 
 class EventLogStore:
@@ -47,9 +48,10 @@ class EventLogStore:
 
     def _events_for_run_sync(self, run_id: int) -> list[dict[str, object]]:
         with self._db.lock:
+            run_id_text = json_field("payload", "run", dialect=self._db.dialect)
             rows = self._db.conn.execute(
                 "SELECT seq, ts, type, entity, payload FROM event_log "
-                "WHERE CAST(json_extract(payload, '$.run') AS TEXT) = ? ORDER BY seq",
+                f"WHERE CAST({run_id_text} AS TEXT) = ? ORDER BY seq",
                 (str(run_id),),
             ).fetchall()
         return [self._event_row(row) for row in rows]

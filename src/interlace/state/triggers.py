@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from interlace.state.conn import ControlDb
+from interlace.state.dialect import upsert
 
 
 class TriggerStore:
@@ -29,7 +30,7 @@ class TriggerStore:
     def _set_trigger_last_fired_sync(self, trigger_id: str, when: datetime) -> None:
         with self._db.lock:
             self._db.conn.execute(
-                "INSERT OR REPLACE INTO trigger_state (trigger_id, last_fired_at) VALUES (?, ?)",
+                upsert("trigger_state", ("trigger_id", "last_fired_at"), ("trigger_id",), dialect=self._db.dialect),
                 (trigger_id, when.isoformat()),
             )
             self._db.conn.commit()

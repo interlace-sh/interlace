@@ -8,6 +8,7 @@ only callers.
 from __future__ import annotations
 
 from interlace.state.conn import ControlDb
+from interlace.state.dialect import upsert
 
 
 class CdcWatermarks:
@@ -32,7 +33,9 @@ class CdcWatermarks:
     def _cdc_note_pending_sync(self, stream: str, rows: list[tuple[int, str]]) -> None:
         with self._db.lock:
             self._db.conn.executemany(
-                "INSERT OR REPLACE INTO cdc_pending (stream, log_offset, lsn) VALUES (?, ?, ?)",
+                upsert(
+                    "cdc_pending", ("stream", "log_offset", "lsn"), ("stream", "log_offset"), dialect=self._db.dialect
+                ),
                 [(stream, offset, lsn) for offset, lsn in rows],
             )
             self._db.conn.commit()
@@ -59,7 +62,7 @@ class CdcWatermarks:
                 (stream, watermark),
             )
             self._db.conn.execute(
-                "INSERT OR REPLACE INTO cdc_confirmed (stream, lsn) VALUES (?, ?)",
+                upsert("cdc_confirmed", ("stream", "lsn"), ("stream",), dialect=self._db.dialect),
                 (stream, lsn),
             )
             self._db.conn.commit()

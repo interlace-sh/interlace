@@ -13,6 +13,7 @@ from interlace.state.codec import (
     _snapshot_to_row,
 )
 from interlace.state.conn import ControlDb
+from interlace.state.dialect import insert_ignore, upsert
 from interlace.state.interval import Interval, IntervalSet
 from interlace.state.snapshot import Snapshot
 
@@ -29,11 +30,26 @@ class SnapshotStore:
     def _add_snapshot_sync(self, snapshot: Snapshot) -> None:
         with self._db.lock:
             self._db.conn.execute(
-                "INSERT OR REPLACE INTO snapshots "
-                "(name, fingerprint, local_fingerprint, metadata_hash, definition_sql, physical_catalog, "
-                " physical_schema, physical_name, change_category, created_at, engine, physical_hash, "
-                " physical_objects) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                upsert(
+                    "snapshots",
+                    (
+                        "name",
+                        "fingerprint",
+                        "local_fingerprint",
+                        "metadata_hash",
+                        "definition_sql",
+                        "physical_catalog",
+                        "physical_schema",
+                        "physical_name",
+                        "change_category",
+                        "created_at",
+                        "engine",
+                        "physical_hash",
+                        "physical_objects",
+                    ),
+                    ("name", "fingerprint"),
+                    dialect=self._db.dialect,
+                ),
                 _snapshot_to_row(snapshot),
             )
             self._db.conn.execute(
@@ -184,7 +200,11 @@ class SnapshotStore:
     def _record_interval_sync(self, name: str, fingerprint: str, interval: Interval) -> None:
         with self._db.lock:
             self._db.conn.execute(
-                "INSERT OR IGNORE INTO intervals (name, fingerprint, start_ts, end_ts) VALUES (?, ?, ?, ?)",
+                insert_ignore(
+                    "intervals",
+                    ("name", "fingerprint", "start_ts", "end_ts"),
+                    dialect=self._db.dialect,
+                ),
                 (name, fingerprint, interval.start.isoformat(), interval.end.isoformat()),
             )
             self._db.conn.commit()
@@ -248,8 +268,12 @@ class SnapshotStore:
                 changed = [(environment, m, fp, now) for m, fp in mapping.items() if current.get(m) != fp]
                 if changed:
                     self._db.conn.executemany(
-                        "INSERT OR REPLACE INTO environments (environment, model_name, fingerprint, promoted_at) "
-                        "VALUES (?, ?, ?, ?)",
+                        upsert(
+                            "environments",
+                            ("environment", "model_name", "fingerprint", "promoted_at"),
+                            ("environment", "model_name"),
+                            dialect=self._db.dialect,
+                        ),
                         changed,
                     )
                 resulting = dict(mapping) if replace else {**current, **mapping}

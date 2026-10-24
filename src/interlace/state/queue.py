@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from interlace.state.codec import QueuedRun, RunRecord, _now_iso
 from interlace.state.conn import ControlDb
+from interlace.state.dialect import insert_ignore, json_field
 
 
 class WorkQueue:
@@ -46,9 +47,19 @@ class WorkQueue:
     ) -> bool:
         with self._db.lock:
             cursor = self._db.conn.execute(
-                "INSERT OR IGNORE INTO work_queue "
-                "(idempotency_key, flow_selector, partition_start, partition_end, priority, enqueued_at, restate) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                insert_ignore(
+                    "work_queue",
+                    (
+                        "idempotency_key",
+                        "flow_selector",
+                        "partition_start",
+                        "partition_end",
+                        "priority",
+                        "enqueued_at",
+                        "restate",
+                    ),
+                    dialect=self._db.dialect,
+                ),
                 (
                     idempotency_key or None,
                     json.dumps(flow_selector),
@@ -270,7 +281,7 @@ class WorkQueue:
                 "  (SELECT ts FROM event_log e WHERE e.entity = CAST(work_queue.id AS TEXT) "
                 "     AND e.type IN ('run.succeeded', 'run.failed', 'run.cancelled') "
                 "     ORDER BY e.seq DESC LIMIT 1) AS finished_at, "
-                "  (SELECT json_extract(e.payload, '$.environment') FROM event_log e "
+                f"  (SELECT {json_field('e.payload', 'environment', dialect=self._db.dialect)} FROM event_log e "
                 "     WHERE e.entity = CAST(work_queue.id AS TEXT) AND e.type = 'run.succeeded' "
                 "     ORDER BY e.seq DESC LIMIT 1) AS environment "
                 "FROM work_queue ORDER BY id DESC LIMIT ?",

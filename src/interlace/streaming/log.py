@@ -26,6 +26,7 @@ from uuid import uuid4
 
 from interlace.exceptions import StreamError
 from interlace.state.conn import ConnLike
+from interlace.state.dialect import insert_ignore, upsert
 
 
 @dataclass(frozen=True)
@@ -164,8 +165,9 @@ class SqliteStreamLog:
     is a partial unique index — transactional by construction.
     """
 
-    def __init__(self, connection: ConnLike) -> None:
+    def __init__(self, connection: ConnLike, *, dialect: str = "sqlite") -> None:
         self._conn = connection
+        self._dialect = dialect
         self._lock = threading.Lock()
         # Waiting reads block on an Event. Append bumps the generation and wakes
         # them, so a tail does not poll. The generation check closes the gap
@@ -183,7 +185,7 @@ class SqliteStreamLog:
     async def open_postgres(cls, dsn: str, *, schema: str = "interlace_streams") -> SqliteStreamLog:
         """Same log, on a Postgres schema. ``schema`` is created if missing."""
         conn = await asyncio.to_thread(_open_postgres_log, dsn, schema)
-        return cls(conn)
+        return cls(conn, dialect="postgres")
 
     @staticmethod
     def _connect(path: str) -> sqlite3.Connection:
@@ -220,8 +222,11 @@ class SqliteStreamLog:
                 offset = int(row["next_offset"]) if row else 1
                 for event in events:
                     cursor = self._conn.execute(
-                        'INSERT OR IGNORE INTO stream_events (stream, "offset", ts, key, headers, payload) '
-                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        insert_ignore(
+                            "stream_events",
+                            ("stream", '"offset"', "ts", "key", "headers", "payload"),
+                            dialect=self._dialect,
+                        ),
                         (
                             stream,
                             offset,
@@ -243,7 +248,8 @@ class SqliteStreamLog:
                         offsets.append(int(seen["offset"]) if seen else 0)
                         deduped.append(True)
                 self._conn.execute(
-                    "INSERT OR REPLACE INTO stream_heads (stream, next_offset) VALUES (?, ?)", (stream, offset)
+                    upsert("stream_heads", ("stream", "next_offset"), ("stream",), dialect=self._dialect),
+                    (stream, offset),
                 )
                 self._conn.commit()  # durable before the publisher sees 200
                 if any(not flag for flag in deduped):

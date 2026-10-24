@@ -211,22 +211,26 @@ writes so `interlace serve` and a separate CLI can share one warehouse — which
 strategy surface — schemas, views, transactional DDL+DML (merge), `DESCRIBE`, Arrow ingest —
 runs identically on plain DuckDB and on DuckLake (`ducklake:…` — a catalog file +
 `<catalog>.files/` Parquet directory DuckDB opens as its primary database); the whole test
-suite executes against DuckDB. Requires `duckdb>=1.5.3`.
+suite executes against DuckDB. Requires `duckdb>=2.0,<3`. A new file cannot be opened
+by an older DuckDB. A file an older DuckDB wrote still opens, and stays in that format.
 
-**Serving the warehouse: the quack protocol.** DuckDB 1.5.3 ships **quack** (core
-extension, beta): `CALL quack_serve('quack:host:port', token := ...)` turns the process
+**Serving the warehouse: the quack protocol.** quack is a core
+extension: `CALL quack_serve('quack:host:port', token := ...)` turns the process
 holding the warehouse into a server; clients speak the same SQL over HTTP. This is how
 interlace solves **single-node multi-process access** *before* any shared-Postgres tier:
 the daemon (`interlace serve --quack quack:localhost:4213`) owns the DuckLake and serves
 it; CLI runs, schedulers, and ad-hoc DuckDB clients set `database: quack:localhost:4213`
 (token via `quack_token` config or `INTERLACE_QUACK_TOKEN`) and share it concurrently.
-The `QuackAdapter` ships each statement through the `quack_query` table function (full
-SQL pass-through with Arrow results — quack's catalog `ATTACH` only resolves the
-server's main schema while in beta), sends multi-statement plans as one `BEGIN…COMMIT`
-payload so they stay atomic server-side, and routes Arrow loads through the attached
-remote catalog. Verified end-to-end: a second OS process ran `interlace apply` through
-quack while the daemon held the DuckLake catalog lock. When quack's catalog mapping
-matures, the adapter can switch to native `ATTACH` without touching callers.
+The `QuackAdapter` ships each statement through the `quack_query` table function and
+sends multi-statement plans as one `BEGIN…COMMIT` payload so they stay atomic
+server-side. Arrow loads go through the attached remote catalog, which resolves
+schema-qualified names outside `main`. Verified end-to-end: a second OS process ran
+`interlace apply` through quack while the daemon held the DuckLake catalog lock.
+
+Each call uses its own cursor. A second thread on a busy connection raises
+`ResourceInUseException`, and `interrupt()` cancels those cursors — interrupting the
+parent connection leaves the query running. Arrow reads use
+`cursor.sql(...).to_arrow_reader()`.
 
 **Role 2 — the federation/transport hub (multi-engine).** Named engines: `engines:`
 config + `default_engine` (top-level warehouse fields synthesise `default`); `engine:`
@@ -724,7 +728,7 @@ src/interlace/
 | Package | Constraint | Why |
 |---|---|---|
 | `sqlglot` | `>=30.0,<31.0` | Canonical IR, transpilation, qualification/type annotation, semantic diff, column lineage. The single most load-bearing dep. |
-| `duckdb` | `>=1.5.3` | Default engine, federation hub, DuckLake, quack serving. |
+| `duckdb` | `>=2.0,<3` | Default engine, federation hub, DuckLake, quack serving. |
 | `pyarrow` | `>=17.0` | The wire format; RecordBatchReader everywhere. |
 | `pydantic` v2 | `>=2.5,<3.0` | Config + manifest validation only (cold paths). |
 | `typer` | `>=0.12,<1.0` | CLI. |

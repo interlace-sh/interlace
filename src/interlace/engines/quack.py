@@ -2,12 +2,11 @@
 
 Connects to a warehouse served by ``interlace serve --quack`` (or any
 ``CALL quack_serve(...)``). Every statement is shipped to the server via the
-``quack_query`` table function — full SQL pass-through with results streamed
-back as Arrow — because quack's catalog ATTACH only resolves the server's main
-schema while the protocol is in beta. Arrow loads go through the attached
-remote catalog (DDL resolves schema-qualified names correctly over the wire).
-Multi-statement plans are sent as one BEGIN/COMMIT payload so they stay atomic
-server-side. Requires DuckDB >= 1.5.3 (quack is a core extension there).
+``quack_query`` table function, and a multi-statement plan is one
+``BEGIN``/``COMMIT`` payload so the server applies it as a single transaction.
+``ATTACH`` resolves schema-qualified names outside ``main``; loads use that
+attached catalog. Queries stay on ``quack_query`` so the transactional payload
+has one place to live. quack is a core extension.
 """
 
 from __future__ import annotations
@@ -55,14 +54,14 @@ class QuackAdapter(DuckDBAdapter):
         return cur.execute("FROM quack_query(?, ?)", [self._uri, sql])
 
     def _execute_sync(self, sql: str) -> None:
-        cur = self._conn.cursor()
+        cur = self._cursor()
         try:
             self._remote_sync(cur, sql)
         except Exception as exc:
             note_statement(exc, sql)
             raise
         finally:
-            cur.close()
+            self._close_cursor(cur)
 
     def _execute_all_sync(self, sqls: list[str]) -> list[int]:
         # One payload, transactional server-side; quack executes it as a unit —
@@ -74,39 +73,47 @@ class QuackAdapter(DuckDBAdapter):
         # `sandboxed` can't be honoured over the wire (the query runs on the remote
         # quack server, its own trust boundary); the console's parse-time deny-list
         # is the fence for quack-backed warehouses.
-        cur = self._conn.cursor()
-        return self._remote_sync(cur, sql).to_arrow_reader()
+        cur = self._cursor()
+        try:
+            # A relation streams. execute().to_arrow_reader() copies the rows and warns.
+            reader = cur.sql("FROM quack_query(?, ?)", params=[self._uri, sql]).to_arrow_reader()
+        except Exception:
+            self._close_cursor(cur)
+            raise
+        return self._stream_reader(cur, reader)
 
     def _load_sync(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
         # Register the reader locally; schema-qualified DDL against the attached
         # remote catalog streams the batches over the wire. The attach caches the
         # remote catalog, so refresh it to see schemas created since we connected.
-        cur = self._conn.cursor()
-        cur.execute("CALL quack_clear_cache()")
-        src = f"__interlace_src_{uuid4().hex}"
-        cur.register(src, reader)
+        cur = self._cursor()
         try:
-            target = exp.table_(table.name, db=table.schema, catalog=_REMOTE).sql(dialect=self.dialect)
-            if mode == "create":
-                cur.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}")
-            else:
-                cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
-            rows = cur.fetchall()
-            return int(rows[0][0]) if rows and rows[0] and isinstance(rows[0][0], int) else 0
+            cur.execute("CALL quack_clear_cache()")
+            src = f"__interlace_src_{uuid4().hex}"
+            cur.register(src, reader)
+            try:
+                target = exp.table_(table.name, db=table.schema, catalog=_REMOTE).sql(dialect=self.dialect)
+                if mode == "create":
+                    cur.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}")
+                else:
+                    cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
+                rows = cur.fetchall()
+                return int(rows[0][0]) if rows and rows[0] and isinstance(rows[0][0], int) else 0
+            finally:
+                cur.unregister(src)
         finally:
-            cur.unregister(src)
-            cur.close()
+            self._close_cursor(cur)
 
     def _table_exists_sync(self, table: TableRef) -> bool:
         sql = (
             "SELECT count(*) FROM information_schema.tables "
             f"WHERE table_schema = {sql_literal(table.schema)} AND table_name = {sql_literal(table.name)}"
         )
-        cur = self._conn.cursor()
+        cur = self._cursor()
         try:
             row = self._remote_sync(cur, sql).fetchone()
         finally:
-            cur.close()
+            self._close_cursor(cur)
         return bool(row and row[0])
 
     def _describe_sync(self, table: TableRef) -> dict[str, str]:
@@ -115,9 +122,9 @@ class QuackAdapter(DuckDBAdapter):
             f"WHERE table_schema = {sql_literal(table.schema)} AND table_name = {sql_literal(table.name)} "
             "ORDER BY ordinal_position"
         )
-        cur = self._conn.cursor()
+        cur = self._cursor()
         try:
             rows = self._remote_sync(cur, sql).fetchall()
         finally:
-            cur.close()
+            self._close_cursor(cur)
         return dict(rows)

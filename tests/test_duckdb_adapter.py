@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -201,15 +203,16 @@ async def test_fetch_closes_its_cursor_when_the_stream_ends() -> None:
     whatever thread dropped the last reference while sibling cursors were mid-query.
     The cursor must be closed deterministically when the stream is exhausted."""
 
+    class RecordingRelation:
+        def to_arrow_reader(self, *args: object) -> pa.RecordBatchReader:
+            return pa.table({"i": [1, 2, 3, 4, 5]}).to_reader()
+
     class RecordingCursor:
         def __init__(self, log: list[str]) -> None:
             self.log = log
 
-        def execute(self, sql: str, *args: object) -> RecordingCursor:
-            return self
-
-        def to_arrow_reader(self, *args: object) -> pa.RecordBatchReader:
-            return pa.table({"i": [1, 2, 3, 4, 5]}).to_reader()
+        def sql(self, sql: str, *args: object, **kwargs: object) -> RecordingRelation:
+            return RecordingRelation()
 
         def close(self) -> None:
             self.log.append("closed")
@@ -288,15 +291,15 @@ def test_lock_error_helper_reraises_other_io_errors() -> None:
 def test_created_tables_keeps_a_named_schema() -> None:
     """The placement guard only fires for a CREATE that names its schema. The merge
     path's ``CREATE TABLE IF NOT EXISTS schema.table AS …`` is the one DuckLake loses."""
-    from interlace.engines.duckdb import _created_tables
+    from interlace.engines.placement import created_relations
 
     sql = (
         "CREATE TABLE IF NOT EXISTS interlace__raw.assets__abc "
         "AS SELECT * FROM interlace__raw.assets__abc__stage AS _s LIMIT 0"
     )
-    assert _created_tables(sql) == [("interlace__raw", "assets__abc", "TABLE")]
-    assert _created_tables("BEGIN") == []
-    assert _created_tables("CREATE TABLE t AS SELECT 1") == []
+    assert created_relations(sql) == [("interlace__raw", "assets__abc", "TABLE")]
+    assert created_relations("BEGIN") == []
+    assert created_relations("CREATE TABLE t AS SELECT 1") == []
 
 
 async def test_ducklake_qualified_create_stays_in_its_schema(tmp_path: Path) -> None:
@@ -324,7 +327,11 @@ async def test_ducklake_create_is_catalog_qualified(tmp_path: Path) -> None:
     resolves through the default schema when the qualifier is dropped."""
     adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
     try:
-        pinned = adapter._pin_create_catalog("CREATE TABLE IF NOT EXISTS interlace__raw.assets__abc AS SELECT 1 AS a")
+        from interlace.engines.placement import pin_catalog
+
+        pinned = pin_catalog(
+            "CREATE TABLE IF NOT EXISTS interlace__raw.assets__abc AS SELECT 1 AS a", adapter._catalog_alias
+        )
         assert pinned.startswith("CREATE TABLE IF NOT EXISTS warehouse.interlace__raw.assets__abc")
     finally:
         adapter.close()
@@ -333,7 +340,7 @@ async def test_ducklake_create_is_catalog_qualified(tmp_path: Path) -> None:
 async def test_ducklake_refuses_a_table_created_in_main(tmp_path: Path) -> None:
     """A CREATE that DuckLake files under ``main`` is not copied into the named schema.
     The statement rolls back, so the empty schema name never commits."""
-    from interlace.engines.duckdb import CatalogPlacementError, _ensure_placed
+    from interlace.engines.placement import CatalogPlacementError, confirm_placed
 
     adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
     try:
@@ -343,7 +350,7 @@ async def test_ducklake_refuses_a_table_created_in_main(tmp_path: Path) -> None:
             cur.execute("BEGIN")
             cur.execute("CREATE TABLE main.assets__abc AS SELECT 1 AS a")
             with pytest.raises(CatalogPlacementError):
-                _ensure_placed(cur, "interlace__raw", "assets__abc")
+                confirm_placed(cur, "interlace__raw", "assets__abc", kind="TABLE")
             cur.execute("ROLLBACK")
         finally:
             cur.close()
@@ -364,7 +371,7 @@ async def test_ducklake_refuses_a_table_created_in_main(tmp_path: Path) -> None:
 async def test_ducklake_drops_a_leftover_main_copy(tmp_path: Path) -> None:
     """Once the named schema has the table, a same-named copy in main is the bug's
     leftover (the failed SEI rebuild left one there) and is dropped."""
-    from interlace.engines.duckdb import _ensure_placed
+    from interlace.engines.placement import confirm_placed
 
     adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
     try:
@@ -374,7 +381,7 @@ async def test_ducklake_drops_a_leftover_main_copy(tmp_path: Path) -> None:
             cur.execute("BEGIN")
             cur.execute("CREATE TABLE interlace__raw.assets__abc AS SELECT 2 AS a")
             cur.execute("CREATE TABLE main.assets__abc AS SELECT 1 AS a")
-            _ensure_placed(cur, "interlace__raw", "assets__abc")
+            confirm_placed(cur, "interlace__raw", "assets__abc", kind="TABLE")
             cur.execute("COMMIT")
         finally:
             cur.close()
@@ -397,7 +404,7 @@ async def test_ducklake_drops_a_leftover_main_copy(tmp_path: Path) -> None:
 async def test_ducklake_placement_failure_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A CREATE we cannot put in its schema must not commit. The snapshot would otherwise
     name a table that only exists under ``main``."""
-    from interlace.engines.duckdb import CatalogPlacementError
+    from interlace.engines.placement import CatalogPlacementError
 
     adapter = DuckDBAdapter.connect_ducklake(str(tmp_path / "wh.ducklake"))
     try:
@@ -406,7 +413,7 @@ async def test_ducklake_placement_failure_rolls_back(tmp_path: Path, monkeypatch
         def boom(_cur: object, _schema: str, _name: str, **_kwargs: object) -> None:
             raise CatalogPlacementError("forced")
 
-        monkeypatch.setattr("interlace.engines.duckdb._ensure_placed", boom)
+        monkeypatch.setattr("interlace.engines.placement.confirm_placed", boom)
         create = sqlglot.parse_one("CREATE TABLE interlace__raw.assets__abc AS SELECT 1 AS a", read="duckdb")
         with pytest.raises(CatalogPlacementError):
             await adapter.execute_all([create])
@@ -439,3 +446,41 @@ async def test_ducklake_fetch_then_load_does_not_deadlock(tmp_path: Path) -> Non
         assert got == [{"a": 1}]
     finally:
         adapter.close()
+
+
+def test_fetch_streams_arrow_without_the_copy_warning(adapter: DuckDBAdapter) -> None:
+    """Arrow taken from an execute() result copies the rows and warns."""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rows = adapter.fetch_sync("SELECT 1 AS x").read_all().to_pylist()
+    assert rows == [{"x": 1}]
+    assert not [item for item in caught if issubclass(item.category, UserWarning)]
+
+
+def test_interrupt_cancels_a_cursor_query() -> None:
+    """connection.interrupt() leaves a cursor query running. The adapter has to
+    interrupt the cursor the statement is actually on."""
+    engine = DuckDBAdapter.in_memory()
+    errors: list[Exception] = []
+
+    def work() -> None:
+        try:
+            engine.execute_sync("SELECT sum(hash(i)) FROM range(2000000000) t(i)")
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not engine._cursors:
+        time.sleep(0.01)
+    # The cursor is registered before execute() enters the scan. An interrupt in
+    # that gap is a no-op, so wait until the scan is actually running.
+    time.sleep(0.05)
+    engine.interrupt()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert errors and isinstance(errors[0], duckdb.InterruptException)
+    engine.close()

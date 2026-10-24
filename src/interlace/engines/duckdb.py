@@ -5,7 +5,10 @@ Everything crosses the boundary as Arrow: :meth:`fetch` streams results as a
 an Arrow reader and writes it with one ``CREATE TABLE AS`` / ``INSERT``. Blocking
 DuckDB calls run in a worker thread; each call uses its own ``cursor()`` so reads
 proceed concurrently (DuckDB MVCC), while the DAG guarantees no two tasks write
-the same table at once.
+the same table at once. A second thread on a busy connection raises
+``ResourceInUseException``, so the cursor per call is required. ``interrupt()``
+has to reach those cursors: interrupting the parent connection does not cancel a
+query running on one.
 
 On **DuckLake** connections every cursor — reads included — is serialised on
 ``_write_lock``. DuckLake's catalog layer is not safe against sibling cursors of
@@ -13,11 +16,9 @@ one DatabaseInstance: under parallel builds a ``CREATE TABLE <schema>.<name>``
 intermittently commits with an empty schema name and lands in the catalog's
 default schema (``main``), silently. Serialising writes alone does not stop it;
 a read cursor open across the commit is enough. Reads are materialised inside
-the lock so that cursor is closed first. On an attached catalog the CREATE is
-rewritten to ``catalog.schema.table`` so the schema is part of the name, not
-resolved through the default schema. If the table still is not in the schema the
-statement named, the transaction is rolled back and retried — it is not kept
-and copied out of ``main``.
+the lock so that cursor is closed first. Placement — pinning the catalog name,
+confirming the schema, and retrying a miss — lives in
+:mod:`interlace.engines.placement` and runs only on these connections.
 
 Plain DuckDB catalogs don't have that bug, and the DAG already guarantees no
 two tasks write the same table — so there the "lock" is a no-op context and
@@ -38,11 +39,17 @@ from uuid import uuid4
 
 import duckdb
 import pyarrow as pa
-import sqlglot
 import tenacity
 from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement, relation_is_absent
+from interlace.engines.placement import (
+    CatalogPlacementError,
+    confirm_statement,
+    drop_misplaced,
+    pin_catalog,
+    retry_placement,
+)
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
 
@@ -116,89 +123,6 @@ def _affected(cur: duckdb.DuckDBPyConnection) -> int:
         return 0
 
 
-class CatalogPlacementError(Exception):
-    """DuckLake committed a CREATE under a schema other than the one the statement named.
-
-    A plain Exception, not an :class:`~interlace.exceptions.InterlaceError`: the scheduler
-    wraps those as ``model '…' failed: …`` and does not record the snapshot.
-    """
-
-
-def _qualified(schema: str, name: str) -> str:
-    return f"{exp.to_identifier(schema).sql(dialect='duckdb')}.{exp.to_identifier(name).sql(dialect='duckdb')}"
-
-
-def _created_tables(sql: str) -> list[tuple[str, str, str]]:
-    """``(schema, name, kind)`` for a CREATE TABLE/VIEW that names a schema. Empty when the
-    statement is not one, or names no schema — an unqualified create cannot be told
-    apart from the DuckLake bug that drops the schema."""
-    try:
-        expression = sqlglot.parse_one(sql, read="duckdb")
-    except Exception:
-        return []
-    if not isinstance(expression, exp.Create):
-        return []
-    kind = str(expression.args.get("kind") or "").upper()
-    if kind not in {"TABLE", "VIEW"}:
-        return []
-    target = expression.this
-    if isinstance(target, exp.Schema):
-        target = target.this
-    if not isinstance(target, exp.Table) or not target.db or not target.name:
-        return []
-    return [(target.db, target.name, kind)]
-
-
-def _placed_schemas(cur: duckdb.DuckDBPyConnection, name: str, *, kind: str) -> set[str]:
-    """Schemas in the current catalog that hold this table, or this view — not both.
-
-    Environment views share a short name (``main.a`` and ``dev__main.a``). Mixing the
-    two types made a view promotion look like the DuckLake bug and drop the other view.
-    """
-    table_type = "VIEW" if kind == "VIEW" else "BASE TABLE"
-    rows = cur.execute(
-        "SELECT table_schema FROM information_schema.tables "
-        "WHERE table_name = ? AND table_type = ? AND table_catalog = current_database()",
-        [name, table_type],
-    ).fetchall()
-    return {str(row[0]) for row in rows if row and row[0]}
-
-
-def _drop_elsewhere(cur: duckdb.DuckDBPyConnection, schema: str, name: str, *, kind: str) -> None:
-    """Drop a table copy in ``main`` left by an autocommitted CREATE. A transaction
-    rolls back instead. Views are never dropped: another environment's view may share
-    the name."""
-    if kind != "TABLE":
-        return
-    for placed in _placed_schemas(cur, name, kind=kind):
-        if placed.casefold() == "main" and placed.casefold() != schema.casefold():
-            cur.execute(f"DROP TABLE IF EXISTS {_qualified(placed, name)}")
-
-
-def _ensure_placed(cur: duckdb.DuckDBPyConnection, schema: str, name: str, *, kind: str = "TABLE") -> None:
-    """Reject a CREATE whose schema name did not survive.
-
-    DuckLake sometimes records the new table under ``main`` (an empty schema name in
-    the commit). That CREATE is wrong — copying the rows across would publish a table
-    that was born without its schema. The caller rolls the statement back and retries
-    it. A leftover *table* already in ``main`` beside one that did land in the named
-    schema is the previous occurrence of this bug and is dropped. Views are left alone.
-    """
-    if not schema or schema.casefold() == "main":
-        return
-    found = _placed_schemas(cur, name, kind=kind)
-    if any(placed.casefold() == schema.casefold() for placed in found):
-        if kind == "TABLE":
-            for placed in found:
-                if placed.casefold() == "main":
-                    cur.execute(f"DROP TABLE IF EXISTS {_qualified(placed, name)}")
-        return
-    if not found:
-        return
-    where = ", ".join(sorted(found))
-    raise CatalogPlacementError(f"DuckLake created {schema}.{name} in schema {where} with an empty schema name")
-
-
 class DuckDBAdapter(EngineAdapter):
     """Executes canonical ASTs and moves Arrow data in and out of a DuckDB database."""
 
@@ -224,7 +148,14 @@ class DuckDBAdapter(EngineAdapter):
         # re-running catalog writes here races across concurrent cursors.
         self._session_init = list(session_init)
         self._attached: list[str] = []  # aliases to DETACH on close (see close())
+        # Cursors with a statement in flight. interrupt() walks this set:
+        # connection.interrupt() does not cancel a cursor's query.
+        self._cursors: set[duckdb.DuckDBPyConnection] = set()
+        self._cursor_lock = threading.Lock()
         self.caps = _DUCKLAKE_CAPS if serialise_writes else _DUCKDB_CAPS
+        # Placement confirmation is DuckLake-only. Plain catalogs skip it, so a view
+        # promotion does not probe information_schema for a same-named table.
+        self._guard_catalog = serialise_writes
         # One cursor at a time on DuckLake (see module docstring); a no-op context
         # elsewhere so builds run in parallel. Plain Lock, not RLock: no locked
         # path calls another, and a plain Lock turns an accidental nesting into an
@@ -235,9 +166,20 @@ class DuckDBAdapter(EngineAdapter):
 
     def _cursor(self) -> duckdb.DuckDBPyConnection:
         cur = self._conn.cursor()
-        for statement in self._session_init:
-            cur.execute(statement)
+        with self._cursor_lock:
+            self._cursors.add(cur)
+        try:
+            for statement in self._session_init:
+                cur.execute(statement)
+        except Exception:
+            self._close_cursor(cur)
+            raise
         return cur
+
+    def _close_cursor(self, cur: duckdb.DuckDBPyConnection) -> None:
+        with self._cursor_lock:
+            self._cursors.discard(cur)
+        cur.close()
 
     @classmethod
     def in_memory(cls) -> DuckDBAdapter:
@@ -298,9 +240,18 @@ class DuckDBAdapter(EngineAdapter):
         self._conn.close()
 
     def interrupt(self) -> None:
-        """Cancel the currently-running statement(s) on this connection (best effort)."""
+        """Cancel the currently-running statement(s) on this connection (best effort).
+
+        Interrupting the parent connection leaves a cursor's query running, so every
+        open cursor is interrupted too.
+        """
         with contextlib.suppress(Exception):
             self._conn.interrupt()
+        with self._cursor_lock:
+            cursors = list(self._cursors)
+        for cur in cursors:
+            with contextlib.suppress(Exception):
+                cur.interrupt()
 
     def search_files_from(self, directory: str) -> None:
         """Resolve relative read paths (``read_csv_auto('seeds/x.csv')``) against
@@ -322,6 +273,7 @@ class DuckDBAdapter(EngineAdapter):
         self._attached.append(alias)
         if uri.startswith("ducklake:"):  # writes may now reach a DuckLake catalog (e.g. table sinks)
             self.caps = _DUCKLAKE_CAPS
+            self._guard_catalog = True
             if isinstance(self._write_lock, contextlib.nullcontext):
                 self._write_lock = threading.Lock()
 
@@ -405,65 +357,42 @@ class DuckDBAdapter(EngineAdapter):
 
     # --- sync workers (run in a thread) -------------------------------------
 
-    def _pin_create_catalog(self, sql: str) -> str:
-        """Write an attached DuckLake CREATE as ``catalog.schema.table``.
-
-        A two-part ``schema.table`` is resolved in the session's default schema when
-        DuckLake drops the qualifier. The catalog alias makes the schema part of the
-        name DuckLake commits.
-        """
-        alias = self._catalog_alias
-        if not alias:
-            return sql
-        try:
-            expression = sqlglot.parse_one(sql, read="duckdb")
-        except Exception:
-            return sql
-        if not isinstance(expression, exp.Create):
-            return sql
-        target = expression.this
-        if isinstance(target, exp.Schema):
-            target = target.this
-        if not isinstance(target, exp.Table) or not target.db or target.catalog:
-            return sql
-        target.set("catalog", exp.to_identifier(alias))
-        return expression.sql(dialect="duckdb")
-
-    def _guard_creates(self, cur: duckdb.DuckDBPyConnection, sql: str) -> None:
-        for schema, name, kind in _created_tables(sql):
-            _ensure_placed(cur, schema, name, kind=kind)
-
     def _execute_once(self, sql: str) -> None:
         cur = self._cursor()
         try:
             cur.execute(sql)
-            self._guard_creates(cur, sql)
+            if self._guard_catalog:
+                try:
+                    confirm_statement(cur, sql)
+                except CatalogPlacementError:
+                    # Autocommit: the empty-schema table is already stored. Drop it so the
+                    # retry creates the named schema, and so a failed retry leaves nothing in main.
+                    drop_misplaced(cur, sql)
+                    raise
         except CatalogPlacementError:
-            # Autocommit: the empty-schema table is already stored. Drop it so the
-            # retry creates the named schema, and so a failed retry leaves nothing in main.
-            for schema, name, kind in _created_tables(sql):
-                _drop_elsewhere(cur, schema, name, kind=kind)
             raise
         except Exception as exc:
             note_statement(exc, sql)
             raise
         finally:
-            cur.close()
+            self._close_cursor(cur)
 
     @_commit_retry
     def _execute_sync(self, sql: str) -> None:
-        sql = self._pin_create_catalog(sql)
+        sql = pin_catalog(sql, self._catalog_alias)
         with self._write_lock:  # may be DDL (create_schema / create_view / migrations)
-            last: CatalogPlacementError | None = None
-            for _attempt in range(3):
+            if not self._guard_catalog:
+                self._execute_once(sql)
+                return
+
+            def attempt() -> None:
                 try:
                     self._execute_once(sql)
-                    return
                 except CatalogPlacementError as exc:
                     note_statement(exc, sql)
-                    last = exc
-            assert last is not None
-            raise last
+                    raise
+
+            retry_placement(attempt)
 
     def _execute_all_once(self, sqls: list[str]) -> list[int]:
         counts: list[int] = []
@@ -476,7 +405,8 @@ class DuckDBAdapter(EngineAdapter):
                     counts.append(_affected(cur))
                     # Before COMMIT. A missing schema rolls this transaction back;
                     # the table never becomes the recorded snapshot.
-                    self._guard_creates(cur, sql)
+                    if self._guard_catalog:
+                        confirm_statement(cur, sql)
                 except Exception as exc:
                     note_statement(exc, sql)
                     raise
@@ -485,48 +415,54 @@ class DuckDBAdapter(EngineAdapter):
             cur.execute("ROLLBACK")
             raise
         finally:
-            cur.close()
+            self._close_cursor(cur)
         return counts
 
     @_commit_retry
     def _execute_all_sync(self, sqls: list[str]) -> list[int]:
-        sqls = [self._pin_create_catalog(sql) for sql in sqls]
+        sqls = [pin_catalog(sql, self._catalog_alias) for sql in sqls]
         with self._write_lock:  # a strategy's CREATE / DELETE / INSERT / DROP batch
-            last: CatalogPlacementError | None = None
-            for _attempt in range(3):
-                try:
-                    return self._execute_all_once(sqls)
-                except CatalogPlacementError as exc:
-                    last = exc
-            assert last is not None
-            raise last
+            if not self._guard_catalog:
+                return self._execute_all_once(sqls)
+            return retry_placement(lambda: self._execute_all_once(sqls))
 
     def _fetch_sync(self, sql: str) -> pa.RecordBatchReader:
         # Plain DuckDB streams: the cursor must outlive the reader, and is closed
         # when that stream ends rather than left for the GC. DuckLake cannot: a
         # cursor left open across another task's CREATE is what drops the schema,
         # so the scan is materialised inside the lock and the cursor closed first.
-        if isinstance(self._write_lock, contextlib.nullcontext):
+        if not self._guard_catalog:
             return self._stream_sync(sql)
         with self._write_lock:
             cur = self._cursor()
             try:
-                cur.execute(sql)
-                table = cur.to_arrow_reader().read_all()
+                table = self._arrow_reader(cur, sql).read_all()
             finally:
-                cur.close()
+                self._close_cursor(cur)
         return table.to_reader()
 
     def _stream_sync(self, sql: str) -> pa.RecordBatchReader:
         cur = self._cursor()
-        cur.execute(sql)
-        reader = cur.to_arrow_reader()
+        try:
+            reader = self._arrow_reader(cur, sql)
+        except Exception:
+            self._close_cursor(cur)
+            raise
+        return self._stream_reader(cur, reader)
 
+    def _arrow_reader(self, cur: duckdb.DuckDBPyConnection, sql: str) -> pa.RecordBatchReader:
+        """Stream ``sql`` as Arrow.
+
+        ``execute().to_arrow_reader()`` copies every row and warns. A relation streams.
+        """
+        return cur.sql(sql).to_arrow_reader()
+
+    def _stream_reader(self, cur: duckdb.DuckDBPyConnection, reader: pa.RecordBatchReader) -> pa.RecordBatchReader:
         def batches() -> Iterator[pa.RecordBatch]:
             try:
                 yield from reader
             finally:
-                cur.close()
+                self._close_cursor(cur)
 
         return pa.RecordBatchReader.from_batches(reader.schema, batches())
 
@@ -539,26 +475,30 @@ class DuckDBAdapter(EngineAdapter):
         with self._write_lock:
             cur = self._cursor()
             src = f"__interlace_src_{uuid4().hex}"
-            cur.register(src, reader)
             try:
-                target = self._table_sql(table)
-                if mode == "create":
-                    sql = self._pin_create_catalog(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}")
-                    cur.execute(sql)
-                    # Row count before the placement probe: that probe runs its own statements.
-                    written = _affected(cur)
-                    try:
-                        self._guard_creates(cur, sql)
-                    except CatalogPlacementError:
-                        for schema, name, kind in _created_tables(sql):
-                            _drop_elsewhere(cur, schema, name, kind=kind)
-                        raise
-                    return written
-                cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
-                return _affected(cur)
+                cur.register(src, reader)
+                try:
+                    target = self._table_sql(table)
+                    if mode == "create":
+                        sql = pin_catalog(
+                            f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {src}", self._catalog_alias
+                        )
+                        cur.execute(sql)
+                        # Row count before the placement probe: that probe runs its own statements.
+                        written = _affected(cur)
+                        if self._guard_catalog:
+                            try:
+                                confirm_statement(cur, sql)
+                            except CatalogPlacementError:
+                                drop_misplaced(cur, sql)
+                                raise
+                        return written
+                    cur.execute(f"INSERT INTO {target} SELECT * FROM {src}")
+                    return _affected(cur)
+                finally:
+                    cur.unregister(src)
             finally:
-                cur.unregister(src)
-                cur.close()
+                self._close_cursor(cur)
 
     def _table_exists_sync(self, table: TableRef) -> bool:
         # information_schema spans every attached catalog: pin to the ref's catalog
@@ -572,7 +512,7 @@ class DuckDBAdapter(EngineAdapter):
                     [table.schema, table.name, table.catalog],
                 ).fetchone()
             finally:
-                cur.close()
+                self._close_cursor(cur)
         return bool(row and row[0])
 
     def _describe_sync(self, table: TableRef) -> dict[str, str]:
@@ -586,5 +526,5 @@ class DuckDBAdapter(EngineAdapter):
                     [table.schema, table.name, table.catalog],
                 ).fetchall()
             finally:
-                cur.close()
+                self._close_cursor(cur)
         return dict(rows)

@@ -24,11 +24,12 @@ ready-to-try, not production-blessed.
 | `bigquery` | BigQuery over ADBC | alpha | Full strategy set (incl. `scd`). Needs the `adbc-bigquery` extra. |
 
 The default warehouse is a plain DuckDB file (`.interlace/warehouse.duckdb`) — simplest to
-start with. Switch to `ducklake:.interlace/warehouse.ducklake` when you need `interlace serve`
-and a separate CLI to write the same warehouse concurrently (DuckLake serialises catalog
-access; a plain DuckDB file is single-writer). DuckDB is also the
-**federation hub**: everything crosses the Python boundary as Arrow `RecordBatchReader`, and
-DuckDB can ATTACH other databases for cross-engine reads. The remote ADBC engines
+start with. A new file cannot be opened by an older DuckDB. A file an older DuckDB wrote
+still opens, and stays in that format. Switch to `ducklake:.interlace/warehouse.ducklake`
+when you need `interlace serve` and a separate CLI to write the same warehouse
+concurrently (DuckLake serialises catalog access; a plain DuckDB file is single-writer).
+DuckDB is also the **federation hub**: everything crosses the Python boundary as Arrow
+`RecordBatchReader`, and DuckDB can ATTACH other databases for cross-engine reads. The remote ADBC engines
 (`postgres`/`redshift`/`snowflake`/`bigquery`) share one base (`engines/adbc.py`): a new ADBC
 backend is a dialect, a capability set, and a `connect`. Spark is its own transport
 (`SparkSession`, not ADBC).
@@ -124,6 +125,13 @@ A DuckDB warehouse `ATTACH`es the URI and writes it in SQL. A warehouse that can
 applies the same strategy inside that database, so `attach: {ext: external.duckdb}`
 still lands in the DuckDB file. `materialise: file` on those engines is written
 from Arrow on the host; DuckDB keeps `COPY`.
+
+## DuckDB SQL
+
+- A lambda renders as `lambda x : x + 1`. An arrow lambda (`x -> x + 1`) is rewritten to that.
+- `'abc' ~ 'b'` and `!~` are partial matches.
+- `SELECT NULL AS x` creates a column of type `NULL`. Cast the null (`NULL::VARCHAR`) before storing other values in it.
+- `1 // 0` and `1 % 0` raise. `TRY(1 // 0)` returns NULL. `1 / 0` is `inf`.
 
 ## Author dialect on Postgres and Redshift
 

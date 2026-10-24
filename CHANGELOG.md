@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+**The warehouse engine is DuckDB 2.0.** A new `.duckdb` file cannot be opened by an older DuckDB. A file an older DuckDB wrote still opens, and stays in that format. Lambdas render as `lambda x : …`. Arrow reads stream from a relation. Cancelling a query interrupts the cursor that is running it. `'abc' ~ 'b'` is a partial match, a `MERGE` that hits one target row twice errors, an untyped `NULL` column stays type `NULL`, and integer division by zero raises.
+
 ## 2.8.8 (2026-10-04)
 
 **DuckLake keeps a new table in the schema the statement named.** A create during a parallel build could commit with an empty schema name and land in `main`, so the next model failed to find it. Catalog cursors no longer overlap, an attached catalog's create names that catalog as well as the schema, and a create that still misses its schema is rolled back and retried.

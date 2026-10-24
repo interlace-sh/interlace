@@ -40,6 +40,15 @@ def test_duckdb_render_is_unchanged() -> None:
     assert "INTERVAL" in rendered and "SECOND" in rendered
 
 
+def test_duckdb_renders_lambdas_in_the_colon_form() -> None:
+    """The arrow lambda is rejected. Both spellings render as the colon form."""
+    arrow = render_sql(parse_one("SELECT list_transform([1, 2], x -> x + 1) AS xs", read="duckdb"), "duckdb")
+    colon = render_sql(parse_one("SELECT list_transform([1, 2], lambda x: x + 1) AS xs", read="duckdb"), "duckdb")
+    assert arrow == colon
+    assert "->" not in arrow
+    assert "LAMBDA x : x + 1" in arrow
+
+
 def test_explicit_postgres_engine_keeps_project_attach_as_a_sink(tmp_path: Path) -> None:
     """engines.default does not drop top-level attach:; a Postgres warehouse cannot ATTACH it."""
     (tmp_path / "interlace.yaml").write_text(

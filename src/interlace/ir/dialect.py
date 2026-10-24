@@ -8,6 +8,9 @@ set), a computed ``INTERVAL <expr> <unit>`` (the generator drops ``<expr>``),
 and ``range(n)`` when the model was parsed as the engine dialect rather than
 DuckDB. DuckDB's ``hash()`` has no Postgres equivalent; it becomes a
 non-negative ``hashtextextended``, which is a different function.
+
+Rendering to ``duckdb`` rewrites an arrow lambda (``x -> x + 1``) to the colon
+form (``LAMBDA x : x + 1``). The arrow form is rejected.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ _SIGN_MASK = (1 << 63) - 1
 
 def render_sql(ast: exp.Expr, dialect: str) -> str:
     """Canonical AST as ``dialect`` SQL, with the fixes above applied first."""
-    if dialect in _POSTGRES_FAMILY:
+    if dialect in _POSTGRES_FAMILY or dialect == "duckdb":
         # Children first. sqlglot's transform visits parents first and, when a
         # parent is replaced, never rewrites the copy of its children.
         ast = _rewrite_tree(ast.copy(), dialect)
@@ -45,6 +48,12 @@ def _rewrite_tree(node: exp.Expr, dialect: str) -> exp.Expr:
 
 
 def _rewrite(node: exp.Expr, dialect: str) -> exp.Expr:
+    if dialect == "duckdb":
+        # The arrow form is rejected. The colon flag is how sqlglot remembers which
+        # syntax the source used; forcing it emits ``LAMBDA x : expr`` for both.
+        if isinstance(node, exp.Lambda) and not node.args.get("colon"):
+            node.set("colon", True)
+        return node
     if dialect == "postgres" and isinstance(node, exp.Anonymous) and _name(node) == "hash" and node.expressions:
         return _postgres_hash(node)
     if isinstance(node, exp.Anonymous) and _name(node) == "range" and node.expressions:

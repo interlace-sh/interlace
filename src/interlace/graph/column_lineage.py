@@ -20,11 +20,14 @@ the trace alive through the opaque node instead of dead-ending the whole subtree
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.scope import Scope, traverse_scope
+from sqlglot.schema import MappingSchema
 
 from interlace.graph.project import CompiledModel, CompiledProject
 from interlace.ir.canonicalize import is_star_projection
@@ -46,10 +49,7 @@ def _insert_schema(schema: dict[str, Any], model_name: str, columns: dict[str, s
 
 
 def _model_lineage(ast: exp.Expr, schema: dict[str, Any], dialect: str) -> ColumnSources | None:
-    try:
-        qualified = qualify(ast.copy(), schema=schema, dialect=dialect)
-    except Exception:
-        return None
+    qualified = _qualify(ast, schema, dialect)
     if not isinstance(qualified, exp.Select):
         return None
 
@@ -63,6 +63,91 @@ def _model_lineage(ast: exp.Expr, schema: dict[str, Any], dialect: str) -> Colum
                 sources.append(ref)
         lineage[projection.alias_or_name] = sources
     return lineage
+
+
+def _qualify(ast: exp.Expr, schema: dict[str, Any], dialect: str) -> exp.Expr | None:
+    """Qualify ``ast``. A table that is not a model has no entry in ``schema``.
+
+    The compiler used to attach an unresolved column to the single such table.
+    It no longer does, so seed that table with the columns this query names
+    and qualify again. A query that is still ambiguous stays opaque.
+    """
+    try:
+        return qualify(ast.copy(), schema=schema, dialect=dialect)
+    except Exception:
+        seeded = _seed_unknown_tables(ast, schema, dialect)
+        if seeded is None:
+            return None
+    try:
+        return qualify(ast.copy(), schema=seeded, dialect=dialect)
+    except Exception:
+        return None
+
+
+def _seed_unknown_tables(ast: exp.Expr, schema: dict[str, Any], dialect: str) -> MappingSchema | None:
+    """Columns a query names on tables missing from ``schema``, keyed for qualify."""
+    try:
+        mapping = MappingSchema(schema, dialect=dialect)
+        pending: dict[str, tuple[exp.Table, dict[str, str]]] = {}
+        for scope in traverse_scope(ast):
+            _collect_unknown_columns(scope, mapping, pending, dialect)
+        if not any(columns for _, columns in pending.values()):
+            return None
+        seeded = MappingSchema(copy.deepcopy(schema), dialect=dialect)
+        for target, columns in pending.values():
+            seeded.add_table(target, columns)
+    except Exception:
+        return None
+    return seeded
+
+
+def _collect_unknown_columns(
+    scope: Scope,
+    mapping: MappingSchema,
+    pending: dict[str, tuple[exp.Table, dict[str, str]]],
+    dialect: str,
+) -> None:
+    unknown, known = _scope_columns(scope, mapping)
+    for alias, table in unknown:
+        target = _schema_table(table, mapping.depth())
+        if target is None:
+            continue
+        bucket = pending.setdefault(target.sql(dialect=dialect), (target, {}))[1]
+        for name in _named(scope.source_columns(alias)):
+            bucket[name] = "UNKNOWN"
+        if len(unknown) == 1:
+            for name in _named(scope.unqualified_columns):
+                if name not in known:
+                    bucket[name] = "UNKNOWN"
+
+
+def _scope_columns(scope: Scope, mapping: MappingSchema) -> tuple[list[tuple[str, exp.Table]], set[str]]:
+    """Sources with no schema columns, and column names the known sources already have."""
+    unknown: list[tuple[str, exp.Table]] = []
+    known: set[str] = set()
+    for alias, (_, source) in scope.selected_sources.items():
+        if isinstance(source, exp.Table):
+            columns = mapping.column_names(source)
+            if columns:
+                known.update(columns)
+            else:
+                unknown.append((alias, source))
+        elif isinstance(source, Scope) and isinstance(source.expression, exp.Selectable):
+            known.update(source.expression.named_selects)
+    return unknown, known
+
+
+def _named(columns: list[exp.Column]) -> list[str]:
+    return [column.name for column in columns if column.name and column.name != "*"]
+
+
+def _schema_table(table: exp.Table, depth: int) -> exp.Table | None:
+    """The schema key for ``table``. An empty schema has depth 0 and takes the bare name."""
+    if depth <= 1:
+        return exp.to_table(table.name) if table.name else None
+    if len(table.parts) != depth:
+        return None
+    return table.copy()
 
 
 def _projection_names(model: CompiledModel) -> list[str]:

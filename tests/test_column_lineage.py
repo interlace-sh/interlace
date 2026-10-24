@@ -49,6 +49,18 @@ def test_external_table_columns_are_attributed() -> None:
     assert lineage["m"]["val"] == [("main.events", "val")]
 
 
+def test_external_columns_stay_attributed_beside_a_model() -> None:
+    project = compile_models(
+        [
+            ModelDef(name="raw", sql="SELECT 1 AS id"),
+            ModelDef(name="m", sql="SELECT raw.id, e.ts FROM raw JOIN main.events AS e ON raw.id = e.id"),
+        ]
+    )
+    lineage = column_lineage(project)
+    assert lineage["m"]["id"] == [("raw", "id")]
+    assert lineage["m"]["ts"] == [("main.events", "ts")]
+
+
 def test_derived_column_with_multiple_inputs() -> None:
     project = compile_models([ModelDef(name="m", sql="SELECT a + b AS total FROM (SELECT 1 AS a, 2 AS b) s")])
     lineage = column_lineage(project)

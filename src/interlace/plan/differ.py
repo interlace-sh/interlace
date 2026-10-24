@@ -97,6 +97,24 @@ def _projection_map(ast: exp.Expr | None) -> dict[str, str] | None:
     return columns
 
 
+def _shown_columns(
+    name: str,
+    added: tuple[str, ...],
+    impact: dict[str, str],
+    touched: dict[str, frozenset[str] | None],
+    indirect: dict[str, frozenset[str]],
+) -> tuple[str, ...]:
+    """Columns the plan reports as moved. Additive changes report the new columns."""
+    if impact.get(name) != "semantic":
+        return added
+    own = touched.get(name)
+    if own:
+        return tuple(sorted(own))
+    if name in indirect:
+        return tuple(sorted(indirect[name]))
+    return added
+
+
 def _positional_hazard(ast: exp.Select) -> bool:
     """Whether a clause resolves against projection *positions* or the whole
     projection list, so a projection edit can silently leak into the row set:
@@ -440,13 +458,7 @@ async def diff(  # noqa: C901
         )
         if inherit:
             category = ChangeCategory.FORWARD_ONLY
-        shown = added
-        if impact.get(model.name) == "semantic":
-            own = touched.get(model.name)
-            if own:
-                shown = tuple(sorted(own))
-            elif model.name in indirect:
-                shown = tuple(sorted(indirect[model.name]))
+        shown = _shown_columns(model.name, added, impact, touched, indirect)
         plan.changes.append(
             ModelChange(model.name, ChangeType.MODIFIED, category, previous_fingerprint, model.fingerprint, shown)
         )

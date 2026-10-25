@@ -7,6 +7,7 @@ import pytest
 from interlace.engines.base import EngineCaps
 from interlace.ir.relation import SqlRelation, TableRef
 from interlace.strategies import FullMerge, HashMerge, Incremental, Merge, Replace, View, resolve_strategy
+from interlace.strategies.base import WritePlan
 
 pytestmark = pytest.mark.unit
 
@@ -128,19 +129,43 @@ _DUCKLAKE = EngineCaps(supports_create_or_replace=True, except_in_delete=False)
 _NO_SUBQUERY = EngineCaps(supports_mutation_subquery=False)
 
 
-def test_full_merge_inlines_except_in_the_delete() -> None:
+def _counts_for(statements: WritePlan, *, changed: int, vanished: int, inserted: int) -> list[int]:
+    """Place affected-row counts by role, so a new staging statement does not shift the test."""
+    placed = {"upsert_delete": changed, "delete": vanished, "insert": inserted}
+    return [placed.get(role, 0) for role in statements.roles]
+
+
+def test_full_merge_reads_the_source_once_and_inlines_except_in_the_delete() -> None:
     relation = SqlRelation.from_sql("SELECT id, v FROM src")
     statements = FullMerge(("id",)).plan_statements(relation, _TARGET, _CAPS)
     rendered = _sql(statements)
-    assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
-    assert rendered[1].startswith("DELETE FROM interlace__main.orders__abc WHERE id IN")
-    assert "EXCEPT" in rendered[1] and "FROM src" in rendered[1]
-    assert rendered[2].startswith("DELETE") and "EXCEPT" not in rendered[2]
-    assert rendered[3].startswith("INSERT INTO interlace__main.orders__abc ") and "EXCEPT" in rendered[3]
-    # [ensure, delete changed=11, delete vanished=2, insert=20] -> +9 ~11 -2
-    counts = statements.row_counts([0, 11, 2, 20])
+    # The model's query is snapshotted once. Both EXCEPT passes read that temp table,
+    # so a non-deterministic source cannot delete one version of a key and insert another.
+    assert [sql for sql in rendered if "FROM src" in sql] == [
+        sql for sql in rendered if sql.startswith("CREATE TEMPORARY TABLE _interlace_fm_src_")
+    ]
+    assert len([sql for sql in rendered if "FROM src" in sql]) == 1
+    other = _sql(FullMerge(("id",)).plan_statements(relation, _TARGET, _CAPS))
+    assert rendered[0] != other[0]  # parallel merges must not share a connection-scoped temp name
+    assert rendered[0].startswith("DROP TABLE IF EXISTS _interlace_fm_src_")
+    assert rendered[-1] == rendered[0]
+    ensure = next(sql for sql in rendered if sql.startswith("CREATE TABLE IF NOT EXISTS"))
+    assert "_interlace_fm_src_" in ensure and "FROM src" not in ensure
+    deletes = [sql for sql in rendered if sql.startswith("DELETE")]
+    assert deletes[0].startswith("DELETE FROM interlace__main.orders__abc WHERE id IN")
+    assert "EXCEPT" in deletes[0] and "_interlace_fm_src_" in deletes[0] and "FROM src" not in deletes[0]
+    assert deletes[1].startswith("DELETE") and "EXCEPT" not in deletes[1]
+    insert = next(sql for sql in rendered if sql.startswith("INSERT"))
+    assert insert.startswith("INSERT INTO interlace__main.orders__abc ") and "EXCEPT" in insert
+    # delete changed=11, delete vanished=2, insert=20 -> +9 ~11 -2
+    counts = statements.row_counts(_counts_for(statements, changed=11, vanished=2, inserted=20))
     assert (counts.inserted, counts.updated, counts.deleted) == (9, 11, 2)
-    assert "EXCEPT" in statements[1].sql(dialect="postgres")
+    postgres_deletes = [
+        statement.sql(dialect="postgres")
+        for statement in statements
+        if statement.sql(dialect="duckdb").startswith("DELETE")
+    ]
+    assert any("EXCEPT" in sql for sql in postgres_deletes)
 
 
 def test_full_merge_stages_key_sets_when_the_delete_cannot_hold_except() -> None:
@@ -148,28 +173,31 @@ def test_full_merge_stages_key_sets_when_the_delete_cannot_hold_except() -> None
     relation = SqlRelation.from_sql("SELECT id, v FROM src")
     statements = FullMerge(("id",)).plan_statements(relation, _TARGET, _DUCKLAKE)
     rendered = _sql(statements)
-    assert rendered[0].startswith("CREATE TABLE IF NOT EXISTS interlace__main.orders__abc AS")
-    assert rendered[1] == "DROP TABLE IF EXISTS _interlace_fm_changed"
-    assert rendered[2].startswith("CREATE TEMPORARY TABLE _interlace_fm_changed AS")
-    assert "EXCEPT" in rendered[2] and "FROM src" in rendered[2]
-    assert rendered[3] == "DROP TABLE IF EXISTS _interlace_fm_vanished"
-    assert rendered[4].startswith("CREATE TEMPORARY TABLE _interlace_fm_vanished AS")
-    assert "WHERE NOT id IN" in rendered[4] and "EXCEPT" not in rendered[4]
+    # One evaluation of the model. The key sets and the insert read the snapshot.
+    assert [sql for sql in rendered if "FROM src" in sql] == [
+        sql for sql in rendered if sql.startswith("CREATE TEMPORARY TABLE _interlace_fm_src_")
+    ]
+    assert rendered[0].startswith("DROP TABLE IF EXISTS _interlace_fm_src_")
+    assert "DROP TABLE IF EXISTS _interlace_fm_changed" in rendered
+    changed_stage = next(sql for sql in rendered if sql.startswith("CREATE TEMPORARY TABLE _interlace_fm_changed AS"))
+    assert "EXCEPT" in changed_stage and "_interlace_fm_src_" in changed_stage and "FROM src" not in changed_stage
+    vanished_stage = next(sql for sql in rendered if sql.startswith("CREATE TEMPORARY TABLE _interlace_fm_vanished AS"))
+    assert "WHERE NOT id IN" in vanished_stage and "EXCEPT" not in vanished_stage
     changed = "DELETE FROM interlace__main.orders__abc WHERE id IN (SELECT id FROM _interlace_fm_changed)"
     vanished = "DELETE FROM interlace__main.orders__abc WHERE id IN (SELECT id FROM _interlace_fm_vanished)"
-    assert rendered[5] == changed and rendered[6] == vanished
-    assert rendered[7].startswith("INSERT INTO interlace__main.orders__abc ") and "EXCEPT" in rendered[7]
-    assert "FROM src" not in changed and "FROM src" not in vanished
+    assert changed in rendered and vanished in rendered
+    insert = next(sql for sql in rendered if sql.startswith("INSERT"))
+    assert "EXCEPT" in insert and "_interlace_fm_src_" in insert
+    assert rendered[-1] == rendered[0]
 
-    # stage sizes (100, 50) are not writes; tail is delete changed=11, delete vanished=2, insert=20
-    counts = statements.row_counts([0, 0, 100, 0, 50, 11, 2, 20])
+    counts = statements.row_counts(_counts_for(statements, changed=11, vanished=2, inserted=20))
     assert (counts.inserted, counts.updated, counts.deleted) == (9, 11, 2)
 
     multi = _sql(FullMerge(("a", "b")).plan_statements(relation, _TARGET, _DUCKLAKE))
-    assert "WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_changed)" in multi[5]
-    assert "WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_vanished)" in multi[6]
+    assert any("WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_changed)" in sql for sql in multi)
+    assert any("WHERE (a, b) IN (SELECT a, b FROM _interlace_fm_vanished)" in sql for sql in multi)
     postgres = [statement.sql(dialect="postgres") for statement in statements]
-    assert postgres[2].startswith("CREATE TEMPORARY TABLE _interlace_fm_changed AS")
+    assert any(sql.startswith("CREATE TEMPORARY TABLE _interlace_fm_changed AS") for sql in postgres)
     assert all("EXCEPT" not in sql for sql in postgres if sql.startswith("DELETE"))
 
 

@@ -29,6 +29,7 @@ from interlace.plan.plan import BackfillTask, Plan
 from interlace.plan.resolve import resolve_model_query
 from interlace.plan.result import ApplyResult, record_build, record_timing
 from interlace.plan.transfer import StageLocks, stage_cross_engine_inputs
+from interlace.readers import release_owned
 from interlace.runtime.python_model import build_python_model, run_python_model
 from interlace.sinks import file_statements, write_arrow_file
 from interlace.state.interval import Interval
@@ -67,7 +68,13 @@ async def _merge_python_output(
     batch.
     """
     stage = replace(target, name=f"{target.name}__stage")
-    await engine.load(stage, reader, "create")
+    try:
+        await engine.load(stage, reader, "create")
+    finally:
+        # The stage holds the rows. Keeping the reader through the merge leaves
+        # the whole Arrow result resident beside the hash of that stage.
+        release_owned(reader)
+        del reader
     stage_table = stage.to_expr()
 
     strategy = resolve_strategy(model.materialise, model.strategy, model.key, model.time_column)
@@ -368,12 +375,13 @@ async def run_backfill(  # noqa: C901
             )
             result.record_rows(snapshot.name, RowCounts(inserted=loaded))
         else:  # keyed strategy: stage the Arrow output, then merge it in SQL
-            reader = await run_python_model(model, compiled, target_engine, resolution, previous)
+            # No local name: the callee drops the reader before the merge, and a
+            # name here would keep the Arrow result alive until this returns.
             merged, filled_window = await _merge_python_output(
                 model,
                 target_engine,
                 snapshot.physical_table,
-                reader,
+                await run_python_model(model, compiled, target_engine, resolution, previous),
                 exists=previous is not None,
                 interval=task.interval,
                 bootstrap=task.bootstrap,

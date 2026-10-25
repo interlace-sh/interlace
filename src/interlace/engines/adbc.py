@@ -24,6 +24,7 @@ from sqlglot import exp
 
 from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement, relation_is_absent
 from interlace.ir.relation import TableRef
+from interlace.readers import release_owned
 
 
 def arrow_type_name(dtype: pa.DataType) -> str:  # noqa: C901
@@ -79,7 +80,10 @@ class AdbcAdapter(EngineAdapter):
         return await self.fetch_sql(self.transpile(ast))
 
     async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
-        return await asyncio.to_thread(self._load_sync, table, reader, mode)
+        try:
+            return await asyncio.to_thread(self._load_sync, table, reader, mode)
+        finally:
+            release_owned(reader)
 
     async def create_view(self, name: TableRef, target: TableRef) -> None:
         await self.execute_sql(

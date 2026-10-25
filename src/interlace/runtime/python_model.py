@@ -41,6 +41,7 @@ from interlace.ir.relation import TableRef
 from interlace.plan.resolve import resolve_model_query
 from interlace.readers import release_owned
 from interlace.runtime.handles import RelationHandle
+from interlace.runtime.scratch import bind as bind_scratch
 
 RESERVED_PARAMS = frozenset({"cursor", "this"})
 
@@ -178,7 +179,9 @@ async def run_python_model(
                 handles.append(handle)
                 arguments[param] = handle
 
-        with registering(model.name):
+        with registering(model.name), bind_scratch(engine):
+            # The scratch database inherits this engine's cap. to_thread copies
+            # the context, so a sync read inside an async model still sees it.
             if inspect.iscoroutinefunction(model.fn):
                 result = await model.fn(**arguments)
             else:
@@ -200,4 +203,9 @@ async def build_python_model(
     """Run ``model``'s function over its upstreams and load the result into ``target``.
     Returns the number of rows written."""
     reader = await run_python_model(model, compiled, engine, physical, previous)
-    return await engine.load(target, reader, "create")
+    try:
+        return await engine.load(target, reader, "create")
+    finally:
+        # Drop the result once it is in the table. A Table-backed reader keeps
+        # every batch alive until this reference goes.
+        release_owned(reader)

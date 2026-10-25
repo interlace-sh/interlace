@@ -39,7 +39,7 @@ literal so it surfaces as an obvious `${VAR}` in errors.
 | `secrets` | map | `{}` | `{name: SecretConfig}` — object-store credentials (see below). |
 | `quack_token` | str | — | Auth token for a `quack:` database (or `INTERLACE_QUACK_TOKEN`). |
 | `attach` | map | `{}` | Databases attached into this engine at open. |
-| `settings` | map | `{}` | DuckDB settings applied to the instance at open, as `SET GLOBAL name = value`: `memory_limit`, `threads`, `temp_directory`, … Unset, DuckDB takes 80% of the host's RAM and a thread per core, per process. In-process DuckDB-family engines only. |
+| `settings` | map | `{}` | DuckDB settings applied to the instance at open, as `SET GLOBAL name = value`: `memory_limit`, `threads`, `temp_directory`, … Unset, DuckDB takes 80% of the host's RAM and a thread per core, per process. In-process DuckDB-family engines only. A `memory_limit` with no `temp_directory` spills to `<project>/.tmp`. A relative `temp_directory` is anchored at the project root. |
 
 ## `SecretConfig` (object-store credentials)
 

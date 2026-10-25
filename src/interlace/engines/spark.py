@@ -33,6 +33,7 @@ from sqlglot import exp
 from interlace.engines.base import EngineAdapter, EngineCaps, LoadMode, note_statement
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
+from interlace.readers import release_owned
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -117,7 +118,10 @@ class SparkAdapter(EngineAdapter):
         return await self.fetch_sql(self.transpile(ast))
 
     async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
-        return await asyncio.to_thread(self._load_sync, table, reader, mode)
+        try:
+            return await asyncio.to_thread(self._load_sync, table, reader, mode)
+        finally:
+            release_owned(reader)
 
     async def create_view(self, name: TableRef, target: TableRef) -> None:
         await self.execute_sql(f"CREATE OR REPLACE VIEW {self._fqtn(name)} AS SELECT * FROM {self._fqtn(target)}")

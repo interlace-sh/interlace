@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.8.12 (2026-10-25)
+
+**Python models share one scratch DuckDB.** `interlace.runtime.scratch.session` borrows a process-wide database capped at the active engine's `memory_limit` (1 GiB when no model run has published one), at most 2 threads, spilling to its own directory. Queries on it take a lock. A fresh `duckdb.connect()` per model was taking 80% of RAM and leaving an allocator arena behind after close.
+
+**A keyed Python model drops its Arrow result once the stage table exists.** The merge then hashes the stage, not the stage and the original table together. `load` releases an owned reader when the scan finishes or fails.
+
+**`full_merge` reads its source once.** The query is written to a temporary table and the deletes and the insert read that snapshot, so the two passes cannot disagree. The temp name is unique per plan: plain DuckDB runs models in parallel on one connection, and a temporary table is connection-scoped.
+
+**A `memory_limit` with no `temp_directory` spills to `<project>/.tmp`.** A relative `temp_directory` is anchored at the project root. A cap with nowhere to spill aborts the query.
+
 ## 2.8.11 (2026-10-24)
 
 **An engine takes `settings:`.** `memory_limit`, `threads`, `temp_directory` and the rest of `duckdb_settings()` are applied to the instance at open, as `SET GLOBAL`, so a daemon no longer inherits DuckDB's default of 80% of the host's RAM and a thread per core. `${VAR:-default}` interpolates with a default, the shell's spelling, anywhere `${VAR}` did; an unset variable with no default still stays literal and is rejected at engine open.

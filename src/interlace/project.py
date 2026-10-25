@@ -32,6 +32,26 @@ _PG_HOST = re.compile(r"\b(host|hostaddr|service)\s*=")
 _log = logging.getLogger("interlace.engines")
 
 
+def _resolved_settings(
+    settings: dict[str, str | int | float | bool], root: Path
+) -> dict[str, str | int | float | bool]:
+    """Copy engine settings, and give a memory cap somewhere to spill.
+
+    A ``memory_limit`` with no ``temp_directory`` makes DuckDB abort the query
+    when the cap is reached. A relative temp directory is anchored at the project
+    root: under ``--path`` or ``serve`` the process CWD is not that directory.
+    """
+    resolved = dict(settings)
+    if "memory_limit" in resolved and "temp_directory" not in resolved:
+        resolved["temp_directory"] = ".tmp"
+    temp = resolved.get("temp_directory")
+    if isinstance(temp, str) and temp and not Path(temp).is_absolute():
+        path = (root / temp).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        resolved["temp_directory"] = str(path)
+    return resolved
+
+
 def _warn_engine_maturity(name: str, engine_type: str, tier: str) -> None:
     """Surface alpha/beta engines at open so config alone cannot silently look production-ready."""
     _log.warning(
@@ -255,8 +275,9 @@ class Project:
         # Instance caps (memory_limit, threads, …) before anything runs on it. After the
         # ATTACH, because a DuckLake attach is itself a query DuckDB plans with whatever
         # thread count is current — the cap must simply be in place before the first model.
-        if cfg.settings:
-            engine.apply_settings(cfg.settings)
+        settings = _resolved_settings(cfg.settings, self.root)
+        if settings:
+            engine.apply_settings(settings)
         if self.config.inputs:
             from interlace.inputs import install_inputs
 

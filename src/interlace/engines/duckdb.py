@@ -56,7 +56,7 @@ from interlace.engines.placement import (
 )
 from interlace.exceptions import ConfigurationError
 from interlace.ir.relation import TableRef
-from interlace.readers import own_reader
+from interlace.readers import own_reader, release_owned
 
 _DUCKDB_CAPS = EngineCaps(
     supports_create_or_replace=True,
@@ -183,6 +183,9 @@ class DuckDBAdapter(EngineAdapter):
         self._deferred: list[duckdb.DuckDBPyConnection] = []
         self._cursor_lock = threading.Lock()
         self._closed = False
+        # What apply_settings last set. The scratch database reads this so a Python
+        # model that opens its own DuckDB inherits the warehouse cap.
+        self.settings: dict[str, object] = {}
         self.caps = _DUCKLAKE_CAPS if serialise_writes else _DUCKDB_CAPS
         # Placement confirmation is DuckLake-only. Plain catalogs skip it, so a view
         # promotion does not probe information_schema for a same-named table.
@@ -338,6 +341,7 @@ class DuckDBAdapter(EngineAdapter):
         of the host's RAM and a thread per core, and does so per process — the wrong default
         for a daemon sharing a host with other daemons. The name is checked as an identifier
         because it is interpolated into SQL; DuckDB rejects an unknown setting itself."""
+        self.settings = dict(settings)
         for name, value in settings.items():
             if not _SETTING_NAME.fullmatch(name):
                 raise ValueError(f"duckdb setting {name!r} is not a setting name")
@@ -383,7 +387,12 @@ class DuckDBAdapter(EngineAdapter):
         return await self.fetch_sql(self.transpile(ast))
 
     async def load(self, table: TableRef, reader: pa.RecordBatchReader, mode: LoadMode) -> int:
-        return await asyncio.to_thread(self._load_sync, table, reader, mode)
+        try:
+            return await asyncio.to_thread(self._load_sync, table, reader, mode)
+        finally:
+            # The scan has finished or failed. An owned reader closes whatever it
+            # borrowed (a cursor, a scratch connection) here, on this thread.
+            release_owned(reader)
 
     async def create_view(self, name: TableRef, target: TableRef) -> None:
         await self.execute_sql(

@@ -336,7 +336,12 @@ def test_settings_reach_the_engine_after_open(tmp_path: Path, monkeypatch: pytes
     project = Project.load(tmp_path)
     engine = project.open_engine()
     assert isinstance(engine, _CappedEngine)
-    assert engine.settings == {"memory_limit": "1GB", "threads": "4"}
+    assert engine.settings["memory_limit"] == "1GB"
+    assert engine.settings["threads"] == "4"
+    # A cap with nowhere to spill aborts the query. The directory is the project root,
+    # not the process CWD.
+    assert engine.settings["temp_directory"] == str((tmp_path / ".tmp").resolve())
+    assert (tmp_path / ".tmp").is_dir()
 
 
 def test_an_unset_setting_variable_is_rejected_before_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

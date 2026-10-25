@@ -110,6 +110,17 @@ async def test_python_merge_accumulates_across_runs(env: Env) -> None:
     ]
 
 
+async def test_full_merge_runs_a_cte_source(env: Env) -> None:
+    """The snapshot is ``CREATE TEMP TABLE AS <query>``. A leading CTE has to survive that."""
+    engine, _ = env
+    await engine.execute_sql("CREATE TABLE src_data AS SELECT * FROM (VALUES (1, 'a')) t(id, val)")
+    merged = ModelDef(
+        name="merged", sql="WITH s AS (SELECT * FROM src_data) SELECT * FROM s", strategy="full_merge", key=("id",)
+    )
+    await _initial(env, [merged])
+    assert await _rows(engine, "SELECT * FROM dev__main.merged ORDER BY id") == [{"id": 1, "val": "a"}]
+
+
 async def test_python_full_merge_deletes_vanished_keys(env: Env) -> None:
     engine, _ = env
     batches = iter(

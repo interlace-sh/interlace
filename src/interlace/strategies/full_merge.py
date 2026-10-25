@@ -4,7 +4,15 @@ For sources that can only supply the complete current state (an API list
 endpoint with no updated-since filter, a snapshot export), a plain full refresh
 rewrites every row on every run. ``full_merge`` treats the query as the desired
 state and applies only the difference, using set difference — column-agnostic,
-no column list or row hash needed (EXCEPT *is* the hash):
+no column list or row hash needed (EXCEPT *is* the hash).
+
+The source is written once into a temporary table and every later statement
+reads that snapshot. The changed-key pass and the insert used to each evaluate
+the query, so a tie in a non-deterministic expression (``any_value``, an
+unordered pick) could delete one version of a key and insert another. One
+snapshot makes those passes agree. The name is unique per plan: a plain DuckDB
+warehouse runs models in parallel on one connection, and a temporary table is
+connection-scoped, so a shared name would let two merges write each other's rows.
 
 - source rows with no exact target match (new keys, or changed content) are
   the **fresh** set: their keys' old versions are deleted, then they are inserted;
@@ -31,6 +39,7 @@ subquery in a ``DELETE`` (Spark/Delta) raises at plan time.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from uuid import uuid4
 
 from sqlglot import exp
 
@@ -44,6 +53,7 @@ from interlace.strategies.base import Strategy, WritePlan, table_expr
 # can run full_merge again; DuckDB cursors are fresh per batch either way.
 _CHANGED_KEYS = "_interlace_fm_changed"
 _VANISHED_KEYS = "_interlace_fm_vanished"
+_SOURCE_PREFIX = "_interlace_fm_src_"
 
 
 class FullMerge(Strategy):
@@ -72,9 +82,11 @@ class FullMerge(Strategy):
             )
         query = relation.ast
         table = table_expr(target)
+        # Unique per plan. See the module docstring: temp tables are connection-scoped.
+        source_name = f"{_SOURCE_PREFIX}{uuid4().hex}"
 
-        def source() -> exp.Select:  # fresh nodes each use
-            return exp.select("*").from_(query.copy().subquery("_s"))
+        def source() -> exp.Select:  # the one snapshot, fresh nodes each use
+            return exp.select("*").from_(_temp(source_name))
 
         def current() -> exp.Select:
             return exp.select("*").from_(table.copy())
@@ -84,7 +96,7 @@ class FullMerge(Strategy):
             return exp.select(*self.key).from_(exp.Subquery(this=fresh, alias=exp.TableAlias(this="_fresh")))
 
         def vanished_keys() -> exp.Select:  # target keys absent from the source
-            source_keys = exp.select(*self.key).from_(query.copy().subquery("_s"))
+            source_keys = exp.select(*self.key).from_(_temp(source_name))
             return (
                 exp.select(*self.key)
                 .from_(table.copy())
@@ -125,30 +137,49 @@ class FullMerge(Strategy):
             exists=True,
             expression=source().limit(0),
         )
-        # recomputed after the deletes: exactly the new keys and new versions
+        # recomputed after the deletes, still from the snapshot: exactly the new keys and new versions
         fresh = exp.Except(this=source(), expression=current(), distinct=True)
         insert = exp.Insert(
             this=table.copy(),
             expression=exp.select("*").from_(exp.Subquery(this=fresh, alias=exp.TableAlias(this="_fresh"))),
         )
+        # The model's query appears only in the snapshot. DROP first so a retried
+        # batch (DuckLake transaction conflict) does not collide with itself, and
+        # DROP last so the copy does not sit in the connection until process exit.
+        snapshot = stage(source_name, query.copy())
+        release = [drop(_temp(source_name), kind="TABLE")]
         # upsert_delete: changed keys are removed and re-inserted (an update).
         # delete: vanished keys are gone. The insert count includes both new keys
         # and new versions, so interpret_counts subtracts the changed-key deletes.
         if caps.except_in_delete:
             return WritePlan(
-                [ensure, delete_keys(fresh_keys()), delete_keys(vanished_keys()), insert],
-                ["ignore", "upsert_delete", "delete", "insert"],
+                [*snapshot, ensure, delete_keys(fresh_keys()), delete_keys(vanished_keys()), insert, *release],
+                ["ignore", "ignore", "ignore", "upsert_delete", "delete", "insert", "ignore"],
             )
-        # Both key sets are computed from the pre-image, then applied. The deletes
+        # Both key sets are computed from the snapshot, then applied. The deletes
         # read only the temp tables — DuckLake aborts if EXCEPT is inside the DELETE.
         return WritePlan(
             [
+                *snapshot,
                 ensure,
                 *stage(_CHANGED_KEYS, fresh_keys()),
                 *stage(_VANISHED_KEYS, vanished_keys()),
                 delete_in(_CHANGED_KEYS),
                 delete_in(_VANISHED_KEYS),
                 insert,
+                *release,
             ],
-            ["ignore", "ignore", "ignore", "ignore", "ignore", "upsert_delete", "delete", "insert"],
+            [
+                "ignore",
+                "ignore",
+                "ignore",
+                "ignore",
+                "ignore",
+                "ignore",
+                "ignore",
+                "upsert_delete",
+                "delete",
+                "insert",
+                "ignore",
+            ],
         )

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+**`interlace import dbt`.** Converts a dbt project: `ref` and `source`, seeds as models, schema tests as checks, snapshots as `scd`, list loops and SQL-fragment macros expanded. What it will not guess at is listed in `IMPORT.md`.
+
+**An open `serve` no longer accepts a cross-site write.** With no API keys, a `text/plain` POST (a browser's CORS simple request) is rejected, and a loopback bind rejects a `Host` or `Origin` that is not loopback. `--allow-open` prints a session token that writes must send.
+
+**A plan for a new environment says `reuse` when the fingerprint is already materialised.** Apply already skipped that compute; the preview called it a rebuild.
+
 ## 2.8.12 (2026-10-25)
 
 **Python models share one scratch DuckDB.** `interlace.runtime.scratch.session` borrows a process-wide database capped at the active engine's `memory_limit` (1 GiB when no model run has published one), at most 2 threads, spilling to its own directory. Queries on it take a lock. A fresh `duckdb.connect()` per model was taking 80% of RAM and leaving an allocator arena behind after close.

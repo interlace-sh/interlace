@@ -50,7 +50,7 @@ def plan_document(
     environment: str,
 ) -> PlanDocument:
     """The preview every surface shows: changes, transfers, physical DDL, drift."""
-    reused = {snapshot.name for snapshot in plan.reuses}
+    reused = plan.reused_names()
     changes: list[PlanChangeView] = []
     for change in plan.changes:
         model = compiled.models.get(change.name)

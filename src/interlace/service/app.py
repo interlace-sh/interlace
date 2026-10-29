@@ -84,6 +84,8 @@ def create_app(
     scheduler_interval: float = 60.0,
     stream_flush_interval: float = 0.05,
     apply_on_start: bool = False,
+    allowed_hosts: frozenset[str] | None = None,
+    local_token: str | None = None,
 ) -> Litestar:
     """Build the Litestar app for the project at ``root``.
 
@@ -96,6 +98,10 @@ def create_app(
     ``quack:<host>:<port>`` URI) additionally serves the warehouse over the
     quack protocol so other processes — CLI runs, ad-hoc DuckDB clients —
     share this process's warehouse concurrently.
+
+    ``allowed_hosts`` rejects any other ``Host`` header (loopback ``serve``).
+    ``local_token`` is required on writes when the bind is not loopback and no
+    API key exists yet.
     """
 
     lifespan = project_lifespan(
@@ -172,7 +178,7 @@ def create_app(
         status = 404 if "unknown" in message[:40].lower() else 400
         return Response(content=body, status_code=status)
 
-    return Litestar(
+    app = Litestar(
         exception_handlers={_InterlaceError: _domain_error},
         # gzip the served modules/CSS/JSON (no build step, so this is where transfer
         # size is won). SSE routes set no_compress — compressing them would buffer
@@ -229,3 +235,9 @@ def create_app(
             render_plugins=[ScalarRenderPlugin()],
         ),
     )
+    # None leaves the check off (tests, embedded use). ``serve`` on loopback sets
+    # the loopback names; a public bind sets ``local_token`` instead, because a
+    # remote caller can send whatever Host header they like.
+    app.state.allowed_hosts = allowed_hosts
+    app.state.local_token = local_token
+    return app

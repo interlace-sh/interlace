@@ -13,7 +13,7 @@ def plan_markdown(plan: Plan, environment: str) -> str:  # noqa: C901
     Starts with ``<!-- interlace-plan -->`` so the Action can replace an earlier
     comment on the same PR instead of stacking them.
     """
-    reused = {snapshot.name for snapshot in plan.reuses}
+    reused = plan.reused_names()
     breaking = [
         change.name for change in plan.changes if change.category is not None and change.category.value == "breaking"
     ]

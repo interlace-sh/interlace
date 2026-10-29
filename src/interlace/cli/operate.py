@@ -307,6 +307,7 @@ def serve(
         import uvicorn
 
         from interlace.service.app import create_app
+        from interlace.service.auth import LOOPBACK_HOSTS
     except ImportError as exc:
         console.print(r"[red]The HTTP API needs the 'service' extra: pip install 'interlaced\[service]'[/red]")
         raise typer.Exit(1) from exc
@@ -317,7 +318,9 @@ def serve(
     # Auth is open until the first API key exists (see auth.py). Fine on loopback;
     # on a routable bind it exposes apply/gc/query unauthenticated — refuse unless
     # --allow-open (or keys already exist).
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    loopback = host in LOOPBACK_HOSTS
+    keyed = False
+    if not loopback:
         keyed = asyncio.run(_has_api_keys(path))
         if not keyed and not allow_open:
             console.print(
@@ -336,9 +339,20 @@ def serve(
     if quack and not token:
         import secrets
 
-        token = secrets.token_hex(8)
+        token = secrets.token_hex(16)
         console.print(f"[bold]quack[/bold] warehouse at [cyan]{quack}[/cyan] · token [yellow]{token}[/yellow]")
         console.print("Clients: set [bold]database: quack:...[/bold] and INTERLACE_QUACK_TOKEN in the environment.")
+    local_token = ""
+    if not loopback and not keyed:
+        import secrets as _secrets
+
+        local_token = _secrets.token_urlsafe(24)
+        console.print(
+            "[bold]Session token[/bold] (required on every write until you create an API key):\n"
+            f"  [yellow]{local_token}[/yellow]\n"
+            f"Open [bold cyan]http://{host}:{port}/ui?token={local_token}[/bold cyan] "
+            "or send [bold]X-Interlace-Token[/bold]."
+        )
     app = create_app(
         path,
         environment,
@@ -347,6 +361,8 @@ def serve(
         scheduler=scheduler,
         scheduler_interval=interval,
         apply_on_start=apply_on_start,
+        allowed_hosts=LOOPBACK_HOSTS if loopback else None,
+        local_token=local_token or None,
     )
     config = uvicorn.Config(
         app,

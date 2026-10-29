@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # Importing the command modules registers them on ``app``.
 import interlace.cli.build  # noqa: F401
+import interlace.cli.importers  # noqa: F401
 import interlace.cli.inspect  # noqa: F401
 import interlace.cli.operate  # noqa: F401
 from interlace.cli.support import _flatten_exceptions, _print_error, app

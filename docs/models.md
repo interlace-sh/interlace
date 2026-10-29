@@ -62,9 +62,12 @@ Two consequences worth knowing:
 - **Type control is yours.** `read_csv_auto` sniffs types. Where that matters, be explicit:
   `read_csv('seeds/countries.csv', columns={'id': 'INTEGER', 'country': 'VARCHAR'})`.
 
-**Coming from dbt:** this replaces `seeds/` plus `dbt seed`. Move the CSV anywhere you like
-(`seeds/` is a convention here, not a special directory), add the one-line model above, and
-every `ref('countries')` becomes a plain `countries` reference.
+**Coming from dbt:** `interlace import dbt <project> --out <dir>` rewrites `ref` and
+`source`, turns seeds into models that read the CSV, turns schema tests into checks, and
+turns snapshots into `scd`. A `{% for %}` over a list and a macro whose body is a SQL
+fragment are expanded. Anything else is listed in `IMPORT.md` and left under
+`unconverted/`. There is no `seed` model type and no `interlace seed` command, because a
+seed is just a model whose source is a file.
 
 ## Python models
 

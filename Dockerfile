@@ -29,8 +29,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /project
 
-# Expose default serve port
-EXPOSE 8080
+# `interlace serve` binds 8000. A container must pass --host 0.0.0.0 or nothing outside can connect.
+EXPOSE 8000
 
 ENTRYPOINT ["interlace"]
 CMD ["--help"]

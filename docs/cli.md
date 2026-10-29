@@ -26,6 +26,12 @@ credentials it needs. Filesystem only. Bundled templates:
 | `postgres` | Incremental pull from a Postgres source (bundled seeded docker-compose) | Docker + `[postgres]` extra |
 | `cdc` | Follow a Docker Postgres table through a logical slot into a `@stream` and a `full_merge` replica | Docker + `[postgres,service]` extras |
 
+### `interlace import dbt PATH [--out DIR] [--force]`
+Convert a dbt project. `ref` and `source` become table names, seeds become models that
+`read_csv_auto` their CSV, schema tests become checks, snapshots become `scd`. A `{% for %}`
+over a list and a macro whose body is a SQL fragment are expanded. Anything else is copied
+to `unconverted/` and listed in `IMPORT.md`. Does not apply the project.
+
 ### `interlace plan [--env] [--select] [--forward-only] [--json] [--markdown]`
 Preview what `apply` would change in an environment, without building. Connects to the
 engines to report live indexes and column drift, but does not write. `--json` mirrors the
@@ -152,7 +158,9 @@ reports `starting` while that apply runs; writes return 503 until it finishes. A
 its `@stream`. `--no-scheduler` runs API-only (pair with a separate `interlace scheduler`).
 `--quack` also serves the warehouse over the quack protocol. A non-loopback bind with no API
 keys is **refused** unless `--allow-open` (insecure); create a key first with
-`interlace apikey create`.
+`interlace apikey create`. With no keys yet, writes must be `application/json`. A loopback
+bind also rejects a `Host` or `Origin` that is not loopback. `--allow-open` prints a session
+token that every write must send (`X-Interlace-Token`, or open `/ui?token=`).
 
 ### `interlace mcp`
 Serve this project to an MCP client on stdio (JSON-RPC 2.0, `Content-Length` framing).

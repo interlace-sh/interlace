@@ -210,6 +210,17 @@ class Plan:
     def has_breaking_changes(self) -> bool:
         return any(c.category is ChangeCategory.BREAKING for c in self.changes)
 
+    def reused_names(self) -> set[str]:
+        """Models apply will not recompute.
+
+        ``reuses`` are provably identical output. A backfill with ``reuse_existing``
+        is a fingerprint another environment already materialised: apply records it
+        and swaps the view. Plan output used to call that a rebuild.
+        """
+        names = {snapshot.name for snapshot in self.reuses}
+        names.update(task.snapshot.name for task in self.backfills if task.reuse_existing)
+        return names
+
 
 __all__ = [
     "PRODUCTION_ENV",

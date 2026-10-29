@@ -94,10 +94,11 @@ def orders(cursor, this):
     return pyarrow.Table.from_pylist(rows)     # or RecordBatchReader / generator of batches
 ```
 
-**Strategies:** `replace`, `view`, `ephemeral` (CTE-inlined), `merge` (upsert),
-`full_merge` (full-state source applied as a minimal diff), `incremental` (one time window
-at a time — rewrites the window, or upserts within it if you give it a `key`), `scd`
-(history with validity windows).
+**Strategies:** `replace`, `append`, `merge` (upsert), `full_merge` (full-state source
+applied as a minimal diff), `hash_merge`, `incremental` (one time window at a time —
+rewrites the window, or upserts within it if you give it a `key`), `scd` (history with
+validity windows), `view`. `ephemeral` is a materialisation: the query is inlined into
+its consumers, not a strategy.
 
 ## Plan / apply
 

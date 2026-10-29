@@ -4,7 +4,7 @@ services:
     build: .
     container_name: interlace
     volumes:
-      - ./examples/basic:/project  # Mount your project directory
+      - ./examples/getting_started:/project  # Mount your project directory
     depends_on:
       postgres:
         condition: service_healthy
@@ -19,7 +19,7 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
-      - "8080:8080"  # interlace serve
+      - "8000:8000"  # `interlace serve` binds 8000. Inside the container pass --host 0.0.0.0.
     # Default: show help. Override with: docker compose run interlace run
     command: ["--help"]
 

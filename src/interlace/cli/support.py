@@ -247,7 +247,9 @@ def _render(plan: Plan, environment: str) -> None:  # noqa: C901
     if not plan.changes and not plan.physical and not plan.transfers and not plan.drift and not plan.warnings:
         console.print(f"No changes for [bold]{environment}[/bold].")
         return
-    reused = {snapshot.name for snapshot in plan.reuses}
+    identical = {snapshot.name for snapshot in plan.reuses}
+    already = {task.snapshot.name for task in plan.backfills if task.reuse_existing} - identical
+    reused = identical | already
     if plan.changes:
         table = _table(f"Plan · {environment}")
         table.add_column("Model")
@@ -271,8 +273,10 @@ def _render(plan: Plan, environment: str) -> None:  # noqa: C901
                 build,
             )
         console.print(table)
-    if reused:
-        console.print(f"[dim]{len(reused)} model(s) have provably identical output — reusing existing tables.[/dim]")
+    if identical:
+        console.print(f"[dim]{len(identical)} model(s) have provably identical output — reusing existing tables.[/dim]")
+    if already:
+        console.print(f"[dim]{len(already)} model(s) already materialised — reusing those tables.[/dim]")
     for action in plan.physical:
         for physical in action.changes:
             mark = "[green]+[/]" if physical.op == "add" else "[red]-[/]"

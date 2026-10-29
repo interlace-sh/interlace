@@ -4,6 +4,18 @@
 // browser's Last-Event-ID); a daemon that's down is retried with backoff.
 
 const TOKEN_KEY = "interlace.token";
+const SESSION_KEY = "interlace.session";
+
+// `interlace serve --allow-open` prints a URL with ?token=. Keep it out of the
+// address bar after the first load and send it on writes. Loopback serve does
+// not mint one; Host and Origin checks cover that case.
+const sessionFromUrl = new URL(location.href).searchParams.get("token");
+if (sessionFromUrl) {
+  localStorage.setItem(SESSION_KEY, sessionFromUrl);
+  const clean = new URL(location.href);
+  clean.searchParams.delete("token");
+  history.replaceState(null, "", clean.pathname + clean.search + clean.hash);
+}
 
 export const token = {
   get: () => localStorage.getItem(TOKEN_KEY) || "",
@@ -21,6 +33,8 @@ class ApiError extends Error {
 async function call(method, path, body) {
   const headers = {};
   if (token.get()) headers["Authorization"] = `Bearer ${token.get()}`;
+  const session = localStorage.getItem(SESSION_KEY);
+  if (session) headers["X-Interlace-Token"] = session;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   if (!response.ok) {
